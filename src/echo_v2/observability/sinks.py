@@ -1,6 +1,6 @@
 import logging
 
-from naot_poc.runtime.events import RuntimeEvent
+from echo_v2.runtime.events import RuntimeEvent
 
 
 class InMemoryEventSink:
@@ -44,7 +44,7 @@ class LoggingEventSink:
         logger: logging.Logger | None = None,
         level: int = logging.INFO,
     ) -> None:
-        self._logger = logger or logging.getLogger("naot_poc.observability")
+        self._logger = logger or logging.getLogger("echo_v2.observability")
         self._level = level
 
     def emit(self, event: RuntimeEvent) -> None:

@@ -834,7 +834,7 @@ The LLM should never directly:
 
 # 11. Runtime Foundation
 
-Reuse the generic design developed in `naot-poc`'s `foundation-v0.1.0`.
+Reuse the generic design developed in the original runtime foundation.
 
 Every important external operation should execute through:
 
@@ -1459,7 +1459,7 @@ scheduled-message concepts
 calendar integration for later
 ```
 
-### From `naot-poc` `foundation-v0.1.0`
+### From the original runtime foundation
 
 Reuse or adapt the engineering foundation:
 

@@ -2,17 +2,17 @@ import asyncio
 
 import pytest
 
-from naot_poc.runtime.context import RunContext
-from naot_poc.runtime.errors import PermanentError, RetryableError
-from naot_poc.runtime.events import RuntimeEvent
-from naot_poc.runtime.executor import execute
-from naot_poc.runtime.idempotency import (
+from echo_v2.runtime.context import RunContext
+from echo_v2.runtime.errors import PermanentError, RetryableError
+from echo_v2.runtime.events import RuntimeEvent
+from echo_v2.runtime.executor import execute
+from echo_v2.runtime.idempotency import (
     InMemoryIdempotencyStore,
     PermanentFailureOutcome,
     ReserveStatus,
     SuccessOutcome,
 )
-from naot_poc.runtime.policy import ExecutionPolicy
+from echo_v2.runtime.policy import ExecutionPolicy
 
 # ---------------------------------------------------------------------------
 # Helpers

@@ -5,16 +5,11 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "echo-v2"
 version = "0.1.0"
-description = "Barcode scanning proof of concept using zxing-cpp."
-readme = "README.md"
+description = "Reliable runtime foundation for Echo v2."
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "gaddy" }]
-dependencies = [
-    "zxing-cpp>=2.2.0",
-    "Pillow>=10.0.0",
-    "langgraph>=0.2.0",
-]
+dependencies = []
 
 [project.optional-dependencies]
 dev = [
@@ -26,12 +21,8 @@ dev = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 
-[project.scripts]
-echo-scan = "echo_v2.__main__:main"
-echo-eval = "echo_v2.evaluation.cli:main"
-
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-echo_v2 = ["py.typed", "evaluation/datasets/*.json"]
+echo_v2 = ["py.typed"]

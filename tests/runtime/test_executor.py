@@ -3,16 +3,15 @@ import time
 
 import pytest
 
-from naot_poc.domain.errors import InvalidInputError
-from naot_poc.observability import InMemoryEventSink
-from naot_poc.runtime.context import RunContext
-from naot_poc.runtime.errors import PermanentError, RetryableError
-from naot_poc.runtime.executor import execute
-from naot_poc.runtime.policy import ExecutionPolicy
+from echo_v2.observability import InMemoryEventSink
+from echo_v2.runtime.context import RunContext
+from echo_v2.runtime.errors import ApplicationError, PermanentError, RetryableError
+from echo_v2.runtime.executor import execute
+from echo_v2.runtime.policy import ExecutionPolicy
 
 
 async def test_execute_returns_operation_result():
-    context = RunContext(operation_name="barcode_scan")
+    context = RunContext(operation_name="operation")
 
     def double(value: int) -> int:
         return value * 2
@@ -27,7 +26,7 @@ async def test_execute_returns_operation_result():
 
 
 async def test_execute_measures_duration():
-    context = RunContext(operation_name="barcode_scan")
+    context = RunContext(operation_name="operation")
 
     def slow_operation(value: str) -> str:
         time.sleep(0.01)
@@ -44,12 +43,12 @@ async def test_execute_measures_duration():
 
 
 async def test_execute_preserves_application_error():
-    context = RunContext(operation_name="barcode_scan")
+    context = RunContext(operation_name="operation")
 
     def operation(value: str) -> str:
-        raise InvalidInputError("bad input")
+        raise ApplicationError("bad input")
 
-    with pytest.raises(InvalidInputError):
+    with pytest.raises(ApplicationError):
         await execute(
             operation=operation,
             input_="hello",
@@ -58,7 +57,7 @@ async def test_execute_preserves_application_error():
 
 
 async def test_execute_wraps_unexpected_error():
-    context = RunContext(operation_name="barcode_scan")
+    context = RunContext(operation_name="operation")
 
     def operation(value: str) -> str:
         raise KeyError("boom")
@@ -72,7 +71,7 @@ async def test_execute_wraps_unexpected_error():
 
 
 async def test_execute_accepts_policy():
-    context = RunContext(operation_name="barcode_scan")
+    context = RunContext(operation_name="operation")
 
     policy = ExecutionPolicy(
         max_attempts=3,
@@ -90,7 +89,7 @@ async def test_execute_accepts_policy():
 
 
 async def test_execute_preserves_retryable_error():
-    context = RunContext(operation_name="barcode_scan")
+    context = RunContext(operation_name="operation")
 
     def operation(value: str) -> str:
         raise RetryableError("temporary failure")
@@ -104,7 +103,7 @@ async def test_execute_preserves_retryable_error():
 
 
 async def test_execute_retries_retryable_error():
-    context = RunContext(operation_name="barcode_scan")
+    context = RunContext(operation_name="operation")
     calls = 0
 
     def operation(value: int) -> int:
@@ -134,7 +133,7 @@ async def test_execute_retries_retryable_error():
 
 
 async def test_execute_stops_after_max_attempts():
-    context = RunContext(operation_name="barcode_scan")
+    context = RunContext(operation_name="operation")
     calls = 0
 
     def operation(value: int) -> int:
@@ -159,7 +158,7 @@ async def test_execute_stops_after_max_attempts():
 
 
 async def test_execute_does_not_retry_permanent_error():
-    context = RunContext(operation_name="barcode_scan")
+    context = RunContext(operation_name="operation")
     calls = 0
 
     def operation(value: int) -> int:
@@ -184,7 +183,7 @@ async def test_execute_does_not_retry_permanent_error():
 
 
 async def test_execute_runs_async_operation():
-    context = RunContext(operation_name="barcode_scan")
+    context = RunContext(operation_name="operation")
 
     async def async_double(value: int) -> int:
         return value * 2
@@ -201,7 +200,7 @@ async def test_execute_runs_async_operation():
 
 async def test_execute_times_out_and_retries():
     sink = InMemoryEventSink()
-    context = RunContext(run_id="run-timeout", operation_name="barcode_scan")
+    context = RunContext(run_id="run-timeout", operation_name="operation")
     calls = 0
 
     async def slow_then_fast(value: int) -> int:
@@ -238,7 +237,7 @@ async def test_execute_times_out_and_retries():
 
 async def test_execute_emits_started_and_succeeded_events():
     sink = InMemoryEventSink()
-    context = RunContext(run_id="run-123", operation_name="barcode_scan")
+    context = RunContext(run_id="run-123", operation_name="operation")
 
     result = await execute(
         operation=lambda value: value * 2,
@@ -255,19 +254,19 @@ async def test_execute_emits_started_and_succeeded_events():
     started = sink.events[0]
     assert started.name == "operation.started"
     assert started.run_id == "run-123"
-    assert started.attributes["operation_name"] == "barcode_scan"
+    assert started.attributes["operation_name"] == "operation"
 
     succeeded = sink.events[1]
     assert succeeded.name == "operation.succeeded"
     assert succeeded.run_id == "run-123"
-    assert succeeded.attributes["operation_name"] == "barcode_scan"
+    assert succeeded.attributes["operation_name"] == "operation"
     assert succeeded.attributes["attempts"] == 1
     assert succeeded.attributes["duration_ms"] >= 0
 
 
 async def test_execute_emits_retrying_event():
     sink = InMemoryEventSink()
-    context = RunContext(run_id="run-123", operation_name="barcode_scan")
+    context = RunContext(run_id="run-123", operation_name="operation")
 
     attempts = 0
 
@@ -304,7 +303,7 @@ async def test_execute_emits_retrying_event():
 
     retrying = sink.events[1]
 
-    assert retrying.attributes["operation_name"] == "barcode_scan"
+    assert retrying.attributes["operation_name"] == "operation"
     assert retrying.attributes["attempt"] == 1
     assert retrying.attributes["next_attempt"] == 2
     assert retrying.attributes["error_type"] == "RetryableError"
@@ -313,7 +312,7 @@ async def test_execute_emits_retrying_event():
 
 async def test_execute_emits_failed_when_retries_exhausted():
     sink = InMemoryEventSink()
-    context = RunContext(run_id="run-123", operation_name="barcode_scan")
+    context = RunContext(run_id="run-123", operation_name="operation")
 
     def always_fails(value: int) -> int:
         raise RetryableError("temporary failure")
@@ -342,6 +341,6 @@ async def test_execute_emits_failed_when_retries_exhausted():
 
     failed = sink.events[-1]
 
-    assert failed.attributes["operation_name"] == "barcode_scan"
+    assert failed.attributes["operation_name"] == "operation"
     assert failed.attributes["attempts"] == 2
     assert failed.attributes["error_type"] == "RetryableError"

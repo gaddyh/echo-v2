@@ -1,3 +1,7 @@
+class ApplicationError(Exception):
+    """Base exception for expected application errors."""
+
+
 class ExecutionError(Exception):
     """Base class for runtime execution failures."""
 

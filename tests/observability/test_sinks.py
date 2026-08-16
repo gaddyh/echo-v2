@@ -1,7 +1,7 @@
 import logging
 
-from naot_poc.observability import InMemoryEventSink, LoggingEventSink
-from naot_poc.runtime.events import RuntimeEvent
+from echo_v2.observability import InMemoryEventSink, LoggingEventSink
+from echo_v2.runtime.events import RuntimeEvent
 
 
 def _event(
@@ -96,15 +96,15 @@ def test_in_memory_sink_filter_with_no_constraints_returns_copy_of_all():
 
 
 def test_logging_sink_emits_one_record_per_event_with_attributes(caplog):
-    logger = logging.getLogger("naot_poc.test.obs.attrs")
+    logger = logging.getLogger("echo_v2.test.obs.attrs")
     sink = LoggingEventSink(logger=logger, level=logging.INFO)
-    caplog.set_level(logging.INFO, logger="naot_poc.test.obs.attrs")
+    caplog.set_level(logging.INFO, logger="echo_v2.test.obs.attrs")
 
     sink.emit(
         _event(
             "operation.succeeded",
             "run-123",
-            {"operation_name": "barcode_scan", "attempts": 2},
+            {"operation_name": "operation", "attempts": 2},
         )
     )
 
@@ -114,14 +114,14 @@ def test_logging_sink_emits_one_record_per_event_with_attributes(caplog):
     message = record.getMessage()
     assert "run_id=run-123" in message
     assert "operation.succeeded" in message
-    assert "operation_name=barcode_scan" in message
+    assert "operation_name=operation" in message
     assert "attempts=2" in message
 
 
 def test_logging_sink_emits_no_trailing_space_when_attributes_empty(caplog):
-    logger = logging.getLogger("naot_poc.test.obs.empty")
+    logger = logging.getLogger("echo_v2.test.obs.empty")
     sink = LoggingEventSink(logger=logger, level=logging.INFO)
-    caplog.set_level(logging.INFO, logger="naot_poc.test.obs.empty")
+    caplog.set_level(logging.INFO, logger="echo_v2.test.obs.empty")
 
     sink.emit(_event("operation.started", "run-abc"))
 
@@ -132,9 +132,9 @@ def test_logging_sink_emits_no_trailing_space_when_attributes_empty(caplog):
 
 
 def test_logging_sink_respects_custom_level(caplog):
-    logger = logging.getLogger("naot_poc.test.obs.level")
+    logger = logging.getLogger("echo_v2.test.obs.level")
     sink = LoggingEventSink(logger=logger, level=logging.WARNING)
-    caplog.set_level(logging.DEBUG, logger="naot_poc.test.obs.level")
+    caplog.set_level(logging.DEBUG, logger="echo_v2.test.obs.level")
 
     sink.emit(_event("operation.started", "run-1"))
 
@@ -144,7 +144,7 @@ def test_logging_sink_respects_custom_level(caplog):
 
 def test_logging_sink_uses_default_logger_when_none_given(caplog):
     sink = LoggingEventSink(level=logging.INFO)
-    caplog.set_level(logging.INFO, logger="naot_poc.observability")
+    caplog.set_level(logging.INFO, logger="echo_v2.observability")
 
     sink.emit(_event("operation.started", "run-default"))
 

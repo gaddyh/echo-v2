@@ -1,7 +1,7 @@
 """Idempotency support for the runtime executor.
 
 When a caller supplies an ``idempotency_key`` and an :class:`IdempotencyStore`
-to :func:`naot_poc.runtime.executor.execute`, the runtime caches terminal
+to :func:`echo_v2.runtime.executor.execute`, the runtime caches terminal
 outcomes (successes and permanent failures) so that repeat calls with the same
 key short-circuit, and concurrent duplicates wait for the owner to finish and
 share its result.
@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Generic, Protocol, TypeVar, runtime_checkable
 
-from naot_poc.runtime.errors import RetryableError
+from echo_v2.runtime.errors import RetryableError
 
 TOutput = TypeVar("TOutput")
 
