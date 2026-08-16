@@ -15,11 +15,21 @@ dependencies = []
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.23",
+    "pytest-cov>=4.0",
     "ruff>=0.4.0",
 ]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+
+[tool.coverage.run]
+branch = true
+source = ["src/echo_v2"]
+
+[tool.coverage.report]
+fail_under = 95
+show_missing = true
+omit = ["src/echo_v2/integrations/*"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

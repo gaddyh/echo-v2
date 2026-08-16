@@ -16,3 +16,12 @@ class TimeoutError(RetryableError):
 
 class PermanentError(ExecutionError):
     """A failure that should not be retried."""
+
+
+class IndeterminateError(ExecutionError):
+    """An operation whose outcome is unknown (e.g. timed out mid-flight).
+
+    Not retryable, not permanent: the side effect may or may not have
+    happened. For idempotent irreversible writes, this is persisted as an
+    ``IndeterminateOutcome`` so the same key cannot re-run until reconciled.
+    """
