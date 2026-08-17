@@ -46,6 +46,9 @@ asyncio_mode = "auto"
 [tool.coverage.run]
 branch = true
 source = ["src/echo_v2"]
+omit = [
+    "src/echo_v2/persistence/alembic/*",
+]
 
 [tool.coverage.report]
 fail_under = 95
