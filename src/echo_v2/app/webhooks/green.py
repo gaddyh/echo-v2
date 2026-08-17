@@ -16,8 +16,17 @@ back in the ``Authorization`` header as ``Bearer <token>`` or
 ``hmac.compare_digest``. The plaintext is never stored.
 
 Idempotency (plan guardrail G8): providers deliver at-least-once. The route
-dedupes by ``provider_message_id`` (in-memory for Step 0; durable with the
-persistent repository). The dispatcher must never assume exactly-once.
+deduplicates on ``event.event_id`` -- the provider-assigned identity of a
+*notification*, not of a message. This is critical because one message
+legitimately produces multiple status notifications (``sent`` / ``delivered``
+/ ``read``) sharing the same ``idMessage``, and a connection can revisit an
+earlier state (``blocked`` -> ``starting`` -> ``blocked``). Deduping on
+``event_id`` (which includes the status value for status events and the event
+timestamp for state events) distinguishes distinct notifications while still
+suppressing provider retries of the *same* notification. The
+:class:`WebhookDedupStore` abstraction keeps the route decoupled from the
+storage mechanism; a persistent implementation ships with the persistent
+repository.
 
 The route does **only** ingress + auth + dedupe + dispatch. No business
 logic. ``EventDispatcher`` is a small port with a stub impl this milestone;
@@ -34,6 +43,7 @@ from typing import Protocol, runtime_checkable
 
 from fastapi import APIRouter, Header, HTTPException, Request
 
+from echo_v2.app.webhooks.dedup import InMemoryWebhookDedupStore, WebhookDedupStore
 from echo_v2.integrations.green.events import GreenEventAdapter
 from echo_v2.persistence.whatsapp_connections import (
     InMemoryWhatsAppConnectionRepository,
@@ -42,8 +52,6 @@ from echo_v2.persistence.whatsapp_connections import (
 from echo_v2.ports.whatsapp import (
     ProviderConnectionStateChanged,
     ProviderEvent,
-    ProviderMessageEvent,
-    ProviderMessageStatusEvent,
 )
 
 __all__ = [
@@ -125,6 +133,7 @@ def build_router(
     connection_repo: WhatsAppConnectionRepository,
     dispatcher: EventDispatcher,
     adapter: GreenEventAdapter | None = None,
+    dedup_store: WebhookDedupStore | None = None,
 ) -> APIRouter:
     """Build a Green webhook router wired to the given dependencies.
 
@@ -134,10 +143,7 @@ def build_router(
     """
     router = APIRouter()
     parse_adapter = adapter or GreenEventAdapter()
-
-    # In-memory dedupe of provider_message_id (plan guardrail G8). Step 0 only;
-    # a durable dedupe store ships with the persistent repository.
-    seen_message_ids: set[str] = set()
+    store = dedup_store or InMemoryWebhookDedupStore()
 
     @router.post("/webhooks/whatsapp/green")
     async def green_webhook(
@@ -173,10 +179,8 @@ def build_router(
         if event is None:
             return {"status": "ignored"}
 
-        if isinstance(event, (ProviderMessageEvent, ProviderMessageStatusEvent)):
-            if event.provider_message_id in seen_message_ids:
-                return {"status": "duplicate"}
-            seen_message_ids.add(event.provider_message_id)
+        if not await store.claim(event.event_id):
+            return {"status": "duplicate"}
 
         await dispatcher.dispatch(event, stored.user_id)
         return {"status": "received"}

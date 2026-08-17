@@ -259,8 +259,14 @@ class ProviderMessageEvent:
     Carries a :class:`ConnectionRef` (no ``user_id``); the application layer
     resolves the connection to a user and emits the domain event. Carries no
     raw provider payload -- "provider JSON never escapes the adapter".
+
+    ``event_id`` is the provider-assigned identity of this *notification* (not
+    of the message itself). The application uses it for webhook deduplication:
+    providers deliver at-least-once, so the same notification may arrive more
+    than once. Format: ``{typeWebhook}:{connection_id}:{provider_message_id}``.
     """
 
+    event_id: str
     connection: ConnectionRef
     chat_id: str
     provider_message_id: str
@@ -273,8 +279,15 @@ class ProviderMessageEvent:
 
 @dataclass(frozen=True)
 class ProviderMessageStatusEvent:
-    """Delivery status update for a previously-sent message."""
+    """Delivery status update for a previously-sent message.
 
+    ``event_id`` includes the ``status`` value so that ``sent`` / ``delivered``
+    / ``read`` / ``failed`` for the same message are distinct notifications,
+    each deduplicated independently. Format:
+    ``{typeWebhook}:{connection_id}:{provider_message_id}:{status}``.
+    """
+
+    event_id: str
     connection: ConnectionRef
     provider_message_id: str
     status: str
@@ -283,8 +296,18 @@ class ProviderMessageStatusEvent:
 
 @dataclass(frozen=True)
 class ProviderConnectionStateChanged:
-    """Connection authorization/state change pushed by the provider."""
+    """Connection authorization/state change pushed by the provider.
 
+    ``event_id`` includes the event timestamp because a connection can
+    legitimately revisit an earlier state (e.g. ``blocked`` -> ``starting`` ->
+    ``blocked``). The timestamp distinguishes distinct occurrences of the same
+    transition while still deduplicating provider retries of the *same*
+    notification (Green resends the identical body, including the original
+    timestamp). Format:
+    ``{typeWebhook}:{connection_id}:{raw_state}:{event_timestamp}``.
+    """
+
+    event_id: str
     connection: ConnectionRef
     status: ConnectionStatus
     provider_raw_status: str | None

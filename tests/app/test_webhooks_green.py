@@ -72,21 +72,25 @@ def _incoming_payload(instance_id: str = "123", message_id: str = "m1") -> dict:
     }
 
 
-def _state_payload(instance_id: str = "123", state: str = "authorized") -> dict:
+def _state_payload(
+    instance_id: str = "123", state: str = "authorized", timestamp: int = 1700000000
+) -> dict:
     return {
         "typeWebhook": "stateInstanceChanged",
         "instanceData": {"idInstance": int(instance_id), "stateInstance": state},
-        "timestamp": 1700000000,
+        "timestamp": timestamp,
     }
 
 
-def _status_payload(instance_id: str = "123", message_id: str = "m3") -> dict:
+def _status_payload(
+    instance_id: str = "123", message_id: str = "m3", status: str = "delivered"
+) -> dict:
     return {
         "typeWebhook": "outgoingMessageStatus",
         "instanceData": {"idInstance": int(instance_id)},
         "idMessage": message_id,
         "timestamp": 1700000000,
-        "messageData": {"statusWebhook": "delivered"},
+        "messageData": {"statusWebhook": status},
     }
 
 
@@ -222,6 +226,91 @@ def test_duplicate_status_event_is_deduped():
     assert r2.json() == {"status": "duplicate"}
 
 
+def test_status_events_same_message_different_status_are_both_dispatched():
+    """sent -> delivered -> read for the same idMessage must all be processed."""
+    app, dispatcher, _ = _make_app()
+    with TestClient(app) as client:
+        r1 = client.post(
+            "/webhooks/whatsapp/green",
+            json=_status_payload(message_id="m3", status="sent"),
+            headers=_bearer("webhook-tok"),
+        )
+        r2 = client.post(
+            "/webhooks/whatsapp/green",
+            json=_status_payload(message_id="m3", status="delivered"),
+            headers=_bearer("webhook-tok"),
+        )
+        r3 = client.post(
+            "/webhooks/whatsapp/green",
+            json=_status_payload(message_id="m3", status="read"),
+            headers=_bearer("webhook-tok"),
+        )
+    assert r1.json() == {"status": "received"}
+    assert r2.json() == {"status": "received"}
+    assert r3.json() == {"status": "received"}
+    assert len(dispatcher.dispatched) == 3
+
+
+def test_message_event_and_status_event_same_message_are_both_dispatched():
+    """The outgoing message event and its later status event share idMessage
+    but are distinct notifications and must not suppress each other."""
+    app, dispatcher, _ = _make_app()
+    with TestClient(app) as client:
+        r1 = client.post(
+            "/webhooks/whatsapp/green",
+            json=_incoming_payload(message_id="m3"),
+            headers=_bearer("webhook-tok"),
+        )
+        r2 = client.post(
+            "/webhooks/whatsapp/green",
+            json=_status_payload(message_id="m3", status="delivered"),
+            headers=_bearer("webhook-tok"),
+        )
+    assert r1.json() == {"status": "received"}
+    assert r2.json() == {"status": "received"}
+    assert len(dispatcher.dispatched) == 2
+
+
+def test_duplicate_state_event_is_deduped():
+    """A provider retry of the same state notification is suppressed."""
+    app, _dispatcher, _ = _make_app()
+    payload = _state_payload(state="authorized")
+    with TestClient(app) as client:
+        r1 = client.post(
+            "/webhooks/whatsapp/green",
+            json=payload,
+            headers=_bearer("webhook-tok"),
+        )
+        r2 = client.post(
+            "/webhooks/whatsapp/green",
+            json=payload,
+            headers=_bearer("webhook-tok"),
+        )
+    assert r1.json() == {"status": "received"}
+    assert r2.json() == {"status": "duplicate"}
+
+
+def test_state_transitions_same_state_different_timestamp_are_both_dispatched():
+    """A connection can revisit an earlier state (e.g. authorized -> sleepMode
+    -> authorized). The two authorized notifications have different timestamps
+    and must both be processed."""
+    app, dispatcher, _ = _make_app()
+    with TestClient(app) as client:
+        r1 = client.post(
+            "/webhooks/whatsapp/green",
+            json=_state_payload(state="authorized", timestamp=1700000000),
+            headers=_bearer("webhook-tok"),
+        )
+        r2 = client.post(
+            "/webhooks/whatsapp/green",
+            json=_state_payload(state="authorized", timestamp=1700001000),
+            headers=_bearer("webhook-tok"),
+        )
+    assert r1.json() == {"status": "received"}
+    assert r2.json() == {"status": "received"}
+    assert len(dispatcher.dispatched) == 2
+
+
 def test_state_changed_event_updates_connection_status():
     app, dispatcher, repo = _make_app()
     with TestClient(app) as client:
@@ -232,7 +321,6 @@ def test_state_changed_event_updates_connection_status():
         )
     assert response.status_code == 200
     assert response.json() == {"status": "received"}
-    # State events are not deduped (no provider_message_id), so they always dispatch.
     assert len(dispatcher.dispatched) == 1
     event, _ = dispatcher.dispatched[0]
     assert isinstance(event, ProviderConnectionStateChanged)

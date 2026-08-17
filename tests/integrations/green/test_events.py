@@ -49,6 +49,7 @@ def test_parse_incoming_message():
     assert event.kind is MessageKind.TEXT
     assert event.text == "hi"
     assert event.timestamp == datetime.fromtimestamp(1700000000, timezone.utc)
+    assert event.event_id == "incomingMessageReceived:green:123:m1"
 
 
 def test_parse_outgoing_user_message():
@@ -67,6 +68,7 @@ def test_parse_outgoing_user_message():
     assert event.source is MessageSource.USER
     assert event.text == "reply"
     assert event.kind is MessageKind.TEXT
+    assert event.event_id == "outgoingMessageReceived:green:123:m2"
 
 
 def test_parse_outgoing_api_message():
@@ -80,6 +82,7 @@ def test_parse_outgoing_api_message():
     assert isinstance(event, ProviderMessageEvent)
     assert event.direction is MessageDirection.OUTBOUND
     assert event.source is MessageSource.API
+    assert event.event_id == "outgoingAPIMessageReceived:green:123:m3"
 
 
 def test_parse_outgoing_status():
@@ -93,6 +96,7 @@ def test_parse_outgoing_status():
     assert event.provider_message_id == "m3"
     assert event.status == "delivered"
     assert event.connection == ConnectionRef("green", "123")
+    assert event.event_id == "outgoingMessageStatus:green:123:m3:delivered"
 
 
 def test_parse_state_instance_changed_authorized():
@@ -104,6 +108,7 @@ def test_parse_state_instance_changed_authorized():
     assert isinstance(event, ProviderConnectionStateChanged)
     assert event.status is ConnectionStatus.CONNECTED
     assert event.provider_raw_status == "authorized"
+    assert event.event_id == "stateInstanceChanged:green:123:authorized:1700000000"
 
 
 def test_parse_state_instance_changed_unknown_state_maps_to_unknown():
@@ -292,6 +297,139 @@ def test_event_has_no_raw_field():
         fields = {f.name for f in dataclasses.fields(cls)}
         assert "raw" not in fields
         assert "user_id" not in fields
+
+
+def test_event_has_event_id_field():
+    import dataclasses
+
+    for cls in (
+        ProviderMessageEvent,
+        ProviderMessageStatusEvent,
+        ProviderConnectionStateChanged,
+    ):
+        fields = {f.name for f in dataclasses.fields(cls)}
+        assert "event_id" in fields
+
+
+# --- event_id semantics: dedupe notifications, not messages ---------------
+
+
+def test_status_events_same_message_different_status_have_different_event_ids():
+    sent = GreenEventAdapter().parse(
+        _base(
+            "outgoingMessageStatus",
+            idMessage="m3",
+            messageData={"statusWebhook": "sent"},
+        )
+    )
+    delivered = GreenEventAdapter().parse(
+        _base(
+            "outgoingMessageStatus",
+            idMessage="m3",
+            messageData={"statusWebhook": "delivered"},
+        )
+    )
+    read = GreenEventAdapter().parse(
+        _base(
+            "outgoingMessageStatus",
+            idMessage="m3",
+            messageData={"statusWebhook": "read"},
+        )
+    )
+    assert isinstance(sent, ProviderMessageStatusEvent)
+    assert isinstance(delivered, ProviderMessageStatusEvent)
+    assert isinstance(read, ProviderMessageStatusEvent)
+    assert sent.event_id != delivered.event_id
+    assert delivered.event_id != read.event_id
+    assert sent.event_id != read.event_id
+
+
+def test_message_event_and_status_event_same_message_have_different_event_ids():
+    msg = GreenEventAdapter().parse(
+        _base(
+            "outgoingAPIMessageReceived",
+            chatId="c",
+            idMessage="m3",
+            messageData={"typeMessage": "textMessage", "textMessage": "x"},
+        )
+    )
+    status = GreenEventAdapter().parse(
+        _base(
+            "outgoingMessageStatus",
+            idMessage="m3",
+            messageData={"statusWebhook": "sent"},
+        )
+    )
+    assert isinstance(msg, ProviderMessageEvent)
+    assert isinstance(status, ProviderMessageStatusEvent)
+    assert msg.event_id != status.event_id
+
+
+def test_state_events_same_state_different_timestamp_have_different_event_ids():
+    first = GreenEventAdapter().parse(
+        _base(
+            "stateInstanceChanged",
+            instanceData={"idInstance": 123, "stateInstance": "authorized"},
+            timestamp=1700000000,
+        )
+    )
+    second = GreenEventAdapter().parse(
+        _base(
+            "stateInstanceChanged",
+            instanceData={"idInstance": 123, "stateInstance": "authorized"},
+            timestamp=1700001000,
+        )
+    )
+    assert isinstance(first, ProviderConnectionStateChanged)
+    assert isinstance(second, ProviderConnectionStateChanged)
+    assert first.event_id != second.event_id
+
+
+def test_state_events_different_state_same_timestamp_have_different_event_ids():
+    a = GreenEventAdapter().parse(
+        _base(
+            "stateInstanceChanged",
+            instanceData={"idInstance": 123, "stateInstance": "authorized"},
+            timestamp=1700000000,
+        )
+    )
+    b = GreenEventAdapter().parse(
+        _base(
+            "stateInstanceChanged",
+            instanceData={"idInstance": 123, "stateInstance": "sleepMode"},
+            timestamp=1700000000,
+        )
+    )
+    assert isinstance(a, ProviderConnectionStateChanged)
+    assert isinstance(b, ProviderConnectionStateChanged)
+    assert a.event_id != b.event_id
+
+
+def test_duplicate_state_event_same_payload_has_same_event_id():
+    payload = _base(
+        "stateInstanceChanged",
+        instanceData={"idInstance": 123, "stateInstance": "authorized"},
+        timestamp=1700000000,
+    )
+    first = GreenEventAdapter().parse(payload)
+    second = GreenEventAdapter().parse(payload)
+    assert isinstance(first, ProviderConnectionStateChanged)
+    assert isinstance(second, ProviderConnectionStateChanged)
+    assert first.event_id == second.event_id
+
+
+def test_duplicate_message_event_same_payload_has_same_event_id():
+    payload = _base(
+        "incomingMessageReceived",
+        chatId="c",
+        idMessage="m1",
+        messageData={"typeMessage": "textMessage", "textMessage": "hi"},
+    )
+    first = GreenEventAdapter().parse(payload)
+    second = GreenEventAdapter().parse(payload)
+    assert isinstance(first, ProviderMessageEvent)
+    assert isinstance(second, ProviderMessageEvent)
+    assert first.event_id == second.event_id
 
 
 def test_parse_status_with_non_dict_message_data_returns_none():

@@ -80,19 +80,29 @@ class GreenEventAdapter:
             return None
 
         if type_webhook == _TYPE_INCOMING:
-            return _message_event(payload, ref, MessageDirection.INBOUND, source=None)
+            return _message_event(
+                _TYPE_INCOMING, payload, ref, MessageDirection.INBOUND, source=None
+            )
         if type_webhook == _TYPE_OUTGOING:
             return _message_event(
-                payload, ref, MessageDirection.OUTBOUND, source=MessageSource.USER
+                _TYPE_OUTGOING,
+                payload,
+                ref,
+                MessageDirection.OUTBOUND,
+                source=MessageSource.USER,
             )
         if type_webhook == _TYPE_OUTGOING_API:
             return _message_event(
-                payload, ref, MessageDirection.OUTBOUND, source=MessageSource.API
+                _TYPE_OUTGOING_API,
+                payload,
+                ref,
+                MessageDirection.OUTBOUND,
+                source=MessageSource.API,
             )
         if type_webhook == _TYPE_OUTGOING_STATUS:
-            return _status_event(payload, ref)
+            return _status_event(_TYPE_OUTGOING_STATUS, payload, ref)
         if type_webhook == _TYPE_STATE_CHANGED:
-            return _state_event(payload, ref)
+            return _state_event(_TYPE_STATE_CHANGED, payload, ref)
 
         _logger.info("provider=green event=unknown type_webhook=%s", type_webhook)
         return None
@@ -109,6 +119,7 @@ def _connection_ref(payload: dict[str, Any]) -> ConnectionRef | None:
 
 
 def _message_event(
+    type_webhook: str,
     payload: dict[str, Any],
     ref: ConnectionRef,
     direction: MessageDirection,
@@ -131,10 +142,12 @@ def _message_event(
     if not chat_id or not provider_message_id:
         return None
 
+    msg_id = str(provider_message_id)
     return ProviderMessageEvent(
+        event_id=f"{type_webhook}:{ref.provider}:{ref.provider_connection_id}:{msg_id}",
         connection=ref,
         chat_id=str(chat_id),
-        provider_message_id=str(provider_message_id),
+        provider_message_id=msg_id,
         direction=direction,
         source=source,
         timestamp=timestamp,
@@ -144,6 +157,7 @@ def _message_event(
 
 
 def _status_event(
+    type_webhook: str,
     payload: dict[str, Any],
     ref: ConnectionRef,
 ) -> ProviderMessageStatusEvent | None:
@@ -155,23 +169,35 @@ def _status_event(
     timestamp = _timestamp(payload.get("timestamp"))
     if not provider_message_id or not status:
         return None
+    msg_id = str(provider_message_id)
+    status_str = str(status)
     return ProviderMessageStatusEvent(
+        event_id=(
+            f"{type_webhook}:{ref.provider}:{ref.provider_connection_id}:"
+            f"{msg_id}:{status_str}"
+        ),
         connection=ref,
-        provider_message_id=str(provider_message_id),
-        status=str(status),
+        provider_message_id=msg_id,
+        status=status_str,
         timestamp=timestamp,
     )
 
 
 def _state_event(
+    type_webhook: str,
     payload: dict[str, Any],
     ref: ConnectionRef,
 ) -> ProviderConnectionStateChanged:
     # instanceData is already validated as a dict by _connection_ref.
     instance_data = payload["instanceData"]
     raw = instance_data.get("stateInstance")
+    raw_str = raw if isinstance(raw, str) else ""
     timestamp = _timestamp(payload.get("timestamp"))
     return ProviderConnectionStateChanged(
+        event_id=(
+            f"{type_webhook}:{ref.provider}:{ref.provider_connection_id}:"
+            f"{raw_str}:{int(timestamp.timestamp())}"
+        ),
         connection=ref,
         status=map_state(raw if isinstance(raw, str) else None),
         provider_raw_status=raw if isinstance(raw, str) else None,
