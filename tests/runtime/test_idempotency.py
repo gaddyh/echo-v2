@@ -14,6 +14,7 @@ from echo_v2.runtime.executor import execute
 from echo_v2.runtime.idempotency import (
     IndeterminateOutcome,
     InMemoryIdempotencyStore,
+    LostOwnershipError,
     PermanentFailureOutcome,
     ReserveStatus,
     SuccessOutcome,
@@ -45,11 +46,17 @@ def _ctx(operation_name: str = "op") -> RunContext:
 async def test_reserve_acquires_then_in_progress_then_completed():
     store: InMemoryIdempotencyStore[int] = InMemoryIdempotencyStore()
 
-    assert await store.reserve("k") == ReserveStatus.ACQUIRED
-    assert await store.reserve("k") == ReserveStatus.IN_PROGRESS
+    r1 = await store.reserve("k")
+    assert r1.status == ReserveStatus.ACQUIRED
+    assert r1.owner_token is not None
 
-    await store.put_success("k", SuccessOutcome(value=1, attempts=1, duration_ms=1.0))
-    assert await store.reserve("k") == ReserveStatus.COMPLETED
+    r2 = await store.reserve("k")
+    assert r2.status == ReserveStatus.IN_PROGRESS
+    assert r2.owner_token is None
+
+    await store.put_success("k", r1.owner_token, SuccessOutcome(value=1, attempts=1, duration_ms=1.0))
+    r3 = await store.reserve("k")
+    assert r3.status == ReserveStatus.COMPLETED
 
 
 async def test_get_returns_none_for_unknown_key():
@@ -60,7 +67,8 @@ async def test_get_returns_none_for_unknown_key():
 async def test_put_success_resolves_waiter():
     store: InMemoryIdempotencyStore[int] = InMemoryIdempotencyStore()
 
-    await store.reserve("k")
+    r = await store.reserve("k")
+    assert r.owner_token is not None
 
     async def waiter():
         return await store.wait_for_completion("k")
@@ -68,7 +76,7 @@ async def test_put_success_resolves_waiter():
     wait_task = asyncio.create_task(waiter())
     await asyncio.sleep(0)  # let waiter suspend on the future
 
-    await store.put_success("k", SuccessOutcome(value=42, attempts=1, duration_ms=1.0))
+    await store.put_success("k", r.owner_token, SuccessOutcome(value=42, attempts=1, duration_ms=1.0))
 
     outcome = await wait_task
     assert isinstance(outcome, SuccessOutcome)
@@ -78,7 +86,8 @@ async def test_put_success_resolves_waiter():
 async def test_put_failure_resolves_waiter():
     store: InMemoryIdempotencyStore[int] = InMemoryIdempotencyStore()
 
-    await store.reserve("k")
+    r = await store.reserve("k")
+    assert r.owner_token is not None
 
     async def waiter():
         return await store.wait_for_completion("k")
@@ -88,6 +97,7 @@ async def test_put_failure_resolves_waiter():
 
     await store.put_failure(
         "k",
+        r.owner_token,
         PermanentFailureOutcome(error_type="PermanentError", error_message="boom"),
     )
 
@@ -99,7 +109,8 @@ async def test_put_failure_resolves_waiter():
 async def test_release_wakes_waiter_with_retryable_error():
     store: InMemoryIdempotencyStore[int] = InMemoryIdempotencyStore()
 
-    await store.reserve("k")
+    r = await store.reserve("k")
+    assert r.owner_token is not None
 
     async def waiter():
         return await store.wait_for_completion("k")
@@ -107,7 +118,7 @@ async def test_release_wakes_waiter_with_retryable_error():
     wait_task = asyncio.create_task(waiter())
     await asyncio.sleep(0)
 
-    await store.release("k")
+    await store.release("k", r.owner_token)
 
     with pytest.raises(RetryableError):
         await wait_task
@@ -115,18 +126,59 @@ async def test_release_wakes_waiter_with_retryable_error():
 
 async def test_release_without_waiter_is_noop():
     store: InMemoryIdempotencyStore[int] = InMemoryIdempotencyStore()
-    await store.reserve("k")
-    await store.release("k")  # no waiter, should not raise
+    r = await store.reserve("k")
+    await store.release("k", r.owner_token)  # no waiter, should not raise
     assert await store.get("k") is None
 
 
 async def test_wait_for_completion_after_release_raises_retryable():
     store: InMemoryIdempotencyStore[int] = InMemoryIdempotencyStore()
-    await store.reserve("k")
-    await store.release("k")
+    r = await store.reserve("k")
+    await store.release("k", r.owner_token)
 
     with pytest.raises(RetryableError):
         await store.wait_for_completion("k")
+
+
+async def test_wrong_owner_token_raises_lost_ownership():
+    """A put_* with the wrong owner_token raises LostOwnershipError (fencing)."""
+    store: InMemoryIdempotencyStore[int] = InMemoryIdempotencyStore()
+
+    r = await store.reserve("k")
+    assert r.owner_token is not None
+
+    wrong_token = __import__("uuid").uuid4()
+    with pytest.raises(LostOwnershipError):
+        await store.put_success(
+            "k",
+            wrong_token,
+            SuccessOutcome(value=1, attempts=1, duration_ms=1.0),
+        )
+    # The correct token still works after the failed wrong-token attempt.
+    await store.put_success(
+        "k",
+        r.owner_token,
+        SuccessOutcome(value=1, attempts=1, duration_ms=1.0),
+    )
+    assert isinstance(await store.get("k"), SuccessOutcome)
+
+
+async def test_renew_lease_returns_true_for_owner_false_for_non_owner():
+    store: InMemoryIdempotencyStore[int] = InMemoryIdempotencyStore()
+
+    r = await store.reserve("k")
+    assert r.owner_token is not None
+
+    assert await store.renew_lease("k", r.owner_token) is True
+    wrong_token = __import__("uuid").uuid4()
+    assert await store.renew_lease("k", wrong_token) is False
+    # After terminal, renew returns False even for the prior owner.
+    await store.put_success(
+        "k",
+        r.owner_token,
+        SuccessOutcome(value=1, attempts=1, duration_ms=1.0),
+    )
+    assert await store.renew_lease("k", r.owner_token) is False
 
 
 # ---------------------------------------------------------------------------
@@ -920,7 +972,7 @@ async def test_process_restart_simulation_already_completed_never_reruns():
     calls = 0
 
     # Pre-seed as if a previous process completed this operation.
-    await store.put_success(
+    store.seed_outcome(
         "op:completed",
         SuccessOutcome(value=42, attempts=1, duration_ms=1.0),
     )
@@ -951,7 +1003,7 @@ async def test_replay_indeterminate_raises_indeterminate_error_and_emits_event()
     sink = RecordingEventSink()
     store: InMemoryIdempotencyStore[int] = InMemoryIdempotencyStore()
 
-    await store.put_indeterminate(
+    store.seed_outcome(
         "op:indet-cached",
         IndeterminateOutcome(
             error_type="TimeoutError",

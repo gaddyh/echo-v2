@@ -426,9 +426,9 @@ async def execute(
         )
 
     # 2. Try to claim the key.
-    status = await store.reserve(key)
+    reserve_result = await store.reserve(key)
 
-    if status == ReserveStatus.COMPLETED:
+    if reserve_result.status == ReserveStatus.COMPLETED:
         outcome = await store.get(key)
         if outcome is not None:
             return await _handle_outcome(
@@ -438,9 +438,9 @@ async def execute(
                 key,
             )
         # Rare race: outcome vanished. Fall through to re-reserve.  # pragma: no cover
-        status = await store.reserve(key)  # pragma: no cover
+        reserve_result = await store.reserve(key)  # pragma: no cover
 
-    if status == ReserveStatus.IN_PROGRESS:
+    if reserve_result.status == ReserveStatus.IN_PROGRESS:
         _emit_idempotent(
             event_sink=event_sink,
             context=context,
@@ -456,6 +456,14 @@ async def execute(
         )
 
     # 3. ACQUIRED: this caller owns execution.
+    # The owner_token from reserve() must be presented on every owner write
+    # (put_*/release). A persistent store enforces fencing: if our lease
+    # expired and was reclaimed by another worker, our writes affect zero rows
+    # and the store raises LostOwnershipError. We propagate that as a
+    # RetryableError so the caller can re-attempt from the top.
+    owner_token = reserve_result.owner_token
+    assert owner_token is not None  # ACQUIRED always carries a token
+
     # _run_with_retries emits the terminal event (succeeded/failed/
     # indeterminate) for all non-cancellation cases. The owner block only
     # persists the outcome; it does NOT emit a second terminal event except
@@ -480,6 +488,7 @@ async def execute(
             await asyncio.shield(
                 store.put_indeterminate(
                     key,
+                    owner_token,
                     IndeterminateOutcome(
                         error_type="CancelledError",
                         error_message=f"Operation cancelled during run {context.run_id}",
@@ -494,12 +503,13 @@ async def execute(
                 idempotency_key=key,
             )
         else:
-            await asyncio.shield(store.release(key))
+            await asyncio.shield(store.release(key, owner_token))
         raise
     except PermanentError as exc:
         await asyncio.shield(
             store.put_failure(
                 key,
+                owner_token,
                 PermanentFailureOutcome(
                     error_type=type(exc).__name__,
                     error_message=str(exc),
@@ -511,6 +521,7 @@ async def execute(
         await asyncio.shield(
             store.put_indeterminate(
                 key,
+                owner_token,
                 IndeterminateOutcome(
                     error_type=type(exc).__name__,
                     error_message=str(exc),
@@ -523,6 +534,7 @@ async def execute(
             await asyncio.shield(
                 store.put_indeterminate(
                     key,
+                    owner_token,
                     IndeterminateOutcome(
                         error_type=type(exc).__name__,
                         error_message=str(exc),
@@ -530,17 +542,17 @@ async def execute(
                 )
             )
         else:
-            await asyncio.shield(store.release(key))
+            await asyncio.shield(store.release(key, owner_token))
         raise
     except RetryableError:
         # Unambiguous "did not complete" (e.g. 429, connection refused before
         # send). Release regardless of irreversible_write — do NOT over-block
         # idempotency keys for trivially-retryable conditions.
-        await asyncio.shield(store.release(key))
+        await asyncio.shield(store.release(key, owner_token))
         raise
     except ExecutionError:
         # Base-class fallback (should not normally be raised directly).
-        await asyncio.shield(store.release(key))
+        await asyncio.shield(store.release(key, owner_token))
         raise
     except Exception as exc:  # pragma: no cover
         # Already wrapped by _run_with_retries as PermanentError or
@@ -549,6 +561,7 @@ async def execute(
         await asyncio.shield(
             store.put_failure(
                 key,
+                owner_token,
                 PermanentFailureOutcome(
                     error_type=type(exc).__name__,
                     error_message=str(exc),
@@ -560,6 +573,7 @@ async def execute(
     await asyncio.shield(
         store.put_success(
             key,
+            owner_token,
             SuccessOutcome(
                 value=result.value,
                 attempts=result.attempts,
