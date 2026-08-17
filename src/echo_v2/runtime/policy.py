@@ -10,9 +10,7 @@ class ExecutionPolicy:
 
     def __post_init__(self) -> None:
         if self.max_attempts < 1:
-            raise ValueError(
-                f"max_attempts must be >= 1, got {self.max_attempts}"
-            )
+            raise ValueError(f"max_attempts must be >= 1, got {self.max_attempts}")
         if self.timeout_seconds is not None and self.timeout_seconds <= 0:
             raise ValueError(
                 f"timeout_seconds must be > 0 or None, got {self.timeout_seconds}"

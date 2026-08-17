@@ -96,9 +96,7 @@ class IndeterminateOutcome:
     error_message: str
 
 
-StoredOutcome = (
-    SuccessOutcome[TOutput] | PermanentFailureOutcome | IndeterminateOutcome
-)
+StoredOutcome = SuccessOutcome[TOutput] | PermanentFailureOutcome | IndeterminateOutcome
 
 
 @runtime_checkable
