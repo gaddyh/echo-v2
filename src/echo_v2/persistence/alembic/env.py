@@ -34,8 +34,11 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 # Override the URL from env if present (programmatic / testcontainers use).
+# Normalize: ensure the URL uses +psycopg (psycopg3), not psycopg2.
 _env_url = os.getenv("DATABASE_URL")
 if _env_url:
+    if _env_url.startswith("postgresql://"):
+        _env_url = _env_url.replace("postgresql://", "postgresql+psycopg://", 1)
     config.set_main_option("sqlalchemy.url", _env_url)
 
 # Echo ORM metadata — enables `alembic revision --autogenerate`.

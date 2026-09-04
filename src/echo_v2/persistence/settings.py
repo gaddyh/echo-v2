@@ -61,6 +61,10 @@ def load_db_settings(
             "Set it in the environment (e.g. .env) before constructing DB components."
         )
 
+    # Normalize: ensure +psycopg (psycopg3), not psycopg2.
+    if url.startswith("postgresql://"):
+        url = url.replace("postgresql://", "postgresql+psycopg://", 1)
+
     raw_key = os.getenv("ECHO_CREDENTIAL_KEY") if credential_key is None else None
     parsed_key: bytes | None = credential_key
     if parsed_key is None and raw_key:
