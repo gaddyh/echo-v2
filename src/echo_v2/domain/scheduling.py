@@ -44,6 +44,7 @@ class ScheduledActionType(Enum):
 
     SEND_WHATSAPP_MESSAGE = "send_whatsapp_message"
     SEND_REMINDER = "send_reminder"
+    SEND_BOT_MESSAGE = "send_bot_message"
 
 
 class ScheduledActionStatus(Enum):

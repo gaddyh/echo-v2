@@ -110,6 +110,7 @@ def create_app() -> FastAPI:
         messaging=green_messaging,
         idempotency_store=idempotency_store,
         event_sink=InMemoryEventSink(),
+        bot_channel=d360_client,
     )
 
     # --- time parser (regex first, LLM fallback) --------------------------

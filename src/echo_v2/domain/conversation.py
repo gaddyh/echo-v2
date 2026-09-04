@@ -52,4 +52,5 @@ class SchedulingFlowContext:
     recipient_phone: str | None = None
     recipient_name: str | None = None
     message: str | None = None
+    is_reminder: bool = False
     updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))

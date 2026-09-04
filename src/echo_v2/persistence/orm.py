@@ -278,7 +278,7 @@ class ScheduledActionRow(Base):
             name="scheduled_actions_status_check",
         ),
         CheckConstraint(
-            "type IN ('send_whatsapp_message','send_reminder')",
+            "type IN ('send_whatsapp_message','send_reminder','send_bot_message')",
             name="scheduled_actions_type_check",
         ),
         Index(

@@ -28,7 +28,6 @@ from echo_v2.runtime.errors import IndeterminateError, PermanentError
 from echo_v2.runtime.idempotency import InMemoryIdempotencyStore
 from echo_v2.services.scheduling import SchedulingService
 
-
 # --- fakes -----------------------------------------------------------------
 
 
@@ -333,6 +332,98 @@ async def test_idempotency_key_includes_user_and_action_id():
     await service._action_repo.save(action)
     await service.execute(action)
 
-    cached = await idempotency.get(f"green:send:user-1:act-xyz")
+    cached = await idempotency.get("green:send:user-1:act-xyz")
     assert cached is not None
     assert cached.value == "MSG_1"
+
+
+# --- SEND_BOT_MESSAGE (self-reminders) -------------------------------------
+
+
+class FakeBot:
+    """Records bot sends; can be configured to fail."""
+
+    def __init__(self, *, fail_with: Exception | None = None) -> None:
+        self.fail_with = fail_with
+        self.sent: list[tuple[str, str]] = []
+
+    async def send_text(self, user_phone: str, text: str) -> None:
+        self.sent.append((user_phone, text))
+        if self.fail_with is not None:
+            raise self.fail_with
+
+
+def _make_bot_service(
+    *,
+    bot: FakeBot | None = None,
+    user_id: str = "user-1",
+) -> tuple[SchedulingService, FakeBot]:
+    bot = bot or FakeBot()
+    service = SchedulingService(
+        action_repo=InMemoryScheduledActionRepository(),
+        connection_repo=_make_connection_repo(user_id),
+        messaging=FakeMessaging(),
+        idempotency_store=InMemoryIdempotencyStore(),
+        event_sink=InMemoryEventSink(),
+        bot_channel=bot,
+    )
+    return service, bot
+
+
+def _make_bot_action(
+    *,
+    id: str = "bot-act-1",
+    user_id: str = "user-1",
+    payload: dict[str, Any] | None = None,
+) -> ScheduledAction:
+    return ScheduledAction(
+        id=id,
+        user_id=user_id,
+        type=ScheduledActionType.SEND_BOT_MESSAGE,
+        execute_at_utc=datetime(2026, 9, 5, 8, tzinfo=timezone.utc),
+        timezone="Asia/Jerusalem",
+        status=ScheduledActionStatus.PENDING,
+        payload=payload or {"chat_id": "972500000001", "message": "reminder!"},
+    )
+
+
+async def test_bot_send_succeeds():
+    """SEND_BOT_MESSAGE sends via the bot channel and marks succeeded."""
+    service, bot = _make_bot_service()
+    action = _make_bot_action()
+    await service._action_repo.save(action)
+    result = await service.execute(action)
+
+    assert result == "bot_sent"
+    assert len(bot.sent) == 1
+    assert bot.sent[0] == ("972500000001", "reminder!")
+
+    actions = await service._action_repo.list_pending("user-1")
+    assert len(actions) == 0  # action was marked succeeded
+
+
+async def test_bot_send_no_bot_channel_fails():
+    """SEND_BOT_MESSAGE without a bot channel configured fails."""
+    service, _ = _make_bot_service(bot=None)  # type: ignore[arg-type]
+    # Override: no bot channel
+    service._bot_channel = None
+    action = _make_bot_action()
+    await service._action_repo.save(action)
+
+    with pytest.raises(PermanentError):
+        await service.execute(action)
+
+
+async def test_bot_send_failure_marks_failed():
+    """If the bot send fails, the action is marked failed."""
+    bot = FakeBot(fail_with=RuntimeError("bot down"))
+    service, _ = _make_bot_service(bot=bot)
+    action = _make_bot_action()
+    await service._action_repo.save(action)
+
+    with pytest.raises(RuntimeError, match="bot down"):
+        await service.execute(action)
+
+    # Action should be marked failed.
+    actions = await service._action_repo.list_pending("user-1")
+    assert len(actions) == 0  # not pending anymore

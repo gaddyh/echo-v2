@@ -155,6 +155,19 @@ class SchedulingFlowService:
             return
 
         if ctx.state is SchedulingFlowState.IDLE:
+            # Check for self-reminder: "לי" means send a reminder to myself.
+            if text.strip() == "לי":
+                new_ctx = SchedulingFlowContext(
+                    user_id=ctx.user_id,
+                    state=SchedulingFlowState.AWAITING_MESSAGE,
+                    recipient_phone=user_phone,
+                    recipient_name="לי",
+                    is_reminder=True,
+                )
+                await self._state_repo.save(new_ctx)
+                await self._bot.send_text(user_phone, "מה להזכיר לך?")
+                return
+
             # Check if the text matches a saved contact name.
             if self._contact_repo is not None:
                 contact = await self._contact_repo.find_by_name(ctx.user_id, text)
@@ -186,14 +199,18 @@ class SchedulingFlowService:
                 recipient_phone=ctx.recipient_phone,
                 recipient_name=ctx.recipient_name,
                 message=text,
+                is_reminder=ctx.is_reminder,
             )
             await self._state_repo.save(new_ctx)
 
-            name = ctx.recipient_name or "the contact"
-            await self._bot.send_text(
-                user_phone,
-                f"מתי לשלוח ל{name}?",
-            )
+            if ctx.is_reminder:
+                await self._bot.send_text(user_phone, "מתי להזכיר לך?")
+            else:
+                name = ctx.recipient_name or "the contact"
+                await self._bot.send_text(
+                    user_phone,
+                    f"מתי לשלוח ל{name}?",
+                )
             return
 
         if ctx.state is SchedulingFlowState.AWAITING_TIME:
@@ -222,9 +239,14 @@ class SchedulingFlowService:
             return
 
         # Create the scheduled action.
+        action_type = (
+            ScheduledActionType.SEND_BOT_MESSAGE
+            if ctx.is_reminder
+            else ScheduledActionType.SEND_WHATSAPP_MESSAGE
+        )
         await self._scheduling.create(
             user_id=ctx.user_id,
-            type=ScheduledActionType.SEND_WHATSAPP_MESSAGE,
+            type=action_type,
             execute_at_utc=execute_at,
             timezone_name=user_timezone,
             payload={
@@ -237,14 +259,21 @@ class SchedulingFlowService:
         await self._state_repo.delete(ctx.user_id)
 
         # Confirm to the user.
-        name = ctx.recipient_name or "the contact"
         local_time = execute_at.astimezone(_tz(user_timezone))
         time_str = local_time.strftime("%d/%m %H:%M")
-        await self._bot.send_text(
-            user_phone,
-            f"✅ מתוזמן ל{name} ב-{time_str}:\n"
-            f'"{ctx.message}"',
-        )
+        if ctx.is_reminder:
+            await self._bot.send_text(
+                user_phone,
+                f"✅ תזכורת ב-{time_str}:\n"
+                f'"{ctx.message}"',
+            )
+        else:
+            name = ctx.recipient_name or "the contact"
+            await self._bot.send_text(
+                user_phone,
+                f"✅ מתוזמן ל{name} ב-{time_str}:\n"
+                f'"{ctx.message}"',
+            )
 
     async def _cancel_flow(
         self,

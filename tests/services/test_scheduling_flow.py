@@ -284,3 +284,43 @@ async def test_no_contact_repo_text_in_idle_prompts_for_contact():
     ctx = await flow._state_repo.get("user-1")
     assert ctx.state.name == "IDLE"
     assert "איש קשר" in bot.sent[-1][1]
+
+
+# --- self-reminder ("לי") flow ---------------------------------------------
+
+
+async def test_li_starts_reminder_flow():
+    """Typing 'לי' starts a self-reminder flow."""
+    flow, bot, _ = _make_flow_service()
+    await flow.handle(_text_event("לי", event_id="wamid.LI1"))
+
+    ctx = await flow._state_repo.get("user-1")
+    assert ctx.state.name == "AWAITING_MESSAGE"
+    assert ctx.is_reminder is True
+    assert ctx.recipient_phone == "972500000001"  # user's own phone
+    assert "מה להזכיר" in bot.sent[-1][1]
+
+
+async def test_reminder_flow_completes_with_send_bot_message():
+    """The 'לי' flow creates a SEND_BOT_MESSAGE action, not SEND_WHATSAPP_MESSAGE."""
+    flow, bot, action_repo = _make_flow_service()
+    await flow.handle(_text_event("לי", event_id="wamid.LI1"))
+    await flow.handle(_text_event("call the doctor", event_id="wamid.LI2"))
+    await flow.handle(_text_event("in 1 hour", event_id="wamid.LI3"))
+
+    actions = await action_repo.list_pending("user-1")
+    assert len(actions) == 1
+    assert actions[0].type.value == "send_bot_message"
+    assert actions[0].payload["chat_id"] == "972500000001"
+    assert actions[0].payload["message"] == "call the doctor"
+    # Confirmation should say "תזכורת" not "מתוזמן ל..."
+    assert "תזכורת" in bot.sent[-1][1]
+
+
+async def test_reminder_flow_asks_when_to_remind():
+    """The 'לי' flow asks 'מתי להזכיר לך?' not 'מתי לשלוח?'."""
+    flow, bot, _ = _make_flow_service()
+    await flow.handle(_text_event("לי", event_id="wamid.LI1"))
+    await flow.handle(_text_event("buy milk", event_id="wamid.LI2"))
+
+    assert "מתי להזכיר" in bot.sent[-1][1]

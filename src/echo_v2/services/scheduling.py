@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
@@ -39,10 +39,11 @@ from echo_v2.persistence.scheduled_actions import ScheduledActionRepository
 from echo_v2.persistence.whatsapp_connections import (
     WhatsAppConnectionRepository,
 )
+from echo_v2.ports.bot import BotChannel
 from echo_v2.ports.whatsapp import ConnectionRef, WhatsAppMessaging
 from echo_v2.runtime.context import RunContext
 from echo_v2.runtime.errors import IndeterminateError, PermanentError
-from echo_v2.runtime.events import EventSink, NO_OP_SINK
+from echo_v2.runtime.events import NO_OP_SINK, EventSink
 from echo_v2.runtime.executor import execute
 from echo_v2.runtime.idempotency import IdempotencyStore
 from echo_v2.runtime.policy import EXTERNAL_WRITE
@@ -71,12 +72,14 @@ class SchedulingService:
         messaging: WhatsAppMessaging,
         idempotency_store: IdempotencyStore[str],
         event_sink: EventSink | None = None,
+        bot_channel: BotChannel | None = None,
     ) -> None:
         self._action_repo = action_repo
         self._connection_repo = connection_repo
         self._messaging = messaging
         self._idempotency_store = idempotency_store
         self._event_sink = event_sink or NO_OP_SINK
+        self._bot_channel = bot_channel
 
     async def create(
         self,
@@ -108,19 +111,25 @@ class SchedulingService:
         return await self._action_repo.cancel(action_id, user_id)
 
     async def execute(self, action: ScheduledAction) -> str:
-        """Execute a scheduled action through the runtime with idempotency.
+        """Execute a scheduled action.
 
-        Resolves the user's WhatsApp connection, builds the send operation,
-        and runs it via ``runtime.execute(EXTERNAL_WRITE)`` with an
-        idempotency key. On success, marks the action SUCCEEDED and returns
-        the provider message id. On indeterminate/permanent failure, marks
-        the action accordingly and re-raises.
+        For ``SEND_WHATSAPP_MESSAGE``: resolves the user's Green connection,
+        runs the send via ``runtime.execute(EXTERNAL_WRITE)`` with idempotency.
+
+        For ``SEND_BOT_MESSAGE``: sends a reminder via the bot channel
+        (360dialog). No idempotency needed — a duplicate bot message is
+        annoying but not irreversible.
 
         Raises ``ValueError`` for unsupported action types.
         """
-        if action.type is not ScheduledActionType.SEND_WHATSAPP_MESSAGE:
-            raise ValueError(f"unsupported action type: {action.type}")
+        if action.type is ScheduledActionType.SEND_WHATSAPP_MESSAGE:
+            return await self._execute_green_send(action)
+        if action.type is ScheduledActionType.SEND_BOT_MESSAGE:
+            return await self._execute_bot_send(action)
+        raise ValueError(f"unsupported action type: {action.type}")
 
+    async def _execute_green_send(self, action: ScheduledAction) -> str:
+        """Execute a Green API WhatsApp message send with idempotency."""
         # Resolve the user's WhatsApp connection at execution time.
         conn = await self._connection_repo.get_by_user(action.user_id)
         if conn is None:
@@ -166,6 +175,29 @@ class SchedulingService:
             {"provider_message_id": provider_message_id},
         )
         return provider_message_id
+
+    async def _execute_bot_send(self, action: ScheduledAction) -> str:
+        """Execute a bot-channel reminder send (no idempotency needed)."""
+        if self._bot_channel is None:
+            error = "no bot channel configured for SEND_BOT_MESSAGE"
+            await self._action_repo.mark_failed(action.id, error)
+            raise PermanentError(error)
+
+        chat_id = action.payload.get("chat_id", "")
+        message = action.payload.get("message", "")
+        if not chat_id or not message:
+            error = f"action {action.id} payload missing chat_id or message"
+            await self._action_repo.mark_failed(action.id, error)
+            raise PermanentError(error)
+
+        try:
+            await self._bot_channel.send_text(chat_id, message)
+        except Exception as exc:
+            await self._action_repo.mark_failed(action.id, str(exc))
+            raise
+
+        await self._action_repo.mark_succeeded(action.id, {"sent": True})
+        return "bot_sent"
 
     async def _send_operation(self, inp: _SendInput) -> str:
         """The actual send, called by ``runtime.execute``."""
