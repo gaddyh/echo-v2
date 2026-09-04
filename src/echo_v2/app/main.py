@@ -120,12 +120,16 @@ def create_app() -> FastAPI:
     time_parser = CombinedTimeParser(llm_parser=llm_parser)
 
     # --- scheduling flow service (3-step bot conversation) ----------------
+    from echo_v2.persistence.contacts import PostgresContactRepository
+
+    contact_repo = PostgresContactRepository(repos.session_factory)
     flow_service = SchedulingFlowService(
         bot=d360_client,
         state_repo=InMemoryConversationStateRepository(),
         scheduling_service=scheduling_service,
         time_parser=time_parser,
         user_resolver=_SessionUserResolver(repos.session_factory),
+        contact_repo=contact_repo,
     )
 
     # --- scheduler (background poller) -------------------------------------

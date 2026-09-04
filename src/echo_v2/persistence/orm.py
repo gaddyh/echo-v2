@@ -45,6 +45,7 @@ from sqlalchemy.types import (
 
 __all__ = [
     "Base",
+    "ContactRow",
     "IdempotencyOperationRow",
     "ProviderWebhookEventRow",
     "ScheduledActionRow",
@@ -284,5 +285,50 @@ class ScheduledActionRow(Base):
             "ix_scheduled_actions_status_execute_at",
             "status",
             "execute_at_utc",
+        ),
+    )
+
+
+# --- contacts --------------------------------------------------------------
+
+
+class ContactRow(Base):
+    """A saved contact for a user — populated from vCards sent to the bot.
+
+    Unique on ``(user_id, phone_number)``: sending the same contact again
+    updates the display name. Lookup by ``display_name`` lets the user type
+    a name instead of re-sending the vCard.
+    """
+
+    __tablename__ = "contacts"
+
+    id: Mapped[str] = mapped_column(Uuid, primary_key=True, server_default=text("gen_random_uuid()"))
+    user_id: Mapped[str] = mapped_column(
+        Uuid,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    display_name: Mapped[str] = mapped_column(Text, nullable=False)
+    phone_number: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "phone_number",
+            name="contacts_user_phone_key",
+        ),
+        Index(
+            "ix_contacts_user_id",
+            "user_id",
         ),
     )

@@ -28,6 +28,7 @@ from typing import Protocol, runtime_checkable
 
 from echo_v2.domain.conversation import SchedulingFlowContext, SchedulingFlowState
 from echo_v2.domain.scheduling import ScheduledActionType
+from echo_v2.persistence.contacts import ContactRecord, ContactRepository
 from echo_v2.persistence.conversation_state import ConversationStateRepository
 from echo_v2.ports.bot import BotChannel, BotEvent, BotEventType
 from echo_v2.services.scheduling import SchedulingService
@@ -64,12 +65,14 @@ class SchedulingFlowService:
         scheduling_service: SchedulingService,
         time_parser: TimeParser,
         user_resolver: UserResolver,
+        contact_repo: ContactRepository | None = None,
     ) -> None:
         self._bot = bot
         self._state_repo = state_repo
         self._scheduling = scheduling_service
         self._time_parser = time_parser
         self._user_resolver = user_resolver
+        self._contact_repo = contact_repo
 
     async def handle(self, event: BotEvent) -> None:
         """Process an incoming bot event through the flow state machine."""
@@ -111,16 +114,29 @@ class SchedulingFlowService:
 
         # Convert phone to Green API chat_id format.
         chat_id = _phone_to_chat_id(contact.phone)
+        name = contact.name or contact.phone
+
+        # Save the contact for future name-based lookup.
+        if self._contact_repo is not None:
+            try:
+                await self._contact_repo.save(
+                    ContactRecord(
+                        user_id=ctx.user_id,
+                        display_name=name,
+                        phone_number=chat_id,
+                    )
+                )
+            except Exception:
+                _logger.exception("failed to save contact for user %s", ctx.user_id)
 
         new_ctx = SchedulingFlowContext(
             user_id=ctx.user_id,
             state=SchedulingFlowState.AWAITING_MESSAGE,
             recipient_phone=chat_id,
-            recipient_name=contact.name or contact.phone,
+            recipient_name=name,
         )
         await self._state_repo.save(new_ctx)
 
-        name = contact.name or contact.phone
         await self._bot.send_text(
             user_phone,
             f"✅ קיבלתי את {name}. מה לשלוח?",
@@ -139,6 +155,23 @@ class SchedulingFlowService:
             return
 
         if ctx.state is SchedulingFlowState.IDLE:
+            # Check if the text matches a saved contact name.
+            if self._contact_repo is not None:
+                contact = await self._contact_repo.find_by_name(ctx.user_id, text)
+                if contact is not None:
+                    # Found a saved contact — treat as if vCard was sent.
+                    new_ctx = SchedulingFlowContext(
+                        user_id=ctx.user_id,
+                        state=SchedulingFlowState.AWAITING_MESSAGE,
+                        recipient_phone=contact.phone_number,
+                        recipient_name=contact.display_name,
+                    )
+                    await self._state_repo.save(new_ctx)
+                    await self._bot.send_text(
+                        user_phone,
+                        f"✅ {contact.display_name}. מה לשלוח?",
+                    )
+                    return
             await self._bot.send_text(
                 user_phone,
                 "שלח לי איש קשר כדי להתחיל. 📇",

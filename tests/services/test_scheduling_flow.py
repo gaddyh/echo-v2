@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from echo_v2.domain.scheduling import ScheduledActionType
+from echo_v2.persistence.contacts import InMemoryContactRepository
 from echo_v2.persistence.conversation_state import InMemoryConversationStateRepository
 from echo_v2.persistence.scheduled_actions import InMemoryScheduledActionRepository
 from echo_v2.persistence.user_resolver import InMemoryUserResolver
@@ -42,6 +43,7 @@ def _make_flow_service(
     user_phone: str = "972500000001",
     user_id: str = "user-1",
     timezone: str = "Asia/Jerusalem",
+    with_contacts: bool = False,
 ) -> tuple[SchedulingFlowService, FakeBot, InMemoryScheduledActionRepository]:
     bot = FakeBot()
     state_repo = InMemoryConversationStateRepository()
@@ -56,12 +58,14 @@ def _make_flow_service(
     user_resolver.add_user(user_phone, user_id, timezone)
     time_parser = CombinedTimeParser(llm_parser=None)
 
+    contact_repo = InMemoryContactRepository() if with_contacts else None
     flow = SchedulingFlowService(
         bot=bot,
         state_repo=state_repo,
         scheduling_service=scheduling_service,
         time_parser=time_parser,
         user_resolver=user_resolver,
+        contact_repo=contact_repo,
     )
     return flow, bot, action_repo
 
@@ -70,9 +74,10 @@ def _contact_event(
     phone: str = "972526610653",
     name: str = "Dana",
     user_phone: str = "972500000001",
+    event_id: str = "wamid.C1",
 ) -> BotEvent:
     return BotEvent(
-        event_id="wamid.C1",
+        event_id=event_id,
         user_phone=user_phone,
         type=BotEventType.CONTACT,
         contact=BotContact(phone=phone, name=name),
@@ -211,3 +216,69 @@ async def test_unknown_user_gets_message():
 
     assert len(bot.sent) == 1
     assert "connect" in bot.sent[0][1].lower() or "know" in bot.sent[0][1].lower()
+
+
+# --- contacts: save + name lookup ------------------------------------------
+
+
+async def test_vcard_saves_contact():
+    """Sending a vCard saves the contact for future name-based lookup."""
+    flow, _bot, _ = _make_flow_service(with_contacts=True)
+    await flow.handle(_contact_event(name="Dana", phone="972526610653"))
+
+    # Contact should be saved in the repo.
+    contact = await flow._contact_repo.find_by_name("user-1", "Dana")  # type: ignore[union-attr]
+    assert contact is not None
+    assert contact.display_name == "Dana"
+    assert contact.phone_number == "972526610653@c.us"
+
+
+async def test_name_lookup_starts_flow():
+    """After sending a vCard once, typing the name starts the flow."""
+    flow, bot, _ = _make_flow_service(with_contacts=True)
+    # First: send vCard to save the contact.
+    await flow.handle(_contact_event(name="Dana", phone="972526610653", event_id="wamid.V1"))
+
+    # Reset state to IDLE (simulating a completed or cancelled flow).
+    await flow._state_repo.delete("user-1")
+
+    # Now just type "Dana" — should find the contact and start the flow.
+    await flow.handle(_text_event("Dana", event_id="wamid.NAME1"))
+
+    ctx = await flow._state_repo.get("user-1")
+    assert ctx.state.name == "AWAITING_MESSAGE"
+    assert ctx.recipient_name == "Dana"
+    assert ctx.recipient_phone == "972526610653@c.us"
+    assert "Dana" in bot.sent[-1][1]
+
+
+async def test_name_lookup_case_insensitive():
+    """Name lookup is case-insensitive."""
+    flow, _bot, _ = _make_flow_service(with_contacts=True)
+    await flow.handle(_contact_event(name="Dana", phone="972526610653", event_id="wamid.V1"))
+    await flow._state_repo.delete("user-1")
+
+    await flow.handle(_text_event("dana", event_id="wamid.NAME2"))
+
+    ctx = await flow._state_repo.get("user-1")
+    assert ctx.state.name == "AWAITING_MESSAGE"
+
+
+async def test_unknown_name_in_idle_prompts_for_contact():
+    """Typing an unknown name in IDLE prompts to send a contact."""
+    flow, bot, _ = _make_flow_service(with_contacts=True)
+    await flow.handle(_text_event("random person", event_id="wamid.UNKNOWN"))
+
+    ctx = await flow._state_repo.get("user-1")
+    assert ctx.state.name == "IDLE"
+    assert "איש קשר" in bot.sent[-1][1]
+
+
+async def test_no_contact_repo_text_in_idle_prompts_for_contact():
+    """Without a contact repo, text in IDLE still prompts for a contact."""
+    flow, bot, _ = _make_flow_service(with_contacts=False)
+    await flow.handle(_text_event("Dana", event_id="wamid.NOREPO"))
+
+    ctx = await flow._state_repo.get("user-1")
+    assert ctx.state.name == "IDLE"
+    assert "איש קשר" in bot.sent[-1][1]
