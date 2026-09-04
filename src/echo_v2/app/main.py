@@ -87,10 +87,7 @@ def create_app() -> FastAPI:
 
     # --- Green (user's WhatsApp — sends scheduled messages) ---------------
     green_settings = load_green_settings()
-    green_client = GreenClient(
-        partner_api_url=green_settings.partner_api_url,
-        partner_token=green_settings.partner_token,
-    )
+    green_client = GreenClient(settings=green_settings)
     green_messaging = GreenMessaging(
         client=green_client,
         credential_resolver=repos.connections,
