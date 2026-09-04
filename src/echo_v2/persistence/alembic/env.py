@@ -15,10 +15,15 @@ from __future__ import annotations
 import os
 from logging.config import fileConfig
 
+from dotenv import load_dotenv
+
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
 from echo_v2.persistence.orm import Base
+
+# Load .env so DATABASE_URL is available without manual export.
+load_dotenv()
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

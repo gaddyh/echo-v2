@@ -188,6 +188,36 @@ class GreenClient:
             is_write=True,
         )
 
+    # -- messaging --------------------------------------------------------
+
+    async def send_message(
+        self,
+        id_instance: str,
+        api_token: str,
+        chat_id: str,
+        message: str,
+    ) -> str:
+        """Per-instance ``sendMessage``. Irreversible write.
+
+        Returns the ``idMessage`` Green assigns to the sent message. A timeout
+        or 5xx on this call is classified as
+        :class:`GreenApiIndeterminateError` — the message may or may not have
+        been delivered, so the runtime must never blindly retry.
+        """
+        url = f"{self._settings.partner_api_url}/waInstance{id_instance}/sendMessage/{api_token}"
+        data = await self._request_json(
+            "POST",
+            url,
+            operation="send_message",
+            connection_id=id_instance,
+            is_write=True,
+            json_body={"chatId": chat_id, "message": message},
+        )
+        msg_id = data.get("idMessage") if isinstance(data, dict) else None
+        if not msg_id:
+            raise GreenApiError("sendMessage response missing idMessage")
+        return str(msg_id)
+
     # -- QR (WebSocket) ---------------------------------------------------
 
     async def get_qr_ws(

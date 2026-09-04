@@ -47,6 +47,7 @@ __all__ = [
     "Base",
     "IdempotencyOperationRow",
     "ProviderWebhookEventRow",
+    "ScheduledActionRow",
     "UserRow",
     "WhatsAppConnectionRow",
 ]
@@ -215,5 +216,73 @@ class IdempotencyOperationRow(Base):
             "ix_idempotency_operations_state_lease",
             "state",
             "lease_expires_at",
+        ),
+    )
+
+
+# --- scheduled_actions ----------------------------------------------------
+
+
+class ScheduledActionRow(Base):
+    """A persisted future action (roadmap §8.4).
+
+    The scheduler claims due rows via ``FOR UPDATE SKIP LOCKED`` on the
+    ``(status, execute_at_utc)`` index, sets ``status='in_progress'`` and
+    ``claimed_at=now()``, then executes. Stale ``in_progress`` rows
+    (``claimed_at`` older than the lease) are reset to ``pending`` on
+    restart via :meth:`ScheduledActionRepository.recover_stale`.
+    """
+
+    __tablename__ = "scheduled_actions"
+
+    id: Mapped[str] = mapped_column(Uuid, primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        Uuid,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    type: Mapped[str] = mapped_column(Text, nullable=False)
+    execute_at_utc: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+    )
+    timezone: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    executed_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=True,
+    )
+    result: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    claimed_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=True,
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending','in_progress','succeeded','failed',"
+            "'cancelled','indeterminate')",
+            name="scheduled_actions_status_check",
+        ),
+        CheckConstraint(
+            "type IN ('send_whatsapp_message','send_reminder')",
+            name="scheduled_actions_type_check",
+        ),
+        Index(
+            "ix_scheduled_actions_status_execute_at",
+            "status",
+            "execute_at_utc",
         ),
     )

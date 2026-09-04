@@ -145,6 +145,60 @@ async def test_logout_posts_to_logout_endpoint():
         await client.aclose()
 
 
+async def test_send_message_returns_id_message():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["path"] = request.url.path
+        captured["body"] = json.loads(request.content)
+        return _ok({"idMessage": "MSG_123"})
+
+    client = _client_with_handler(handler)
+    try:
+        msg_id = await client.send_message("123", "api-tok", "972@c.us", "hello")
+        assert msg_id == "MSG_123"
+        assert "sendMessage" in captured["path"]
+        assert captured["body"] == {"chatId": "972@c.us", "message": "hello"}
+    finally:
+        await client.aclose()
+
+
+async def test_send_message_raises_on_missing_id_message():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return _ok({"something": "else"})
+
+    client = _client_with_handler(handler)
+    try:
+        with pytest.raises(GreenApiError):
+            await client.send_message("123", "api-tok", "972@c.us", "hello")
+    finally:
+        await client.aclose()
+
+
+async def test_send_message_5xx_is_indeterminate():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, json={})
+
+    client = _client_with_handler(handler)
+    try:
+        with pytest.raises(GreenApiIndeterminateError):
+            await client.send_message("123", "api-tok", "972@c.us", "hello")
+    finally:
+        await client.aclose()
+
+
+async def test_send_message_read_timeout_is_indeterminate():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("slow")
+
+    client = _client_with_handler(handler)
+    try:
+        with pytest.raises(GreenApiIndeterminateError):
+            await client.send_message("123", "api-tok", "972@c.us", "hello")
+    finally:
+        await client.aclose()
+
+
 # --- Error classification (G5) -------------------------------------------
 
 

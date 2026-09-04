@@ -137,6 +137,7 @@ async def clean_db(engine) -> AsyncIterator[None]:
         # Order matters: respect FK constraints (children first).
         await conn.exec_driver_sql(
             "TRUNCATE TABLE "
+            "scheduled_actions, "
             "idempotency_operations, "
             "provider_webhook_events, "
             "whatsapp_connections, "
@@ -168,6 +169,14 @@ async def unit_of_work_factory(session_factory, clean_db):
     def _make() -> PostgresUnitOfWork:
         return PostgresUnitOfWork(session_factory, IdentityCredentialCipher(), lease_seconds=2)
     return _make
+
+
+@pytest_asyncio.fixture
+async def scheduled_actions_repo(session_factory, clean_db) -> PostgresScheduledActionRepository:
+    from echo_v2.persistence.postgres_scheduled_actions import (
+        PostgresScheduledActionRepository,
+    )
+    return PostgresScheduledActionRepository(session_factory)
 
 
 # --- user helper ------------------------------------------------------------
