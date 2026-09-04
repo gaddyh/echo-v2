@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
 from fastapi import FastAPI
@@ -135,8 +136,32 @@ def create_app() -> FastAPI:
         poll_interval_seconds=float(os.environ.get("SCHEDULER_POLL_INTERVAL", "5")),
     )
 
-    # --- FastAPI app -------------------------------------------------------
-    app = FastAPI(title="Echo v2", version="0.1.0")
+    # --- FastAPI app with lifespan (scheduler starts/stops with app) -------
+    scheduler_task: asyncio.Task | None = None
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        nonlocal scheduler_task
+        # Startup: recover stale actions + start scheduler loop.
+        try:
+            recovered = await scheduler.recover()
+            if recovered:
+                _logger.info("recovered %d stale scheduled actions", recovered)
+        except Exception:
+            _logger.exception("scheduler recovery failed on startup")
+        scheduler_task = asyncio.create_task(scheduler.run_loop())
+        _logger.info("scheduler loop started")
+        yield
+        # Shutdown: cancel the scheduler loop.
+        if scheduler_task is not None:
+            scheduler_task.cancel()
+            try:
+                await scheduler_task
+            except asyncio.CancelledError:
+                pass
+            _logger.info("scheduler loop stopped")
+
+    app = FastAPI(title="Echo v2", version="0.1.0", lifespan=lifespan)
 
     # Green webhook: receives events from the user's WhatsApp (delivery
     # status, connection state changes). Static URL — the instance is
@@ -160,23 +185,7 @@ def create_app() -> FastAPI:
     async def health() -> dict[str, str]:
         return {"status": "ok"}
 
-    # --- scheduler background task -----------------------------------------
-    @app.on_event("startup")
-    async def _start_scheduler() -> None:
-        asyncio.create_task(_run_scheduler(scheduler))
-
     return app
-
-
-async def _run_scheduler(scheduler: Scheduler) -> None:
-    """Run the scheduler loop, recovering stale actions on startup."""
-    try:
-        recovered = await scheduler.recover()
-        if recovered:
-            _logger.info("recovered %d stale scheduled actions", recovered)
-    except Exception:
-        _logger.exception("scheduler recovery failed on startup")
-    await scheduler.run_loop()
 
 
 # Module-level app for uvicorn: `uvicorn echo_v2.app.main:app`
