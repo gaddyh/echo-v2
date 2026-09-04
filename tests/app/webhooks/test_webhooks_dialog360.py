@@ -159,3 +159,34 @@ def test_invalid_json_returns_400(client):
         headers=AUTH_HEADER,
     )
     assert resp.status_code == 400
+
+
+# --- no-secret mode (360dialog doesn't send Authorization headers) ---------
+
+
+@pytest.fixture
+def no_secret_client():
+    """Client with no webhook secret — auth is skipped."""
+    flow = RecordingFlowService()
+    app = FastAPI()
+    app.include_router(build_router(flow_service=flow, webhook_secret=""))
+    with TestClient(app) as c:
+        yield c, flow
+
+
+def test_no_secret_accepts_without_auth(no_secret_client):
+    """When no secret is configured, requests without Authorization pass."""
+    c, flow = no_secret_client
+    resp = c.post("/webhooks/bot/dialog360", json=_text_payload())
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "received"
+    assert len(flow.handled) == 1
+
+
+def test_no_secret_accepts_alt_path(no_secret_client):
+    """The /webhook/360dialog alias also works without auth."""
+    c, flow = no_secret_client
+    resp = c.post("/webhook/360dialog", json=_text_payload())
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "received"
+    assert len(flow.handled) == 1

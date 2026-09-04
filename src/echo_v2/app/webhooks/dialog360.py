@@ -52,7 +52,10 @@ def build_router(
     router = APIRouter()
     parse_adapter = adapter or Dialog360EventAdapter()
     store = dedup_store or InMemoryWebhookDedupStore()
-    secret_hash = hashlib.sha256(webhook_secret.encode("utf-8")).digest()
+    has_secret = bool(webhook_secret)
+    secret_hash = (
+        hashlib.sha256(webhook_secret.encode("utf-8")).digest() if has_secret else b""
+    )
 
     async def _handle_webhook(
         request: Request,
@@ -65,8 +68,11 @@ def build_router(
         if not isinstance(payload, dict):
             raise HTTPException(status_code=400, detail="invalid payload")
 
-        # Auth: bearer token.
-        if not _valid_bearer(authorization, secret_hash):
+        # Auth: bearer token (optional — if no secret configured, skip auth).
+        # 360dialog does not send Authorization headers by default; the URL
+        # itself acts as the shared secret. Set D360_WEBHOOK_SECRET to enforce
+        # bearer auth if your 360dialog plan supports it.
+        if has_secret and not _valid_bearer(authorization, secret_hash):
             raise HTTPException(status_code=401, detail="unauthorized")
 
         # Parse the webhook into a canonical BotEvent.
