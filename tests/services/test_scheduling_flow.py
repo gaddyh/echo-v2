@@ -252,16 +252,18 @@ async def test_name_lookup_starts_flow():
     assert "Dana" in bot.sent[-1][1]
 
 
-async def test_name_lookup_case_insensitive():
-    """Name lookup is case-insensitive."""
+async def test_name_lookup_case_insensitive_and_partial():
+    """Name lookup is case-insensitive and supports partial prefix match."""
     flow, _bot, _ = _make_flow_service(with_contacts=True)
-    await flow.handle(_contact_event(name="Dana", phone="972526610653", event_id="wamid.V1"))
+    await flow.handle(_contact_event(name="Dana Smith", phone="972526610653", event_id="wamid.V1"))
     await flow._state_repo.delete("user-1")
 
+    # Partial + lowercase: "dana" matches "Dana Smith"
     await flow.handle(_text_event("dana", event_id="wamid.NAME2"))
 
     ctx = await flow._state_repo.get("user-1")
     assert ctx.state.name == "AWAITING_MESSAGE"
+    assert ctx.recipient_name == "Dana Smith"
 
 
 async def test_unknown_name_in_idle_prompts_for_contact():

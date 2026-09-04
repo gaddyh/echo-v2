@@ -64,7 +64,7 @@ class InMemoryContactRepository(ContactRepository):
     async def find_by_name(self, user_id: str, name: str) -> ContactRecord | None:
         name_lower = name.lower().strip()
         for (uid, _phone), contact in self._contacts.items():
-            if uid == user_id and contact.display_name.lower().strip() == name_lower:
+            if uid == user_id and contact.display_name.lower().strip().startswith(name_lower):
                 return contact
         return None
 
@@ -102,10 +102,13 @@ class PostgresContactRepository(ContactRepository):
 
     async def find_by_name(self, user_id: str, name: str) -> ContactRecord | None:
         async with self._session_factory() as session:
+            # Partial match: user types "זיפוש", matches "זיפוש המהממת".
+            # ILIKE with wildcard: prefix match, case-insensitive.
+            pattern = f"{name.strip()}%"
             stmt = select(ContactRow).where(
                 ContactRow.user_id == user_id,
-                ContactRow.display_name.ilike(name.strip()),
-            )
+                ContactRow.display_name.ilike(pattern),
+            ).limit(1)
             row = (await session.execute(stmt)).scalar_one_or_none()
             if row is None:
                 return None
