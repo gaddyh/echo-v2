@@ -54,10 +54,9 @@ def build_router(
     store = dedup_store or InMemoryWebhookDedupStore()
     secret_hash = hashlib.sha256(webhook_secret.encode("utf-8")).digest()
 
-    @router.post("/webhooks/bot/dialog360")
-    async def dialog360_webhook(
+    async def _handle_webhook(
         request: Request,
-        authorization: str | None = Header(default=None),
+        authorization: str | None,
     ) -> dict[str, str]:
         try:
             payload = await request.json()
@@ -82,6 +81,20 @@ def build_router(
         # Dispatch to the flow service.
         await flow_service.handle(event)
         return {"status": "received"}
+
+    @router.post("/webhooks/bot/dialog360")
+    async def dialog360_webhook(
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, str]:
+        return await _handle_webhook(request, authorization)
+
+    @router.post("/webhook/360dialog")
+    async def dialog360_webhook_alt(
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, str]:
+        return await _handle_webhook(request, authorization)
 
     return router
 
