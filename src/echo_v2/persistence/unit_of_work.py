@@ -40,6 +40,7 @@ from echo_v2.persistence.credential_cipher import (
 from echo_v2.persistence.postgres_chat import (
     PostgresChatStateRepository,
     PostgresMessageRepository,
+    PostgresWaitingForMeActiveRepository,
     PostgresWaitingForMeResultRepository,
 )
 from echo_v2.persistence.postgres_idempotency import PostgresIdempotencyStore
@@ -66,6 +67,7 @@ class UnitOfWorkRepos:
     messages: PostgresMessageRepository
     chat_state: PostgresChatStateRepository
     wfm_results: PostgresWaitingForMeResultRepository
+    wfm_active: PostgresWaitingForMeActiveRepository
 
 
 class PostgresUnitOfWork:
@@ -123,6 +125,10 @@ class PostgresUnitOfWork:
                 self._session_factory,
                 session=self._session,
             ),
+            wfm_active=PostgresWaitingForMeActiveRepository(
+                self._session_factory,
+                session=self._session,
+            ),
         )
         return self
 
@@ -168,3 +174,8 @@ class PostgresUnitOfWork:
     def wfm_results(self) -> PostgresWaitingForMeResultRepository:
         assert self.repos is not None, "UnitOfWork not entered"
         return self.repos.wfm_results
+
+    @property
+    def wfm_active(self) -> PostgresWaitingForMeActiveRepository:
+        assert self.repos is not None, "UnitOfWork not entered"
+        return self.repos.wfm_active

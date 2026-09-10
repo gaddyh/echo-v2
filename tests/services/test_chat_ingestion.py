@@ -115,7 +115,10 @@ async def test_duplicate_message_is_noop():
 # --- Outbound message ------------------------------------------------------
 
 
-async def test_outbound_message_cancels_analysis():
+async def test_outbound_message_schedules_analysis():
+    """Outbound messages also schedule analysis — direction alone does not
+    determine resolution. The LLM decides whether the waiting state persists.
+    """
     service = _make_service()
     inbound = _make_event(direction=MessageDirection.INBOUND)
     outbound = _make_event(
@@ -134,7 +137,7 @@ async def test_outbound_message_cancels_analysis():
     assert chat is not None
     assert chat.activity_version == 2
     assert chat.last_direction == MessageDirection.OUTBOUND
-    assert chat.next_analysis_at is None
+    assert chat.next_analysis_at is not None  # outbound also schedules
 
 
 # --- Private-only filtering ------------------------------------------------

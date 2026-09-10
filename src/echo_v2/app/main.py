@@ -170,6 +170,7 @@ def create_app() -> FastAPI:
         message_repo=repos.messages,
         analyzer=analyzer,
         result_repo=repos.wfm_results,
+        active_repo=repos.wfm_active,
         context_messages=5,
         max_no_outbound=20,
     )

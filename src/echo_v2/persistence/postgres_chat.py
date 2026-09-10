@@ -21,13 +21,23 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from echo_v2.domain.chat import ChatState, Message
-from echo_v2.domain.waiting_for_me import WaitingForMeDecision, WaitingForMeResult
-from echo_v2.persistence.orm import ChatRow, MessageRow, WaitingForMeResultRow
+from echo_v2.domain.waiting_for_me import (
+    WaitingForMeActive,
+    WaitingForMeDecision,
+    WaitingForMeResult,
+)
+from echo_v2.persistence.orm import (
+    ChatRow,
+    MessageRow,
+    WaitingForMeActiveRow,
+    WaitingForMeResultRow,
+)
 from echo_v2.ports.whatsapp import MessageDirection
 
 __all__ = [
     "PostgresChatStateRepository",
     "PostgresMessageRepository",
+    "PostgresWaitingForMeActiveRepository",
     "PostgresWaitingForMeResultRepository",
 ]
 
@@ -289,7 +299,6 @@ class PostgresChatStateRepository:
                 .where(
                     ChatRow.next_analysis_at.is_not(None),
                     ChatRow.next_analysis_at <= now,
-                    ChatRow.last_direction == MessageDirection.INBOUND.value,
                     ChatRow.activity_version > ChatRow.last_processed_version,
                 )
                 .order_by(ChatRow.next_analysis_at)
@@ -366,7 +375,7 @@ class PostgresWaitingForMeResultRepository:
         user_id: str,
         chat_id: str,
         result: WaitingForMeResult,
-    ) -> None:
+    ) -> str:
         async with self._session() as session:
             stmt = (
                 pg_insert(WaitingForMeResultRow)
@@ -378,8 +387,10 @@ class PostgresWaitingForMeResultRepository:
                     confidence=result.confidence,
                     reason=result.reason,
                 )
+                .returning(WaitingForMeResultRow.id)
             )
-            await session.execute(stmt)
+            row_id = (await session.execute(stmt)).scalar_one()
+            return str(row_id)
 
     async def list_recent(
         self,
@@ -408,4 +419,117 @@ class PostgresWaitingForMeResultRepository:
             confidence=row.confidence,
             reason=row.reason,
             target_version=row.target_version,
+        )
+
+
+# --- PostgresWaitingForMeActiveRepository -----------------------------------
+
+
+class PostgresWaitingForMeActiveRepository:
+    """PostgreSQL implementation of :class:`WaitingForMeActiveRepository`.
+
+    Uses ``INSERT ... ON CONFLICT DO UPDATE`` to upsert the active row.
+    On conflict, ``waiting_since`` and ``notified_at`` are preserved
+    (not overwritten by the UPDATE).
+    """
+
+    def __init__(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        *,
+        session: AsyncSession | None = None,
+    ) -> None:
+        self._session_factory = session_factory
+        self._shared_session = session
+
+    def _session(self) -> _SessionContext:
+        if self._shared_session is not None:
+            return _SessionContext(self._shared_session, owns=False)
+        return _SessionContext(self._session_factory(), owns=True)
+
+    async def upsert(
+        self,
+        *,
+        user_id: str,
+        chat_id: str,
+        target_version: int,
+        result_id: str,
+        waiting_since: datetime,
+        notified_at: datetime | None = None,
+    ) -> None:
+        async with self._session() as session:
+            stmt = (
+                pg_insert(WaitingForMeActiveRow)
+                .values(
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    target_version=target_version,
+                    result_id=result_id,
+                    waiting_since=waiting_since,
+                    notified_at=notified_at,
+                )
+                .on_conflict_do_update(
+                    index_elements=["user_id", "chat_id"],
+                    set_={
+                        "target_version": target_version,
+                        "result_id": result_id,
+                        "updated_at": datetime.now(timezone.utc),
+                    },
+                )
+            )
+            await session.execute(stmt)
+
+    async def delete(self, *, user_id: str, chat_id: str) -> bool:
+        from sqlalchemy import delete as sa_delete
+
+        async with self._session() as session:
+            stmt = sa_delete(WaitingForMeActiveRow).where(
+                WaitingForMeActiveRow.user_id == user_id,
+                WaitingForMeActiveRow.chat_id == chat_id,
+            )
+            result = await session.execute(stmt)
+            return result.rowcount > 0
+
+    async def get(
+        self,
+        *,
+        user_id: str,
+        chat_id: str,
+    ) -> WaitingForMeActive | None:
+        async with self._session() as session:
+            stmt = select(WaitingForMeActiveRow).where(
+                WaitingForMeActiveRow.user_id == user_id,
+                WaitingForMeActiveRow.chat_id == chat_id,
+            )
+            row = (await session.execute(stmt)).scalar_one_or_none()
+            if row is None:
+                return None
+            return self._row_to_domain(row)
+
+    async def list_active(
+        self,
+        *,
+        user_id: str,
+        current_versions: dict[str, int],
+    ) -> list[WaitingForMeActive]:
+        async with self._session() as session:
+            stmt = select(WaitingForMeActiveRow).where(
+                WaitingForMeActiveRow.user_id == user_id,
+            )
+            rows = (await session.execute(stmt)).scalars().all()
+            return [
+                self._row_to_domain(r)
+                for r in rows
+                if current_versions.get(r.chat_id) == r.target_version
+            ]
+
+    @staticmethod
+    def _row_to_domain(row: WaitingForMeActiveRow) -> WaitingForMeActive:
+        return WaitingForMeActive(
+            user_id=str(row.user_id),
+            chat_id=row.chat_id,
+            target_version=row.target_version,
+            result_id=str(row.result_id),
+            waiting_since=row.waiting_since,
+            notified_at=row.notified_at,
         )

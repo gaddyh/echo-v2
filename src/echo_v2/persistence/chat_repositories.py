@@ -24,15 +24,17 @@ from datetime import datetime
 from typing import Protocol, runtime_checkable
 
 from echo_v2.domain.chat import ChatState, Message
-from echo_v2.domain.waiting_for_me import WaitingForMeResult
+from echo_v2.domain.waiting_for_me import WaitingForMeActive, WaitingForMeResult
 from echo_v2.ports.whatsapp import MessageDirection
 
 __all__ = [
     "ChatStateRepository",
     "InMemoryChatStateRepository",
     "InMemoryMessageRepository",
+    "InMemoryWaitingForMeActiveRepository",
     "InMemoryWaitingForMeResultRepository",
     "MessageRepository",
+    "WaitingForMeActiveRepository",
     "WaitingForMeResultRepository",
 ]
 
@@ -153,9 +155,9 @@ class ChatStateRepository(Protocol):
         """Return chats ready for analysis.
 
         Chats where ``next_analysis_at IS NOT NULL AND next_analysis_at <= now``
-        and ``last_direction = 'inbound'`` and
-        ``activity_version > last_processed_version``, ordered by
-        ``next_analysis_at``, limited to ``limit``.
+        and ``activity_version > last_processed_version``, ordered by
+        ``next_analysis_at``, limited to ``limit``. Direction is not
+        filtered — both inbound and outbound schedule analysis.
         """
         ...
 
@@ -224,7 +226,6 @@ class InMemoryChatStateRepository:
             for chat in self._chats.values()
             if chat.next_analysis_at is not None
             and chat.next_analysis_at <= now
-            and chat.last_direction == MessageDirection.INBOUND
             and chat.activity_version > chat.last_processed_version
         ]
         due.sort(key=lambda c: c.next_analysis_at)  # type: ignore[arg-type]
@@ -272,8 +273,8 @@ class WaitingForMeResultRepository(Protocol):
         user_id: str,
         chat_id: str,
         result: WaitingForMeResult,
-    ) -> None:
-        """Insert a result row. One row per analysis run."""
+    ) -> str:
+        """Insert a result row. One row per analysis run. Returns the row ID."""
         ...
 
     async def list_recent(
@@ -291,7 +292,7 @@ class InMemoryWaitingForMeResultRepository:
     """Process-local result repository backed by a list."""
 
     def __init__(self) -> None:
-        self._results: list[tuple[str, str, WaitingForMeResult]] = []
+        self._results: list[tuple[str, str, str, WaitingForMeResult]] = []
 
     async def save(
         self,
@@ -299,8 +300,12 @@ class InMemoryWaitingForMeResultRepository:
         user_id: str,
         chat_id: str,
         result: WaitingForMeResult,
-    ) -> None:
-        self._results.append((user_id, chat_id, result))
+    ) -> str:
+        import uuid
+
+        row_id = str(uuid.uuid4())
+        self._results.append((user_id, chat_id, row_id, result))
+        return row_id
 
     async def list_recent(
         self,
@@ -310,10 +315,138 @@ class InMemoryWaitingForMeResultRepository:
         limit: int = 10,
     ) -> list[WaitingForMeResult]:
         matching = [
-            r for (uid, cid, r) in self._results
+            r for (uid, cid, _rid, r) in self._results
             if uid == user_id and cid == chat_id
         ]
         return list(reversed(matching))[:limit]
 
 
 _wfm_repo: WaitingForMeResultRepository = InMemoryWaitingForMeResultRepository()  # type: ignore[assignment]
+
+
+# --- WaitingForMeActiveRepository -------------------------------------------
+
+
+@runtime_checkable
+class WaitingForMeActiveRepository(Protocol):
+    """Manage the current active WaitingForMe state — one row per chat."""
+
+    async def upsert(
+        self,
+        *,
+        user_id: str,
+        chat_id: str,
+        target_version: int,
+        result_id: str,
+        waiting_since: datetime,
+        notified_at: datetime | None = None,
+    ) -> None:
+        """Insert or update the active state for a chat.
+
+        On conflict (row already exists for this chat): update
+        ``target_version``, ``result_id``, and ``updated_at``. Preserve
+        the existing ``waiting_since`` and ``notified_at`` — the caller
+        passes the *original* values, but the repository keeps whatever
+        is already stored so the caller doesn't need to read first.
+        """
+        ...
+
+    async def delete(self, *, user_id: str, chat_id: str) -> bool:
+        """Delete the active state. Returns ``True`` if a row was deleted."""
+        ...
+
+    async def get(
+        self,
+        *,
+        user_id: str,
+        chat_id: str,
+    ) -> WaitingForMeActive | None:
+        """Get the current active state for a chat, or ``None``."""
+        ...
+
+    async def list_active(
+        self,
+        *,
+        user_id: str,
+        current_versions: dict[str, int],
+    ) -> list[WaitingForMeActive]:
+        """List active states where ``target_version`` matches the current
+        ``activity_version`` for that chat.
+
+        Args:
+            user_id: The user whose active states to list.
+            current_versions: A mapping of ``chat_id → activity_version``
+                from the ``chats`` table. Only rows whose
+                ``target_version`` matches are returned.
+        """
+        ...
+
+
+class InMemoryWaitingForMeActiveRepository:
+    """Process-local active state repository backed by a dict."""
+
+    def __init__(self) -> None:
+        self._rows: dict[tuple[str, str], WaitingForMeActive] = {}
+
+    async def upsert(
+        self,
+        *,
+        user_id: str,
+        chat_id: str,
+        target_version: int,
+        result_id: str,
+        waiting_since: datetime,
+        notified_at: datetime | None = None,
+    ) -> None:
+        key = (user_id, chat_id)
+        existing = self._rows.get(key)
+        if existing is not None:
+            # Preserve waiting_since and notified_at from existing row.
+            self._rows[key] = WaitingForMeActive(
+                user_id=user_id,
+                chat_id=chat_id,
+                target_version=target_version,
+                result_id=result_id,
+                waiting_since=existing.waiting_since,
+                notified_at=existing.notified_at,
+            )
+        else:
+            self._rows[key] = WaitingForMeActive(
+                user_id=user_id,
+                chat_id=chat_id,
+                target_version=target_version,
+                result_id=result_id,
+                waiting_since=waiting_since,
+                notified_at=notified_at,
+            )
+
+    async def delete(self, *, user_id: str, chat_id: str) -> bool:
+        key = (user_id, chat_id)
+        if key in self._rows:
+            del self._rows[key]
+            return True
+        return False
+
+    async def get(
+        self,
+        *,
+        user_id: str,
+        chat_id: str,
+    ) -> WaitingForMeActive | None:
+        return self._rows.get((user_id, chat_id))
+
+    async def list_active(
+        self,
+        *,
+        user_id: str,
+        current_versions: dict[str, int],
+    ) -> list[WaitingForMeActive]:
+        return [
+            row
+            for (uid, _cid), row in self._rows.items()
+            if uid == user_id
+            and current_versions.get(row.chat_id) == row.target_version
+        ]
+
+
+_wfm_active_repo: WaitingForMeActiveRepository = InMemoryWaitingForMeActiveRepository()  # type: ignore[assignment]

@@ -154,7 +154,9 @@ async def test_chat_upsert_increments_activity_version():
     assert chat2.activity_version == 2
 
 
-async def test_chat_upsert_outbound_after_inbound_cancels():
+async def test_chat_upsert_outbound_after_inbound_schedules_analysis():
+    """Outbound messages also schedule analysis — the repo stores whatever
+    next_analysis_at the service computes. Direction alone doesn't cancel."""
     repo = InMemoryChatStateRepository()
     now = datetime.now(timezone.utc)
     due = now + timedelta(minutes=5)
@@ -170,10 +172,10 @@ async def test_chat_upsert_outbound_after_inbound_cancels():
         chat_id="972501234567@c.us",
         direction=MessageDirection.OUTBOUND,
         observed_at=now,
-        next_analysis_at=None,
+        next_analysis_at=due,  # outbound also schedules now
     )
     assert chat1.next_analysis_at is not None
-    assert chat2.next_analysis_at is None
+    assert chat2.next_analysis_at is not None
 
 
 # --- ChatStateRepository.list_due ------------------------------------------
@@ -208,7 +210,9 @@ async def test_list_due_excludes_not_yet_due():
     assert await repo.list_due(now) == []
 
 
-async def test_list_due_excludes_outbound():
+async def test_list_due_includes_outbound_with_next_analysis_at():
+    """list_due no longer filters by direction — outbound chats with
+    next_analysis_at set are included."""
     repo = InMemoryChatStateRepository()
     now = datetime.now(timezone.utc)
     past = now - timedelta(minutes=10)
@@ -217,9 +221,11 @@ async def test_list_due_excludes_outbound():
         chat_id="972501234567@c.us",
         direction=MessageDirection.OUTBOUND,
         observed_at=past,
-        next_analysis_at=None,
+        next_analysis_at=past + timedelta(minutes=5),
     )
-    assert await repo.list_due(now) == []
+    due = await repo.list_due(now)
+    assert len(due) == 1
+    assert due[0].chat_id == "972501234567@c.us"
 
 
 async def test_list_due_excludes_already_processed():

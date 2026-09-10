@@ -11,8 +11,10 @@ transaction:
 
 The service owns the business logic:
 
-* Computing ``next_analysis_at`` from ``quiet_period`` + direction
-  (inbound → ``now + quiet_period``, outbound → ``None``).
+* Computing ``next_analysis_at`` from ``quiet_period`` + direction.
+  Both inbound and outbound schedule analysis after the quiet period —
+  direction alone does not determine resolution. The LLM decides whether
+  the waiting state persists.
 * Filtering private/group chats (``private_only`` flag, default
   ``True`` — Green ``chat_id`` suffix ``@c.us`` = private, ``@g.us`` =
   group).
@@ -32,7 +34,7 @@ from echo_v2.persistence.chat_repositories import (
     ChatStateRepository,
     MessageRepository,
 )
-from echo_v2.ports.whatsapp import MessageDirection, ProviderMessageEvent
+from echo_v2.ports.whatsapp import ProviderMessageEvent
 
 __all__ = ["ChatIngestionService"]
 
@@ -82,11 +84,10 @@ class ChatIngestionService:
             return False
 
         now = datetime.now(timezone.utc)
-        next_analysis_at = (
-            now + timedelta(seconds=self._quiet_period)
-            if event.direction is MessageDirection.INBOUND
-            else None
-        )
+        # Both inbound and outbound schedule analysis after the quiet
+        # period. Direction alone does not determine resolution — the
+        # LLM decides whether the waiting state persists.
+        next_analysis_at = now + timedelta(seconds=self._quiet_period)
 
         message = Message(
             id=str(uuid.uuid4()),

@@ -25,9 +25,11 @@ dataclass. The LLM prompt and parsing logic come in a later stage.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from enum import Enum
 
 __all__ = [
+    "WaitingForMeActive",
     "WaitingForMeDecision",
     "WaitingForMeResult",
 ]
@@ -87,3 +89,28 @@ class WaitingForMeResult:
     confidence: float | None = None
     reason: str | None = None
     target_version: int = 0
+
+
+@dataclass(frozen=True)
+class WaitingForMeActive:
+    """Current active waiting state for a chat — one row per chat.
+
+    Attributes:
+        user_id: The user who owns this chat.
+        chat_id: The WhatsApp chat ID.
+        target_version: The ``activity_version`` this state was computed
+            from. Stale if ``target_version != chats.activity_version``.
+        result_id: The ``waiting_for_me_results.id`` that produced this
+            active state.
+        waiting_since: When the waiting state originally started.
+            Preserved across re-analyses that remain WAITING_FOR_ME.
+        notified_at: When the user was last notified about this waiting
+            state. ``None`` if not yet notified.
+    """
+
+    user_id: str
+    chat_id: str
+    target_version: int
+    result_id: str
+    waiting_since: datetime
+    notified_at: datetime | None = None

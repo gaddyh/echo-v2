@@ -24,6 +24,7 @@ from echo_v2.persistence.db import (
 from echo_v2.persistence.postgres_chat import (
     PostgresChatStateRepository,
     PostgresMessageRepository,
+    PostgresWaitingForMeActiveRepository,
     PostgresWaitingForMeResultRepository,
 )
 from echo_v2.persistence.postgres_idempotency import PostgresIdempotencyStore
@@ -51,6 +52,7 @@ class PostgresRepos:
     messages: PostgresMessageRepository
     chat_state: PostgresChatStateRepository
     wfm_results: PostgresWaitingForMeResultRepository
+    wfm_active: PostgresWaitingForMeActiveRepository
     session_factory: async_sessionmaker
     unit_of_work: type[PostgresUnitOfWork]
 
@@ -78,6 +80,7 @@ def build_postgres_repos(settings: DBSettings) -> PostgresRepos:
     messages = PostgresMessageRepository(factory)
     chat_state = PostgresChatStateRepository(factory)
     wfm_results = PostgresWaitingForMeResultRepository(factory)
+    wfm_active = PostgresWaitingForMeActiveRepository(factory)
 
     # A UoW factory bound to the same session_factory + cipher.
     class _BoundUoW(PostgresUnitOfWork):
@@ -92,6 +95,7 @@ def build_postgres_repos(settings: DBSettings) -> PostgresRepos:
         messages=messages,
         chat_state=chat_state,
         wfm_results=wfm_results,
+        wfm_active=wfm_active,
         session_factory=factory,
         unit_of_work=_BoundUoW,
     )

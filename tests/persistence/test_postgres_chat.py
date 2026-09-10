@@ -162,7 +162,7 @@ async def test_chat_upsert_increments_activity_version(chat_state_repo, session_
     assert chat2.activity_version == 2
 
 
-async def test_chat_upsert_outbound_after_inbound_cancels(
+async def test_chat_upsert_outbound_after_inbound_schedules_analysis(
     chat_state_repo, session_factory
 ):
     user_id = await insert_user(session_factory)
@@ -181,10 +181,10 @@ async def test_chat_upsert_outbound_after_inbound_cancels(
         chat_id="972501234567@c.us",
         direction=MessageDirection.OUTBOUND,
         observed_at=now,
-        next_analysis_at=None,
+        next_analysis_at=due,  # outbound also schedules now
     )
     assert chat1.next_analysis_at is not None
-    assert chat2.next_analysis_at is None
+    assert chat2.next_analysis_at is not None
     assert chat2.last_direction == MessageDirection.OUTBOUND
 
 
@@ -249,7 +249,11 @@ async def test_list_due_excludes_not_yet_due(chat_state_repo, session_factory):
     assert len(due) == 0
 
 
-async def test_list_due_excludes_outbound(chat_state_repo, session_factory):
+async def test_list_due_includes_outbound_with_next_analysis_at(
+    chat_state_repo, session_factory
+):
+    """list_due no longer filters by direction — outbound chats with
+    next_analysis_at set are included."""
     user_id = await insert_user(session_factory)
     now = datetime.now(timezone.utc)
     past = now - timedelta(minutes=10)
@@ -259,10 +263,11 @@ async def test_list_due_excludes_outbound(chat_state_repo, session_factory):
         chat_id="972501234567@c.us",
         direction=MessageDirection.OUTBOUND,
         observed_at=past,
-        next_analysis_at=None,
+        next_analysis_at=past + timedelta(minutes=5),
     )
     due = await chat_state_repo.list_due(now)
-    assert len(due) == 0
+    assert len(due) == 1
+    assert due[0].chat_id == "972501234567@c.us"
 
 
 async def test_list_due_excludes_already_processed(chat_state_repo, session_factory):
@@ -742,3 +747,141 @@ async def test_wfm_list_recent_empty(wfm_repo, session_factory):
     user_id = await insert_user(session_factory)
     results = await wfm_repo.list_recent(user_id=user_id, chat_id="chat-1@c.us")
     assert results == []
+
+
+# --- PostgresWaitingForMeActiveRepository -----------------------------------
+
+
+@pytest_asyncio.fixture
+async def wfm_active_repo(session_factory, clean_db):
+    from echo_v2.persistence.postgres_chat import (
+        PostgresWaitingForMeActiveRepository,
+    )
+
+    return PostgresWaitingForMeActiveRepository(session_factory)
+
+
+async def _seed_wfm_result(session_factory, user_id, chat_id="chat-1@c.us", version=1):
+    """Insert a waiting_for_me_results row and return its ID."""
+    from sqlalchemy import insert
+
+    from echo_v2.persistence.orm import WaitingForMeResultRow
+
+    async with session_factory() as session:
+        stmt = (
+            insert(WaitingForMeResultRow)
+            .values(
+                user_id=user_id,
+                chat_id=chat_id,
+                target_version=version,
+                decision="waiting_for_me",
+                confidence=0.9,
+                reason="test",
+            )
+            .returning(WaitingForMeResultRow.id)
+        )
+        result_id = (await session.execute(stmt)).scalar_one()
+        await session.commit()
+        return str(result_id)
+
+
+async def test_wfm_active_upsert_inserts_new(wfm_active_repo, session_factory):
+    user_id = await insert_user(session_factory)
+    result_id = await _seed_wfm_result(session_factory, user_id)
+
+    await wfm_active_repo.upsert(
+        user_id=user_id,
+        chat_id="chat-1@c.us",
+        target_version=1,
+        result_id=result_id,
+        waiting_since=datetime.now(timezone.utc),
+    )
+    row = await wfm_active_repo.get(user_id=user_id, chat_id="chat-1@c.us")
+    assert row is not None
+    assert row.target_version == 1
+    assert row.result_id == result_id
+
+
+async def test_wfm_active_upsert_preserves_waiting_since(wfm_active_repo, session_factory):
+    user_id = await insert_user(session_factory)
+    result_id_1 = await _seed_wfm_result(session_factory, user_id, version=1)
+    result_id_2 = await _seed_wfm_result(session_factory, user_id, version=2)
+
+    original_waiting_since = datetime(2026, 9, 12, 8, 0, 0, tzinfo=timezone.utc)
+
+    # First upsert
+    await wfm_active_repo.upsert(
+        user_id=user_id,
+        chat_id="chat-1@c.us",
+        target_version=1,
+        result_id=result_id_1,
+        waiting_since=original_waiting_since,
+    )
+
+    # Second upsert — new version
+    await wfm_active_repo.upsert(
+        user_id=user_id,
+        chat_id="chat-1@c.us",
+        target_version=2,
+        result_id=result_id_2,
+        waiting_since=datetime.now(timezone.utc),  # different, but should be ignored
+    )
+
+    row = await wfm_active_repo.get(user_id=user_id, chat_id="chat-1@c.us")
+    assert row is not None
+    assert row.target_version == 2
+    assert row.result_id == result_id_2
+    assert row.waiting_since == original_waiting_since  # preserved
+
+
+async def test_wfm_active_delete(wfm_active_repo, session_factory):
+    user_id = await insert_user(session_factory)
+    result_id = await _seed_wfm_result(session_factory, user_id)
+
+    await wfm_active_repo.upsert(
+        user_id=user_id,
+        chat_id="chat-1@c.us",
+        target_version=1,
+        result_id=result_id,
+        waiting_since=datetime.now(timezone.utc),
+    )
+    deleted = await wfm_active_repo.delete(user_id=user_id, chat_id="chat-1@c.us")
+    assert deleted is True
+
+    row = await wfm_active_repo.get(user_id=user_id, chat_id="chat-1@c.us")
+    assert row is None
+
+
+async def test_wfm_active_delete_returns_false_if_not_exists(wfm_active_repo, session_factory):
+    user_id = await insert_user(session_factory)
+    deleted = await wfm_active_repo.delete(user_id=user_id, chat_id="chat-1@c.us")
+    assert deleted is False
+
+
+async def test_wfm_active_list_active(wfm_active_repo, session_factory):
+    user_id = await insert_user(session_factory)
+    result_id_1 = await _seed_wfm_result(session_factory, user_id, chat_id="chat-1@c.us", version=5)
+    result_id_2 = await _seed_wfm_result(session_factory, user_id, chat_id="chat-2@c.us", version=3)
+
+    await wfm_active_repo.upsert(
+        user_id=user_id,
+        chat_id="chat-1@c.us",
+        target_version=5,
+        result_id=result_id_1,
+        waiting_since=datetime.now(timezone.utc),
+    )
+    await wfm_active_repo.upsert(
+        user_id=user_id,
+        chat_id="chat-2@c.us",
+        target_version=3,
+        result_id=result_id_2,
+        waiting_since=datetime.now(timezone.utc),
+    )
+
+    # Only chat-1 has matching version
+    active = await wfm_active_repo.list_active(
+        user_id=user_id,
+        current_versions={"chat-1@c.us": 5, "chat-2@c.us": 4},
+    )
+    assert len(active) == 1
+    assert active[0].chat_id == "chat-1@c.us"

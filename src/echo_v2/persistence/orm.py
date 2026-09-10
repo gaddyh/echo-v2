@@ -504,3 +504,59 @@ class WaitingForMeResultRow(Base):
             "created_at",
         ),
     )
+
+
+# --- waiting_for_me_active --------------------------------------------------
+
+
+class WaitingForMeActiveRow(Base):
+    """Current active WaitingForMe state — one row per chat.
+
+    Represents the *current* waiting state of a chat, not history. When a
+    new message arrives, ``activity_version`` increments on ``chats`` and
+    the active row's ``target_version`` becomes stale (it no longer
+    matches ``chats.activity_version``). The worker re-analyzes and
+    either:
+
+    - ``WAITING_FOR_ME`` → upsert the active row with the new
+      ``target_version`` and ``result_id``, preserving ``waiting_since``
+      and ``notified_at``.
+    - ``NOT_WAITING_FOR_ME`` / ``UNCERTAIN`` → delete the active row.
+
+    "What's currently waiting" = rows where ``target_version ==
+    chats.activity_version``.
+    """
+
+    __tablename__ = "waiting_for_me_active"
+
+    user_id: Mapped[str] = mapped_column(
+        Uuid,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+        nullable=False,
+    )
+    chat_id: Mapped[str] = mapped_column(Text, primary_key=True, nullable=False)
+    target_version: Mapped[int] = mapped_column(nullable=False)
+    result_id: Mapped[str] = mapped_column(
+        Uuid,
+        ForeignKey("waiting_for_me_results.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    waiting_since: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+    )
+    notified_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )

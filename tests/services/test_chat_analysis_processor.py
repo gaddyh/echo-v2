@@ -206,3 +206,162 @@ async def test_processor_does_not_store_when_result_repo_is_none():
     )
     # Should not raise
     await processor.process("user-1", "972501234567@c.us", target_version=1)
+
+
+# --- Active state management (stage 4) --------------------------------------
+
+
+async def test_processor_creates_active_on_waiting_for_me():
+    """WAITING_FOR_ME → upsert active state."""
+    from echo_v2.persistence.chat_repositories import (
+        InMemoryWaitingForMeActiveRepository,
+        InMemoryWaitingForMeResultRepository,
+    )
+
+    repo = InMemoryMessageRepository()
+    msgs = [
+        _make_message(direction=MessageDirection.INBOUND, text="hello", offset_minutes=0),
+    ]
+    for m in msgs:
+        await repo.save(m)
+
+    analyzer = FakeAnalyzer(WaitingForMeDecision.WAITING_FOR_ME)
+    result_repo = InMemoryWaitingForMeResultRepository()
+    active_repo = InMemoryWaitingForMeActiveRepository()
+    processor = ChatAnalysisProcessor(
+        message_repo=repo,
+        analyzer=analyzer,
+        result_repo=result_repo,
+        active_repo=active_repo,
+    )
+    await processor.process("user-1", "972501234567@c.us", target_version=1)
+
+    active = await active_repo.get(user_id="user-1", chat_id="972501234567@c.us")
+    assert active is not None
+    assert active.target_version == 1
+    assert active.waiting_since is not None
+    assert active.notified_at is None
+
+
+async def test_processor_deletes_active_on_not_waiting_for_me():
+    """NOT_WAITING_FOR_ME → delete active state if exists."""
+    from echo_v2.persistence.chat_repositories import (
+        InMemoryWaitingForMeActiveRepository,
+        InMemoryWaitingForMeResultRepository,
+    )
+
+    repo = InMemoryMessageRepository()
+    msgs = [
+        _make_message(direction=MessageDirection.INBOUND, text="thanks", offset_minutes=0),
+    ]
+    for m in msgs:
+        await repo.save(m)
+
+    analyzer = FakeAnalyzer(WaitingForMeDecision.NOT_WAITING_FOR_ME)
+    result_repo = InMemoryWaitingForMeResultRepository()
+    active_repo = InMemoryWaitingForMeActiveRepository()
+    processor = ChatAnalysisProcessor(
+        message_repo=repo,
+        analyzer=analyzer,
+        result_repo=result_repo,
+        active_repo=active_repo,
+    )
+    await processor.process("user-1", "972501234567@c.us", target_version=1)
+
+    active = await active_repo.get(user_id="user-1", chat_id="972501234567@c.us")
+    assert active is None
+
+
+async def test_processor_deletes_active_on_uncertain():
+    """UNCERTAIN → delete active state if exists."""
+    from echo_v2.persistence.chat_repositories import (
+        InMemoryWaitingForMeActiveRepository,
+        InMemoryWaitingForMeResultRepository,
+    )
+
+    repo = InMemoryMessageRepository()
+    msgs = [
+        _make_message(direction=MessageDirection.INBOUND, text="", offset_minutes=0),
+    ]
+    for m in msgs:
+        await repo.save(m)
+
+    analyzer = FakeAnalyzer(WaitingForMeDecision.UNCERTAIN)
+    result_repo = InMemoryWaitingForMeResultRepository()
+    active_repo = InMemoryWaitingForMeActiveRepository()
+    processor = ChatAnalysisProcessor(
+        message_repo=repo,
+        analyzer=analyzer,
+        result_repo=result_repo,
+        active_repo=active_repo,
+    )
+    await processor.process("user-1", "972501234567@c.us", target_version=1)
+
+    active = await active_repo.get(user_id="user-1", chat_id="972501234567@c.us")
+    assert active is None
+
+
+async def test_processor_preserves_waiting_since_on_re_analysis():
+    """Re-analysis with WAITING_FOR_ME preserves waiting_since from first analysis."""
+    from echo_v2.persistence.chat_repositories import (
+        InMemoryWaitingForMeActiveRepository,
+        InMemoryWaitingForMeResultRepository,
+    )
+
+    repo = InMemoryMessageRepository()
+    msgs = [
+        _make_message(direction=MessageDirection.INBOUND, text="send me the file?", offset_minutes=0),
+    ]
+    for m in msgs:
+        await repo.save(m)
+
+    analyzer = FakeAnalyzer(WaitingForMeDecision.WAITING_FOR_ME)
+    result_repo = InMemoryWaitingForMeResultRepository()
+    active_repo = InMemoryWaitingForMeActiveRepository()
+    processor = ChatAnalysisProcessor(
+        message_repo=repo,
+        analyzer=analyzer,
+        result_repo=result_repo,
+        active_repo=active_repo,
+    )
+
+    # First analysis — creates active
+    await processor.process("user-1", "972501234567@c.us", target_version=1)
+    first_active = await active_repo.get(user_id="user-1", chat_id="972501234567@c.us")
+    assert first_active is not None
+    first_waiting_since = first_active.waiting_since
+
+    # Second analysis — new version, should preserve waiting_since
+    await processor.process("user-1", "972501234567@c.us", target_version=2)
+    second_active = await active_repo.get(user_id="user-1", chat_id="972501234567@c.us")
+    assert second_active is not None
+    assert second_active.target_version == 2
+    assert second_active.waiting_since == first_waiting_since
+
+
+async def test_processor_no_active_repo_does_not_crash():
+    """Processor works without active_repo — just stores result."""
+    from echo_v2.persistence.chat_repositories import (
+        InMemoryWaitingForMeResultRepository,
+    )
+
+    repo = InMemoryMessageRepository()
+    msgs = [
+        _make_message(direction=MessageDirection.INBOUND, text="hello", offset_minutes=0),
+    ]
+    for m in msgs:
+        await repo.save(m)
+
+    analyzer = FakeAnalyzer(WaitingForMeDecision.WAITING_FOR_ME)
+    result_repo = InMemoryWaitingForMeResultRepository()
+    processor = ChatAnalysisProcessor(
+        message_repo=repo,
+        analyzer=analyzer,
+        result_repo=result_repo,
+        active_repo=None,  # no active repo
+    )
+    # Should not raise
+    await processor.process("user-1", "972501234567@c.us", target_version=1)
+
+    stored = await result_repo.list_recent(user_id="user-1", chat_id="972501234567@c.us")
+    assert len(stored) == 1
