@@ -393,6 +393,13 @@ class GreenClient:
             # 4xx other than 429 is permanent. Green error body, if present,
             # is surfaced via the message but never includes the URL/token.
             body = _safe_json(response)
+            _logger.warning(
+                "provider=green operation=%s connection_id=%s status_code=%s body=%s",
+                operation,
+                connection_id,
+                status,
+                body,
+            )
             if isinstance(body, dict) and body.get("code"):
                 raise GreenApiError(
                     f"green {operation} error {body.get('code')}: {body.get('description')}"

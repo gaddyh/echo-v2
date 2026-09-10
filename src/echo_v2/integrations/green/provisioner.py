@@ -12,6 +12,8 @@ guardrail G9).
 
 from __future__ import annotations
 
+import logging
+
 from echo_v2.integrations.green.client import GreenClient
 from echo_v2.integrations.green.models import subscription_to_green_fields
 from echo_v2.ports.whatsapp import (
@@ -32,6 +34,8 @@ __all__ = ["GreenProvisioner"]
 
 class GreenProvisioner:
     """Green API implementation of :class:`WhatsAppProvisioner`."""
+
+    _logger = logging.getLogger("echo_v2.green.provisioner")
 
     def __init__(
         self,
@@ -58,6 +62,11 @@ class GreenProvisioner:
             "webhookUrlToken": config.webhook_token,
         }
         data = await self._client.create_instance(payload)
+        self._logger.info(
+            "green provisioner: createInstance response keys=%s idInstance=%s",
+            list(data.keys()) if isinstance(data, dict) else type(data).__name__,
+            data.get("idInstance") if isinstance(data, dict) else None,
+        )
         try:
             id_instance = str(data["idInstance"])
             api_token = str(data["apiTokenInstance"])

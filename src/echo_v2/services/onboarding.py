@@ -129,7 +129,7 @@ class OnboardingService:
         green_client,  # GreenClient — avoid circular import
         webhook_base_url: str,
         poll_interval: float = 5.0,
-        poll_max_attempts: int = 24,
+        poll_max_attempts: int = 60,
     ) -> None:
         self._bot = bot
         self._user_repo = user_repo
@@ -237,6 +237,11 @@ class OnboardingService:
         # until it returns "notAuthorized" — the instance is still being
         # created for a few seconds after createInstance returns).
         api_token = created.credentials.data.decode("utf-8")
+        _logger.info(
+            "onboarding: instance created id=%s token_len=%d",
+            created.ref.provider_connection_id,
+            len(api_token),
+        )
         ready = await self._wait_for_instance_ready(
             created.ref.provider_connection_id,
             api_token,
@@ -313,7 +318,7 @@ class OnboardingService:
                     state,
                     attempt + 1,
                 )
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 # 401 is expected during creation — the token isn't valid yet.
                 _logger.info(
                     "onboarding: getStateInstance failed (attempt=%d): %s",
