@@ -78,6 +78,7 @@ class UserRow(Base):
         nullable=False,
         server_default="active",
     )
+    onboarding_status: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True),
         nullable=False,
@@ -93,6 +94,11 @@ class UserRow(Base):
         CheckConstraint(
             "account_status IN ('active', 'suspended', 'deleted')",
             name="users_account_status_check",
+        ),
+        CheckConstraint(
+            "onboarding_status IS NULL "
+            "OR onboarding_status IN ('pending','connected','failed','active')",
+            name="users_onboarding_status_check",
         ),
     )
 

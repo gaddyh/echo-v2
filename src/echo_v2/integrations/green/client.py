@@ -188,6 +188,42 @@ class GreenClient:
             is_write=True,
         )
 
+    async def get_authorization_code(
+        self,
+        id_instance: str,
+        api_token: str,
+        phone_number: int,
+    ) -> str:
+        """Per-instance ``GetAuthorizationCode``. OTP login alternative to QR.
+
+        Returns the 8-digit authorization code. The user enters it in
+        WhatsApp → Settings → Linked Devices → Link with phone number.
+        The code is valid for ~2.5 minutes.
+
+        ``phone_number`` is the international phone number without ``+`` or
+        ``00`` (e.g. ``972501234567``).
+        """
+        url = (
+            f"{self._settings.partner_api_url}/waInstance{id_instance}"
+            f"/getAuthorizationCode/{api_token}"
+        )
+        data = await self._request_json(
+            "POST",
+            url,
+            operation="get_authorization_code",
+            connection_id=id_instance,
+            is_write=True,
+            json_body={"phoneNumber": phone_number},
+        )
+        if not isinstance(data, dict) or not data.get("status"):
+            raise GreenApiError(
+                "getAuthorizationCode failed — instance may already be authorized"
+            )
+        code = data.get("code")
+        if not code:
+            raise GreenApiError("getAuthorizationCode response missing code")
+        return str(code)
+
     # -- messaging --------------------------------------------------------
 
     async def send_message(

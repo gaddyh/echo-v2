@@ -26,7 +26,7 @@ from fastapi import APIRouter, Header, HTTPException, Request
 
 from echo_v2.app.webhooks.dedup import InMemoryWebhookDedupStore, WebhookDedupStore
 from echo_v2.integrations.dialog360.events import Dialog360EventAdapter
-from echo_v2.ports.bot import BotEventAdapter
+from echo_v2.ports.bot import BotEventAdapter, BotEventType
 from echo_v2.services.scheduling_flow import SchedulingFlowService
 
 __all__ = ["build_router", "dialog360_webhook_router"]
@@ -41,6 +41,7 @@ def build_router(
     adapter: BotEventAdapter | None = None,
     dedup_store: WebhookDedupStore | None = None,
     digest_reply_service=None,
+    onboarding_service=None,
 ) -> APIRouter:
     """Build a 360dialog bot webhook router.
 
@@ -52,6 +53,9 @@ def build_router(
         digest_reply_service: Optional :class:`DigestReplyService` pre-handler.
             If it handles the event (returns ``True``), the flow service is
             skipped. Used for the "הצג הכול" button reply.
+        onboarding_service: Optional :class:`OnboardingService`. If set,
+            unknown users are routed to onboarding instead of being rejected.
+            Also handles the name-collection step after connection.
     """
     router = APIRouter()
     parse_adapter = adapter or Dialog360EventAdapter()
@@ -92,6 +96,29 @@ def build_router(
         if digest_reply_service is not None:
             handled = await digest_reply_service.handle(event)
             if handled:
+                return {"status": "received"}
+
+        # Onboarding pre-handler: if the user is unknown or in onboarding,
+        # route to the onboarding service instead of the flow service.
+        if onboarding_service is not None:
+            is_onboarding = await onboarding_service.is_onboarding(event.user_phone)
+            if is_onboarding:
+                # Handle name response (after connection) or resend request.
+                if event.type is BotEventType.TEXT and event.text:
+                    handled = await onboarding_service.handle_name_response(
+                        event.user_phone, event.text
+                    )
+                    if handled:
+                        return {"status": "received"}
+                    if event.text.strip() == "קוד":
+                        await onboarding_service.handle_resend_request(event.user_phone)
+                        return {"status": "received"}
+                return {"status": "received"}
+
+            # Check if user is fully unknown — start onboarding.
+            user_info = await flow_service._user_resolver.resolve(event.user_phone)
+            if user_info is None:
+                await onboarding_service.handle_unknown_user(event.user_phone)
                 return {"status": "received"}
 
         # Dispatch to the flow service.

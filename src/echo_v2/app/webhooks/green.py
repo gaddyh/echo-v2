@@ -54,6 +54,7 @@ from echo_v2.persistence.whatsapp_connections import (
     WhatsAppConnectionRepository,
 )
 from echo_v2.ports.whatsapp import (
+    ConnectionStatus,
     ProviderConnectionStateChanged,
     ProviderEvent,
     ProviderMessageEvent,
@@ -121,7 +122,8 @@ class ChatEventDispatcher:
 
     * ``ProviderMessageEvent`` → :class:`ChatIngestionService` (saves
       message + updates chat state + manages queue).
-    * ``ProviderConnectionStateChanged`` → connection repo (updates status).
+    * ``ProviderConnectionStateChanged`` → connection repo (updates status)
+      + onboarding service (if connected, sends welcome message).
     * ``ProviderMessageStatusEvent`` → logged only (no action this milestone).
 
     The ``connection_id`` is the ``whatsapp_connections.id`` UUID (not the
@@ -133,9 +135,11 @@ class ChatEventDispatcher:
         self,
         ingestion_service: ChatIngestionService,
         connection_repo: WhatsAppConnectionRepository,
+        onboarding_service=None,
     ) -> None:
         self._ingestion = ingestion_service
         self._connection_repo = connection_repo
+        self._onboarding = onboarding_service
 
     async def dispatch(
         self,
@@ -156,6 +160,19 @@ class ChatEventDispatcher:
                 event.status,
                 event.provider_raw_status,
             )
+            # If connected and onboarding is wired, complete the onboarding.
+            if (
+                self._onboarding is not None
+                and event.status == ConnectionStatus.CONNECTED
+            ):
+                # Resolve the user's phone from the connection.
+                conn = await self._connection_repo.get(event.connection)
+                if conn is not None:
+                    # The user's phone is stored in the users table;
+                    # the onboarding service resolves by user_id.
+                    await self._onboarding.handle_connection_established_by_id(
+                        user_id,
+                    )
         # ProviderMessageStatusEvent: no action in this milestone
 
 

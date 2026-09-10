@@ -103,6 +103,29 @@ def create_app() -> FastAPI:
     d360_settings = Dialog360Settings()
     d360_client = Dialog360Client(settings=d360_settings)
 
+    # --- onboarding service (OTP-based WhatsApp onboarding) ---------------
+    from echo_v2.integrations.green.provisioner import GreenProvisioner
+    from echo_v2.persistence.user_repository import PostgresUserRepository
+    from echo_v2.services.onboarding import OnboardingService
+
+    user_repo = PostgresUserRepository(repos.session_factory)
+    provisioner = GreenProvisioner(
+        client=green_client,
+        credential_resolver=repos.connections,
+    )
+    webhook_base_url = os.environ.get(
+        "ECHO_WEBHOOK_BASE_URL",
+        "https://i-me.onrender.com",
+    )
+    onboarding_service = OnboardingService(
+        bot=d360_client,
+        user_repo=user_repo,
+        connection_repo=repos.connections,
+        provisioner=provisioner,
+        green_client=green_client,
+        webhook_base_url=webhook_base_url,
+    )
+
     # --- scheduling service (executes due actions) ------------------------
     # In-memory idempotency for now — a Postgres implementation exists but
     # we use in-memory to keep the bootstrap simple. The scheduler's
@@ -169,6 +192,7 @@ def create_app() -> FastAPI:
     chat_dispatcher = ChatEventDispatcher(
         ingestion_service=ingestion_service,
         connection_repo=repos.connections,
+        onboarding_service=onboarding_service,
     )
 
     # --- chat analysis worker (NOT started by default — CHAT_ANALYSIS_ENABLED)
@@ -306,6 +330,7 @@ def create_app() -> FastAPI:
         webhook_secret=d360_settings.webhook_secret,
         adapter=Dialog360EventAdapter(),
         digest_reply_service=digest_reply_service,
+        onboarding_service=onboarding_service,
     )
     app.include_router(dialog360_router)
 
