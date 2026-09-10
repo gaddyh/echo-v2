@@ -33,7 +33,7 @@ from fastapi import FastAPI
 
 from echo_v2.app.webhooks.dialog360 import build_router as build_dialog360_router
 from echo_v2.app.webhooks.green import (
-    RecordingEventDispatcher,
+    ChatEventDispatcher,
 )
 from echo_v2.app.webhooks.green import (
     build_router as build_green_router,
@@ -50,6 +50,11 @@ from echo_v2.persistence.conversation_state import InMemoryConversationStateRepo
 from echo_v2.persistence.settings import load_db_settings
 from echo_v2.persistence.user_resolver import PostgresUserResolver
 from echo_v2.runtime.idempotency import InMemoryIdempotencyStore
+from echo_v2.services.chat_analysis_worker import (
+    ChatAnalysisWorker,
+    RecordingAnalysisProcessor,
+)
+from echo_v2.services.chat_ingestion import ChatIngestionService
 from echo_v2.services.scheduler import Scheduler
 from echo_v2.services.scheduling import SchedulingService
 from echo_v2.services.scheduling_flow import SchedulingFlowService
@@ -141,12 +146,38 @@ def create_app() -> FastAPI:
         poll_interval_seconds=float(os.environ.get("SCHEDULER_POLL_INTERVAL", "5")),
     )
 
-    # --- FastAPI app with lifespan (scheduler starts/stops with app) -------
+    # --- chat ingestion (saves messages + manages analysis queue) ----------
+    ingestion_service = ChatIngestionService(
+        message_repo=repos.messages,
+        chat_state_repo=repos.chat_state,
+        quiet_period_seconds=float(os.environ.get("CHAT_QUIET_PERIOD_SECONDS", "300")),
+        private_only=os.environ.get("CHAT_PRIVATE_ONLY", "true").lower()
+        in ("1", "true", "yes"),
+    )
+    chat_dispatcher = ChatEventDispatcher(
+        ingestion_service=ingestion_service,
+        connection_repo=repos.connections,
+    )
+
+    # --- chat analysis worker (NOT started by default — CHAT_ANALYSIS_ENABLED)
+    analysis_worker = ChatAnalysisWorker(
+        chat_state_repo=repos.chat_state,
+        processor=RecordingAnalysisProcessor(),
+        poll_interval_seconds=float(os.environ.get("CHAT_ANALYSIS_POLL_INTERVAL", "60")),
+    )
+    chat_analysis_enabled = os.environ.get("CHAT_ANALYSIS_ENABLED", "false").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+    # --- FastAPI app with lifespan (scheduler + worker start/stop with app) --
     scheduler_task: asyncio.Task | None = None
+    analysis_worker_task: asyncio.Task | None = None
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        nonlocal scheduler_task
+        nonlocal scheduler_task, analysis_worker_task
         # Startup: recover stale actions + start scheduler loop.
         try:
             recovered = await scheduler.recover()
@@ -156,8 +187,22 @@ def create_app() -> FastAPI:
             _logger.exception("scheduler recovery failed on startup")
         scheduler_task = asyncio.create_task(scheduler.run_loop())
         _logger.info("scheduler loop started")
+
+        # Start chat analysis worker only if explicitly enabled.
+        if chat_analysis_enabled:
+            analysis_worker_task = asyncio.create_task(analysis_worker.run_loop())
+            _logger.info("chat analysis worker loop started")
+
         yield
-        # Shutdown: cancel the scheduler loop.
+
+        # Shutdown: cancel the loops.
+        if analysis_worker_task is not None:
+            analysis_worker_task.cancel()
+            try:
+                await analysis_worker_task
+            except asyncio.CancelledError:
+                pass
+            _logger.info("chat analysis worker loop stopped")
         if scheduler_task is not None:
             scheduler_task.cancel()
             try:
@@ -168,12 +213,14 @@ def create_app() -> FastAPI:
 
     app = FastAPI(title="Echo v2", version="0.1.0", lifespan=lifespan)
 
-    # Green webhook: receives events from the user's WhatsApp (delivery
-    # status, connection state changes). Static URL — the instance is
-    # resolved from the payload.
+    # Green webhook: receives events from the user's WhatsApp (messages,
+    # delivery status, connection state changes). Static URL — the instance
+    # is resolved from the payload. Message events are deduped via the
+    # messages table; status/state events via provider_webhook_events.
     green_router = build_green_router(
         connection_repo=repos.connections,
-        dispatcher=RecordingEventDispatcher(connection_repo=repos.connections),
+        dispatcher=chat_dispatcher,
+        dedup_store=repos.webhooks,
     )
     app.include_router(green_router)
 

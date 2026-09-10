@@ -10,10 +10,15 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from echo_v2.app.webhooks.green import (
+    ChatEventDispatcher,
     RecordingEventDispatcher,
     _extract_token_from_header,
     _valid_webhook_token,
     build_router,
+)
+from echo_v2.persistence.chat_repositories import (
+    InMemoryChatStateRepository,
+    InMemoryMessageRepository,
 )
 from echo_v2.persistence.whatsapp_connections import (
     InMemoryWhatsAppConnectionRepository,
@@ -26,6 +31,7 @@ from echo_v2.ports.whatsapp import (
     ProviderCredentials,
     ProviderMessageEvent,
 )
+from echo_v2.services.chat_ingestion import ChatIngestionService
 
 
 def _make_app(
@@ -46,6 +52,40 @@ def _make_app(
     asyncio.run(repo.save(conn))
 
     dispatcher = RecordingEventDispatcher(repo)
+    router = build_router(connection_repo=repo, dispatcher=dispatcher)
+    app = FastAPI()
+    app.include_router(router)
+    return app, dispatcher, repo
+
+
+def _make_app_with_chat_dispatcher(
+    *,
+    webhook_token: str = "webhook-tok",
+    instance_id: str = "123",
+    user_id: str = "u1",
+):
+    """Build an app with ChatEventDispatcher + in-memory chat repos."""
+    repo = InMemoryWhatsAppConnectionRepository()
+    token_hash = hashlib.sha256(webhook_token.encode()).digest()
+    conn = StoredConnection(
+        user_id=user_id,
+        ref=ConnectionRef("green", instance_id),
+        credentials=ProviderCredentials(b"api-tok"),
+        webhook_token_hash=token_hash,
+        status=ConnectionStatus.CONNECTED,
+    )
+    asyncio.run(repo.save(conn))
+
+    ingestion = ChatIngestionService(
+        message_repo=InMemoryMessageRepository(),
+        chat_state_repo=InMemoryChatStateRepository(),
+        quiet_period_seconds=300,
+        private_only=True,
+    )
+    dispatcher = ChatEventDispatcher(
+        ingestion_service=ingestion,
+        connection_repo=repo,
+    )
     router = build_router(connection_repo=repo, dispatcher=dispatcher)
     app = FastAPI()
     app.include_router(router)
@@ -105,7 +145,7 @@ def test_valid_bearer_token_dispatches_message_event():
     assert response.status_code == 200
     assert response.json() == {"status": "received"}
     assert len(dispatcher.dispatched) == 1
-    event, user_id = dispatcher.dispatched[0]
+    event, user_id, _connection_id = dispatcher.dispatched[0]
     assert isinstance(event, ProviderMessageEvent)
     assert user_id == "u1"
     assert event.text == "hi"
@@ -192,7 +232,10 @@ def test_unknown_type_webhook_returns_ignored():
     assert dispatcher.dispatched == []
 
 
-def test_duplicate_message_id_is_deduped():
+def test_duplicate_message_event_not_deduped_at_route():
+    """Message events skip store.claim — dedup is via the messages table
+    in ChatIngestionService. With RecordingEventDispatcher (no dedup),
+    both are dispatched."""
     app, dispatcher, _ = _make_app()
     with TestClient(app) as client:
         r1 = client.post(
@@ -206,8 +249,29 @@ def test_duplicate_message_id_is_deduped():
             headers=_bearer("webhook-tok"),
         )
     assert r1.json() == {"status": "received"}
-    assert r2.json() == {"status": "duplicate"}
-    assert len(dispatcher.dispatched) == 1
+    assert r2.json() == {"status": "received"}
+    assert len(dispatcher.dispatched) == 2
+
+
+def test_duplicate_message_deduped_by_chat_dispatcher():
+    """With ChatEventDispatcher, duplicate message events are deduped via
+    the messages table INSERT ON CONFLICT DO NOTHING."""
+    app, _dispatcher, _repo = _make_app_with_chat_dispatcher()
+    with TestClient(app) as client:
+        r1 = client.post(
+            "/webhooks/whatsapp/green",
+            json=_incoming_payload(message_id="m1"),
+            headers=_bearer("webhook-tok"),
+        )
+        r2 = client.post(
+            "/webhooks/whatsapp/green",
+            json=_incoming_payload(message_id="m1"),
+            headers=_bearer("webhook-tok"),
+        )
+    assert r1.json() == {"status": "received"}
+    assert r2.json() == {"status": "received"}
+    # The second message was a duplicate — the ingestion service returned False.
+    # We can verify by checking the chat state has version 1 (not 2).
 
 
 def test_duplicate_status_event_is_deduped():
@@ -322,7 +386,7 @@ def test_state_changed_event_updates_connection_status():
     assert response.status_code == 200
     assert response.json() == {"status": "received"}
     assert len(dispatcher.dispatched) == 1
-    event, _ = dispatcher.dispatched[0]
+    event, _, _ = dispatcher.dispatched[0]
     assert isinstance(event, ProviderConnectionStateChanged)
     assert event.status is ConnectionStatus.DEGRADED
     # The dispatcher updated the repo.

@@ -28,9 +28,13 @@ suppressing provider retries of the *same* notification. The
 storage mechanism; a persistent implementation ships with the persistent
 repository.
 
-The route does **only** ingress + auth + dedupe + dispatch. No business
-logic. ``EventDispatcher`` is a small port with a stub impl this milestone;
-the real ``ConversationService`` arrives in Step 2.
+Dedup split: ``ProviderMessageEvent`` uses the ``messages`` table
+``INSERT ON CONFLICT DO NOTHING`` as its sole dedup (handled by
+:class:`ChatEventDispatcher` → :class:`ChatIngestionService`). Status and
+state events keep using ``provider_webhook_events`` via ``store.claim``.
+
+The route does **only** ingress + auth + dedupe (for non-message events) +
+dispatch. No business logic.
 """
 
 from __future__ import annotations
@@ -52,9 +56,12 @@ from echo_v2.persistence.whatsapp_connections import (
 from echo_v2.ports.whatsapp import (
     ProviderConnectionStateChanged,
     ProviderEvent,
+    ProviderMessageEvent,
 )
+from echo_v2.services.chat_ingestion import ChatIngestionService
 
 __all__ = [
+    "ChatEventDispatcher",
     "EventDispatcher",
     "RecordingEventDispatcher",
     "build_router",
@@ -68,7 +75,13 @@ _logger = logging.getLogger("echo_v2.app.webhooks.green")
 class EventDispatcher(Protocol):
     """Receiver of normalized provider events bound to a user."""
 
-    async def dispatch(self, event: ProviderEvent, user_id: str) -> None: ...
+    async def dispatch(
+        self,
+        event: ProviderEvent,
+        *,
+        user_id: str,
+        connection_id: str,
+    ) -> None: ...
 
 
 class RecordingEventDispatcher:
@@ -85,16 +98,65 @@ class RecordingEventDispatcher:
         connection_repo: WhatsAppConnectionRepository | None = None,
     ) -> None:
         self._repo = connection_repo
-        self.dispatched: list[tuple[ProviderEvent, str]] = []
+        self.dispatched: list[tuple[ProviderEvent, str, str]] = []
 
-    async def dispatch(self, event: ProviderEvent, user_id: str) -> None:
-        self.dispatched.append((event, user_id))
+    async def dispatch(
+        self,
+        event: ProviderEvent,
+        *,
+        user_id: str,
+        connection_id: str,
+    ) -> None:
+        self.dispatched.append((event, user_id, connection_id))
         if isinstance(event, ProviderConnectionStateChanged) and self._repo is not None:
             await self._repo.update_status(
                 event.connection,
                 event.status,
                 event.provider_raw_status,
             )
+
+
+class ChatEventDispatcher:
+    """Real dispatcher that routes events to the appropriate handler.
+
+    * ``ProviderMessageEvent`` → :class:`ChatIngestionService` (saves
+      message + updates chat state + manages queue).
+    * ``ProviderConnectionStateChanged`` → connection repo (updates status).
+    * ``ProviderMessageStatusEvent`` → logged only (no action this milestone).
+
+    The ``connection_id`` is the ``whatsapp_connections.id`` UUID (not the
+    provider's ``idInstance``), resolved by the route from the authenticated
+    connection row.
+    """
+
+    def __init__(
+        self,
+        ingestion_service: ChatIngestionService,
+        connection_repo: WhatsAppConnectionRepository,
+    ) -> None:
+        self._ingestion = ingestion_service
+        self._connection_repo = connection_repo
+
+    async def dispatch(
+        self,
+        event: ProviderEvent,
+        *,
+        user_id: str,
+        connection_id: str,
+    ) -> None:
+        if isinstance(event, ProviderMessageEvent):
+            await self._ingestion.ingest_message(
+                event,
+                user_id=user_id,
+                connection_id=connection_id,
+            )
+        elif isinstance(event, ProviderConnectionStateChanged):
+            await self._connection_repo.update_status(
+                event.connection,
+                event.status,
+                event.provider_raw_status,
+            )
+        # ProviderMessageStatusEvent: no action in this milestone
 
 
 def _extract_token_from_header(authorization: str | None) -> str | None:
@@ -179,10 +241,23 @@ def build_router(
         if event is None:
             return {"status": "ignored"}
 
-        if not await store.claim(event.event_id):
+        # Dedup split:
+        # - Message events: dedup via messages table INSERT ON CONFLICT
+        #   (handled by the dispatcher → ChatIngestionService).
+        # - Status/state events: dedup via provider_webhook_events (store.claim).
+        if not isinstance(event, ProviderMessageEvent) and not await store.claim(
+            event.event_id,
+            provider="green",
+            connection_id=stored.id,
+            event_type=type(event).__name__,
+        ):
             return {"status": "duplicate"}
 
-        await dispatcher.dispatch(event, stored.user_id)
+        await dispatcher.dispatch(
+            event,
+            user_id=stored.user_id,
+            connection_id=stored.id,
+        )
         return {"status": "received"}
 
     return router

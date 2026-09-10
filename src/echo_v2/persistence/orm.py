@@ -45,8 +45,10 @@ from sqlalchemy.types import (
 
 __all__ = [
     "Base",
+    "ChatRow",
     "ContactRow",
     "IdempotencyOperationRow",
+    "MessageRow",
     "ProviderWebhookEventRow",
     "ScheduledActionRow",
     "UserRow",
@@ -330,5 +332,125 @@ class ContactRow(Base):
         Index(
             "ix_contacts_user_id",
             "user_id",
+        ),
+    )
+
+
+# --- messages --------------------------------------------------------------
+
+
+class MessageRow(Base):
+    """An immutable record of a single WhatsApp message.
+
+    Deduplicated by ``(connection_id, provider_message_id)`` — a
+    duplicate webhook delivery of the same message is a no-op
+    (``INSERT ... ON CONFLICT DO NOTHING``). This is the sole dedup
+    mechanism for ``ProviderMessageEvent``; status/state events keep
+    using ``provider_webhook_events``.
+
+    ``sender_id`` is ``None`` for now; the Green adapter does not yet
+    extract the actual sender in group chats.
+    """
+
+    __tablename__ = "messages"
+
+    id: Mapped[str] = mapped_column(Uuid, primary_key=True, server_default=text("gen_random_uuid()"))
+    user_id: Mapped[str] = mapped_column(
+        Uuid,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    connection_id: Mapped[str] = mapped_column(
+        Uuid,
+        ForeignKey("whatsapp_connections.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    chat_id: Mapped[str] = mapped_column(Text, nullable=False)
+    provider_message_id: Mapped[str] = mapped_column(Text, nullable=False)
+    direction: Mapped[str] = mapped_column(Text, nullable=False)
+    sender_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    timestamp: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+    )
+    message_type: Mapped[str] = mapped_column(Text, nullable=False)
+    text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "connection_id",
+            "provider_message_id",
+            name="messages_connection_provider_key",
+        ),
+        Index(
+            "ix_messages_user_chat_timestamp",
+            "user_id",
+            "chat_id",
+            "timestamp",
+        ),
+    )
+
+
+# --- chats -----------------------------------------------------------------
+
+
+class ChatRow(Base):
+    """Compact per-chat state that also serves as the analysis queue.
+
+    ``activity_version`` increments on every new message.
+    ``next_analysis_at`` is set to ``now + quiet_period`` on inbound
+    messages and ``NULL`` on outbound (cancelling pending analysis).
+    The worker polls for chats where ``next_analysis_at <= now()`` and
+    ``activity_version > last_processed_version``.
+
+    Keyed by ``(user_id, chat_id)`` — sufficient for POC (one Green
+    connection per user). ``connection_id`` stays in ``messages`` for
+    dedup only.
+    """
+
+    __tablename__ = "chats"
+
+    user_id: Mapped[str] = mapped_column(
+        Uuid,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+        nullable=False,
+    )
+    chat_id: Mapped[str] = mapped_column(Text, primary_key=True, nullable=False)
+    activity_version: Mapped[int] = mapped_column(nullable=False, server_default=text("0"))
+    last_message_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+    )
+    last_direction: Mapped[str] = mapped_column(Text, nullable=False)
+    next_analysis_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=True,
+    )
+    last_processed_version: Mapped[int] = mapped_column(nullable=False, server_default=text("0"))
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "last_direction IN ('inbound', 'outbound')",
+            name="chats_last_direction_check",
+        ),
+        Index(
+            "ix_chats_next_analysis_at",
+            "next_analysis_at",
         ),
     )

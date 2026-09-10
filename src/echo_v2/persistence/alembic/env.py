@@ -15,9 +15,8 @@ from __future__ import annotations
 import os
 from logging.config import fileConfig
 
-from dotenv import load_dotenv
-
 from alembic import context
+from dotenv import load_dotenv
 from sqlalchemy import engine_from_config, pool
 
 from echo_v2.persistence.orm import Base

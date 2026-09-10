@@ -21,7 +21,6 @@ from typing import Any
 from echo_v2.domain.scheduling import (
     ScheduledAction,
     ScheduledActionStatus,
-    ScheduledActionType,
 )
 
 __all__ = [
@@ -40,13 +39,11 @@ class ScheduledActionRepository:
 
     async def save(self, action: ScheduledAction) -> None:
         """Insert or update a scheduled action (upsert on ``id``)."""
-        ...
 
     async def get(self, action_id: str) -> ScheduledAction | None: ...
 
     async def list_pending(self, user_id: str) -> list[ScheduledAction]:
         """Return all PENDING actions for a user, ordered by ``execute_at_utc``."""
-        ...
 
     async def claim_due(
         self,
@@ -61,7 +58,6 @@ class ScheduledActionRepository:
         window — if the claim is not resolved within this time,
         ``recover_stale`` may reset it.
         """
-        ...
 
     async def mark_succeeded(
         self,
@@ -69,20 +65,16 @@ class ScheduledActionRepository:
         result: dict[str, Any],
     ) -> None:
         """Mark an action as SUCCEEDED with a result payload."""
-        ...
 
     async def mark_failed(self, action_id: str, error: str) -> None:
         """Mark an action as permanently FAILED."""
-        ...
 
     async def mark_indeterminate(self, action_id: str, error: str) -> None:
         """Mark an action as INDETERMINATE (send outcome unknown)."""
-        ...
 
     async def cancel(self, action_id: str, user_id: str) -> bool:
         """Cancel a PENDING action. Returns ``True`` if cancelled, ``False``
         if not found, not owned by ``user_id``, or not in PENDING status."""
-        ...
 
     async def recover_stale(
         self,
@@ -95,7 +87,6 @@ class ScheduledActionRepository:
         ``now - lease_seconds``. Returns the count of recovered actions.
         Called on scheduler startup to recover from crashes.
         """
-        ...
 
 
 class InMemoryScheduledActionRepository(ScheduledActionRepository):

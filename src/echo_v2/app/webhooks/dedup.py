@@ -28,9 +28,20 @@ class WebhookDedupStore(Protocol):
     Returns ``True`` only for the first claim of ``key`` within the store's
     retention window. Subsequent claims for the same key return ``False``,
     indicating a duplicate that should not be reprocessed.
+
+    The optional metadata kwargs (``provider``, ``connection_id``,
+    ``event_type``) are stored by the Postgres implementation for
+    operational visibility. The in-memory implementation ignores them.
     """
 
-    async def claim(self, key: str) -> bool:
+    async def claim(
+        self,
+        key: str,
+        *,
+        provider: str | None = None,
+        connection_id: str | None = None,
+        event_type: str | None = None,
+    ) -> bool:
         """Atomically claim ``key``. ``True`` if this is the first claim."""
         ...
 
@@ -47,7 +58,14 @@ class InMemoryWebhookDedupStore:
     def __init__(self) -> None:
         self._seen: set[str] = set()
 
-    async def claim(self, key: str) -> bool:
+    async def claim(
+        self,
+        key: str,
+        *,
+        provider: str | None = None,
+        connection_id: str | None = None,
+        event_type: str | None = None,
+    ) -> bool:
         if key in self._seen:
             return False
         self._seen.add(key)

@@ -196,6 +196,7 @@ class PostgresWhatsAppConnectionRepository(WhatsAppConnectionRepository):
             webhook_token_hash=row.webhook_token_hash,
             status=ConnectionStatus(row.connection_status),
             provider_raw_status=row.provider_raw_status,
+            id=str(row.id),
             updated_at=row.updated_at,
         )
 

@@ -22,7 +22,8 @@ def test_load_db_settings_from_explicit_args():
     assert settings.echo is True
 
 
-def test_load_db_settings_defaults():
+def test_load_db_settings_defaults(monkeypatch):
+    monkeypatch.delenv("ECHO_CREDENTIAL_KEY", raising=False)
     settings = load_db_settings(database_url="postgresql+psycopg://u:p@localhost/db")
     assert settings.credential_key is None
     assert settings.default_phone_region == "IL"

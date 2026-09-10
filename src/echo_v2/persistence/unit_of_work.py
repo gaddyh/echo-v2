@@ -37,6 +37,10 @@ from echo_v2.persistence.credential_cipher import (
     CredentialCipher,
     IdentityCredentialCipher,
 )
+from echo_v2.persistence.postgres_chat import (
+    PostgresChatStateRepository,
+    PostgresMessageRepository,
+)
 from echo_v2.persistence.postgres_idempotency import PostgresIdempotencyStore
 from echo_v2.persistence.postgres_webhook_dedup import PostgresWebhookDedupStore
 from echo_v2.persistence.postgres_whatsapp_connections import (
@@ -51,12 +55,15 @@ class UnitOfWorkRepos:
     """Repositories bound to a single shared session.
 
     Constructed by :class:`PostgresUnitOfWork`; callers access repos via
-    ``uow.connections``, ``uow.webhooks``, ``uow.idempotency``.
+    ``uow.connections``, ``uow.webhooks``, ``uow.idempotency``,
+    ``uow.messages``, ``uow.chat_state``.
     """
 
     connections: PostgresWhatsAppConnectionRepository
     webhooks: PostgresWebhookDedupStore
     idempotency: PostgresIdempotencyStore
+    messages: PostgresMessageRepository
+    chat_state: PostgresChatStateRepository
 
 
 class PostgresUnitOfWork:
@@ -102,6 +109,14 @@ class PostgresUnitOfWork:
                 session=self._session,
                 lease_seconds=self._lease_seconds,
             ),
+            messages=PostgresMessageRepository(
+                self._session_factory,
+                session=self._session,
+            ),
+            chat_state=PostgresChatStateRepository(
+                self._session_factory,
+                session=self._session,
+            ),
         )
         return self
 
@@ -132,3 +147,13 @@ class PostgresUnitOfWork:
     def idempotency(self) -> PostgresIdempotencyStore:
         assert self.repos is not None, "UnitOfWork not entered"
         return self.repos.idempotency
+
+    @property
+    def messages(self) -> PostgresMessageRepository:
+        assert self.repos is not None, "UnitOfWork not entered"
+        return self.repos.messages
+
+    @property
+    def chat_state(self) -> PostgresChatStateRepository:
+        assert self.repos is not None, "UnitOfWork not entered"
+        return self.repos.chat_state

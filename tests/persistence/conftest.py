@@ -37,6 +37,9 @@ from echo_v2.persistence.db import run_migrations
 from echo_v2.persistence.postgres_idempotency import (
     PostgresIdempotencyStore,
 )
+from echo_v2.persistence.postgres_scheduled_actions import (
+    PostgresScheduledActionRepository,
+)
 from echo_v2.persistence.postgres_webhook_dedup import (
     PostgresWebhookDedupStore,
 )
@@ -102,12 +105,22 @@ def postgres_url() -> str:
     async_url = sync_url
 
     # Apply migrations once, synchronously, against the sync URL.
+    # Neutralize DATABASE_URL so env.py doesn't override the testcontainer
+    # URL with an external DB from .env (pre-existing env.py bug).
+    # Setting to "" (not popping) prevents load_dotenv() from re-loading it.
+    saved_url = os.environ.get("DATABASE_URL")
+    os.environ["DATABASE_URL"] = ""
     try:
         run_migrations(sync_url)
     except Exception as exc:  # noqa: BLE001 — any migration failure is a skip/fail
         container.stop()
         _skip_or_fail(f"Alembic migrations failed: {exc}")
         return ""  # unreachable
+    finally:
+        if saved_url is not None:
+            os.environ["DATABASE_URL"] = saved_url
+        else:
+            os.environ.pop("DATABASE_URL", None)
 
     yield async_url
 
@@ -137,9 +150,12 @@ async def clean_db(engine) -> AsyncIterator[None]:
         # Order matters: respect FK constraints (children first).
         await conn.exec_driver_sql(
             "TRUNCATE TABLE "
+            "messages, "
+            "chats, "
             "scheduled_actions, "
             "idempotency_operations, "
             "provider_webhook_events, "
+            "contacts, "
             "whatsapp_connections, "
             "users "
             "RESTART IDENTITY CASCADE"
@@ -173,10 +189,19 @@ async def unit_of_work_factory(session_factory, clean_db):
 
 @pytest_asyncio.fixture
 async def scheduled_actions_repo(session_factory, clean_db) -> PostgresScheduledActionRepository:
-    from echo_v2.persistence.postgres_scheduled_actions import (
-        PostgresScheduledActionRepository,
-    )
     return PostgresScheduledActionRepository(session_factory)
+
+
+@pytest_asyncio.fixture
+async def messages_repo(session_factory, clean_db):
+    from echo_v2.persistence.postgres_chat import PostgresMessageRepository
+    return PostgresMessageRepository(session_factory)
+
+
+@pytest_asyncio.fixture
+async def chat_state_repo(session_factory, clean_db):
+    from echo_v2.persistence.postgres_chat import PostgresChatStateRepository
+    return PostgresChatStateRepository(session_factory)
 
 
 # --- user helper ------------------------------------------------------------

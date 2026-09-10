@@ -21,6 +21,10 @@ from echo_v2.persistence.db import (
     async_session_factory,
     create_async_engine_from_settings,
 )
+from echo_v2.persistence.postgres_chat import (
+    PostgresChatStateRepository,
+    PostgresMessageRepository,
+)
 from echo_v2.persistence.postgres_idempotency import PostgresIdempotencyStore
 from echo_v2.persistence.postgres_scheduled_actions import (
     PostgresScheduledActionRepository,
@@ -43,6 +47,8 @@ class PostgresRepos:
     webhooks: PostgresWebhookDedupStore
     idempotency: PostgresIdempotencyStore
     scheduled_actions: PostgresScheduledActionRepository
+    messages: PostgresMessageRepository
+    chat_state: PostgresChatStateRepository
     session_factory: async_sessionmaker
     unit_of_work: type[PostgresUnitOfWork]
 
@@ -67,6 +73,8 @@ def build_postgres_repos(settings: DBSettings) -> PostgresRepos:
     webhooks = PostgresWebhookDedupStore(factory)
     idempotency = PostgresIdempotencyStore(factory)
     scheduled_actions = PostgresScheduledActionRepository(factory)
+    messages = PostgresMessageRepository(factory)
+    chat_state = PostgresChatStateRepository(factory)
 
     # A UoW factory bound to the same session_factory + cipher.
     class _BoundUoW(PostgresUnitOfWork):
@@ -78,6 +86,8 @@ def build_postgres_repos(settings: DBSettings) -> PostgresRepos:
         webhooks=webhooks,
         idempotency=idempotency,
         scheduled_actions=scheduled_actions,
+        messages=messages,
+        chat_state=chat_state,
         session_factory=factory,
         unit_of_work=_BoundUoW,
     )

@@ -25,9 +25,8 @@ from echo_v2.ports.whatsapp import (
     ProviderCredentials,
 )
 from echo_v2.runtime.idempotency import InMemoryIdempotencyStore
-from echo_v2.services.scheduling import SchedulingService
 from echo_v2.services.scheduler import Scheduler
-
+from echo_v2.services.scheduling import SchedulingService
 
 # --- helpers ---------------------------------------------------------------
 

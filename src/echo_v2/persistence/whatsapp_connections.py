@@ -42,6 +42,11 @@ class StoredConnection:
     ``credentials`` is the opaque :class:`ProviderCredentials` (api token
     only). ``webhook_token_hash`` is ``sha256(plaintext_token)`` -- the
     plaintext is never stored.
+
+    ``id`` is the DB UUID of the ``whatsapp_connections`` row. It is
+    ``None`` for in-memory repos that don't assign IDs. The webhook route
+    passes it as ``connection_id`` to the dispatcher for message
+    persistence and dedup.
     """
 
     user_id: str
@@ -50,6 +55,7 @@ class StoredConnection:
     webhook_token_hash: bytes
     status: ConnectionStatus
     provider_raw_status: str | None = None
+    id: str | None = None
     updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 

@@ -15,8 +15,6 @@ from echo_v2.integrations.green.client import GreenClient
 from echo_v2.ports.whatsapp import (
     ConnectionRef,
     CredentialResolver,
-    ProviderCredentials,
-    WhatsAppMessaging,
 )
 from echo_v2.runtime.errors import PermanentError
 
