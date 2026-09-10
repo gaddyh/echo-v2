@@ -193,7 +193,7 @@ class Dialog360Client:
                 "body": {"text": body_text},
                 "action": {
                     "buttons": [
-                        {"type": "reply", "id": b["id"], "title": b["title"]}
+                        {"type": "reply", "reply": {"id": b["id"], "title": b["title"]}}
                         for b in buttons
                     ]
                 },
