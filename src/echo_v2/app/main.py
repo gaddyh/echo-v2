@@ -51,8 +51,8 @@ from echo_v2.persistence.settings import load_db_settings
 from echo_v2.persistence.user_resolver import PostgresUserResolver
 from echo_v2.runtime.idempotency import InMemoryIdempotencyStore
 from echo_v2.services.chat_analysis_worker import (
+    ChatAnalysisProcessor,
     ChatAnalysisWorker,
-    RecordingAnalysisProcessor,
 )
 from echo_v2.services.chat_ingestion import ChatIngestionService
 from echo_v2.services.scheduler import Scheduler
@@ -160,9 +160,14 @@ def create_app() -> FastAPI:
     )
 
     # --- chat analysis worker (NOT started by default — CHAT_ANALYSIS_ENABLED)
+    analysis_processor = ChatAnalysisProcessor(
+        message_repo=repos.messages,
+        context_messages=5,
+        max_no_outbound=20,
+    )
     analysis_worker = ChatAnalysisWorker(
         chat_state_repo=repos.chat_state,
-        processor=RecordingAnalysisProcessor(),
+        processor=analysis_processor,
         poll_interval_seconds=float(os.environ.get("CHAT_ANALYSIS_POLL_INTERVAL", "60")),
     )
     chat_analysis_enabled = os.environ.get("CHAT_ANALYSIS_ENABLED", "false").lower() in (

@@ -533,3 +533,120 @@ async def test_conditional_mark_processed_loses_race_safely(
     assert fresh.activity_version == 2
     assert fresh.last_processed_version == 0
     assert fresh.next_analysis_at is not None
+
+
+# --- MessageRepository.list_for_analysis ------------------------------------
+
+
+def _make_timed_message(
+    user_id: str,
+    connection_id: str,
+    *,
+    direction: MessageDirection,
+    text: str,
+    offset_minutes: int,
+    chat_id: str = "972501234567@c.us",
+    provider_message_id: str | None = None,
+) -> Message:
+    return Message(
+        id=str(uuid.uuid4()),
+        user_id=user_id,
+        connection_id=connection_id,
+        chat_id=chat_id,
+        provider_message_id=provider_message_id or str(uuid.uuid4()),
+        direction=direction,
+        sender_id=None,
+        timestamp=datetime(2026, 9, 10, 12, 0, 0, tzinfo=timezone.utc)
+        + timedelta(minutes=offset_minutes),
+        message_type=MessageKind.TEXT.value,
+        text=text,
+    )
+
+
+async def test_list_for_analysis_no_outbound_returns_last_n(
+    messages_repo, session_factory
+):
+    user_id = await insert_user(session_factory)
+    conn_id = await _seed_connection(session_factory, user_id)
+
+    for i in range(25):
+        msg = _make_timed_message(
+            user_id, conn_id,
+            direction=MessageDirection.INBOUND,
+            text=f"msg-{i}",
+            offset_minutes=i,
+        )
+        await messages_repo.save(msg)
+
+    result = await messages_repo.list_for_analysis(
+        user_id=user_id, chat_id="972501234567@c.us", max_no_outbound=20,
+    )
+    assert len(result) == 20
+    assert result[0].text == "msg-5"
+    assert result[-1].text == "msg-24"
+
+
+async def test_list_for_analysis_with_outbound_returns_context_and_after(
+    messages_repo, session_factory
+):
+    user_id = await insert_user(session_factory)
+    conn_id = await _seed_connection(session_factory, user_id)
+
+    msgs = [
+        _make_timed_message(user_id, conn_id, direction=MessageDirection.INBOUND, text="ctx-1", offset_minutes=0),
+        _make_timed_message(user_id, conn_id, direction=MessageDirection.INBOUND, text="ctx-2", offset_minutes=1),
+        _make_timed_message(user_id, conn_id, direction=MessageDirection.INBOUND, text="ctx-3", offset_minutes=2),
+        _make_timed_message(user_id, conn_id, direction=MessageDirection.INBOUND, text="ctx-4", offset_minutes=3),
+        _make_timed_message(user_id, conn_id, direction=MessageDirection.INBOUND, text="ctx-5", offset_minutes=4),
+        _make_timed_message(user_id, conn_id, direction=MessageDirection.INBOUND, text="ctx-6", offset_minutes=5),
+        _make_timed_message(user_id, conn_id, direction=MessageDirection.OUTBOUND, text="reply", offset_minutes=6),
+        _make_timed_message(user_id, conn_id, direction=MessageDirection.INBOUND, text="after-1", offset_minutes=7),
+        _make_timed_message(user_id, conn_id, direction=MessageDirection.INBOUND, text="after-2", offset_minutes=8),
+    ]
+    for m in msgs:
+        await messages_repo.save(m)
+
+    result = await messages_repo.list_for_analysis(
+        user_id=user_id, chat_id="972501234567@c.us", context_messages=5,
+    )
+    assert len(result) == 8
+    assert result[0].text == "ctx-2"
+    assert result[-1].text == "after-2"
+
+
+async def test_list_for_analysis_empty_chat(messages_repo, session_factory):
+    user_id = await insert_user(session_factory)
+    conn_id = await _seed_connection(session_factory, user_id)
+
+    result = await messages_repo.list_for_analysis(
+        user_id=user_id, chat_id="972501234567@c.us",
+    )
+    assert result == []
+
+
+async def test_list_for_analysis_multiple_outbounds_uses_last(
+    messages_repo, session_factory
+):
+    user_id = await insert_user(session_factory)
+    conn_id = await _seed_connection(session_factory, user_id)
+
+    msgs = [
+        _make_timed_message(user_id, conn_id, direction=MessageDirection.INBOUND, text="old-1", offset_minutes=0),
+        _make_timed_message(user_id, conn_id, direction=MessageDirection.OUTBOUND, text="old-reply", offset_minutes=1),
+        _make_timed_message(user_id, conn_id, direction=MessageDirection.INBOUND, text="old-2", offset_minutes=2),
+        _make_timed_message(user_id, conn_id, direction=MessageDirection.INBOUND, text="ctx-1", offset_minutes=3),
+        _make_timed_message(user_id, conn_id, direction=MessageDirection.INBOUND, text="ctx-2", offset_minutes=4),
+        _make_timed_message(user_id, conn_id, direction=MessageDirection.OUTBOUND, text="new-reply", offset_minutes=5),
+        _make_timed_message(user_id, conn_id, direction=MessageDirection.INBOUND, text="after", offset_minutes=6),
+    ]
+    for m in msgs:
+        await messages_repo.save(m)
+
+    result = await messages_repo.list_for_analysis(
+        user_id=user_id, chat_id="972501234567@c.us", context_messages=2,
+    )
+    assert len(result) == 4
+    assert result[0].text == "ctx-1"
+    assert result[1].text == "ctx-2"
+    assert result[2].text == "new-reply"
+    assert result[3].text == "after"

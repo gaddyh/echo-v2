@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import select, update
+from sqlalchemy import desc, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
@@ -102,6 +102,91 @@ class PostgresMessageRepository:
             result = await session.execute(stmt)
             inserted = result.scalar_one_or_none()
             return inserted is not None
+
+    async def list_for_analysis(
+        self,
+        *,
+        user_id: str,
+        chat_id: str,
+        context_messages: int = 5,
+        max_no_outbound: int = 20,
+    ) -> list[Message]:
+        async with self._session() as session:
+            # Find the last outbound message timestamp.
+            last_outbound_stmt = (
+                select(MessageRow.timestamp)
+                .where(
+                    MessageRow.user_id == user_id,
+                    MessageRow.chat_id == chat_id,
+                    MessageRow.direction == MessageDirection.OUTBOUND.value,
+                )
+                .order_by(desc(MessageRow.timestamp))
+                .limit(1)
+            )
+            last_outbound_ts = (
+                await session.execute(last_outbound_stmt)
+            ).scalar_one_or_none()
+
+            if last_outbound_ts is None:
+                # No outbound — return last max_no_outbound messages.
+                stmt = (
+                    select(MessageRow)
+                    .where(
+                        MessageRow.user_id == user_id,
+                        MessageRow.chat_id == chat_id,
+                    )
+                    .order_by(desc(MessageRow.timestamp))
+                    .limit(max_no_outbound)
+                )
+                rows = (await session.execute(stmt)).scalars().all()
+                # Reverse to ascending order.
+                rows = list(reversed(rows))
+            else:
+                # Find the cutoff: the timestamp of the context_messages-th
+                # message strictly before the last outbound.
+                cutoff_stmt = (
+                    select(MessageRow.timestamp)
+                    .where(
+                        MessageRow.user_id == user_id,
+                        MessageRow.chat_id == chat_id,
+                        MessageRow.timestamp < last_outbound_ts,
+                    )
+                    .order_by(desc(MessageRow.timestamp))
+                    .limit(context_messages)
+                )
+                cutoff_rows = (await session.execute(cutoff_stmt)).scalars().all()
+                if cutoff_rows:
+                    cutoff_ts = min(cutoff_rows)
+                else:
+                    cutoff_ts = last_outbound_ts
+
+                stmt = (
+                    select(MessageRow)
+                    .where(
+                        MessageRow.user_id == user_id,
+                        MessageRow.chat_id == chat_id,
+                        MessageRow.timestamp >= cutoff_ts,
+                    )
+                    .order_by(MessageRow.timestamp)
+                )
+                rows = (await session.execute(stmt)).scalars().all()
+
+            return [self._row_to_domain(r) for r in rows]
+
+    @staticmethod
+    def _row_to_domain(row: MessageRow) -> Message:
+        return Message(
+            id=str(row.id),
+            user_id=str(row.user_id),
+            connection_id=str(row.connection_id),
+            chat_id=row.chat_id,
+            provider_message_id=row.provider_message_id,
+            direction=MessageDirection(row.direction),
+            sender_id=row.sender_id,
+            timestamp=row.timestamp,
+            message_type=row.message_type,
+            text=row.text,
+        )
 
 
 class PostgresChatStateRepository:

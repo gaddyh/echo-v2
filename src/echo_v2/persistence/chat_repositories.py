@@ -45,6 +45,27 @@ class MessageRepository(Protocol):
         """Insert a message. Returns ``True`` if inserted, ``False`` if duplicate."""
         ...
 
+    async def list_for_analysis(
+        self,
+        *,
+        user_id: str,
+        chat_id: str,
+        context_messages: int = 5,
+        max_no_outbound: int = 20,
+    ) -> list[Message]:
+        """Load messages relevant for chat analysis.
+
+        Finds the last outbound message in the chat. Returns all messages
+        after it (the inbound burst that triggered analysis) plus
+        ``context_messages`` messages before it for context.
+
+        If no outbound message exists, returns the last ``max_no_outbound``
+        messages.
+
+        Ordered by timestamp ascending.
+        """
+        ...
+
 
 class InMemoryMessageRepository:
     """Process-local message repository backed by a dict.
@@ -61,6 +82,40 @@ class InMemoryMessageRepository:
             return False
         self._messages[key] = message
         return True
+
+    async def list_for_analysis(
+        self,
+        *,
+        user_id: str,
+        chat_id: str,
+        context_messages: int = 5,
+        max_no_outbound: int = 20,
+    ) -> list[Message]:
+        from echo_v2.ports.whatsapp import MessageDirection
+
+        # Filter to this chat, ordered by timestamp.
+        chat_msgs = sorted(
+            (m for m in self._messages.values()
+             if m.user_id == user_id and m.chat_id == chat_id),
+            key=lambda m: m.timestamp,
+        )
+        if not chat_msgs:
+            return []
+
+        # Find the last outbound message.
+        last_outbound_idx: int | None = None
+        for i in range(len(chat_msgs) - 1, -1, -1):
+            if chat_msgs[i].direction == MessageDirection.OUTBOUND:
+                last_outbound_idx = i
+                break
+
+        if last_outbound_idx is None:
+            # No outbound — return last max_no_outbound messages.
+            return chat_msgs[-max_no_outbound:]
+
+        # All messages after the last outbound + context_messages before it.
+        start = max(0, last_outbound_idx - context_messages)
+        return chat_msgs[start:]
 
 
 # --- ChatStateRepository ---------------------------------------------------

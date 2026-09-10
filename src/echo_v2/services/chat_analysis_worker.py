@@ -34,19 +34,37 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Protocol, runtime_checkable
 
 from echo_v2.domain.chat import ChatState
-from echo_v2.persistence.chat_repositories import ChatStateRepository
+from echo_v2.persistence.chat_repositories import ChatStateRepository, MessageRepository
 
 __all__ = [
     "AnalysisProcessor",
+    "ChatAnalysisProcessor",
     "ChatAnalysisWorker",
+    "ConversationInput",
     "RecordingAnalysisProcessor",
 ]
 
 _logger = logging.getLogger("echo_v2.services.chat_analysis_worker")
+
+
+@dataclass(frozen=True)
+class ConversationInput:
+    """Stable, serializable representation of a chat slice for analysis.
+
+    Built from the messages loaded by :meth:`MessageRepository.list_for_analysis`.
+    Contains only the fields needed for the LLM prompt — no IDs, no
+    connection metadata.
+    """
+
+    user_id: str
+    chat_id: str
+    target_version: int
+    messages: list[tuple[str, str, datetime]]  # (direction, text, timestamp)
 
 
 @runtime_checkable
@@ -54,8 +72,9 @@ class AnalysisProcessor(Protocol):
     """Hook for chat analysis.
 
     The default :class:`RecordingAnalysisProcessor` records calls without
-    doing real analysis. A real implementation will call an LLM and store
-    the result.
+    doing real analysis. :class:`ChatAnalysisProcessor` loads messages
+    and builds a :class:`ConversationInput`. A future implementation will
+    add the LLM call and result storage.
     """
 
     async def process(
@@ -84,6 +103,63 @@ class RecordingAnalysisProcessor:
         target_version: int,
     ) -> None:
         self.calls.append((user_id, chat_id, target_version))
+
+
+class ChatAnalysisProcessor:
+    """Loads messages and builds a stable conversation input.
+
+    Stage 1 of the real processor: message loading only. No LLM call,
+    no prompt, no result storage. The :class:`ConversationInput` is
+    built and logged — a future stage will pass it to the LLM.
+
+    Args:
+        message_repo: The :class:`MessageRepository` for
+            :meth:`list_for_analysis`.
+        context_messages: Number of messages before the last outbound
+            to include for context. Default 5.
+        max_no_outbound: If no outbound exists, load this many recent
+            messages. Default 20.
+    """
+
+    def __init__(
+        self,
+        message_repo: MessageRepository,
+        *,
+        context_messages: int = 5,
+        max_no_outbound: int = 20,
+    ) -> None:
+        self._messages = message_repo
+        self._context_messages = context_messages
+        self._max_no_outbound = max_no_outbound
+
+    async def process(
+        self,
+        user_id: str,
+        chat_id: str,
+        target_version: int,
+    ) -> None:
+        messages = await self._messages.list_for_analysis(
+            user_id=user_id,
+            chat_id=chat_id,
+            context_messages=self._context_messages,
+            max_no_outbound=self._max_no_outbound,
+        )
+        conversation = ConversationInput(
+            user_id=user_id,
+            chat_id=chat_id,
+            target_version=target_version,
+            messages=[
+                (m.direction.value, m.text or "", m.timestamp)
+                for m in messages
+            ],
+        )
+        _logger.info(
+            "loaded %d messages for chat %s/%s (version %d)",
+            len(conversation.messages),
+            user_id,
+            chat_id,
+            target_version,
+        )
 
 
 class ChatAnalysisWorker:
