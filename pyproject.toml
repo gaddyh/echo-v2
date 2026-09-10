@@ -57,6 +57,10 @@ dev = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+markers = [
+    "eval: evaluation harness — runs real LLM API calls, not part of normal suite",
+]
+addopts = "-m 'not eval'"
 
 [tool.coverage.run]
 branch = true
