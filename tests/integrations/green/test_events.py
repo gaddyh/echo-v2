@@ -534,3 +534,19 @@ def test_parse_message_with_chat_id_in_message_data_when_root_missing():
     event = GreenEventAdapter().parse(payload)
     assert isinstance(event, ProviderMessageEvent)
     assert event.chat_id == "from-md@c.us"
+
+
+def test_parse_text_message_nested_green_api_format():
+    """Real Green API nests text under textMessageData.textMessage."""
+    payload = _base(
+        "incomingMessageReceived",
+        chatId="9725@c.us",
+        idMessage="m_nested",
+        messageData={
+            "typeMessage": "textMessage",
+            "textMessageData": {"textMessage": "יש מצב לחמישי?"},
+        },
+    )
+    event = GreenEventAdapter().parse(payload)
+    assert isinstance(event, ProviderMessageEvent)
+    assert event.text == "יש מצב לחמישי?"

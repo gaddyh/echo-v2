@@ -207,6 +207,13 @@ def _state_event(
 
 def _extract_text(message_data: dict[str, Any], type_message: str) -> str | None:
     if type_message in ("textMessage", "quotedMessage"):
+        # Green API nests text under textMessageData.textMessage.
+        text_data = message_data.get("textMessageData")
+        if isinstance(text_data, dict):
+            text = text_data.get("textMessage")
+            if text:
+                return str(text)
+        # Fall back to flat textMessage (used by tests / older format).
         text = message_data.get("textMessage")
         return str(text) if text else None
     if type_message == "extendedTextMessage":
