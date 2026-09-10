@@ -122,12 +122,26 @@ class DigestReplyService:
         return current
 
     async def _build_items(self, user_id: str, active_states) -> list[DigestItem]:
-        """Build DigestItems with contact names and last message text."""
+        """Build DigestItems with contact names and last message text.
+
+        Name resolution priority:
+        1. chats.chat_name (from Green API senderData.chatName)
+        2. contacts.display_name (from contacts table)
+        3. message.chat_name or sender_name (from the latest message)
+        4. phone number from chat_id (fallback)
+        """
         items: list[DigestItem] = []
         for active in active_states:
             phone = _phone_from_chat_id(active.chat_id)
-            contact = await self._contact_repo.find_by_phone(user_id, phone)
-            contact_name = contact.display_name if contact else None
+
+            # Try chat_name from chat state first.
+            chat = await self._chat_state_repo.get(user_id, active.chat_id)
+            chat_name = chat.chat_name if chat else None
+
+            # Fall back to contact lookup.
+            if not chat_name:
+                contact = await self._contact_repo.find_by_phone(user_id, phone)
+                chat_name = contact.display_name if contact else None
 
             msg = await self._message_repo.get_latest_inbound(
                 user_id=user_id,
@@ -135,9 +149,13 @@ class DigestReplyService:
             )
             last_text = msg.text if msg and msg.text else None
 
+            # Fall back to message-level names.
+            if not chat_name and msg:
+                chat_name = msg.chat_name or msg.sender_name
+
             items.append(DigestItem(
                 active=active,
-                contact_name=contact_name,
+                contact_name=chat_name,
                 last_message_text=last_text,
             ))
         return items

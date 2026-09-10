@@ -96,7 +96,9 @@ class ChatIngestionService:
             chat_id=event.chat_id,
             provider_message_id=event.provider_message_id,
             direction=event.direction,
-            sender_id=None,
+            sender_id=event.sender_id,
+            sender_name=event.sender_name,
+            chat_name=event.chat_name,
             timestamp=event.timestamp,
             message_type=event.kind.value,
             text=event.text,
@@ -112,5 +114,6 @@ class ChatIngestionService:
             direction=event.direction,
             observed_at=now,
             next_analysis_at=next_analysis_at,
+            chat_name=event.chat_name,
         )
         return True

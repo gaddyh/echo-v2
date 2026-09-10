@@ -275,6 +275,9 @@ class ProviderMessageEvent:
     timestamp: datetime
     kind: MessageKind = MessageKind.TEXT
     text: str | None = None
+    sender_id: str | None = None
+    sender_name: str | None = None
+    chat_name: str | None = None
 
 
 @dataclass(frozen=True)

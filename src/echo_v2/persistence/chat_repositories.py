@@ -168,12 +168,14 @@ class ChatStateRepository(Protocol):
         direction: MessageDirection,
         observed_at: datetime,
         next_analysis_at: datetime | None,
+        chat_name: str | None = None,
     ) -> ChatState:
         """Atomically increment ``activity_version`` and update chat state.
 
         Sets ``last_message_at = observed_at``, ``last_direction = direction``,
-        ``next_analysis_at = next_analysis_at``. Creates the row if it
-        doesn't exist (``activity_version = 1``). Returns the post-upsert state.
+        ``next_analysis_at = next_analysis_at``, ``chat_name = chat_name``.
+        Creates the row if it doesn't exist (``activity_version = 1``).
+        Returns the post-upsert state.
         """
         ...
 
@@ -220,6 +222,7 @@ class InMemoryChatStateRepository:
         direction: MessageDirection,
         observed_at: datetime,
         next_analysis_at: datetime | None,
+        chat_name: str | None = None,
     ) -> ChatState:
         key = (user_id, chat_id)
         existing = self._chats.get(key)
@@ -232,6 +235,7 @@ class InMemoryChatStateRepository:
                 last_direction=direction,
                 next_analysis_at=next_analysis_at,
                 last_processed_version=0,
+                chat_name=chat_name,
             )
         else:
             chat = ChatState(
@@ -242,6 +246,7 @@ class InMemoryChatStateRepository:
                 last_direction=direction,
                 next_analysis_at=next_analysis_at,
                 last_processed_version=existing.last_processed_version,
+                chat_name=chat_name or existing.chat_name,
             )
         self._chats[key] = chat
         return chat

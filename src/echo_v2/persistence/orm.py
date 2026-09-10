@@ -370,6 +370,8 @@ class MessageRow(Base):
     provider_message_id: Mapped[str] = mapped_column(Text, nullable=False)
     direction: Mapped[str] = mapped_column(Text, nullable=False)
     sender_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sender_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    chat_name: Mapped[str | None] = mapped_column(Text, nullable=True)
     timestamp: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True),
         nullable=False,
@@ -423,6 +425,7 @@ class ChatRow(Base):
         nullable=False,
     )
     chat_id: Mapped[str] = mapped_column(Text, primary_key=True, nullable=False)
+    chat_name: Mapped[str | None] = mapped_column(Text, nullable=True)
     activity_version: Mapped[int] = mapped_column(nullable=False, server_default=text("0"))
     last_message_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True),

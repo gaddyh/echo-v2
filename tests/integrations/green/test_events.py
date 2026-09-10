@@ -550,3 +550,72 @@ def test_parse_text_message_nested_green_api_format():
     event = GreenEventAdapter().parse(payload)
     assert isinstance(event, ProviderMessageEvent)
     assert event.text == "יש מצב לחמישי?"
+
+
+def test_parse_sender_data_extracts_names():
+    """Real Green API format: chatId and names under senderData."""
+    payload = _base(
+        "incomingMessageReceived",
+        chatId="9725@c.us",
+        idMessage="m_sender",
+        messageData={
+            "typeMessage": "textMessage",
+            "textMessageData": {"textMessage": "מה קורה?"},
+        },
+    )
+    # Add senderData (real Green API format).
+    payload["senderData"] = {
+        "chatId": "972501234567@c.us",
+        "sender": "972501234567@c.us",
+        "chatName": "Dana",
+        "senderName": "Dana",
+        "senderContactName": "Dana Cohen",
+    }
+    event = GreenEventAdapter().parse(payload)
+    assert isinstance(event, ProviderMessageEvent)
+    assert event.chat_id == "972501234567@c.us"
+    assert event.chat_name == "Dana"
+    assert event.sender_name == "Dana"
+    assert event.sender_id == "972501234567@c.us"
+    assert event.text == "מה קורה?"
+
+
+def test_parse_sender_data_prefers_senderName_over_contactName():
+    """senderName takes priority over senderContactName."""
+    payload = _base(
+        "incomingMessageReceived",
+        chatId="9725@c.us",
+        idMessage="m_priority",
+        messageData={
+            "typeMessage": "textMessage",
+            "textMessageData": {"textMessage": "hi"},
+        },
+    )
+    payload["senderData"] = {
+        "chatId": "9725@c.us",
+        "sender": "9725@c.us",
+        "chatName": "Chat Name",
+        "senderName": "Sender Name",
+        "senderContactName": "Contact Name",
+    }
+    event = GreenEventAdapter().parse(payload)
+    assert event.sender_name == "Sender Name"
+    assert event.chat_name == "Chat Name"
+
+
+def test_parse_no_sender_data_falls_back_to_top_level():
+    """Older/test format without senderData still works."""
+    payload = _base(
+        "incomingMessageReceived",
+        chatId="9725@c.us",
+        idMessage="m_fallback",
+        messageData={
+            "typeMessage": "textMessage",
+            "textMessage": "hello",
+        },
+    )
+    event = GreenEventAdapter().parse(payload)
+    assert event.chat_id == "9725@c.us"
+    assert event.chat_name is None
+    assert event.sender_name is None
+    assert event.sender_id is None

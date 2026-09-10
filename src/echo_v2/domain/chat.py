@@ -21,7 +21,7 @@ mechanism.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 
@@ -59,9 +59,11 @@ class Message:
     provider_message_id: str
     direction: MessageDirection
     sender_id: str | None
-    timestamp: datetime
-    message_type: str
-    text: str | None
+    sender_name: str | None = None
+    chat_name: str | None = None
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    message_type: str = "text"
+    text: str | None = None
 
 
 @dataclass
@@ -86,3 +88,4 @@ class ChatState:
     last_direction: MessageDirection
     next_analysis_at: datetime | None
     last_processed_version: int
+    chat_name: str | None = None

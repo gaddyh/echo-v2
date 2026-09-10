@@ -53,6 +53,21 @@ _LABELS = [
     WaitingForMeDecision.UNCERTAIN,
 ]
 
+# Short labels for table display.
+_SHORT = {
+    WaitingForMeDecision.WAITING_FOR_ME: "WFM",
+    WaitingForMeDecision.NOT_WAITING_FOR_ME: "NWM",
+    WaitingForMeDecision.UNCERTAIN: "UNC",
+}
+
+# Box-drawing characters for rich tables.
+_BOX = {
+    "tl": "┌", "tr": "┐", "bl": "└", "br": "┘",
+    "h": "─", "v": "│",
+    "lt": "├", "rt": "┤", "tt": "┬", "bt": "┴",
+    "cross": "┼",
+}
+
 
 def _build_conversation(case: EvalCase) -> ConversationInput:
     """Convert an EvalCase to a ConversationInput with synthetic timestamps."""
@@ -88,6 +103,144 @@ async def _run_case(
         return None, str(exc)
 
 
+def _print_summary_table(results, correct, errors, accuracy):
+    """Print the top-level summary table."""
+    total = len(results)
+    wfm_total = sum(1 for r in results if r[0].expected == WaitingForMeDecision.WAITING_FOR_ME)
+    nwm_total = sum(1 for r in results if r[0].expected == WaitingForMeDecision.NOT_WAITING_FOR_ME)
+    unc_total = sum(1 for r in results if r[0].expected == WaitingForMeDecision.UNCERTAIN)
+
+    wfm_correct = sum(1 for r in results if r[0].expected == WaitingForMeDecision.WAITING_FOR_ME and r[1] == r[0].expected)
+    nwm_correct = sum(1 for r in results if r[0].expected == WaitingForMeDecision.NOT_WAITING_FOR_ME and r[1] == r[0].expected)
+    unc_correct = sum(1 for r in results if r[0].expected == WaitingForMeDecision.UNCERTAIN and r[1] == r[0].expected)
+
+    print()
+    _print_table_header("Evaluation Summary", ["Metric", "Value"])
+    rows = [
+        ("Total cases", str(total)),
+        ("Correct", str(correct)),
+        ("Errors", str(errors)),
+        ("Accuracy", f"{accuracy:.1%}"),
+        ("", ""),
+        ("WAITING_FOR_ME", f"{wfm_correct}/{wfm_total} ({wfm_correct/wfm_total:.0%})" if wfm_total else "0/0"),
+        ("NOT_WAITING_FOR_ME", f"{nwm_correct}/{nwm_total} ({nwm_correct/nwm_total:.0%})" if nwm_total else "0/0"),
+        ("UNCERTAIN", f"{unc_correct}/{unc_total} ({unc_correct/unc_total:.0%})" if unc_total else "0/0"),
+    ]
+    _print_table_rows(rows)
+    print()
+
+
+def _print_confusion_matrix(matrix):
+    """Print the confusion matrix as a rich table."""
+    print()
+    _print_table_header("Confusion Matrix (rows=expected, cols=actual)", ["Expected \\ Actual"] + [_SHORT[d] for d in _LABELS])
+    for expected in _LABELS:
+        row = [_SHORT[expected]]
+        for actual in _LABELS:
+            count = matrix.get((expected, actual), 0)
+            row.append(str(count) if count else "·")
+        _print_table_rows([row])
+    print()
+
+
+def _print_per_case_table(results):
+    """Print per-case results as a rich table."""
+    print()
+    _print_table_header("Per-Case Results", ["Status", "ID", "Msgs", "Expected", "Actual", "Description"])
+    rows = []
+    for case, actual, error in results:
+        if error:
+            status = "ERR"
+            actual_str = "ERROR"
+        elif actual == case.expected:
+            status = "PASS"
+            actual_str = _SHORT.get(actual, "?")
+        else:
+            status = "FAIL"
+            actual_str = _SHORT.get(actual, "?")
+        rows.append((status, case.id, str(len(case.messages)), _SHORT[case.expected], actual_str, case.description[:50]))
+    _print_table_rows(rows)
+    print()
+
+
+def _print_failures_table(results):
+    """Print only failed/errored cases with full detail."""
+    failures = [(c, a, e) for c, a, e in results if a != c.expected or e]
+    if not failures:
+        print("\n  No failures! All cases passed.\n")
+        return
+
+    print()
+    _print_table_header("Failures Detail", ["ID", "Expected", "Actual", "Messages"])
+    rows = []
+    for case, actual, error in failures:
+        if error:
+            actual_str = f"ERROR: {error[:40]}"
+        else:
+            actual_str = _SHORT.get(actual, "?")
+        # Show last 3 messages for context.
+        last_msgs = case.messages[-3:]
+        msg_summary = " | ".join(f"{d[0][:3]}:{d[1][:30]}" for d in last_msgs)
+        rows.append((case.id, _SHORT[case.expected], actual_str, msg_summary[:80]))
+    _print_table_rows(rows)
+    print()
+
+
+def _print_table_header(title, headers):
+    """Print a table header with title and column headers."""
+    print(f"\n  {title}")
+    print()
+
+    # Calculate column widths.
+    col_widths = []
+    for h in headers:
+        col_widths.append(max(len(h), 8))
+
+    # Print top border.
+    parts = [_BOX["tl"]]
+    for w in col_widths:
+        parts.append(_BOX["h"] * (w + 2))
+        parts.append(_BOX["tt"])
+    parts[-1] = _BOX["tr"]
+    print("  " + "".join(parts))
+
+    # Print header row.
+    cells = []
+    for h, w in zip(headers, col_widths):
+        cells.append(f" {h:<{w}} ")
+    print("  " + _BOX["v"] + _BOX["v"].join(cells) + _BOX["v"])
+
+    # Print separator.
+    parts = [_BOX["lt"]]
+    for w in col_widths:
+        parts.append(_BOX["h"] * (w + 2))
+        parts.append(_BOX["cross"])
+    parts[-1] = _BOX["rt"]
+    print("  " + "".join(parts))
+
+    # Store col_widths for _print_table_rows.
+    _print_table_header._col_widths = col_widths
+
+
+def _print_table_rows(rows):
+    """Print table rows with borders."""
+    col_widths = _print_table_header._col_widths
+
+    for row in rows:
+        cells = []
+        for val, w in zip(row, col_widths):
+            cells.append(f" {val!s:<{w}} ")
+        print("  " + _BOX["v"] + _BOX["v"].join(cells) + _BOX["v"])
+
+    # Print bottom border.
+    parts = [_BOX["bl"]]
+    for w in col_widths:
+        parts.append(_BOX["h"] * (w + 2))
+        parts.append(_BOX["bt"])
+    parts[-1] = _BOX["br"]
+    print("  " + "".join(parts))
+
+
 @pytest.mark.eval
 async def test_evaluation_summary(analyzer):
     """Run all eval cases and report accuracy + confusion matrix.
@@ -116,43 +269,15 @@ async def test_evaluation_summary(analyzer):
     total = len(results)
     accuracy = correct / total if total > 0 else 0.0
 
-    # Print full report.
+    # Print rich report.
     print("\n" + "=" * 70)
-    print("WaitingForMe Evaluation Report")
+    print("  WaitingForMe Evaluation Report")
     print("=" * 70)
-    print(f"Cases: {total} | Correct: {correct} | Errors: {errors}")
-    print(f"Accuracy: {accuracy:.1%}")
-    print()
 
-    # Confusion matrix.
-    print("Confusion matrix (rows=expected, cols=actual):")
-    header = "              " + "  ".join(f"{d.value[:8]:>14s}" for d in _LABELS)
-    print(header)
-    for expected in _LABELS:
-        row = f"{expected.value[:14]:>14s}"
-        for actual in _LABELS:
-            count = matrix.get((expected, actual), 0)
-            row += f"  {count:>14d}"
-        print(row)
-    print()
-
-    # Per-case details.
-    print("Per-case results:")
-    print("-" * 70)
-    for case, actual, error in results:
-        if error:
-            status = "E"
-            actual_str = f"ERROR: {error}"
-        elif actual == case.expected:
-            status = "PASS"
-            actual_str = actual.value if actual else "?"
-        else:
-            status = "FAIL"
-            actual_str = actual.value if actual else "?"
-        print(
-            f"  {status:4s} {case.id}  {case.expected.value:>20s} -> {actual_str:>20s}  {case.description}"
-        )
-    print("-" * 70)
+    _print_summary_table(results, correct, errors, accuracy)
+    _print_confusion_matrix(matrix)
+    _print_per_case_table(results)
+    _print_failures_table(results)
 
     # Assert minimum accuracy.
     min_accuracy = float(os.environ.get("EVAL_MIN_ACCURACY", "0.7"))

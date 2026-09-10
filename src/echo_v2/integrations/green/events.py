@@ -134,7 +134,20 @@ def _message_event(
     if kind is MessageKind.OTHER:
         _logger.info("provider=green event=message unknown_type=%s", type_message)
 
-    chat_id = payload.get("chatId") or _extract_chat_id(message_data)
+    # Green API nests chatId and sender info under senderData.
+    sender_data = payload.get("senderData")
+    if isinstance(sender_data, dict):
+        chat_id = sender_data.get("chatId") or payload.get("chatId") or _extract_chat_id(message_data)
+        sender_id = sender_data.get("sender")
+        chat_name = sender_data.get("chatName")
+        sender_name = sender_data.get("senderName") or sender_data.get("senderContactName")
+    else:
+        # Fallback for older/test format with top-level chatId.
+        chat_id = payload.get("chatId") or _extract_chat_id(message_data)
+        sender_id = None
+        chat_name = None
+        sender_name = None
+
     provider_message_id = payload.get("idMessage")
     timestamp = _timestamp(payload.get("timestamp"))
     text = _extract_text(message_data, type_message)
@@ -153,6 +166,9 @@ def _message_event(
         timestamp=timestamp,
         kind=kind,
         text=text,
+        sender_id=str(sender_id) if sender_id else None,
+        sender_name=str(sender_name) if sender_name else None,
+        chat_name=str(chat_name) if chat_name else None,
     )
 
 

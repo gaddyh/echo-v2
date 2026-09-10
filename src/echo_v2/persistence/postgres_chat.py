@@ -102,6 +102,8 @@ class PostgresMessageRepository:
                     provider_message_id=message.provider_message_id,
                     direction=message.direction.value,
                     sender_id=message.sender_id,
+                    sender_name=message.sender_name,
+                    chat_name=message.chat_name,
                     timestamp=message.timestamp,
                     message_type=message.message_type,
                     text=message.text,
@@ -241,6 +243,8 @@ class PostgresMessageRepository:
             provider_message_id=row.provider_message_id,
             direction=MessageDirection(row.direction),
             sender_id=row.sender_id,
+            sender_name=row.sender_name,
+            chat_name=row.chat_name,
             timestamp=row.timestamp,
             message_type=row.message_type,
             text=row.text,
@@ -290,6 +294,7 @@ class PostgresChatStateRepository:
         direction: MessageDirection,
         observed_at: datetime,
         next_analysis_at: datetime | None,
+        chat_name: str | None = None,
     ) -> ChatState:
         async with self._session() as session:
             stmt = (
@@ -302,6 +307,7 @@ class PostgresChatStateRepository:
                     last_direction=direction.value,
                     next_analysis_at=next_analysis_at,
                     last_processed_version=0,
+                    chat_name=chat_name,
                 )
                 .on_conflict_do_update(
                     index_elements=["user_id", "chat_id"],
@@ -311,6 +317,7 @@ class PostgresChatStateRepository:
                         "last_direction": direction.value,
                         "next_analysis_at": next_analysis_at,
                         "updated_at": datetime.now(timezone.utc),
+                        **({"chat_name": chat_name} if chat_name else {}),
                     },
                 )
                 .returning(ChatRow)
@@ -366,6 +373,7 @@ class PostgresChatStateRepository:
             last_direction=MessageDirection(row.last_direction),
             next_analysis_at=row.next_analysis_at,
             last_processed_version=row.last_processed_version,
+            chat_name=row.chat_name,
         )
 
 
