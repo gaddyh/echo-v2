@@ -277,6 +277,60 @@ class OnboardingService:
         await self._bot.send_text(phone, message)
         _logger.info("onboarding: OTP sent to %s", phone)
 
+        # Poll for authorization — Green API may not fire stateInstanceChanged
+        # when the state changes to 'authorized' via OTP. Poll as a fallback.
+        await self._poll_for_authorization(
+            user_id,
+            phone,
+            created.ref.provider_connection_id,
+            api_token,
+        )
+
+    async def _poll_for_authorization(
+        self,
+        user_id: str,
+        phone: str,
+        id_instance: str,
+        api_token: str,
+    ) -> None:
+        """Poll getStateInstance until 'authorized', then complete onboarding.
+
+        Green API's stateInstanceChanged webhook fires during instance
+        creation (state=None) but may not fire again when the user enters
+        the OTP and the state changes to 'authorized'. This poll is a
+        reliable fallback that also works if the webhook is delayed.
+
+        If the webhook does arrive first, :meth:`handle_connection_established`
+        is idempotent (updates status + sends welcome).
+        """
+        import asyncio
+
+        # Poll every 10s for up to 5 minutes (30 attempts).
+        for attempt in range(30):
+            await asyncio.sleep(10.0)
+            try:
+                state = await self._green_client.get_state_instance(
+                    id_instance,
+                    api_token,
+                )
+                if state == "authorized":
+                    _logger.info(
+                        "onboarding: instance %s authorized (attempt=%d)",
+                        id_instance,
+                        attempt + 1,
+                    )
+                    await self.handle_connection_established(user_id, phone)
+                    return
+            except Exception:  # noqa: BLE001
+                # 401 can happen transiently — keep polling.
+                pass
+
+        _logger.warning(
+            "onboarding: authorization poll timed out for %s (user=%s)",
+            phone,
+            user_id,
+        )
+
     async def _wait_for_instance_ready(
         self,
         id_instance: str,
@@ -352,7 +406,21 @@ class OnboardingService:
         """Called when Green API confirms the connection (stateInstanceChanged).
 
         Updates onboarding status and sends the welcome message.
+        Idempotent: if onboarding is already 'active' (user already sent
+        their name via the poll race), skip the welcome message.
         """
+        # Check current state — skip if already active.
+        existing = await self._user_repo.get_by_phone(phone)
+        if existing is not None:
+            _uid, onboarding_status, _name = existing
+            if onboarding_status in ("connected", "active"):
+                _logger.info(
+                    "onboarding: already %s for user %s, skipping welcome",
+                    onboarding_status,
+                    user_id,
+                )
+                return
+
         await self._user_repo.update_onboarding_status(user_id, "connected")
         await self._bot.send_text(phone, _WELCOME_MESSAGE.format(name=_DEFAULT_NAME))
         _logger.info("onboarding: connection established for user %s", user_id)
