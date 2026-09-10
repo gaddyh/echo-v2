@@ -137,7 +137,7 @@ class LLMWaitingForMeAnalyzer:
                     {"role": "user", "content": user_msg},
                 ],
                 temperature=0,
-                max_tokens=200,
+                max_completion_tokens=200,
             )
         except Exception as exc:
             _logger.warning("WaitingForMe analyzer API error: %s", exc)

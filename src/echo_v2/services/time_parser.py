@@ -104,7 +104,7 @@ class LLMTimeParser:
                     {"role": "user", "content": user_msg},
                 ],
                 temperature=0,
-                max_tokens=100,
+                max_completion_tokens=100,
             )
         except Exception as exc:
             _logger.warning("LLM time parser API error: %s", exc)
