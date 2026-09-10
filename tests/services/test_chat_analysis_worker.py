@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -179,3 +180,125 @@ async def test_recording_processor_records_calls():
         ("user-1", "chat-1", 3),
         ("user-2", "chat-2", 5),
     ]
+
+
+# --- Concurrency regression test (blocking fake processor) ------------------
+
+
+async def test_concurrent_message_during_processing_discards_result():
+    """The core safety property: if a new message arrives during processing,
+    the worker's mark_processed must fail (version changed)."""
+    repo = InMemoryChatStateRepository()
+    now = datetime.now(timezone.utc)
+
+    # Seed a due chat.
+    _seed_chat(repo, next_analysis_at=now - timedelta(minutes=5))
+
+    event = asyncio.Event()
+
+    class _BlockingProcessor:
+        def __init__(self):
+            self.calls = []
+
+        async def process(self, user_id, chat_id, target_version):
+            self.calls.append((user_id, chat_id, target_version))
+            # Block until the test releases us.
+            await event.wait()
+            # By now, a new message has been ingested, bumping the version.
+
+    processor = _BlockingProcessor()
+    worker = ChatAnalysisWorker(chat_state_repo=repo, processor=processor)
+
+    # Start run_once in the background.
+    task = asyncio.create_task(worker.run_once())
+    # Give the processor a moment to start.
+    await asyncio.sleep(0.01)
+
+    # Simulate a new inbound message arriving during processing.
+    await repo.upsert_on_message(
+        user_id="user-1",
+        chat_id="972501234567@c.us",
+        direction=MessageDirection.INBOUND,
+        observed_at=datetime.now(timezone.utc),
+        next_analysis_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+    )
+
+    # Release the processor.
+    event.set()
+    await task
+
+    # The worker should have called the processor once.
+    assert len(processor.calls) == 1
+    assert processor.calls[0][2] == 1  # target_version was 1
+
+    # mark_processed should have failed (version changed from 1 to 2).
+    chat = await repo.get("user-1", "972501234567@c.us")
+    assert chat is not None
+    assert chat.activity_version == 2
+    assert chat.last_processed_version == 0  # NOT advanced
+    assert chat.next_analysis_at is not None  # still due from the new message
+
+
+# --- Processor exception leaves chat due ------------------------------------
+
+
+async def test_processor_exception_leaves_chat_due():
+    """If the processor raises, the chat remains due for the next poll."""
+    repo = InMemoryChatStateRepository()
+    now = datetime.now(timezone.utc)
+    _seed_chat(repo, next_analysis_at=now - timedelta(minutes=5))
+
+    class _FailingProcessor:
+        async def process(self, user_id, chat_id, target_version):
+            raise RuntimeError("analysis failed")
+
+    worker = ChatAnalysisWorker(chat_state_repo=repo, processor=_FailingProcessor())
+
+    # run_once should not crash — it catches exceptions per-chat.
+    processed = await worker.run_once()
+    assert processed is True  # there was a due chat
+
+    # Chat should still be due — not marked processed.
+    chat = await repo.get("user-1", "972501234567@c.us")
+    assert chat is not None
+    assert chat.last_processed_version == 0
+    assert chat.next_analysis_at is not None
+
+
+# --- run_loop cancellation --------------------------------------------------
+
+
+async def test_run_loop_cancellation_exits_cleanly():
+    """Cancelling run_loop() exits cleanly without swallowing CancelledError."""
+    repo = InMemoryChatStateRepository()
+    processor = RecordingAnalysisProcessor()
+    worker = ChatAnalysisWorker(
+        chat_state_repo=repo, processor=processor, poll_interval_seconds=0.01
+    )
+
+    task = asyncio.create_task(worker.run_loop())
+    await asyncio.sleep(0.05)  # let it poll a few times
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+# --- list_due limit ---------------------------------------------------------
+
+
+async def test_worker_processes_at_most_limit_chats():
+    """run_once processes at most `limit` chats per poll (default 20)."""
+    repo = InMemoryChatStateRepository()
+    now = datetime.now(timezone.utc)
+    for i in range(5):
+        _seed_chat(
+            repo,
+            chat_id=f"chat-{i}@c.us",
+            next_analysis_at=now - timedelta(minutes=5),
+        )
+    processor = RecordingAnalysisProcessor()
+    worker = ChatAnalysisWorker(chat_state_repo=repo, processor=processor)
+
+    processed = await worker.run_once(limit=3)
+    assert processed is True
+    assert len(processor.calls) == 3

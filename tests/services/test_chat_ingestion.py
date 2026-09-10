@@ -175,3 +175,84 @@ async def test_private_chat_processed_when_private_only_true():
         event, user_id="user-1", connection_id="conn-uuid-1"
     )
     assert inserted is True
+
+
+# --- Second inbound moves next_analysis_at forward --------------------------
+
+
+async def test_second_inbound_moves_next_analysis_at_forward():
+    """A second inbound message increments the version and pushes
+    next_analysis_at forward."""
+    service = _make_service(quiet_period_seconds=300)
+    event1 = _make_event(provider_message_id="msg-1")
+    event2 = _make_event(provider_message_id="msg-2")
+
+    await service.ingest_message(
+        event1, user_id="user-1", connection_id="conn-uuid-1"
+    )
+    chat1 = await service._chat_state_repo.get("user-1", "972501234567@c.us")
+    assert chat1 is not None
+    first_next = chat1.next_analysis_at
+
+    import asyncio
+
+    await asyncio.sleep(0.01)
+
+    await service.ingest_message(
+        event2, user_id="user-1", connection_id="conn-uuid-1"
+    )
+    chat2 = await service._chat_state_repo.get("user-1", "972501234567@c.us")
+    assert chat2 is not None
+    assert chat2.activity_version == 2
+    assert chat2.next_analysis_at > first_next
+
+
+# --- Duplicate does not change next_analysis_at -----------------------------
+
+
+async def test_duplicate_does_not_change_next_analysis_at():
+    """A duplicate message does not move next_analysis_at."""
+    service = _make_service(quiet_period_seconds=300)
+    event = _make_event(provider_message_id="msg-1")
+
+    await service.ingest_message(
+        event, user_id="user-1", connection_id="conn-uuid-1"
+    )
+    chat1 = await service._chat_state_repo.get("user-1", "972501234567@c.us")
+    assert chat1 is not None
+    first_next = chat1.next_analysis_at
+
+    # Send the same event again (duplicate).
+    result = await service.ingest_message(
+        event, user_id="user-1", connection_id="conn-uuid-1"
+    )
+    assert result is False
+
+    chat2 = await service._chat_state_repo.get("user-1", "972501234567@c.us")
+    assert chat2 is not None
+    assert chat2.activity_version == 1  # unchanged
+    assert chat2.next_analysis_at == first_next  # unchanged
+
+
+# --- Transaction rollback (in-memory) ---------------------------------------
+
+
+async def test_transaction_rollback_on_failure():
+    """If the chat state update fails after the message is saved,
+    the entire transaction should be a no-op (message not persisted either)."""
+    class _FailingChatStateRepo:
+        async def upsert_on_message(self, **kwargs):
+            raise RuntimeError("chat state failure")
+
+    service = ChatIngestionService(
+        message_repo=InMemoryMessageRepository(),
+        chat_state_repo=_FailingChatStateRepo(),
+        quiet_period_seconds=300,
+        private_only=True,
+    )
+    event = _make_event()
+
+    with pytest.raises(RuntimeError, match="chat state failure"):
+        await service.ingest_message(
+            event, user_id="user-1", connection_id="conn-uuid-1"
+        )

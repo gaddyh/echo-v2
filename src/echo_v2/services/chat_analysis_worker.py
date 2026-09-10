@@ -108,15 +108,24 @@ class ChatAnalysisWorker:
         self._processor = processor
         self._poll_interval = poll_interval_seconds
 
-    async def run_once(self) -> bool:
+    async def run_once(self, *, limit: int = 20) -> bool:
         """Process all due chats once.
 
         Returns ``True`` if at least one chat was processed.
         """
         now = datetime.now(timezone.utc)
-        due_chats = await self._chat_state_repo.list_due(now)
+        due_chats = await self._chat_state_repo.list_due(now, limit=limit)
         for chat in due_chats:
-            await self._process_chat(chat)
+            try:
+                await self._process_chat(chat)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                _logger.exception(
+                    "error processing chat %s/%s, continuing",
+                    chat.user_id,
+                    chat.chat_id,
+                )
         return len(due_chats) > 0
 
     async def run_loop(self) -> None:
