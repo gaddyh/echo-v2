@@ -209,3 +209,58 @@ def test_parse_falls_back_to_message_from_for_phone():
     event = adapter.parse(payload)
     assert event is not None
     assert event.user_phone == "972500000099"
+
+
+def test_parse_button_reply():
+    """Quick Reply button replies should be parsed as TEXT events."""
+    adapter = Dialog360EventAdapter()
+    payload = {
+        "entry": [{
+            "changes": [{
+                "value": {
+                    "messages": [{
+                        "id": "wamid.BUTTON1",
+                        "from": "972500000001",
+                        "type": "button",
+                        "button": {"text": "הצג הכול"},
+                        "timestamp": "1700000000",
+                    }],
+                    "contacts": [
+                        {"profile": {"name": "Gaddy"}, "wa_id": "972500000001"}
+                    ],
+                }
+            }]
+        }]
+    }
+    event = adapter.parse(payload)
+    assert event is not None
+    assert event.event_id == "wamid.BUTTON1"
+    assert event.user_phone == "972500000001"
+    assert event.type is BotEventType.TEXT
+    assert event.text == "הצג הכול"
+    assert event.timestamp is not None
+
+
+def test_parse_button_reply_no_text_returns_none():
+    """A button reply without text should return None."""
+    adapter = Dialog360EventAdapter()
+    payload = {
+        "entry": [{
+            "changes": [{
+                "value": {
+                    "messages": [{
+                        "id": "wamid.BUTTON2",
+                        "from": "972500000001",
+                        "type": "button",
+                        "button": {},
+                        "timestamp": "1700000000",
+                    }],
+                    "contacts": [
+                        {"profile": {"name": "Gaddy"}, "wa_id": "972500000001"}
+                    ],
+                }
+            }]
+        }]
+    }
+    event = adapter.parse(payload)
+    assert event is None

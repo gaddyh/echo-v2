@@ -40,6 +40,7 @@ def build_router(
     webhook_secret: str,
     adapter: BotEventAdapter | None = None,
     dedup_store: WebhookDedupStore | None = None,
+    digest_reply_service=None,
 ) -> APIRouter:
     """Build a 360dialog bot webhook router.
 
@@ -48,6 +49,9 @@ def build_router(
         webhook_secret: The bearer secret expected in the Authorization header.
         adapter: Event adapter (defaults to :class:`Dialog360EventAdapter`).
         dedup_store: Webhook dedup store (defaults to in-memory).
+        digest_reply_service: Optional :class:`DigestReplyService` pre-handler.
+            If it handles the event (returns ``True``), the flow service is
+            skipped. Used for the "הצג הכול" button reply.
     """
     router = APIRouter()
     parse_adapter = adapter or Dialog360EventAdapter()
@@ -83,6 +87,12 @@ def build_router(
         # Deduplicate on event_id (wamid).
         if not await store.claim(event.event_id):
             return {"status": "duplicate"}
+
+        # Pre-handler: digest reply ("הצג הכול" button).
+        if digest_reply_service is not None:
+            handled = await digest_reply_service.handle(event)
+            if handled:
+                return {"status": "received"}
 
         # Dispatch to the flow service.
         await flow_service.handle(event)

@@ -138,6 +138,18 @@ def create_app() -> FastAPI:
         contact_repo=contact_repo,
     )
 
+    # --- digest reply service (handles "הצג הכול" button) -----------------
+    from echo_v2.services.digest_reply import DigestReplyService
+
+    digest_reply_service = DigestReplyService(
+        bot=d360_client,
+        active_repo=repos.wfm_active,
+        chat_state_repo=repos.chat_state,
+        message_repo=repos.messages,
+        contact_repo=contact_repo,
+        user_resolver=_SessionUserResolver(repos.session_factory),
+    )
+
     # --- scheduler (background poller) -------------------------------------
     scheduler = Scheduler(
         service=scheduling_service,
@@ -293,6 +305,7 @@ def create_app() -> FastAPI:
         flow_service=flow_service,
         webhook_secret=d360_settings.webhook_secret,
         adapter=Dialog360EventAdapter(),
+        digest_reply_service=digest_reply_service,
     )
     app.include_router(dialog360_router)
 

@@ -97,6 +97,22 @@ class Dialog360EventAdapter:
                 timestamp=timestamp,
             )
 
+        if msg_type == "button":
+            # Quick Reply button reply. The button text is in
+            # message.button.text. We surface it as a TEXT event so
+            # the application can match on the button text.
+            button = message.get("button", {})
+            text = button.get("text", "") if isinstance(button, dict) else ""
+            if not text:
+                return None
+            return BotEvent(
+                event_id=msg_id,
+                user_phone=str(user_phone),
+                type=BotEventType.TEXT,
+                text=str(text),
+                timestamp=timestamp,
+            )
+
         _logger.info("provider=dialog360 event=unknown message_type=%s", msg_type)
         return None
 
