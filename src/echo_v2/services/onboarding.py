@@ -128,6 +128,8 @@ class OnboardingService:
         provisioner: GreenProvisioner,
         green_client,  # GreenClient — avoid circular import
         webhook_base_url: str,
+        poll_interval: float = 5.0,
+        poll_max_attempts: int = 24,
     ) -> None:
         self._bot = bot
         self._user_repo = user_repo
@@ -135,6 +137,8 @@ class OnboardingService:
         self._provisioner = provisioner
         self._green_client = green_client
         self._webhook_base_url = webhook_base_url.rstrip("/")
+        self._poll_interval = poll_interval
+        self._poll_max_attempts = poll_max_attempts
 
     async def handle_unknown_user(self, phone: str) -> None:
         """Start onboarding for an unknown user who messaged the bot.
@@ -229,9 +233,25 @@ class OnboardingService:
         )
         await self._connection_repo.save(conn)
 
+        # Wait for the instance to be ready (Green API: poll getStateInstance
+        # until it returns "notAuthorized" — the instance is still being
+        # created for a few seconds after createInstance returns).
+        api_token = created.credentials.data.decode("utf-8")
+        ready = await self._wait_for_instance_ready(
+            created.ref.provider_connection_id,
+            api_token,
+        )
+        if not ready:
+            _logger.error("onboarding: instance not ready for %s", phone)
+            await self._user_repo.update_onboarding_status(user_id, "failed")
+            await self._bot.send_text(
+                phone,
+                "מצטער, היצירה של החיבור לקחה יותר מדי זמן. נסה שוב.",
+            )
+            return
+
         # Get the OTP.
         phone_int = int(phone.lstrip("+"))
-        api_token = created.credentials.data.decode("utf-8")
         try:
             code = await self._green_client.get_authorization_code(
                 created.ref.provider_connection_id,
@@ -251,6 +271,50 @@ class OnboardingService:
         message = _OTP_INSTRUCTIONS.format(code=code)
         await self._bot.send_text(phone, message)
         _logger.info("onboarding: OTP sent to %s", phone)
+
+    async def _wait_for_instance_ready(
+        self,
+        id_instance: str,
+        api_token: str,
+    ) -> bool:
+        """Poll getStateInstance until it returns a non-null state.
+
+        Green API creates the instance asynchronously — ``createInstance``
+        returns immediately, but the instance isn't ready for pairing
+        until ``getStateInstance`` returns a non-null ``stateInstance``.
+        We poll every ``poll_interval`` seconds for up to
+        ``poll_max_attempts`` attempts (default: 5s × 24 = 2 minutes).
+
+        Returns ``True`` if the instance is ready, ``False`` on timeout.
+        """
+        import asyncio
+
+        for attempt in range(self._poll_max_attempts):
+            try:
+                state = await self._green_client.get_state_instance(
+                    id_instance,
+                    api_token,
+                )
+                # ``None`` means the instance is still being created.
+                # Any non-null state (``notAuthorized``, ``authorized``) means
+                # the instance is ready.
+                if state is not None:
+                    _logger.info(
+                        "onboarding: instance %s ready (state=%s, attempt=%d)",
+                        id_instance,
+                        state,
+                        attempt + 1,
+                    )
+                    return True
+            except Exception:
+                _logger.warning(
+                    "onboarding: getStateInstance failed (attempt=%d)",
+                    attempt + 1,
+                    exc_info=True,
+                )
+            await asyncio.sleep(self._poll_interval)
+
+        return False
 
     async def handle_resend_request(self, phone: str) -> None:
         """Handle a user sending 'קוד' to re-request the OTP."""

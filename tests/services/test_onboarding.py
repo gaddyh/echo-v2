@@ -106,6 +106,11 @@ class FakeGreenClient:
     def __init__(self, otp_code: str = "12345678") -> None:
         self._otp_code = otp_code
         self.otp_calls: list[tuple[str, str, int]] = []
+        self._state_sequence: list[str | None] = []
+
+    def set_state_sequence(self, states: list[str | None]) -> None:
+        """Set the sequence of states returned by get_state_instance."""
+        self._state_sequence = states
 
     async def get_authorization_code(
         self,
@@ -131,7 +136,9 @@ class FakeGreenClient:
         pass
 
     async def get_state_instance(self, id_instance: str, api_token: str) -> str | None:
-        return "authorized"
+        if self._state_sequence:
+            return self._state_sequence.pop(0)
+        return "notAuthorized"
 
     async def get_qr_ws(self, id_instance: str, api_token: str, **kwargs) -> dict:
         return {"type": "qrCode", "message": "base64data"}
@@ -163,6 +170,8 @@ def fakes():
         provisioner=provisioner,
         green_client=green_client,
         webhook_base_url="https://echo.example.com",
+        poll_interval=0.01,
+        poll_max_attempts=3,
     )
     return service, bot, user_repo, connection_repo, green_client
 
@@ -373,3 +382,26 @@ async def test_invalid_phone_ignored(fakes):
 
     assert len(green_client.otp_calls) == 0
     assert len(bot.sent) == 0
+
+
+async def test_instance_not_ready_sends_failure(fakes):
+    """If instance never becomes ready, user gets a failure message."""
+    service, bot, user_repo, _conn_repo, green_client = fakes
+
+    # Simulate instance stuck in "creating" — always returns None.
+    green_client.set_state_sequence([None] * 30)
+
+    await service.handle_unknown_user("+972546610653")
+    import asyncio
+    # poll_interval=0.01, poll_max_attempts=3 → ~0.03s before timeout
+    await asyncio.sleep(0.5)
+
+    user = await user_repo.get_by_phone("+972546610653")
+    assert user is not None
+    assert user[1] == "failed"
+
+    # Bot sent: 1) "please wait" 2) failure message.
+    assert len(bot.sent) == 2
+    _phone, failure_msg = bot.sent[1]
+    assert "מצטער" in failure_msg
+    assert len(green_client.otp_calls) == 0
