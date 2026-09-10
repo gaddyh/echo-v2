@@ -1,4 +1,9 @@
-"""Tests for DigestFormatter (template parameter mode)."""
+"""Tests for DigestFormatter (template parameter mode).
+
+The template now produces only 2 params (first_name, count) — no
+conversation content is exposed in the template. The interactive list
+is sent only after the user taps the button.
+"""
 
 from __future__ import annotations
 
@@ -21,7 +26,7 @@ def _make_active(chat_id="972501234567@c.us", waiting_since=NOW, target_version=
     )
 
 
-def test_format_single_item_with_name_and_text():
+def test_format_single_item():
     formatter = DigestFormatter()
     items = [
         DigestItem(
@@ -33,7 +38,6 @@ def test_format_single_item_with_name_and_text():
     params = formatter.format(items, first_name="גדי")
     assert params.first_name == "גדי"
     assert params.count == "1"
-    assert 'דנה: "יש מצב לחמישי?"' in params.items_text
 
 
 def test_format_multiple_items():
@@ -52,59 +56,18 @@ def test_format_multiple_items():
     ]
     params = formatter.format(items, first_name="גדי")
     assert params.count == "2"
-    assert 'דנה: "יש מצב לחמישי?"' in params.items_text
-    assert 'יוסי: "תשלח לי את ההצעה?"' in params.items_text
 
 
-def test_format_sorts_by_waiting_since_ascending():
-    """Oldest waiting_since first."""
+def test_format_no_items():
+    """Empty list produces count=0."""
     formatter = DigestFormatter()
-    items = [
-        DigestItem(
-            active=_make_active(chat_id="972508765432@c.us", waiting_since=LATER),
-            contact_name="יוסי",
-            last_message_text="תשלח לי את ההצעה?",
-        ),
-        DigestItem(
-            active=_make_active(chat_id="972501234567@c.us", waiting_since=NOW),
-            contact_name="דנה",
-            last_message_text="יש מצב לחמישי?",
-        ),
-    ]
-    params = formatter.format(items, first_name="גדי")
-    # דנה (NOW) should appear before יוסי (LATER)
-    dana_pos = params.items_text.index("דנה")
-    yossi_pos = params.items_text.index("יוסי")
-    assert dana_pos < yossi_pos
+    params = formatter.format([], first_name="גדי")
+    assert params.first_name == "גדי"
+    assert params.count == "0"
 
 
-def test_format_falls_back_to_phone_when_no_name():
-    formatter = DigestFormatter()
-    items = [
-        DigestItem(
-            active=_make_active(chat_id="972501234567@c.us"),
-            contact_name=None,
-            last_message_text="יש מצב לחמישי?",
-        ),
-    ]
-    params = formatter.format(items, first_name="גדי")
-    assert '972501234567: "יש מצב לחמישי?"' in params.items_text
-
-
-def test_format_falls_back_for_media_only():
-    formatter = DigestFormatter()
-    items = [
-        DigestItem(
-            active=_make_active(),
-            contact_name="דנה",
-            last_message_text=None,
-        ),
-    ]
-    params = formatter.format(items, first_name="גדי")
-    assert "שלח/ה הודעה שמחכה להתייחסותך" in params.items_text
-
-
-def test_format_truncates_at_20_items():
+def test_format_25_items():
+    """25 items produce count=25 (no truncation in the count)."""
     formatter = DigestFormatter()
     items = [
         DigestItem(
@@ -116,4 +79,3 @@ def test_format_truncates_at_20_items():
     ]
     params = formatter.format(items, first_name="גדי")
     assert params.count == "25"
-    assert "ועוד 5 שיחות..." in params.items_text

@@ -45,6 +45,7 @@ from sqlalchemy.types import (
 
 __all__ = [
     "Base",
+    "ChatMuteRow",
     "ChatRow",
     "ContactRow",
     "IdempotencyOperationRow",
@@ -52,6 +53,9 @@ __all__ = [
     "ProviderWebhookEventRow",
     "ScheduledActionRow",
     "UserRow",
+    "WaitingForMeActionRow",
+    "WaitingForMeActiveRow",
+    "WaitingForMeFeedbackRow",
     "WhatsAppConnectionRow",
 ]
 
@@ -560,6 +564,14 @@ class WaitingForMeActiveRow(Base):
         TIMESTAMP(timezone=True),
         nullable=True,
     )
+    acknowledged_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=True,
+    )
+    snoozed_until: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=True,
+    )
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True),
         nullable=False,
@@ -572,7 +584,168 @@ class WaitingForMeActiveRow(Base):
     )
 
 
-# --- daily_digests ----------------------------------------------------------
+# --- waiting_for_me_feedback -------------------------------------------------
+
+
+class WaitingForMeFeedbackRow(Base):
+    """Correctness signal only — was the model's analysis right?
+
+    Stores the user's verdict on a specific analysis result. Does NOT
+    mutate active state. Linked to the exact ``result_id`` +
+    ``target_version`` the user is judging.
+
+    Verdicts:
+    - ``correct`` — Echo was right, the chat was waiting.
+    - ``false_positive`` — Echo was wrong, the chat was NOT waiting.
+    - ``false_negative`` — Echo missed a waiting chat (reported via פספסתי).
+    """
+
+    __tablename__ = "waiting_for_me_feedback"
+
+    id: Mapped[str] = mapped_column(Uuid, primary_key=True, server_default=text("gen_random_uuid()"))
+    user_id: Mapped[str] = mapped_column(
+        Uuid,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    chat_id: Mapped[str] = mapped_column(Text, nullable=False)
+    result_id: Mapped[str | None] = mapped_column(
+        Uuid,
+        ForeignKey("waiting_for_me_results.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    target_version: Mapped[int | None] = mapped_column(nullable=True)
+    verdict: Mapped[str] = mapped_column(Text, nullable=False)
+    conversation_snapshot: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    provider_event_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    expires_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=True,
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "verdict IN ('correct', 'false_positive', 'false_negative')",
+            name="wfm_feedback_verdict_check",
+        ),
+        UniqueConstraint(
+            "user_id",
+            "provider_event_id",
+            name="uq_wfm_feedback_event",
+        ),
+        Index(
+            "ix_wfm_feedback_user_chat_created",
+            "user_id",
+            "chat_id",
+            "created_at",
+        ),
+    )
+
+
+# --- waiting_for_me_actions --------------------------------------------------
+
+
+class WaitingForMeActionRow(Base):
+    """User actions on active waiting items — what the user asked Echo to do.
+
+    Each row records an action AND its handler mutates current state
+    atomically. Idempotent via ``UNIQUE(user_id, provider_event_id)``.
+
+    Action types:
+    - ``acknowledge`` — set ``acknowledged_at`` on the active item.
+    - ``snooze`` — set ``snoozed_until`` on the active item.
+    - ``resolve`` — remove the active item.
+    - ``mute_chat`` — upsert ``chat_mutes``.
+    - ``unmute_chat`` — remove ``chat_mutes``.
+    """
+
+    __tablename__ = "waiting_for_me_actions"
+
+    id: Mapped[str] = mapped_column(Uuid, primary_key=True, server_default=text("gen_random_uuid()"))
+    user_id: Mapped[str] = mapped_column(
+        Uuid,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    chat_id: Mapped[str] = mapped_column(Text, nullable=False)
+    active_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    target_version: Mapped[int | None] = mapped_column(nullable=True)
+    action_type: Mapped[str] = mapped_column(Text, nullable=False)
+    action_payload: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    provider_event_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "action_type IN ('acknowledge', 'snooze', 'resolve', 'mute_chat', 'unmute_chat')",
+            name="wfm_action_type_check",
+        ),
+        UniqueConstraint(
+            "user_id",
+            "provider_event_id",
+            name="uq_wfm_actions_event",
+        ),
+        Index(
+            "ix_wfm_actions_user_chat_created",
+            "user_id",
+            "chat_id",
+            "created_at",
+        ),
+    )
+
+
+# --- chat_mutes --------------------------------------------------------------
+
+
+class ChatMuteRow(Base):
+    """Per-user, per-chat mute record.
+
+    ``permanent = true`` with ``muted_until = NULL`` → muted forever.
+    ``permanent = false`` with ``muted_until = <timestamp>`` → temporary mute.
+    The CHECK constraint enforces this invariant.
+    """
+
+    __tablename__ = "chat_mutes"
+
+    user_id: Mapped[str] = mapped_column(
+        Uuid,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+        nullable=False,
+    )
+    chat_id: Mapped[str] = mapped_column(Text, primary_key=True, nullable=False)
+    muted_until: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=True,
+    )
+    permanent: Mapped[bool] = mapped_column(nullable=False, server_default=text("false"))
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "(permanent = true AND muted_until IS NULL) "
+            "OR (permanent = false AND muted_until IS NOT NULL)",
+            name="chat_mutes_consistency_check",
+        ),
+    )
 
 
 class DailyDigestRow(Base):

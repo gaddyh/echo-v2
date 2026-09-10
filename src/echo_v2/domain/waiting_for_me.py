@@ -106,6 +106,10 @@ class WaitingForMeActive:
             Preserved across re-analyses that remain WAITING_FOR_ME.
         notified_at: When the user was last notified about this waiting
             state. ``None`` if not yet notified.
+        acknowledged_at: When the user tapped "מטפל עכשיו". ``None`` if
+            not yet acknowledged.
+        snoozed_until: When the snooze expires. ``None`` if not snoozed.
+            While snoozed, the item is suppressed from digests.
     """
 
     user_id: str
@@ -114,3 +118,5 @@ class WaitingForMeActive:
     result_id: str
     waiting_since: datetime
     notified_at: datetime | None = None
+    acknowledged_at: datetime | None = None
+    snoozed_until: datetime | None = None

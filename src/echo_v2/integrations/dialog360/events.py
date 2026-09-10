@@ -113,6 +113,47 @@ class Dialog360EventAdapter:
                 timestamp=timestamp,
             )
 
+        if msg_type == "interactive":
+            # Interactive message reply (button or list).
+            interactive = message.get("interactive", {})
+            if not isinstance(interactive, dict):
+                return None
+
+            # Button reply: interactive.type == "button_reply"
+            if interactive.get("type") == "button_reply":
+                button_reply = interactive.get("button_reply", {})
+                button_id = button_reply.get("id", "") if isinstance(button_reply, dict) else ""
+                title = button_reply.get("title", "") if isinstance(button_reply, dict) else ""
+                if not button_id:
+                    return None
+                return BotEvent(
+                    event_id=msg_id,
+                    user_phone=str(user_phone),
+                    type=BotEventType.BUTTON_REPLY,
+                    text=str(title) if title else None,
+                    button_id=str(button_id),
+                    timestamp=timestamp,
+                )
+
+            # List reply: interactive.type == "list_reply"
+            if interactive.get("type") == "list_reply":
+                list_reply = interactive.get("list_reply", {})
+                list_id = list_reply.get("id", "") if isinstance(list_reply, dict) else ""
+                title = list_reply.get("title", "") if isinstance(list_reply, dict) else ""
+                if not list_id:
+                    return None
+                return BotEvent(
+                    event_id=msg_id,
+                    user_phone=str(user_phone),
+                    type=BotEventType.LIST_REPLY,
+                    text=str(title) if title else None,
+                    list_id=str(list_id),
+                    timestamp=timestamp,
+                )
+
+            _logger.info("provider=dialog360 event=unknown interactive_type=%s", interactive.get("type"))
+            return None
+
         _logger.info("provider=dialog360 event=unknown message_type=%s", msg_type)
         return None
 

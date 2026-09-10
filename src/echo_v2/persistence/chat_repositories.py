@@ -420,6 +420,28 @@ class WaitingForMeActiveRepository(Protocol):
         """
         ...
 
+    async def acknowledge(
+        self,
+        *,
+        user_id: str,
+        chat_id: str,
+        acknowledged_at: datetime,
+    ) -> bool:
+        """Set ``acknowledged_at`` on the active item. Returns ``True`` if
+        a row was updated."""
+        ...
+
+    async def snooze(
+        self,
+        *,
+        user_id: str,
+        chat_id: str,
+        snoozed_until: datetime,
+    ) -> bool:
+        """Set ``snoozed_until`` on the active item. Returns ``True`` if
+        a row was updated."""
+        ...
+
 
 class InMemoryWaitingForMeActiveRepository:
     """Process-local active state repository backed by a dict."""
@@ -440,7 +462,7 @@ class InMemoryWaitingForMeActiveRepository:
         key = (user_id, chat_id)
         existing = self._rows.get(key)
         if existing is not None:
-            # Preserve waiting_since and notified_at from existing row.
+            # Preserve waiting_since, notified_at, acknowledged_at, snoozed_until.
             self._rows[key] = WaitingForMeActive(
                 user_id=user_id,
                 chat_id=chat_id,
@@ -448,6 +470,8 @@ class InMemoryWaitingForMeActiveRepository:
                 result_id=result_id,
                 waiting_since=existing.waiting_since,
                 notified_at=existing.notified_at,
+                acknowledged_at=existing.acknowledged_at,
+                snoozed_until=existing.snoozed_until,
             )
         else:
             self._rows[key] = WaitingForMeActive(
@@ -493,6 +517,52 @@ class InMemoryWaitingForMeActiveRepository:
             for (uid, _cid), row in self._rows.items()
             if uid == user_id
         ]
+
+    async def acknowledge(
+        self,
+        *,
+        user_id: str,
+        chat_id: str,
+        acknowledged_at: datetime,
+    ) -> bool:
+        key = (user_id, chat_id)
+        existing = self._rows.get(key)
+        if existing is None:
+            return False
+        self._rows[key] = WaitingForMeActive(
+            user_id=existing.user_id,
+            chat_id=existing.chat_id,
+            target_version=existing.target_version,
+            result_id=existing.result_id,
+            waiting_since=existing.waiting_since,
+            notified_at=existing.notified_at,
+            acknowledged_at=acknowledged_at,
+            snoozed_until=existing.snoozed_until,
+        )
+        return True
+
+    async def snooze(
+        self,
+        *,
+        user_id: str,
+        chat_id: str,
+        snoozed_until: datetime,
+    ) -> bool:
+        key = (user_id, chat_id)
+        existing = self._rows.get(key)
+        if existing is None:
+            return False
+        self._rows[key] = WaitingForMeActive(
+            user_id=existing.user_id,
+            chat_id=existing.chat_id,
+            target_version=existing.target_version,
+            result_id=existing.result_id,
+            waiting_since=existing.waiting_since,
+            notified_at=existing.notified_at,
+            acknowledged_at=existing.acknowledged_at,
+            snoozed_until=snoozed_until,
+        )
+        return True
 
 
 _wfm_active_repo: WaitingForMeActiveRepository = InMemoryWaitingForMeActiveRepository()  # type: ignore[assignment]

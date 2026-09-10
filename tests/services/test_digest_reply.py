@@ -88,7 +88,7 @@ async def _setup_chat_with_active(
     )
 
 
-def _make_event(text="הצג הכול"):
+def _make_event(text="צפה בשיחות"):
     return BotEvent(
         event_id="wamid.TEST",
         user_phone=USER_PHONE,

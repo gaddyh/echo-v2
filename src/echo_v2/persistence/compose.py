@@ -28,6 +28,11 @@ from echo_v2.persistence.postgres_chat import (
     PostgresWaitingForMeResultRepository,
 )
 from echo_v2.persistence.postgres_digest import PostgresDailyDigestRepository
+from echo_v2.persistence.postgres_feedback import (
+    PostgresChatMuteRepository,
+    PostgresWaitingForMeActionRepository,
+    PostgresWaitingForMeFeedbackRepository,
+)
 from echo_v2.persistence.postgres_idempotency import PostgresIdempotencyStore
 from echo_v2.persistence.postgres_scheduled_actions import (
     PostgresScheduledActionRepository,
@@ -54,6 +59,9 @@ class PostgresRepos:
     chat_state: PostgresChatStateRepository
     wfm_results: PostgresWaitingForMeResultRepository
     wfm_active: PostgresWaitingForMeActiveRepository
+    wfm_feedback: PostgresWaitingForMeFeedbackRepository
+    wfm_actions: PostgresWaitingForMeActionRepository
+    chat_mutes: PostgresChatMuteRepository
     daily_digests: PostgresDailyDigestRepository
     session_factory: async_sessionmaker
     unit_of_work: type[PostgresUnitOfWork]
@@ -83,6 +91,9 @@ def build_postgres_repos(settings: DBSettings) -> PostgresRepos:
     chat_state = PostgresChatStateRepository(factory)
     wfm_results = PostgresWaitingForMeResultRepository(factory)
     wfm_active = PostgresWaitingForMeActiveRepository(factory)
+    wfm_feedback = PostgresWaitingForMeFeedbackRepository(factory)
+    wfm_actions = PostgresWaitingForMeActionRepository(factory)
+    chat_mutes = PostgresChatMuteRepository(factory)
     daily_digests = PostgresDailyDigestRepository(factory)
 
     # A UoW factory bound to the same session_factory + cipher.
@@ -99,6 +110,9 @@ def build_postgres_repos(settings: DBSettings) -> PostgresRepos:
         chat_state=chat_state,
         wfm_results=wfm_results,
         wfm_active=wfm_active,
+        wfm_feedback=wfm_feedback,
+        wfm_actions=wfm_actions,
+        chat_mutes=chat_mutes,
         daily_digests=daily_digests,
         session_factory=factory,
         unit_of_work=_BoundUoW,

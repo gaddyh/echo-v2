@@ -321,7 +321,7 @@ class OnboardingService:
                     )
                     await self.handle_connection_established(user_id, phone)
                     return
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001, S110
                 # 401 can happen transiently — keep polling.
                 pass
 

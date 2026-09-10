@@ -249,12 +249,35 @@ def create_app() -> FastAPI:
         contact_repo=contact_repo,
         bot=d360_client,
         user_provider=user_provider,
+        mute_repo=repos.chat_mutes,
         poll_interval_seconds=float(os.environ.get("DIGEST_POLL_INTERVAL", "300")),
+        template_name=os.environ.get("DIGEST_TEMPLATE_NAME", "morning_waiting_digest4"),
     )
     digest_enabled = os.environ.get("DIGEST_ENABLED", "false").lower() in (
         "1",
         "true",
         "yes",
+    )
+
+    # --- feedback flyloop (actions + feedback on waiting items) -------------
+    from echo_v2.services.feedback_handler import FeedbackHandler
+    from echo_v2.services.feedback_service import FeedbackService
+
+    feedback_service = FeedbackService(
+        active_repo=repos.wfm_active,
+        action_repo=repos.wfm_actions,
+        feedback_repo=repos.wfm_feedback,
+        mute_repo=repos.chat_mutes,
+    )
+    feedback_handler = FeedbackHandler(
+        bot=d360_client,
+        feedback_service=feedback_service,
+        active_repo=repos.wfm_active,
+        chat_state_repo=repos.chat_state,
+        message_repo=repos.messages,
+        contact_repo=contact_repo,
+        mute_repo=repos.chat_mutes,
+        user_resolver=flow_service._user_resolver,
     )
 
     # --- FastAPI app with lifespan (scheduler + worker start/stop with app) --
@@ -331,6 +354,7 @@ def create_app() -> FastAPI:
         adapter=Dialog360EventAdapter(),
         digest_reply_service=digest_reply_service,
         onboarding_service=onboarding_service,
+        feedback_handler=feedback_handler,
     )
     app.include_router(dialog360_router)
 

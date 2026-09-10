@@ -34,6 +34,7 @@ from echo_v2.persistence.chat_repositories import (
 )
 from echo_v2.persistence.contacts import ContactRepository
 from echo_v2.persistence.digest_repositories import DailyDigestRepository
+from echo_v2.persistence.feedback_repositories import ChatMuteRepository
 from echo_v2.ports.bot import BotChannel
 from echo_v2.runtime.errors import IndeterminateError, PermanentError
 from echo_v2.services.digest_formatter import DigestFormatter, DigestItem
@@ -71,7 +72,9 @@ class DigestWorker:
         contact_repo: ContactRepository,
         bot: BotChannel,
         user_provider,
+        mute_repo: ChatMuteRepository | None = None,
         poll_interval_seconds: float = 300.0,
+        template_name: str = "morning_waiting_digest4",
     ) -> None:
         self._digest_repo = digest_repo
         self._active_repo = active_repo
@@ -80,7 +83,9 @@ class DigestWorker:
         self._contact_repo = contact_repo
         self._bot = bot
         self._user_provider = user_provider
+        self._mute_repo = mute_repo
         self._poll_interval = poll_interval_seconds
+        self._template_name = template_name
         self._formatter = DigestFormatter()
 
     async def run_once(self, *, now_utc: datetime | None = None) -> int:
@@ -167,13 +172,13 @@ class DigestWorker:
         name = first_name or "חבר"  # fallback if user has no first_name
         params = self._formatter.format(items, first_name=name)
 
-        # Send via bot template.
+        # Send via bot template (2 params: first_name, count).
         try:
             msg_id = await self._bot.send_template(
                 phone,
-                "morning_waiting_digest",
+                self._template_name,
                 "he",
-                [params.first_name, params.count, params.items_text],
+                [params.first_name, params.count],
             )
         except IndeterminateError as exc:
             _logger.warning(
@@ -223,12 +228,24 @@ class DigestWorker:
         return True
 
     async def _get_current_active(self, user_id: str) -> list[WaitingForMeActive]:
-        """Get active states where target_version matches chats.activity_version."""
+        """Get active states where target_version matches chats.activity_version.
+
+        Excludes snoozed items (snoozed_until > now) and muted chats.
+        """
+        now = datetime.now(timezone.utc)
         all_active = await self._active_repo.list_all_for_user(user_id=user_id)
         current: list[WaitingForMeActive] = []
         for active in all_active:
             chat = await self._chat_state_repo.get(user_id, active.chat_id)
             if chat is not None and chat.activity_version == active.target_version:
+                # Skip snoozed items.
+                if active.snoozed_until is not None and active.snoozed_until > now:
+                    continue
+                # Skip muted chats.
+                if self._mute_repo is not None and await self._mute_repo.is_muted(
+                    user_id=user_id, chat_id=active.chat_id, now=now
+                ):
+                    continue
                 current.append(active)
         return current
 

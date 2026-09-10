@@ -122,11 +122,10 @@ async def test_digest_sent_when_in_window_and_has_active():
     assert sent == 1
     assert len(bot.sent) == 1
     _phone, template_name, language, body_params = bot.sent[0]
-    assert template_name == "morning_waiting_digest"
+    assert template_name == "morning_waiting_digest4"
     assert language == "he"
     assert body_params[0] == "גדי"  # first_name
     assert body_params[1] == "1"  # count
-    assert 'דנה' in body_params[2] or '972' in body_params[2]  # items_text
 
     # Status should be SENT
     digest = await digest_repo.get(user_id=USER_ID, local_date=date(2026, 9, 12))

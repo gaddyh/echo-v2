@@ -565,6 +565,54 @@ class PostgresWaitingForMeActiveRepository:
             rows = (await session.execute(stmt)).scalars().all()
             return [self._row_to_domain(r) for r in rows]
 
+    async def acknowledge(
+        self,
+        *,
+        user_id: str,
+        chat_id: str,
+        acknowledged_at: datetime,
+    ) -> bool:
+        from sqlalchemy import update as sa_update
+
+        async with self._session() as session:
+            stmt = (
+                sa_update(WaitingForMeActiveRow)
+                .where(
+                    WaitingForMeActiveRow.user_id == user_id,
+                    WaitingForMeActiveRow.chat_id == chat_id,
+                )
+                .values(
+                    acknowledged_at=acknowledged_at,
+                    updated_at=datetime.now(timezone.utc),
+                )
+            )
+            result = await session.execute(stmt)
+            return result.rowcount > 0
+
+    async def snooze(
+        self,
+        *,
+        user_id: str,
+        chat_id: str,
+        snoozed_until: datetime,
+    ) -> bool:
+        from sqlalchemy import update as sa_update
+
+        async with self._session() as session:
+            stmt = (
+                sa_update(WaitingForMeActiveRow)
+                .where(
+                    WaitingForMeActiveRow.user_id == user_id,
+                    WaitingForMeActiveRow.chat_id == chat_id,
+                )
+                .values(
+                    snoozed_until=snoozed_until,
+                    updated_at=datetime.now(timezone.utc),
+                )
+            )
+            result = await session.execute(stmt)
+            return result.rowcount > 0
+
     @staticmethod
     def _row_to_domain(row: WaitingForMeActiveRow) -> WaitingForMeActive:
         return WaitingForMeActive(
@@ -574,4 +622,6 @@ class PostgresWaitingForMeActiveRepository:
             result_id=str(row.result_id),
             waiting_since=row.waiting_since,
             notified_at=row.notified_at,
+            acknowledged_at=row.acknowledged_at,
+            snoozed_until=row.snoozed_until,
         )

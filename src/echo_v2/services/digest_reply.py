@@ -36,7 +36,7 @@ __all__ = ["DigestReplyService"]
 _logger = logging.getLogger("echo_v2.services.digest_reply")
 
 # The Quick Reply button text on the morning_waiting_digest template.
-_SHOW_ALL_BUTTON = "הצג הכול"
+_SHOW_ALL_BUTTON = "צפה בשיחות"
 
 
 class DigestReplyService:

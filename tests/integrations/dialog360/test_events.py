@@ -222,7 +222,7 @@ def test_parse_button_reply():
                         "id": "wamid.BUTTON1",
                         "from": "972500000001",
                         "type": "button",
-                        "button": {"text": "הצג הכול"},
+                        "button": {"text": "צפה בשיחות"},
                         "timestamp": "1700000000",
                     }],
                     "contacts": [
@@ -237,7 +237,7 @@ def test_parse_button_reply():
     assert event.event_id == "wamid.BUTTON1"
     assert event.user_phone == "972500000001"
     assert event.type is BotEventType.TEXT
-    assert event.text == "הצג הכול"
+    assert event.text == "צפה בשיחות"
     assert event.timestamp is not None
 
 

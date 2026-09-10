@@ -121,14 +121,90 @@ class Dialog360Client:
             payload,
             operation="send_template",
         )
-        msg_id = data.get("message_id") if isinstance(data, dict) else None
-        if not msg_id:
-            messages = data.get("messages") if isinstance(data, dict) else None
-            if isinstance(messages, list) and messages:
-                msg_id = messages[0].get("id")
-        if not msg_id:
-            raise PermanentError("360dialog send_template response missing message id")
-        return str(msg_id)
+        return _extract_msg_id(data, "send_template")
+
+    async def send_interactive_list(
+        self,
+        recipient: str,
+        *,
+        body_text: str,
+        button_text: str,
+        sections: list[dict[str, Any]],
+    ) -> str:
+        """Send an interactive list message.
+
+        Args:
+            recipient: Phone number (E.164 or raw).
+            body_text: The message body text (above the list button).
+            button_text: The text on the list button (max 20 chars).
+            sections: A list of section dicts, each with ``title`` and
+                ``rows``. Each row is a dict with ``id``, ``title``, and
+                optional ``description``. Max 10 rows total.
+
+        Returns the message ID assigned by 360dialog.
+        """
+        phone = _normalize_phone(recipient)
+        payload: dict[str, Any] = {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": phone,
+            "type": "interactive",
+            "interactive": {
+                "type": "list",
+                "body": {"text": body_text},
+                "action": {
+                    "button": button_text,
+                    "sections": sections,
+                },
+            },
+        }
+        data = await self._post_json(
+            f"{self._settings.api_base_url}/messages",
+            payload,
+            operation="send_interactive_list",
+        )
+        return _extract_msg_id(data, "send_interactive_list")
+
+    async def send_buttons(
+        self,
+        recipient: str,
+        *,
+        body_text: str,
+        buttons: list[dict[str, str]],
+    ) -> str:
+        """Send an interactive button message.
+
+        Args:
+            recipient: Phone number (E.164 or raw).
+            body_text: The message body text (above the buttons).
+            buttons: A list of button dicts, each with ``id`` and ``title``.
+                Max 3 buttons.
+
+        Returns the message ID assigned by 360dialog.
+        """
+        phone = _normalize_phone(recipient)
+        payload: dict[str, Any] = {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": phone,
+            "type": "interactive",
+            "interactive": {
+                "type": "button",
+                "body": {"text": body_text},
+                "action": {
+                    "buttons": [
+                        {"type": "reply", "id": b["id"], "title": b["title"]}
+                        for b in buttons
+                    ]
+                },
+            },
+        }
+        data = await self._post_json(
+            f"{self._settings.api_base_url}/messages",
+            payload,
+            operation="send_buttons",
+        )
+        return _extract_msg_id(data, "send_buttons")
 
     async def _post_json(
         self,
@@ -178,6 +254,18 @@ def _safe_json(response: httpx.Response) -> Any:
         return response.json()
     except ValueError:
         return None
+
+
+def _extract_msg_id(data: dict[str, Any], operation: str) -> str:
+    """Extract the message ID from a 360dialog send response."""
+    msg_id = data.get("message_id") if isinstance(data, dict) else None
+    if not msg_id:
+        messages = data.get("messages") if isinstance(data, dict) else None
+        if isinstance(messages, list) and messages:
+            msg_id = messages[0].get("id")
+    if not msg_id:
+        raise PermanentError(f"360dialog {operation} response missing message id")
+    return str(msg_id)
 
 
 def _normalize_phone(recipient: str) -> str:

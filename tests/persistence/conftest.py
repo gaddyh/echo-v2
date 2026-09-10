@@ -150,8 +150,14 @@ async def clean_db(engine) -> AsyncIterator[None]:
         # Order matters: respect FK constraints (children first).
         await conn.exec_driver_sql(
             "TRUNCATE TABLE "
+            "waiting_for_me_feedback, "
+            "waiting_for_me_actions, "
+            "chat_mutes, "
+            "waiting_for_me_active, "
+            "waiting_for_me_results, "
             "messages, "
             "chats, "
+            "daily_digests, "
             "scheduled_actions, "
             "idempotency_operations, "
             "provider_webhook_events, "
@@ -202,6 +208,24 @@ async def messages_repo(session_factory, clean_db):
 async def chat_state_repo(session_factory, clean_db):
     from echo_v2.persistence.postgres_chat import PostgresChatStateRepository
     return PostgresChatStateRepository(session_factory)
+
+
+@pytest_asyncio.fixture
+async def feedback_repo(session_factory, clean_db):
+    from echo_v2.persistence.postgres_feedback import PostgresWaitingForMeFeedbackRepository
+    return PostgresWaitingForMeFeedbackRepository(session_factory)
+
+
+@pytest_asyncio.fixture
+async def action_repo(session_factory, clean_db):
+    from echo_v2.persistence.postgres_feedback import PostgresWaitingForMeActionRepository
+    return PostgresWaitingForMeActionRepository(session_factory)
+
+
+@pytest_asyncio.fixture
+async def mute_repo(session_factory, clean_db):
+    from echo_v2.persistence.postgres_feedback import PostgresChatMuteRepository
+    return PostgresChatMuteRepository(session_factory)
 
 
 # --- user helper ------------------------------------------------------------

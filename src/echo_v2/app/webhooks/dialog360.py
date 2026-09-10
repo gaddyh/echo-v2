@@ -42,6 +42,7 @@ def build_router(
     dedup_store: WebhookDedupStore | None = None,
     digest_reply_service=None,
     onboarding_service=None,
+    feedback_handler=None,
 ) -> APIRouter:
     """Build a 360dialog bot webhook router.
 
@@ -56,6 +57,9 @@ def build_router(
         onboarding_service: Optional :class:`OnboardingService`. If set,
             unknown users are routed to onboarding instead of being rejected.
             Also handles the name-collection step after connection.
+        feedback_handler: Optional :class:`FeedbackHandler` pre-handler.
+            Handles the feedback flyloop: template button taps, list item
+            selections, feedback button callbacks, and miss reports.
     """
     router = APIRouter()
     parse_adapter = adapter or Dialog360EventAdapter()
@@ -91,6 +95,12 @@ def build_router(
         # Deduplicate on event_id (wamid).
         if not await store.claim(event.event_id):
             return {"status": "duplicate"}
+
+        # Pre-handler: feedback flyloop (template button, list, feedback buttons).
+        if feedback_handler is not None:
+            handled = await feedback_handler.handle(event)
+            if handled:
+                return {"status": "received"}
 
         # Pre-handler: digest reply ("הצג הכול" button).
         if digest_reply_service is not None:

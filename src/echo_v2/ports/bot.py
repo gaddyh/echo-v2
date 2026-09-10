@@ -38,6 +38,8 @@ class BotEventType(Enum):
 
     TEXT = "text"
     CONTACT = "contact"
+    BUTTON_REPLY = "button_reply"
+    LIST_REPLY = "list_reply"
 
 
 @dataclass(frozen=True)
@@ -63,6 +65,12 @@ class BotEvent:
 
     For ``TEXT`` events, ``text`` carries the message body.
     For ``CONTACT`` events, ``contact`` carries the parsed vCard data.
+    For ``BUTTON_REPLY`` events, ``button_id`` carries the structured
+        callback ID (e.g. ``wfm_feedback:{active_id}:{version}:now``)
+        and ``text`` carries the button's display text.
+    For ``LIST_REPLY`` events, ``list_id`` carries the structured
+        callback ID (e.g. ``wfm_item:{active_id}:{version}``) and ``text``
+        carries the row's display text.
     """
 
     event_id: str
@@ -70,6 +78,8 @@ class BotEvent:
     type: BotEventType
     text: str | None = None
     contact: BotContact | None = None
+    button_id: str | None = None
+    list_id: str | None = None
     timestamp: datetime | None = None
 
 
@@ -104,4 +114,41 @@ class BotChannel(Protocol):
         body_params: list[str],
     ) -> str:
         """Send a template message. Returns the provider message ID."""
+        ...
+
+    async def send_interactive_list(
+        self,
+        user_phone: str,
+        *,
+        body_text: str,
+        button_text: str,
+        sections: list[dict],
+    ) -> str:
+        """Send an interactive list message. Returns the provider message ID.
+
+        Args:
+            user_phone: The recipient's phone number.
+            body_text: The message body text (above the list button).
+            button_text: The text on the list button (max 20 chars).
+            sections: A list of section dicts, each with ``title`` and
+                ``rows``. Each row is a dict with ``id``, ``title``, and
+                optional ``description``. Max 10 rows total.
+        """
+        ...
+
+    async def send_buttons(
+        self,
+        user_phone: str,
+        *,
+        body_text: str,
+        buttons: list[dict],
+    ) -> str:
+        """Send an interactive button message. Returns the provider message ID.
+
+        Args:
+            user_phone: The recipient's phone number.
+            body_text: The message body text (above the buttons).
+            buttons: A list of button dicts, each with ``id`` and ``title``.
+                Max 3 buttons.
+        """
         ...
