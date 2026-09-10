@@ -71,6 +71,15 @@ class MessageRepository(Protocol):
         """
         ...
 
+    async def get_latest_inbound(
+        self,
+        *,
+        user_id: str,
+        chat_id: str,
+    ) -> Message | None:
+        """Get the latest inbound message for a chat, or ``None``."""
+        ...
+
 
 class InMemoryMessageRepository:
     """Process-local message repository backed by a dict.
@@ -121,6 +130,23 @@ class InMemoryMessageRepository:
         # context_messages before the outbound + the outbound + everything after.
         start = max(0, last_outbound_idx - context_messages)
         return chat_msgs[start:]
+
+    async def get_latest_inbound(
+        self,
+        *,
+        user_id: str,
+        chat_id: str,
+    ) -> Message | None:
+        from echo_v2.ports.whatsapp import MessageDirection
+
+        chat_msgs = sorted(
+            (m for m in self._messages.values()
+             if m.user_id == user_id
+             and m.chat_id == chat_id
+             and m.direction == MessageDirection.INBOUND),
+            key=lambda m: (m.timestamp, m.id),
+        )
+        return chat_msgs[-1] if chat_msgs else None
 
 
 # --- ChatStateRepository ---------------------------------------------------
@@ -381,6 +407,14 @@ class WaitingForMeActiveRepository(Protocol):
         """
         ...
 
+    async def list_all_for_user(self, *, user_id: str) -> list[WaitingForMeActive]:
+        """List all active states for a user, regardless of version match.
+
+        The caller is responsible for checking ``target_version`` against
+        ``chats.activity_version`` if needed.
+        """
+        ...
+
 
 class InMemoryWaitingForMeActiveRepository:
     """Process-local active state repository backed by a dict."""
@@ -446,6 +480,13 @@ class InMemoryWaitingForMeActiveRepository:
             for (uid, _cid), row in self._rows.items()
             if uid == user_id
             and current_versions.get(row.chat_id) == row.target_version
+        ]
+
+    async def list_all_for_user(self, *, user_id: str) -> list[WaitingForMeActive]:
+        return [
+            row
+            for (uid, _cid), row in self._rows.items()
+            if uid == user_id
         ]
 
 

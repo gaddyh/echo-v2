@@ -185,13 +185,50 @@ def create_app() -> FastAPI:
         "yes",
     )
 
+    # --- digest worker (NOT started by default — DIGEST_ENABLED) -------------
+    from echo_v2.persistence.contacts import PostgresContactRepository
+    from echo_v2.services.digest_worker import DigestWorker
+
+    contact_repo = PostgresContactRepository(repos.session_factory)
+
+    async def user_provider():
+        """Return all active users as (user_id, phone, timezone)."""
+        from sqlalchemy import select
+
+        from echo_v2.persistence.orm import UserRow
+
+        async with repos.session_factory() as session:
+            stmt = select(UserRow).where(UserRow.account_status == "active")
+            rows = (await session.execute(stmt)).scalars().all()
+            return [
+                (str(r.id), r.phone_number, r.timezone)
+                for r in rows
+            ]
+
+    digest_worker = DigestWorker(
+        digest_repo=repos.daily_digests,
+        active_repo=repos.wfm_active,
+        chat_state_repo=repos.chat_state,
+        message_repo=repos.messages,
+        contact_repo=contact_repo,
+        bot=d360_client,
+        user_provider=user_provider,
+        poll_interval_seconds=float(os.environ.get("DIGEST_POLL_INTERVAL", "300")),
+    )
+    digest_enabled = os.environ.get("DIGEST_ENABLED", "false").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
     # --- FastAPI app with lifespan (scheduler + worker start/stop with app) --
     scheduler_task: asyncio.Task | None = None
     analysis_worker_task: asyncio.Task | None = None
+    digest_worker_task: asyncio.Task | None = None
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        nonlocal scheduler_task, analysis_worker_task
+        nonlocal scheduler_task, analysis_worker_task, digest_worker_task
         # Startup: recover stale actions + start scheduler loop.
         try:
             recovered = await scheduler.recover()
@@ -207,9 +244,21 @@ def create_app() -> FastAPI:
             analysis_worker_task = asyncio.create_task(analysis_worker.run_loop())
             _logger.info("chat analysis worker loop started")
 
+        # Start digest worker only if explicitly enabled.
+        if digest_enabled:
+            digest_worker_task = asyncio.create_task(digest_worker.run_loop())
+            _logger.info("digest worker loop started")
+
         yield
 
         # Shutdown: cancel the loops.
+        if digest_worker_task is not None:
+            digest_worker_task.cancel()
+            try:
+                await digest_worker_task
+            except asyncio.CancelledError:
+                pass
+            _logger.info("digest worker loop stopped")
         if analysis_worker_task is not None:
             analysis_worker_task.cancel()
             try:

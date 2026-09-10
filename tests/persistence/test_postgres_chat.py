@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 import pytest_asyncio
 
 from echo_v2.domain.chat import Message
+from echo_v2.domain.digest import DailyDigestStatus
 from echo_v2.ports.whatsapp import MessageDirection, MessageKind
 from tests.persistence.conftest import insert_user
 
@@ -885,3 +886,149 @@ async def test_wfm_active_list_active(wfm_active_repo, session_factory):
     )
     assert len(active) == 1
     assert active[0].chat_id == "chat-1@c.us"
+
+
+# --- PostgresDailyDigestRepository ------------------------------------------
+
+
+@pytest_asyncio.fixture
+async def digest_repo(session_factory, clean_db):
+    from echo_v2.persistence.postgres_digest import PostgresDailyDigestRepository
+
+    return PostgresDailyDigestRepository(session_factory)
+
+
+async def test_digest_claim_inserts_new(digest_repo, session_factory):
+    user_id = await insert_user(session_factory)
+    digest = await digest_repo.claim_or_get(
+        user_id=user_id,
+        local_date=date(2026, 9, 12),
+    )
+    assert digest is not None
+    assert digest.status == "processing"
+
+
+async def test_digest_claim_returns_none_if_exists(digest_repo, session_factory):
+    user_id = await insert_user(session_factory)
+    first = await digest_repo.claim_or_get(
+        user_id=user_id,
+        local_date=date(2026, 9, 12),
+    )
+    assert first is not None
+    second = await digest_repo.claim_or_get(
+        user_id=user_id,
+        local_date=date(2026, 9, 12),
+    )
+    assert second is None
+
+
+async def test_digest_update_status_sent(digest_repo, session_factory):
+    user_id = await insert_user(session_factory)
+    digest = await digest_repo.claim_or_get(
+        user_id=user_id,
+        local_date=date(2026, 9, 12),
+    )
+    assert digest is not None
+    sent_at = datetime(2026, 9, 12, 8, 0, 0, tzinfo=timezone.utc)
+    updated = await digest_repo.update_status(
+        digest_id=digest.id,
+        status=DailyDigestStatus.SENT,
+        sent_at=sent_at,
+        provider_message_id="msg-123",
+        item_count=3,
+    )
+    assert updated is True
+    row = await digest_repo.get(user_id=user_id, local_date=date(2026, 9, 12))
+    assert row is not None
+    assert row.status == DailyDigestStatus.SENT
+    assert row.sent_at is not None
+    assert row.provider_message_id == "msg-123"
+    assert row.item_count == 3
+
+
+async def test_digest_update_status_empty(digest_repo, session_factory):
+    user_id = await insert_user(session_factory)
+    digest = await digest_repo.claim_or_get(
+        user_id=user_id,
+        local_date=date(2026, 9, 12),
+    )
+    assert digest is not None
+    await digest_repo.update_status(
+        digest_id=digest.id,
+        status=DailyDigestStatus.EMPTY,
+        item_count=0,
+    )
+    row = await digest_repo.get(user_id=user_id, local_date=date(2026, 9, 12))
+    assert row is not None
+    assert row.status == DailyDigestStatus.EMPTY
+
+
+async def test_digest_get_returns_none_if_not_exists(digest_repo, session_factory):
+    user_id = await insert_user(session_factory)
+    row = await digest_repo.get(user_id=user_id, local_date=date(2026, 9, 12))
+    assert row is None
+
+
+async def test_digest_different_users_same_date(digest_repo, session_factory):
+    user1 = await insert_user(session_factory, phone="972501111111")
+    user2 = await insert_user(session_factory, phone="972502222222")
+    d1 = await digest_repo.claim_or_get(user_id=user1, local_date=date(2026, 9, 12))
+    d2 = await digest_repo.claim_or_get(user_id=user2, local_date=date(2026, 9, 12))
+    assert d1 is not None
+    assert d2 is not None
+    assert d1.id != d2.id
+
+
+async def test_message_get_latest_inbound(session_factory, clean_db):
+    """Test PostgresMessageRepository.get_latest_inbound."""
+    from echo_v2.persistence.postgres_chat import PostgresMessageRepository
+
+    user_id = await insert_user(session_factory)
+    conn_id = await _seed_connection(session_factory, user_id)
+    message_repo = PostgresMessageRepository(session_factory)
+
+    # Save an outbound message
+    await message_repo.save(Message(
+        id=str(uuid.uuid4()),
+        user_id=user_id,
+        connection_id=conn_id,
+        chat_id="chat-1@c.us",
+        provider_message_id="msg-1",
+        direction=MessageDirection.OUTBOUND,
+        sender_id="me",
+        timestamp=datetime(2026, 9, 12, 10, 0, 0, tzinfo=timezone.utc),
+        message_type="text",
+        text="my reply",
+    ))
+    # Save an inbound message after it
+    await message_repo.save(Message(
+        id=str(uuid.uuid4()),
+        user_id=user_id,
+        connection_id=conn_id,
+        chat_id="chat-1@c.us",
+        provider_message_id="msg-2",
+        direction=MessageDirection.INBOUND,
+        sender_id="them",
+        timestamp=datetime(2026, 9, 12, 10, 5, 0, tzinfo=timezone.utc),
+        message_type="text",
+        text="their reply",
+    ))
+
+    latest = await message_repo.get_latest_inbound(
+        user_id=user_id,
+        chat_id="chat-1@c.us",
+    )
+    assert latest is not None
+    assert latest.text == "their reply"
+
+
+async def test_message_get_latest_inbound_returns_none_if_empty(session_factory, clean_db):
+    from echo_v2.persistence.postgres_chat import PostgresMessageRepository
+
+    user_id = await insert_user(session_factory)
+    message_repo = PostgresMessageRepository(session_factory)
+    latest = await message_repo.get_latest_inbound(
+        user_id=user_id,
+        chat_id="chat-1@c.us",
+    )
+    assert latest is None

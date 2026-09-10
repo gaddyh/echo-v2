@@ -20,7 +20,7 @@ between domain dataclasses and these rows.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 
 from sqlalchemy import (
     CheckConstraint,
@@ -559,4 +559,47 @@ class WaitingForMeActiveRow(Base):
         TIMESTAMP(timezone=True),
         nullable=False,
         server_default=func.now(),
+    )
+
+
+# --- daily_digests ----------------------------------------------------------
+
+
+class DailyDigestRow(Base):
+    """One row per user per local_date — tracks whether a digest was sent.
+
+    The UNIQUE(user_id, local_date) constraint provides dedup. If the
+    worker crashes after sending but before updating status, the row
+    already exists and won't be re-created on the next poll.
+    """
+
+    __tablename__ = "daily_digests"
+
+    id: Mapped[str] = mapped_column(Uuid, primary_key=True, server_default=text("gen_random_uuid()"))
+    user_id: Mapped[str] = mapped_column(
+        Uuid,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    local_date: Mapped[date] = mapped_column(nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default="processing")
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    sent_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=True,
+    )
+    provider_message_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    item_count: Mapped[int] = mapped_column(nullable=False, server_default=text("0"))
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "local_date", name="daily_digests_user_date_key"),
+        CheckConstraint(
+            "status IN ('processing', 'sent', 'empty', 'indeterminate', 'failed')",
+            name="daily_digests_status_check",
+        ),
+        Index("ix_daily_digests_user_date", "user_id", "local_date"),
     )

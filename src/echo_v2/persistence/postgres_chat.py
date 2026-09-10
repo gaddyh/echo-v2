@@ -205,6 +205,32 @@ class PostgresMessageRepository:
             rows = (await session.execute(stmt)).scalars().all()
             return [self._row_to_domain(r) for r in rows]
 
+    async def get_latest_inbound(
+        self,
+        *,
+        user_id: str,
+        chat_id: str,
+    ) -> Message | None:
+        async with self._session() as session:
+            stmt = (
+                select(MessageRow)
+                .where(
+                    MessageRow.user_id == user_id,
+                    MessageRow.chat_id == chat_id,
+                    MessageRow.direction == MessageDirection.INBOUND.value,
+                )
+                .order_by(
+                    desc(MessageRow.timestamp),
+                    desc(MessageRow.created_at),
+                    desc(MessageRow.id),
+                )
+                .limit(1)
+            )
+            row = (await session.execute(stmt)).scalar_one_or_none()
+            if row is None:
+                return None
+            return self._row_to_domain(row)
+
     @staticmethod
     def _row_to_domain(row: MessageRow) -> Message:
         return Message(
@@ -522,6 +548,14 @@ class PostgresWaitingForMeActiveRepository:
                 for r in rows
                 if current_versions.get(r.chat_id) == r.target_version
             ]
+
+    async def list_all_for_user(self, *, user_id: str) -> list[WaitingForMeActive]:
+        async with self._session() as session:
+            stmt = select(WaitingForMeActiveRow).where(
+                WaitingForMeActiveRow.user_id == user_id,
+            )
+            rows = (await session.execute(stmt)).scalars().all()
+            return [self._row_to_domain(r) for r in rows]
 
     @staticmethod
     def _row_to_domain(row: WaitingForMeActiveRow) -> WaitingForMeActive:

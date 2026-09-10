@@ -27,6 +27,7 @@ from echo_v2.persistence.postgres_chat import (
     PostgresWaitingForMeActiveRepository,
     PostgresWaitingForMeResultRepository,
 )
+from echo_v2.persistence.postgres_digest import PostgresDailyDigestRepository
 from echo_v2.persistence.postgres_idempotency import PostgresIdempotencyStore
 from echo_v2.persistence.postgres_scheduled_actions import (
     PostgresScheduledActionRepository,
@@ -53,6 +54,7 @@ class PostgresRepos:
     chat_state: PostgresChatStateRepository
     wfm_results: PostgresWaitingForMeResultRepository
     wfm_active: PostgresWaitingForMeActiveRepository
+    daily_digests: PostgresDailyDigestRepository
     session_factory: async_sessionmaker
     unit_of_work: type[PostgresUnitOfWork]
 
@@ -81,6 +83,7 @@ def build_postgres_repos(settings: DBSettings) -> PostgresRepos:
     chat_state = PostgresChatStateRepository(factory)
     wfm_results = PostgresWaitingForMeResultRepository(factory)
     wfm_active = PostgresWaitingForMeActiveRepository(factory)
+    daily_digests = PostgresDailyDigestRepository(factory)
 
     # A UoW factory bound to the same session_factory + cipher.
     class _BoundUoW(PostgresUnitOfWork):
@@ -96,6 +99,7 @@ def build_postgres_repos(settings: DBSettings) -> PostgresRepos:
         chat_state=chat_state,
         wfm_results=wfm_results,
         wfm_active=wfm_active,
+        daily_digests=daily_digests,
         session_factory=factory,
         unit_of_work=_BoundUoW,
     )
