@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import desc, select, update
+from sqlalchemy import desc, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
@@ -111,66 +111,86 @@ class PostgresMessageRepository:
         context_messages: int = 5,
         max_no_outbound: int = 20,
     ) -> list[Message]:
+        """Load messages relevant for chat analysis.
+
+        Uses ``ROW_NUMBER() OVER (ORDER BY timestamp, created_at, id)`` for
+        deterministic ordering even when messages share a timestamp.
+
+        Finds the last outbound message. Returns all messages after it
+        (the inbound burst) plus ``context_messages`` messages before it
+        for context. The last outbound is included in the window.
+
+        If no outbound exists, returns the last ``max_no_outbound`` messages.
+        """
         async with self._session() as session:
-            # Find the last outbound message timestamp.
-            last_outbound_stmt = (
-                select(MessageRow.timestamp)
+            # Build a CTE with row numbers for deterministic ordering.
+            ordered = (
+                select(
+                    MessageRow.id,
+                    MessageRow.direction,
+                    func.row_number()
+                    .over(
+                        order_by=(
+                            MessageRow.timestamp,
+                            MessageRow.created_at,
+                            MessageRow.id,
+                        )
+                    )
+                    .label("rn"),
+                )
                 .where(
                     MessageRow.user_id == user_id,
                     MessageRow.chat_id == chat_id,
-                    MessageRow.direction == MessageDirection.OUTBOUND.value,
                 )
-                .order_by(desc(MessageRow.timestamp))
+                .cte("ordered")
+            )
+
+            # Find the row number of the last outbound message.
+            last_outbound_rn = (
+                select(ordered.c.rn)
+                .where(ordered.c.direction == MessageDirection.OUTBOUND.value)
+                .order_by(desc(ordered.c.rn))
                 .limit(1)
             )
-            last_outbound_ts = (
-                await session.execute(last_outbound_stmt)
+            outbound_rn = (
+                await session.execute(last_outbound_rn)
             ).scalar_one_or_none()
 
-            if last_outbound_ts is None:
+            if outbound_rn is None:
                 # No outbound — return last max_no_outbound messages.
+                max_rn = (
+                    select(func.max(ordered.c.rn)).select_from(ordered)
+                )
+                total = (await session.execute(max_rn)).scalar_one()
+                if total is None:
+                    return []
+                start_rn = max(1, total - max_no_outbound + 1)
                 stmt = (
                     select(MessageRow)
-                    .where(
-                        MessageRow.user_id == user_id,
-                        MessageRow.chat_id == chat_id,
+                    .join(ordered, MessageRow.id == ordered.c.id)
+                    .where(ordered.c.rn >= start_rn)
+                    .order_by(
+                        MessageRow.timestamp,
+                        MessageRow.created_at,
+                        MessageRow.id,
                     )
-                    .order_by(desc(MessageRow.timestamp))
-                    .limit(max_no_outbound)
                 )
-                rows = (await session.execute(stmt)).scalars().all()
-                # Reverse to ascending order.
-                rows = list(reversed(rows))
             else:
-                # Find the cutoff: the timestamp of the context_messages-th
-                # message strictly before the last outbound.
-                cutoff_stmt = (
-                    select(MessageRow.timestamp)
-                    .where(
-                        MessageRow.user_id == user_id,
-                        MessageRow.chat_id == chat_id,
-                        MessageRow.timestamp < last_outbound_ts,
-                    )
-                    .order_by(desc(MessageRow.timestamp))
-                    .limit(context_messages)
-                )
-                cutoff_rows = (await session.execute(cutoff_stmt)).scalars().all()
-                if cutoff_rows:
-                    cutoff_ts = min(cutoff_rows)
-                else:
-                    cutoff_ts = last_outbound_ts
-
+                # Include context_messages before the outbound + the outbound
+                # + everything after it.
+                start_rn = max(1, outbound_rn - context_messages)
                 stmt = (
                     select(MessageRow)
-                    .where(
-                        MessageRow.user_id == user_id,
-                        MessageRow.chat_id == chat_id,
-                        MessageRow.timestamp >= cutoff_ts,
+                    .join(ordered, MessageRow.id == ordered.c.id)
+                    .where(ordered.c.rn >= start_rn)
+                    .order_by(
+                        MessageRow.timestamp,
+                        MessageRow.created_at,
+                        MessageRow.id,
                     )
-                    .order_by(MessageRow.timestamp)
                 )
-                rows = (await session.execute(stmt)).scalars().all()
 
+            rows = (await session.execute(stmt)).scalars().all()
             return [self._row_to_domain(r) for r in rows]
 
     @staticmethod

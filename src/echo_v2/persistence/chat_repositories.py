@@ -93,11 +93,11 @@ class InMemoryMessageRepository:
     ) -> list[Message]:
         from echo_v2.ports.whatsapp import MessageDirection
 
-        # Filter to this chat, ordered by timestamp.
+        # Filter to this chat, ordered by (timestamp, id) for determinism.
         chat_msgs = sorted(
             (m for m in self._messages.values()
              if m.user_id == user_id and m.chat_id == chat_id),
-            key=lambda m: m.timestamp,
+            key=lambda m: (m.timestamp, m.id),
         )
         if not chat_msgs:
             return []
@@ -113,7 +113,7 @@ class InMemoryMessageRepository:
             # No outbound — return last max_no_outbound messages.
             return chat_msgs[-max_no_outbound:]
 
-        # All messages after the last outbound + context_messages before it.
+        # context_messages before the outbound + the outbound + everything after.
         start = max(0, last_outbound_idx - context_messages)
         return chat_msgs[start:]
 
