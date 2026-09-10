@@ -141,6 +141,10 @@ class OnboardingService:
 
         Idempotent: if onboarding is already pending, re-send OTP instructions
         instead of creating a new instance.
+
+        The instance creation (which can take 1-2 minutes) runs in the
+        background — we send an immediate "please wait" message, then
+        fire off the provisioning + OTP as a background task.
         """
         normalized = self._normalize_phone(phone)
         if normalized is None:
@@ -172,6 +176,28 @@ class OnboardingService:
             _logger.exception("onboarding: failed to create user %s", normalized)
             return
 
+        # Send immediate "please wait" message — instance creation takes 1-2 min.
+        await self._bot.send_text(
+            normalized,
+            "מחבר אותך ל-Echo... זה יכול לקחת דקה-שתיים. רגע ותקבל את הקוד. ⏳",
+        )
+
+        # Fire off the provisioning + OTP in the background.
+        import asyncio
+        asyncio.create_task(
+            self._provision_and_send_otp(user_id, normalized)
+        )
+
+    async def _provision_and_send_otp(
+        self,
+        user_id: str,
+        phone: str,
+    ) -> None:
+        """Create Green instance + get OTP + send instructions.
+
+        Runs in the background — instance creation can take 1-2 minutes.
+        Updates onboarding_status to ``failed`` on error.
+        """
         # Create Green instance + configure webhook.
         webhook_token = secrets.token_urlsafe(32)
         webhook_url = f"{self._webhook_base_url}/webhooks/whatsapp/green"
@@ -184,10 +210,10 @@ class OnboardingService:
         try:
             created = await self._provisioner.create_connection(config)
         except Exception:
-            _logger.exception("onboarding: failed to create Green instance for %s", normalized)
+            _logger.exception("onboarding: failed to create Green instance for %s", phone)
             await self._user_repo.update_onboarding_status(user_id, "failed")
             await self._bot.send_text(
-                normalized,
+                phone,
                 "מצטער, לא הצלחתי ליצור את החיבור. נסה שוב מאוחר יותר.",
             )
             return
@@ -204,7 +230,7 @@ class OnboardingService:
         await self._connection_repo.save(conn)
 
         # Get the OTP.
-        phone_int = int(normalized.lstrip("+"))
+        phone_int = int(phone.lstrip("+"))
         api_token = created.credentials.data.decode("utf-8")
         try:
             code = await self._green_client.get_authorization_code(
@@ -213,18 +239,18 @@ class OnboardingService:
                 phone_int,
             )
         except Exception:
-            _logger.exception("onboarding: failed to get OTP for %s", normalized)
+            _logger.exception("onboarding: failed to get OTP for %s", phone)
             await self._user_repo.update_onboarding_status(user_id, "failed")
             await self._bot.send_text(
-                normalized,
+                phone,
                 "מצטער, לא הצלחתי לקבל את קוד האימות. נסה שוב מאוחר יותר.",
             )
             return
 
         # Send OTP + instructions.
         message = _OTP_INSTRUCTIONS.format(code=code)
-        await self._bot.send_text(normalized, message)
-        _logger.info("onboarding: OTP sent to %s", normalized)
+        await self._bot.send_text(phone, message)
+        _logger.info("onboarding: OTP sent to %s", phone)
 
     async def handle_resend_request(self, phone: str) -> None:
         """Handle a user sending 'קוד' to re-request the OTP."""

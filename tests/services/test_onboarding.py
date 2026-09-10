@@ -176,6 +176,10 @@ async def test_unknown_user_starts_onboarding(fakes):
 
     await service.handle_unknown_user("+972546610653")
 
+    # Wait for background task to complete.
+    import asyncio
+    await asyncio.sleep(0.1)
+
     # User created with pending status.
     user = await user_repo.get_by_phone("+972546610653")
     assert user is not None
@@ -188,9 +192,11 @@ async def test_unknown_user_starts_onboarding(fakes):
     _id_instance, _token, phone_int = green_client.otp_calls[0]
     assert phone_int == 972546610653
 
-    # Bot sent the OTP instructions.
-    assert len(bot.sent) == 1
-    _phone, message = bot.sent[0]
+    # Bot sent: 1) "please wait" 2) OTP instructions.
+    assert len(bot.sent) == 2
+    _phone_wait, wait_msg = bot.sent[0]
+    assert "מחבר" in wait_msg
+    _phone, message = bot.sent[1]
     assert "87654321" in message
     assert "הקוד שלך" in message
 
@@ -201,10 +207,13 @@ async def test_pending_user_resends_otp(fakes):
 
     # First message starts onboarding.
     await service.handle_unknown_user("+972546610653")
+    import asyncio
+    await asyncio.sleep(0.1)
     assert len(green_client.otp_calls) == 1
 
     # Second message (same user) should re-send OTP, not create a new instance.
     await service.handle_unknown_user("+972546610653")
+    await asyncio.sleep(0.1)
     assert len(green_client.otp_calls) == 2  # re-requested OTP
 
     # Only one user exists.
@@ -236,6 +245,8 @@ async def test_connection_established_sends_welcome(fakes):
     service, bot, user_repo, _conn_repo, _green_client = fakes
 
     await service.handle_unknown_user("+972546610653")
+    import asyncio
+    await asyncio.sleep(0.1)
     user = await user_repo.get_by_phone("+972546610653")
     user_id = user[0]
 
@@ -245,9 +256,9 @@ async def test_connection_established_sends_welcome(fakes):
     user = await user_repo.get_by_phone("+972546610653")
     assert user[1] == "connected"
 
-    # Welcome message sent (second message, after OTP).
-    assert len(bot.sent) == 2
-    _phone, welcome = bot.sent[1]
+    # Bot sent: 1) "please wait" 2) OTP 3) welcome.
+    assert len(bot.sent) == 3
+    _phone, welcome = bot.sent[2]
     assert "היי" in welcome
     assert "Echo" in welcome
     assert "איך אפנה אליך" in welcome
@@ -258,6 +269,8 @@ async def test_name_response_completes_onboarding(fakes):
     service, bot, user_repo, _conn_repo, _green_client = fakes
 
     await service.handle_unknown_user("+972546610653")
+    import asyncio
+    await asyncio.sleep(0.1)
     user = await user_repo.get_by_phone("+972546610653")
     user_id = user[0]
 
@@ -271,9 +284,9 @@ async def test_name_response_completes_onboarding(fakes):
     assert user[1] == "active"
     assert user[2] == "Dana"
 
-    # Confirmation message sent.
-    assert len(bot.sent) == 3
-    _phone, confirm = bot.sent[2]
+    # Bot sent: 1) "please wait" 2) OTP 3) welcome 4) name confirmation.
+    assert len(bot.sent) == 4
+    _phone, confirm = bot.sent[3]
     assert "Dana" in confirm
     assert "נחמד להכיר" in confirm
 
@@ -293,6 +306,8 @@ async def test_is_onboarding_true_for_pending(fakes):
     service, _bot, _user_repo, _conn_repo, _green_client = fakes
 
     await service.handle_unknown_user("+972546610653")
+    import asyncio
+    await asyncio.sleep(0.1)
     assert await service.is_onboarding("+972546610653") is True
 
 
@@ -318,14 +333,17 @@ async def test_resend_request_sends_new_otp(fakes):
     service, bot, _user_repo, _conn_repo, green_client = fakes
 
     await service.handle_unknown_user("+972546610653")
+    import asyncio
+    await asyncio.sleep(0.1)
     assert len(green_client.otp_calls) == 1
 
     await service.handle_resend_request("+972546610653")
+    await asyncio.sleep(0.1)
     assert len(green_client.otp_calls) == 2
 
-    # Second message sent.
-    assert len(bot.sent) == 2
-    _phone, message = bot.sent[1]
+    # Bot sent: 1) "please wait" 2) OTP 3) re-sent OTP.
+    assert len(bot.sent) == 3
+    _phone, message = bot.sent[2]
     assert "87654321" in message
 
 
@@ -334,6 +352,8 @@ async def test_connection_established_by_id(fakes):
     service, bot, user_repo, _conn_repo, _green_client = fakes
 
     await service.handle_unknown_user("+972546610653")
+    import asyncio
+    await asyncio.sleep(0.1)
     user = await user_repo.get_by_phone("+972546610653")
     user_id = user[0]
 
@@ -341,7 +361,8 @@ async def test_connection_established_by_id(fakes):
 
     user = await user_repo.get_by_phone("+972546610653")
     assert user[1] == "connected"
-    assert len(bot.sent) == 2  # OTP + welcome
+    # Bot sent: 1) "please wait" 2) OTP 3) welcome.
+    assert len(bot.sent) == 3
 
 
 async def test_invalid_phone_ignored(fakes):
