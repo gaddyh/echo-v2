@@ -277,15 +277,19 @@ class OnboardingService:
         id_instance: str,
         api_token: str,
     ) -> bool:
-        """Poll getStateInstance until it returns a non-null state.
+        """Poll getStateInstance until it returns ``notAuthorized``.
 
-        Green API creates the instance asynchronously — ``createInstance``
-        returns immediately, but the instance isn't ready for pairing
-        until ``getStateInstance`` returns a non-null ``stateInstance``.
-        We poll every ``poll_interval`` seconds for up to
-        ``poll_max_attempts`` attempts (default: 5s × 24 = 2 minutes).
+        Green API creates the instance asynchronously. States:
+        - ``None`` — instance still being created (getStateInstance returns null)
+        - ``starting`` — instance is initializing, not ready for pairing
+        - ``notAuthorized`` — ready for pairing (QR or OTP)
+        - ``authorized`` — already paired
 
-        Returns ``True`` if the instance is ready, ``False`` on timeout.
+        We poll until ``notAuthorized`` (or ``authorized`` if re-pairing).
+        401 errors are expected during creation — the API token isn't
+        valid until the instance is fully created.
+
+        Returns ``True`` if the instance is ready for pairing, ``False`` on timeout.
         """
         import asyncio
 
@@ -295,10 +299,7 @@ class OnboardingService:
                     id_instance,
                     api_token,
                 )
-                # ``None`` means the instance is still being created.
-                # Any non-null state (``notAuthorized``, ``authorized``) means
-                # the instance is ready.
-                if state is not None:
+                if state in ("notAuthorized", "authorized"):
                     _logger.info(
                         "onboarding: instance %s ready (state=%s, attempt=%d)",
                         id_instance,
@@ -306,11 +307,18 @@ class OnboardingService:
                         attempt + 1,
                     )
                     return True
-            except Exception:
-                _logger.warning(
-                    "onboarding: getStateInstance failed (attempt=%d)",
+                _logger.info(
+                    "onboarding: instance %s not ready (state=%s, attempt=%d)",
+                    id_instance,
+                    state,
                     attempt + 1,
-                    exc_info=True,
+                )
+            except Exception as exc:
+                # 401 is expected during creation — the token isn't valid yet.
+                _logger.info(
+                    "onboarding: getStateInstance failed (attempt=%d): %s",
+                    attempt + 1,
+                    exc,
                 )
             await asyncio.sleep(self._poll_interval)
 

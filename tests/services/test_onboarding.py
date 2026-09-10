@@ -388,8 +388,8 @@ async def test_instance_not_ready_sends_failure(fakes):
     """If instance never becomes ready, user gets a failure message."""
     service, bot, user_repo, _conn_repo, green_client = fakes
 
-    # Simulate instance stuck in "creating" — always returns None.
-    green_client.set_state_sequence([None] * 30)
+    # Simulate instance stuck in "starting" — never reaches notAuthorized.
+    green_client.set_state_sequence(["starting"] * 30)
 
     await service.handle_unknown_user("+972546610653")
     import asyncio
@@ -405,3 +405,22 @@ async def test_instance_not_ready_sends_failure(fakes):
     _phone, failure_msg = bot.sent[1]
     assert "מצטער" in failure_msg
     assert len(green_client.otp_calls) == 0
+
+
+async def test_instance_starting_then_not_authorized(fakes):
+    """Instance goes through 'starting' before 'notAuthorized' — OTP sent."""
+    service, bot, _user_repo, _conn_repo, green_client = fakes
+
+    # Simulate: starting → notAuthorized (ready for OTP).
+    green_client.set_state_sequence(["starting", "notAuthorized"])
+
+    await service.handle_unknown_user("+972546610653")
+    import asyncio
+    await asyncio.sleep(0.5)
+
+    # OTP was requested after reaching notAuthorized.
+    assert len(green_client.otp_calls) == 1
+    # Bot sent: 1) "please wait" 2) OTP instructions.
+    assert len(bot.sent) == 2
+    _phone, message = bot.sent[1]
+    assert "87654321" in message
