@@ -21,12 +21,14 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from echo_v2.domain.chat import ChatState, Message
-from echo_v2.persistence.orm import ChatRow, MessageRow
+from echo_v2.domain.waiting_for_me import WaitingForMeDecision, WaitingForMeResult
+from echo_v2.persistence.orm import ChatRow, MessageRow, WaitingForMeResultRow
 from echo_v2.ports.whatsapp import MessageDirection
 
 __all__ = [
     "PostgresChatStateRepository",
     "PostgresMessageRepository",
+    "PostgresWaitingForMeResultRepository",
 ]
 
 
@@ -329,4 +331,81 @@ class PostgresChatStateRepository:
             last_direction=MessageDirection(row.last_direction),
             next_analysis_at=row.next_analysis_at,
             last_processed_version=row.last_processed_version,
+        )
+
+
+# --- PostgresWaitingForMeResultRepository -----------------------------------
+
+
+class PostgresWaitingForMeResultRepository:
+    """PostgreSQL implementation of :class:`WaitingForMeResultRepository`.
+
+    Stores one immutable row per analysis run. ``save`` is a simple INSERT
+    — no dedup, no upsert. If the worker reprocesses the same version
+    (e.g. after a crash), a new row is created with a new ``id`` and
+    ``created_at``.
+    """
+
+    def __init__(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        *,
+        session: AsyncSession | None = None,
+    ) -> None:
+        self._session_factory = session_factory
+        self._shared_session = session
+
+    def _session(self) -> _SessionContext:
+        if self._shared_session is not None:
+            return _SessionContext(self._shared_session, owns=False)
+        return _SessionContext(self._session_factory(), owns=True)
+
+    async def save(
+        self,
+        *,
+        user_id: str,
+        chat_id: str,
+        result: WaitingForMeResult,
+    ) -> None:
+        async with self._session() as session:
+            stmt = (
+                pg_insert(WaitingForMeResultRow)
+                .values(
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    target_version=result.target_version,
+                    decision=result.decision.value,
+                    confidence=result.confidence,
+                    reason=result.reason,
+                )
+            )
+            await session.execute(stmt)
+
+    async def list_recent(
+        self,
+        *,
+        user_id: str,
+        chat_id: str,
+        limit: int = 10,
+    ) -> list[WaitingForMeResult]:
+        async with self._session() as session:
+            stmt = (
+                select(WaitingForMeResultRow)
+                .where(
+                    WaitingForMeResultRow.user_id == user_id,
+                    WaitingForMeResultRow.chat_id == chat_id,
+                )
+                .order_by(desc(WaitingForMeResultRow.created_at))
+                .limit(limit)
+            )
+            rows = (await session.execute(stmt)).scalars().all()
+            return [self._row_to_domain(r) for r in rows]
+
+    @staticmethod
+    def _row_to_domain(row: WaitingForMeResultRow) -> WaitingForMeResult:
+        return WaitingForMeResult(
+            decision=WaitingForMeDecision(row.decision),
+            confidence=row.confidence,
+            reason=row.reason,
+            target_version=row.target_version,
         )

@@ -39,7 +39,11 @@ from datetime import datetime, timezone
 from typing import Protocol, runtime_checkable
 
 from echo_v2.domain.chat import ChatState
-from echo_v2.persistence.chat_repositories import ChatStateRepository, MessageRepository
+from echo_v2.persistence.chat_repositories import (
+    ChatStateRepository,
+    MessageRepository,
+    WaitingForMeResultRepository,
+)
 from echo_v2.services.waiting_for_me_analyzer import WaitingForMeAnalyzer
 
 __all__ = [
@@ -107,19 +111,21 @@ class RecordingAnalysisProcessor:
 
 
 class ChatAnalysisProcessor:
-    """Loads messages, builds conversation input, and runs WaitingForMe analysis.
+    """Loads messages, builds conversation input, runs analysis, stores result.
 
-    Stage 2: message loading + LLM analysis. The processor loads messages
-    via :meth:`MessageRepository.list_for_analysis`, builds a
-    :class:`ConversationInput`, and passes it to a
-    :class:`WaitingForMeAnalyzer`. The resulting :class:`WaitingForMeResult`
-    is logged — result storage comes in a later stage.
+    Stage 3: message loading + LLM analysis + result storage. The processor
+    loads messages via :meth:`MessageRepository.list_for_analysis`, builds a
+    :class:`ConversationInput`, passes it to a :class:`WaitingForMeAnalyzer`,
+    and stores the :class:`WaitingForMeResult` via
+    :class:`WaitingForMeResultRepository`.
 
     Args:
         message_repo: The :class:`MessageRepository` for
             :meth:`list_for_analysis`.
         analyzer: The :class:`WaitingForMeAnalyzer` that produces the
             :class:`WaitingForMeResult`.
+        result_repo: The :class:`WaitingForMeResultRepository` that stores
+            the result. If ``None``, results are logged but not persisted.
         context_messages: Number of messages before the last outbound
             to include for context. Default 5.
         max_no_outbound: If no outbound exists, load this many recent
@@ -130,12 +136,14 @@ class ChatAnalysisProcessor:
         self,
         message_repo: MessageRepository,
         analyzer: WaitingForMeAnalyzer,
+        result_repo: WaitingForMeResultRepository | None = None,
         *,
         context_messages: int = 5,
         max_no_outbound: int = 20,
     ) -> None:
         self._messages = message_repo
         self._analyzer = analyzer
+        self._result_repo = result_repo
         self._context_messages = context_messages
         self._max_no_outbound = max_no_outbound
 
@@ -170,6 +178,18 @@ class ChatAnalysisProcessor:
             result.confidence,
             result.reason,
         )
+        if self._result_repo is not None:
+            await self._result_repo.save(
+                user_id=user_id,
+                chat_id=chat_id,
+                result=result,
+            )
+            _logger.info(
+                "stored result for chat %s/%s (version %d)",
+                user_id,
+                chat_id,
+                target_version,
+            )
 
 
 class ChatAnalysisWorker:

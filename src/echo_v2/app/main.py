@@ -169,6 +169,7 @@ def create_app() -> FastAPI:
     analysis_processor = ChatAnalysisProcessor(
         message_repo=repos.messages,
         analyzer=analyzer,
+        result_repo=repos.wfm_results,
         context_messages=5,
         max_no_outbound=20,
     )

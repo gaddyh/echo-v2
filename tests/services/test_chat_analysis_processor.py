@@ -156,3 +156,53 @@ async def test_processor_passes_target_version_to_analyzer():
     await processor.process("user-1", "972501234567@c.us", target_version=42)
 
     assert analyzer.calls[0].target_version == 42
+
+
+# --- Result storage (stage 3) -----------------------------------------------
+
+
+async def test_processor_stores_result_when_result_repo_provided():
+    """When a result_repo is provided, the processor saves the result."""
+    from echo_v2.persistence.chat_repositories import (
+        InMemoryWaitingForMeResultRepository,
+    )
+
+    repo = InMemoryMessageRepository()
+    msgs = [
+        _make_message(direction=MessageDirection.INBOUND, text="hello", offset_minutes=0),
+        _make_message(direction=MessageDirection.OUTBOUND, text="hi", offset_minutes=1),
+        _make_message(direction=MessageDirection.INBOUND, text="what's up?", offset_minutes=2),
+    ]
+    for m in msgs:
+        await repo.save(m)
+
+    analyzer = FakeAnalyzer(WaitingForMeDecision.WAITING_FOR_ME)
+    result_repo = InMemoryWaitingForMeResultRepository()
+    processor = ChatAnalysisProcessor(
+        message_repo=repo, analyzer=analyzer, result_repo=result_repo,
+    )
+    await processor.process("user-1", "972501234567@c.us", target_version=1)
+
+    stored = await result_repo.list_recent(
+        user_id="user-1", chat_id="972501234567@c.us",
+    )
+    assert len(stored) == 1
+    assert stored[0].decision == WaitingForMeDecision.WAITING_FOR_ME
+    assert stored[0].target_version == 1
+
+
+async def test_processor_does_not_store_when_result_repo_is_none():
+    """When result_repo is None, the processor does not persist."""
+    repo = InMemoryMessageRepository()
+    msgs = [
+        _make_message(direction=MessageDirection.INBOUND, text="hello", offset_minutes=0),
+    ]
+    for m in msgs:
+        await repo.save(m)
+
+    analyzer = FakeAnalyzer()
+    processor = ChatAnalysisProcessor(
+        message_repo=repo, analyzer=analyzer, result_repo=None,
+    )
+    # Should not raise
+    await processor.process("user-1", "972501234567@c.us", target_version=1)

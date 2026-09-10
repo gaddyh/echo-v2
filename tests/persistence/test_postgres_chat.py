@@ -6,6 +6,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 import pytest
+import pytest_asyncio
 
 from echo_v2.domain.chat import Message
 from echo_v2.ports.whatsapp import MessageDirection, MessageKind
@@ -616,7 +617,7 @@ async def test_list_for_analysis_with_outbound_returns_context_and_after(
 
 async def test_list_for_analysis_empty_chat(messages_repo, session_factory):
     user_id = await insert_user(session_factory)
-    conn_id = await _seed_connection(session_factory, user_id)
+    await _seed_connection(session_factory, user_id)
 
     result = await messages_repo.list_for_analysis(
         user_id=user_id, chat_id="972501234567@c.us",
@@ -650,3 +651,94 @@ async def test_list_for_analysis_multiple_outbounds_uses_last(
     assert result[1].text == "ctx-2"
     assert result[2].text == "new-reply"
     assert result[3].text == "after"
+
+
+# --- PostgresWaitingForMeResultRepository -----------------------------------
+
+
+@pytest_asyncio.fixture
+async def wfm_repo(session_factory, clean_db):
+    from echo_v2.persistence.postgres_chat import PostgresWaitingForMeResultRepository
+
+    return PostgresWaitingForMeResultRepository(session_factory)
+
+
+async def test_wfm_save_and_list_recent(wfm_repo, session_factory):
+    from echo_v2.domain.waiting_for_me import WaitingForMeDecision, WaitingForMeResult
+
+    user_id = await insert_user(session_factory)
+    result1 = WaitingForMeResult(
+        decision=WaitingForMeDecision.WAITING_FOR_ME,
+        confidence=0.9,
+        reason="open question",
+        target_version=1,
+    )
+    result2 = WaitingForMeResult(
+        decision=WaitingForMeDecision.NOT_WAITING_FOR_ME,
+        confidence=0.8,
+        reason="closed",
+        target_version=2,
+    )
+    await wfm_repo.save(user_id=user_id, chat_id="chat-1@c.us", result=result1)
+    await wfm_repo.save(user_id=user_id, chat_id="chat-1@c.us", result=result2)
+
+    results = await wfm_repo.list_recent(user_id=user_id, chat_id="chat-1@c.us")
+    assert len(results) == 2
+    # Newest first
+    assert results[0].target_version == 2
+    assert results[0].decision == WaitingForMeDecision.NOT_WAITING_FOR_ME
+    assert results[1].target_version == 1
+    assert results[1].decision == WaitingForMeDecision.WAITING_FOR_ME
+
+
+async def test_wfm_list_recent_filters_by_chat(wfm_repo, session_factory):
+    from echo_v2.domain.waiting_for_me import WaitingForMeDecision, WaitingForMeResult
+
+    user_id = await insert_user(session_factory)
+    await wfm_repo.save(
+        user_id=user_id,
+        chat_id="chat-1@c.us",
+        result=WaitingForMeResult(
+            decision=WaitingForMeDecision.WAITING_FOR_ME,
+            target_version=1,
+        ),
+    )
+    await wfm_repo.save(
+        user_id=user_id,
+        chat_id="chat-2@c.us",
+        result=WaitingForMeResult(
+            decision=WaitingForMeDecision.NOT_WAITING_FOR_ME,
+            target_version=1,
+        ),
+    )
+
+    results = await wfm_repo.list_recent(user_id=user_id, chat_id="chat-1@c.us")
+    assert len(results) == 1
+    assert results[0].decision == WaitingForMeDecision.WAITING_FOR_ME
+
+
+async def test_wfm_list_recent_respects_limit(wfm_repo, session_factory):
+    from echo_v2.domain.waiting_for_me import WaitingForMeDecision, WaitingForMeResult
+
+    user_id = await insert_user(session_factory)
+    for i in range(5):
+        await wfm_repo.save(
+            user_id=user_id,
+            chat_id="chat-1@c.us",
+            result=WaitingForMeResult(
+                decision=WaitingForMeDecision.WAITING_FOR_ME,
+                target_version=i + 1,
+            ),
+        )
+
+    results = await wfm_repo.list_recent(
+        user_id=user_id, chat_id="chat-1@c.us", limit=3,
+    )
+    assert len(results) == 3
+    assert results[0].target_version == 5
+
+
+async def test_wfm_list_recent_empty(wfm_repo, session_factory):
+    user_id = await insert_user(session_factory)
+    results = await wfm_repo.list_recent(user_id=user_id, chat_id="chat-1@c.us")
+    assert results == []

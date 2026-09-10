@@ -454,3 +454,53 @@ class ChatRow(Base):
             "next_analysis_at",
         ),
     )
+
+
+# --- waiting_for_me_results -------------------------------------------------
+
+
+class WaitingForMeResultRow(Base):
+    """Immutable record of a single WaitingForMe analysis result.
+
+    One row per analysis run. The worker stores the result here after the
+    LLM returns a decision. The ``target_version`` links the result to the
+    ``activity_version`` it was computed from — if a new message arrived
+    during processing (version changed), the worker discards the result
+    and the row is never written.
+
+    Keyed by ``(user_id, chat_id, target_version)`` — one result per
+    version per chat. If reprocessed (e.g. after a crash), the same
+    version produces a new row with a new ``id`` and ``created_at``.
+    """
+
+    __tablename__ = "waiting_for_me_results"
+
+    id: Mapped[str] = mapped_column(Uuid, primary_key=True, server_default=text("gen_random_uuid()"))
+    user_id: Mapped[str] = mapped_column(
+        Uuid,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    chat_id: Mapped[str] = mapped_column(Text, nullable=False)
+    target_version: Mapped[int] = mapped_column(nullable=False)
+    decision: Mapped[str] = mapped_column(Text, nullable=False)
+    confidence: Mapped[float | None] = mapped_column(nullable=True)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "decision IN ('waiting_for_me', 'not_waiting_for_me', 'uncertain')",
+            name="wfm_decision_check",
+        ),
+        Index(
+            "ix_wfm_user_chat_created",
+            "user_id",
+            "chat_id",
+            "created_at",
+        ),
+    )

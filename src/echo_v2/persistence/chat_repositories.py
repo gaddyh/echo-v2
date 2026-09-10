@@ -24,13 +24,16 @@ from datetime import datetime
 from typing import Protocol, runtime_checkable
 
 from echo_v2.domain.chat import ChatState, Message
+from echo_v2.domain.waiting_for_me import WaitingForMeResult
 from echo_v2.ports.whatsapp import MessageDirection
 
 __all__ = [
     "ChatStateRepository",
     "InMemoryChatStateRepository",
     "InMemoryMessageRepository",
+    "InMemoryWaitingForMeResultRepository",
     "MessageRepository",
+    "WaitingForMeResultRepository",
 ]
 
 
@@ -254,3 +257,63 @@ class InMemoryChatStateRepository:
 # Structural checks: in-memory impls satisfy the protocols.
 _msg_repo: MessageRepository = InMemoryMessageRepository()  # type: ignore[assignment]
 _chat_repo: ChatStateRepository = InMemoryChatStateRepository()  # type: ignore[assignment]
+
+
+# --- WaitingForMeResultRepository -------------------------------------------
+
+
+@runtime_checkable
+class WaitingForMeResultRepository(Protocol):
+    """Store immutable WaitingForMe analysis results."""
+
+    async def save(
+        self,
+        *,
+        user_id: str,
+        chat_id: str,
+        result: WaitingForMeResult,
+    ) -> None:
+        """Insert a result row. One row per analysis run."""
+        ...
+
+    async def list_recent(
+        self,
+        *,
+        user_id: str,
+        chat_id: str,
+        limit: int = 10,
+    ) -> list[WaitingForMeResult]:
+        """Return recent results for a chat, newest first."""
+        ...
+
+
+class InMemoryWaitingForMeResultRepository:
+    """Process-local result repository backed by a list."""
+
+    def __init__(self) -> None:
+        self._results: list[tuple[str, str, WaitingForMeResult]] = []
+
+    async def save(
+        self,
+        *,
+        user_id: str,
+        chat_id: str,
+        result: WaitingForMeResult,
+    ) -> None:
+        self._results.append((user_id, chat_id, result))
+
+    async def list_recent(
+        self,
+        *,
+        user_id: str,
+        chat_id: str,
+        limit: int = 10,
+    ) -> list[WaitingForMeResult]:
+        matching = [
+            r for (uid, cid, r) in self._results
+            if uid == user_id and cid == chat_id
+        ]
+        return list(reversed(matching))[:limit]
+
+
+_wfm_repo: WaitingForMeResultRepository = InMemoryWaitingForMeResultRepository()  # type: ignore[assignment]
