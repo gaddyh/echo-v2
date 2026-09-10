@@ -26,16 +26,27 @@ USER_PHONE = "972501234567"
 
 
 class FakeBot:
-    """Fake BotChannel that records sent messages."""
+    """Fake BotChannel that records sent template messages."""
 
     def __init__(self) -> None:
-        self.sent: list[tuple[str, str]] = []
+        self.sent: list[tuple[str, str, str, list[str]]] = []
         self.error: Exception | None = None
 
     async def send_text(self, user_phone: str, text: str) -> None:
         if self.error is not None:
             raise self.error
-        self.sent.append((user_phone, text))
+
+    async def send_template(
+        self,
+        user_phone: str,
+        template_name: str,
+        language: str,
+        body_params: list[str],
+    ) -> str:
+        if self.error is not None:
+            raise self.error
+        self.sent.append((user_phone, template_name, language, body_params))
+        return "fake-msg-id"
 
 
 def _make_active(chat_id="972508765432@c.us", waiting_since=NOW, target_version=1):
@@ -105,13 +116,17 @@ async def test_digest_sent_when_in_window_and_has_active():
         message_repo=message_repo,
         contact_repo=contact_repo,
         bot=bot,
-        user_provider=_make_user_provider([(USER_ID, USER_PHONE, "Asia/Jerusalem")]),
+        user_provider=_make_user_provider([(USER_ID, USER_PHONE, "Asia/Jerusalem", "גדי")]),
     )
     sent = await worker.run_once(now_utc=NOW)
     assert sent == 1
     assert len(bot.sent) == 1
-    assert "בוקר טוב" in bot.sent[0][1]
-    assert "1 מחכה לך" in bot.sent[0][1]
+    _phone, template_name, language, body_params = bot.sent[0]
+    assert template_name == "morning_waiting_digest"
+    assert language == "he"
+    assert body_params[0] == "גדי"  # first_name
+    assert body_params[1] == "1"  # count
+    assert 'דנה' in body_params[2] or '972' in body_params[2]  # items_text
 
     # Status should be SENT
     digest = await digest_repo.get(user_id=USER_ID, local_date=date(2026, 9, 12))
@@ -136,7 +151,7 @@ async def test_digest_empty_when_no_active():
         message_repo=message_repo,
         contact_repo=contact_repo,
         bot=bot,
-        user_provider=_make_user_provider([(USER_ID, USER_PHONE, "Asia/Jerusalem")]),
+        user_provider=_make_user_provider([(USER_ID, USER_PHONE, "Asia/Jerusalem", "גדי")]),
     )
     sent = await worker.run_once(now_utc=NOW)
     assert sent == 0
@@ -169,7 +184,7 @@ async def test_digest_skipped_when_already_sent_today():
         message_repo=message_repo,
         contact_repo=contact_repo,
         bot=bot,
-        user_provider=_make_user_provider([(USER_ID, USER_PHONE, "Asia/Jerusalem")]),
+        user_provider=_make_user_provider([(USER_ID, USER_PHONE, "Asia/Jerusalem", "גדי")]),
     )
     sent = await worker.run_once(now_utc=NOW)
     assert sent == 0
@@ -197,7 +212,7 @@ async def test_digest_skipped_when_outside_window():
         message_repo=message_repo,
         contact_repo=contact_repo,
         bot=bot,
-        user_provider=_make_user_provider([(USER_ID, USER_PHONE, "Asia/Jerusalem")]),
+        user_provider=_make_user_provider([(USER_ID, USER_PHONE, "Asia/Jerusalem", "גדי")]),
     )
 
     sent = await worker.run_once(now_utc=noon_utc)
@@ -227,7 +242,7 @@ async def test_digest_indeterminate_on_send_error():
         message_repo=message_repo,
         contact_repo=contact_repo,
         bot=bot,
-        user_provider=_make_user_provider([(USER_ID, USER_PHONE, "Asia/Jerusalem")]),
+        user_provider=_make_user_provider([(USER_ID, USER_PHONE, "Asia/Jerusalem", "גדי")]),
     )
     sent = await worker.run_once(now_utc=NOW)
     assert sent == 0
@@ -256,7 +271,7 @@ async def test_digest_failed_on_permanent_error():
         message_repo=message_repo,
         contact_repo=contact_repo,
         bot=bot,
-        user_provider=_make_user_provider([(USER_ID, USER_PHONE, "Asia/Jerusalem")]),
+        user_provider=_make_user_provider([(USER_ID, USER_PHONE, "Asia/Jerusalem", "גדי")]),
     )
     sent = await worker.run_once(now_utc=NOW)
     assert sent == 0
@@ -294,7 +309,7 @@ async def test_stale_active_excluded_from_digest():
         message_repo=message_repo,
         contact_repo=contact_repo,
         bot=bot,
-        user_provider=_make_user_provider([(USER_ID, USER_PHONE, "Asia/Jerusalem")]),
+        user_provider=_make_user_provider([(USER_ID, USER_PHONE, "Asia/Jerusalem", "גדי")]),
     )
     sent = await worker.run_once(now_utc=NOW)
     assert sent == 0  # no current active → empty
@@ -323,7 +338,7 @@ async def test_default_timezone_used_when_user_has_none():
         message_repo=message_repo,
         contact_repo=contact_repo,
         bot=bot,
-        user_provider=_make_user_provider([(USER_ID, USER_PHONE, None)]),
+        user_provider=_make_user_provider([(USER_ID, USER_PHONE, None, "גדי")]),
     )
     sent = await worker.run_once(now_utc=NOW)
     assert sent == 1  # should still send at 08:30 Israel time
@@ -341,7 +356,7 @@ async def test_run_once_continues_on_user_error():
     await _setup_chat_with_active(chat_state_repo, active_repo, chat_id="972509999999@c.us")
 
     async def user_provider():
-        return [("bad-user", "bad-phone", "Asia/Jerusalem"), (USER_ID, USER_PHONE, "Asia/Jerusalem")]
+        return [("bad-user", "bad-phone", "Asia/Jerusalem", None), (USER_ID, USER_PHONE, "Asia/Jerusalem", "גדי")]
 
     worker = DigestWorker(
         digest_repo=digest_repo,

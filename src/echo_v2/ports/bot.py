@@ -95,3 +95,13 @@ class BotChannel(Protocol):
     """
 
     async def send_text(self, user_phone: str, text: str) -> None: ...
+
+    async def send_template(
+        self,
+        user_phone: str,
+        template_name: str,
+        language: str,
+        body_params: list[str],
+    ) -> str:
+        """Send a template message. Returns the provider message ID."""
+        ...

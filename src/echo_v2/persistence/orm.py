@@ -70,6 +70,7 @@ class UserRow(Base):
 
     id: Mapped[str] = mapped_column(Uuid, primary_key=True, server_default=text("gen_random_uuid()"))
     phone_number: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    first_name: Mapped[str | None] = mapped_column(Text, nullable=True)
     timezone: Mapped[str | None] = mapped_column(Text, nullable=True)
     locale: Mapped[str | None] = mapped_column(Text, nullable=True)
     account_status: Mapped[str] = mapped_column(

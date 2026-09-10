@@ -9,7 +9,7 @@ status, the row already exists and won't be re-claimed.
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Protocol, runtime_checkable
 
 from echo_v2.domain.digest import DailyDigest, DailyDigestStatus
@@ -83,7 +83,7 @@ class InMemoryDailyDigestRepository:
             user_id=user_id,
             local_date=local_date,
             status=DailyDigestStatus.PROCESSING,
-            created_at=datetime.now(),
+            created_at=datetime.now(timezone.utc),
         )
         self._rows[key] = digest
         return digest

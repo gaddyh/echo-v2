@@ -93,9 +93,9 @@ class DigestWorker:
         now = now_utc or datetime.now(timezone.utc)
         users = await self._user_provider()
         sent_count = 0
-        for user_id, phone, tz_name in users:
+        for user_id, phone, tz_name, first_name in users:
             try:
-                if await self._process_user(user_id, phone, tz_name, now):
+                if await self._process_user(user_id, phone, tz_name, first_name, now):
                     sent_count += 1
             except asyncio.CancelledError:
                 raise
@@ -126,6 +126,7 @@ class DigestWorker:
         user_id: str,
         phone: str,
         tz_name: str | None,
+        first_name: str | None,
         now_utc: datetime,
     ) -> bool:
         """Process a single user. Returns ``True`` if a digest was sent."""
@@ -162,12 +163,18 @@ class DigestWorker:
         # Build digest items.
         items = await self._build_items(user_id, active_states)
 
-        # Format digest text.
-        text = self._formatter.format(items)
+        # Format template parameters.
+        name = first_name or "חבר"  # fallback if user has no first_name
+        params = self._formatter.format(items, first_name=name)
 
-        # Send via bot.
+        # Send via bot template.
         try:
-            await self._bot.send_text(phone, text)
+            msg_id = await self._bot.send_template(
+                phone,
+                "morning_waiting_digest",
+                "he",
+                [params.first_name, params.count, params.items_text],
+            )
         except IndeterminateError as exc:
             _logger.warning(
                 "digest send indeterminate for user %s: %s", user_id, exc
@@ -204,6 +211,7 @@ class DigestWorker:
             digest_id=digest.id,
             status=DailyDigestStatus.SENT,
             sent_at=datetime.now(timezone.utc),
+            provider_message_id=msg_id,
             item_count=len(active_states),
         )
         _logger.info(

@@ -103,3 +103,41 @@ async def test_send_text_connect_error_is_retryable():
     with pytest.raises(RetryableError):
         await client.send_text("972500000001", "hello")
     await client.aclose()
+
+
+async def test_send_template_success():
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json
+        body = json.loads(request.content)
+        captured["type"] = body["type"]
+        captured["template"] = body["template"]
+        return httpx.Response(200, json={"messages": [{"id": "wamid.TPL123"}]})
+
+    client = _make_client(handler)
+    msg_id = await client.send_template(
+        "972500000001",
+        "morning_waiting_digest",
+        "he",
+        ["גדי", "2", "דנה: \"יש מצב?\""],
+    )
+    assert msg_id == "wamid.TPL123"
+    assert captured["type"] == "template"
+    assert captured["template"]["name"] == "morning_waiting_digest"
+    assert captured["template"]["language"]["code"] == "he"
+    params = captured["template"]["components"][0]["parameters"]
+    assert params[0]["text"] == "גדי"
+    assert params[1]["text"] == "2"
+    assert params[2]["text"] == "דנה: \"יש מצב?\""
+    await client.aclose()
+
+
+async def test_send_template_5xx_is_indeterminate():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, json={"error": "unavailable"})
+
+    client = _make_client(handler)
+    with pytest.raises(IndeterminateError):
+        await client.send_template("972500000001", "tpl", "he", ["a"])
+    await client.aclose()

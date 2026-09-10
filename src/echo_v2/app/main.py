@@ -192,7 +192,7 @@ def create_app() -> FastAPI:
     contact_repo = PostgresContactRepository(repos.session_factory)
 
     async def user_provider():
-        """Return all active users as (user_id, phone, timezone)."""
+        """Return all active users as (user_id, phone, timezone, first_name)."""
         from sqlalchemy import select
 
         from echo_v2.persistence.orm import UserRow
@@ -201,7 +201,7 @@ def create_app() -> FastAPI:
             stmt = select(UserRow).where(UserRow.account_status == "active")
             rows = (await session.execute(stmt)).scalars().all()
             return [
-                (str(r.id), r.phone_number, r.timezone)
+                (str(r.id), r.phone_number, r.timezone, r.first_name)
                 for r in rows
             ]
 

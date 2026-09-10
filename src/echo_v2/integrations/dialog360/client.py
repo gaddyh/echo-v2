@@ -78,6 +78,58 @@ class Dialog360Client:
             raise PermanentError("360dialog send_text response missing message id")
         return str(msg_id)
 
+    async def send_template(
+        self,
+        recipient: str,
+        template_name: str,
+        language: str,
+        body_params: list[str],
+    ) -> str:
+        """Send a template message from the bot to ``recipient``.
+
+        Args:
+            recipient: Phone number (E.164 or raw).
+            template_name: The approved template name (e.g.
+                ``morning_waiting_digest``).
+            language: The language code (e.g. ``he``).
+            body_params: Body parameter values, in order ({{1}}, {{2}}, ...).
+
+        Returns the message ID assigned by 360dialog.
+        """
+        phone = _normalize_phone(recipient)
+        payload: dict[str, Any] = {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": phone,
+            "type": "template",
+            "template": {
+                "name": template_name,
+                "language": {"code": language},
+                "components": [
+                    {
+                        "type": "body",
+                        "parameters": [
+                            {"type": "text", "text": param}
+                            for param in body_params
+                        ],
+                    }
+                ],
+            },
+        }
+        data = await self._post_json(
+            f"{self._settings.api_base_url}/messages",
+            payload,
+            operation="send_template",
+        )
+        msg_id = data.get("message_id") if isinstance(data, dict) else None
+        if not msg_id:
+            messages = data.get("messages") if isinstance(data, dict) else None
+            if isinstance(messages, list) and messages:
+                msg_id = messages[0].get("id")
+        if not msg_id:
+            raise PermanentError("360dialog send_template response missing message id")
+        return str(msg_id)
+
     async def _post_json(
         self,
         url: str,

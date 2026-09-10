@@ -1,4 +1,4 @@
-"""Tests for DigestFormatter."""
+"""Tests for DigestFormatter (template parameter mode)."""
 
 from __future__ import annotations
 
@@ -30,10 +30,10 @@ def test_format_single_item_with_name_and_text():
             last_message_text="יש מצב לחמישי?",
         ),
     ]
-    text = formatter.format(items)
-    assert "בוקר טוב" in text
-    assert "1 מחכה לך" in text
-    assert 'דנה: "יש מצב לחמישי?"' in text
+    params = formatter.format(items, first_name="גדי")
+    assert params.first_name == "גדי"
+    assert params.count == "1"
+    assert 'דנה: "יש מצב לחמישי?"' in params.items_text
 
 
 def test_format_multiple_items():
@@ -50,10 +50,10 @@ def test_format_multiple_items():
             last_message_text="תשלח לי את ההצעה?",
         ),
     ]
-    text = formatter.format(items)
-    assert "2 מחכים לך" in text
-    assert 'דנה: "יש מצב לחמישי?"' in text
-    assert 'יוסי: "תשלח לי את ההצעה?"' in text
+    params = formatter.format(items, first_name="גדי")
+    assert params.count == "2"
+    assert 'דנה: "יש מצב לחמישי?"' in params.items_text
+    assert 'יוסי: "תשלח לי את ההצעה?"' in params.items_text
 
 
 def test_format_sorts_by_waiting_since_ascending():
@@ -71,10 +71,10 @@ def test_format_sorts_by_waiting_since_ascending():
             last_message_text="יש מצב לחמישי?",
         ),
     ]
-    text = formatter.format(items)
+    params = formatter.format(items, first_name="גדי")
     # דנה (NOW) should appear before יוסי (LATER)
-    dana_pos = text.index("דנה")
-    yossi_pos = text.index("יוסי")
+    dana_pos = params.items_text.index("דנה")
+    yossi_pos = params.items_text.index("יוסי")
     assert dana_pos < yossi_pos
 
 
@@ -87,8 +87,8 @@ def test_format_falls_back_to_phone_when_no_name():
             last_message_text="יש מצב לחמישי?",
         ),
     ]
-    text = formatter.format(items)
-    assert '972501234567: "יש מצב לחמישי?"' in text
+    params = formatter.format(items, first_name="גדי")
+    assert '972501234567: "יש מצב לחמישי?"' in params.items_text
 
 
 def test_format_falls_back_for_media_only():
@@ -100,8 +100,8 @@ def test_format_falls_back_for_media_only():
             last_message_text=None,
         ),
     ]
-    text = formatter.format(items)
-    assert 'שלח/ה הודעה שמחכה להתייחסותך' in text
+    params = formatter.format(items, first_name="גדי")
+    assert "שלח/ה הודעה שמחכה להתייחסותך" in params.items_text
 
 
 def test_format_truncates_at_20_items():
@@ -114,6 +114,6 @@ def test_format_truncates_at_20_items():
         )
         for i in range(25)
     ]
-    text = formatter.format(items)
-    assert "25 מחכים לך" in text
-    assert "ועוד 5 שיחות..." in text
+    params = formatter.format(items, first_name="גדי")
+    assert params.count == "25"
+    assert "ועוד 5 שיחות..." in params.items_text
