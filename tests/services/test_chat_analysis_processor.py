@@ -1,4 +1,4 @@
-"""Tests for ChatAnalysisProcessor — message loading stage (no LLM)."""
+"""Tests for ChatAnalysisProcessor — message loading + analyzer (stage 2)."""
 
 from __future__ import annotations
 
@@ -8,13 +8,37 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from echo_v2.domain.chat import Message
+from echo_v2.domain.waiting_for_me import WaitingForMeDecision, WaitingForMeResult
 from echo_v2.persistence.chat_repositories import InMemoryMessageRepository
 from echo_v2.ports.whatsapp import MessageDirection
-from echo_v2.services.chat_analysis_worker import ChatAnalysisProcessor
+from echo_v2.services.chat_analysis_worker import (
+    ChatAnalysisProcessor,
+    ConversationInput,
+)
 
 pytestmark = pytest.mark.asyncio
 
 BASE_TIME = datetime(2026, 1, 1, 10, 0, 0, tzinfo=timezone.utc)
+
+
+class FakeAnalyzer:
+    """Records the ConversationInput it receives and returns a fixed result."""
+
+    def __init__(
+        self,
+        decision: WaitingForMeDecision = WaitingForMeDecision.WAITING_FOR_ME,
+    ) -> None:
+        self.calls: list[ConversationInput] = []
+        self._decision = decision
+
+    async def analyze(self, conversation: ConversationInput) -> WaitingForMeResult:
+        self.calls.append(conversation)
+        return WaitingForMeResult(
+            decision=self._decision,
+            confidence=0.9,
+            reason="test reason",
+            target_version=conversation.target_version,
+        )
 
 
 def _make_message(
@@ -39,8 +63,8 @@ def _make_message(
     )
 
 
-async def test_processor_loads_messages_and_logs_without_error():
-    """process() loads messages via the repo and completes without error."""
+async def test_processor_loads_messages_and_calls_analyzer():
+    """process() loads messages and passes them to the analyzer."""
     repo = InMemoryMessageRepository()
     msgs = [
         _make_message(direction=MessageDirection.INBOUND, text="hello", offset_minutes=0),
@@ -50,16 +74,28 @@ async def test_processor_loads_messages_and_logs_without_error():
     for m in msgs:
         await repo.save(m)
 
-    processor = ChatAnalysisProcessor(message_repo=repo)
-    # Should not raise
+    analyzer = FakeAnalyzer()
+    processor = ChatAnalysisProcessor(message_repo=repo, analyzer=analyzer)
     await processor.process("user-1", "972501234567@c.us", target_version=1)
+
+    assert len(analyzer.calls) == 1
+    conv = analyzer.calls[0]
+    assert conv.target_version == 1
+    assert len(conv.messages) == 3
+    assert conv.messages[0] == ("inbound", "hello", msgs[0].timestamp)
+    assert conv.messages[1] == ("outbound", "hi there", msgs[1].timestamp)
+    assert conv.messages[2] == ("inbound", "how are you?", msgs[2].timestamp)
 
 
 async def test_processor_handles_empty_chat():
-    """process() on a chat with no messages completes without error."""
+    """process() on a chat with no messages still calls the analyzer."""
     repo = InMemoryMessageRepository()
-    processor = ChatAnalysisProcessor(message_repo=repo)
+    analyzer = FakeAnalyzer(decision=WaitingForMeDecision.UNCERTAIN)
+    processor = ChatAnalysisProcessor(message_repo=repo, analyzer=analyzer)
     await processor.process("user-1", "972501234567@c.us", target_version=1)
+
+    assert len(analyzer.calls) == 1
+    assert analyzer.calls[0].messages == []
 
 
 async def test_processor_respects_context_messages_param():
@@ -75,12 +111,12 @@ async def test_processor_respects_context_messages_param():
     for m in msgs:
         await repo.save(m)
 
-    # With context_messages=2, we expect 2 context + 1 outbound + 1 after = 4
-    processor = ChatAnalysisProcessor(message_repo=repo, context_messages=2)
-    # We can't directly inspect the ConversationInput (it's logged, not returned),
-    # but we can verify the repo was called with the right params by checking
-    # that process() completes without error.
+    analyzer = FakeAnalyzer()
+    processor = ChatAnalysisProcessor(message_repo=repo, analyzer=analyzer, context_messages=2)
     await processor.process("user-1", "972501234567@c.us", target_version=1)
+
+    # 2 context + 1 outbound + 1 after = 4
+    assert len(analyzer.calls[0].messages) == 4
 
 
 async def test_processor_respects_max_no_outbound_param():
@@ -93,9 +129,13 @@ async def test_processor_respects_max_no_outbound_param():
     for m in msgs:
         await repo.save(m)
 
-    processor = ChatAnalysisProcessor(message_repo=repo, max_no_outbound=10)
-    # Should not raise — loads 10 messages (no outbound exists)
+    analyzer = FakeAnalyzer()
+    processor = ChatAnalysisProcessor(
+        message_repo=repo, analyzer=analyzer, max_no_outbound=10,
+    )
     await processor.process("user-1", "972501234567@c.us", target_version=1)
+
+    assert len(analyzer.calls[0].messages) == 10
 
 
 async def test_processor_satisfies_analysis_processor_protocol():
@@ -103,5 +143,16 @@ async def test_processor_satisfies_analysis_processor_protocol():
     from echo_v2.services.chat_analysis_worker import AnalysisProcessor
 
     repo = InMemoryMessageRepository()
-    processor = ChatAnalysisProcessor(message_repo=repo)
+    analyzer = FakeAnalyzer()
+    processor = ChatAnalysisProcessor(message_repo=repo, analyzer=analyzer)
     assert isinstance(processor, AnalysisProcessor)
+
+
+async def test_processor_passes_target_version_to_analyzer():
+    """The target_version from process() flows through to the analyzer."""
+    repo = InMemoryMessageRepository()
+    analyzer = FakeAnalyzer()
+    processor = ChatAnalysisProcessor(message_repo=repo, analyzer=analyzer)
+    await processor.process("user-1", "972501234567@c.us", target_version=42)
+
+    assert analyzer.calls[0].target_version == 42

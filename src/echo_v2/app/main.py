@@ -160,8 +160,15 @@ def create_app() -> FastAPI:
     )
 
     # --- chat analysis worker (NOT started by default — CHAT_ANALYSIS_ENABLED)
+    from echo_v2.services.waiting_for_me_analyzer import LLMWaitingForMeAnalyzer
+
+    analyzer = LLMWaitingForMeAnalyzer(
+        api_key=os.environ.get("OPENAI_API_KEY", ""),
+        model=os.environ.get("LLM_MODEL_NAME", "gpt-4.1"),
+    )
     analysis_processor = ChatAnalysisProcessor(
         message_repo=repos.messages,
+        analyzer=analyzer,
         context_messages=5,
         max_no_outbound=20,
     )

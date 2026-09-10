@@ -40,6 +40,7 @@ from typing import Protocol, runtime_checkable
 
 from echo_v2.domain.chat import ChatState
 from echo_v2.persistence.chat_repositories import ChatStateRepository, MessageRepository
+from echo_v2.services.waiting_for_me_analyzer import WaitingForMeAnalyzer
 
 __all__ = [
     "AnalysisProcessor",
@@ -72,9 +73,9 @@ class AnalysisProcessor(Protocol):
     """Hook for chat analysis.
 
     The default :class:`RecordingAnalysisProcessor` records calls without
-    doing real analysis. :class:`ChatAnalysisProcessor` loads messages
-    and builds a :class:`ConversationInput`. A future implementation will
-    add the LLM call and result storage.
+    doing real analysis. :class:`ChatAnalysisProcessor` loads messages,
+    builds a :class:`ConversationInput`, and calls a
+    :class:`WaitingForMeAnalyzer` to produce a :class:`WaitingForMeResult`.
     """
 
     async def process(
@@ -106,15 +107,19 @@ class RecordingAnalysisProcessor:
 
 
 class ChatAnalysisProcessor:
-    """Loads messages and builds a stable conversation input.
+    """Loads messages, builds conversation input, and runs WaitingForMe analysis.
 
-    Stage 1 of the real processor: message loading only. No LLM call,
-    no prompt, no result storage. The :class:`ConversationInput` is
-    built and logged — a future stage will pass it to the LLM.
+    Stage 2: message loading + LLM analysis. The processor loads messages
+    via :meth:`MessageRepository.list_for_analysis`, builds a
+    :class:`ConversationInput`, and passes it to a
+    :class:`WaitingForMeAnalyzer`. The resulting :class:`WaitingForMeResult`
+    is logged — result storage comes in a later stage.
 
     Args:
         message_repo: The :class:`MessageRepository` for
             :meth:`list_for_analysis`.
+        analyzer: The :class:`WaitingForMeAnalyzer` that produces the
+            :class:`WaitingForMeResult`.
         context_messages: Number of messages before the last outbound
             to include for context. Default 5.
         max_no_outbound: If no outbound exists, load this many recent
@@ -124,11 +129,13 @@ class ChatAnalysisProcessor:
     def __init__(
         self,
         message_repo: MessageRepository,
+        analyzer: WaitingForMeAnalyzer,
         *,
         context_messages: int = 5,
         max_no_outbound: int = 20,
     ) -> None:
         self._messages = message_repo
+        self._analyzer = analyzer
         self._context_messages = context_messages
         self._max_no_outbound = max_no_outbound
 
@@ -153,12 +160,15 @@ class ChatAnalysisProcessor:
                 for m in messages
             ],
         )
+        result = await self._analyzer.analyze(conversation)
         _logger.info(
-            "loaded %d messages for chat %s/%s (version %d)",
-            len(conversation.messages),
+            "analysis for chat %s/%s (version %d): %s (confidence=%s, reason=%s)",
             user_id,
             chat_id,
             target_version,
+            result.decision.value,
+            result.confidence,
+            result.reason,
         )
 
 
