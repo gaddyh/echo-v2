@@ -214,6 +214,7 @@ class GreenClient:
             connection_id=id_instance,
             is_write=True,
             json_body={"phoneNumber": phone_number},
+            skip_error_envelope=True,
         )
         if not isinstance(data, dict) or not data.get("status"):
             raise GreenApiError(
@@ -336,6 +337,7 @@ class GreenClient:
         connection_id: str | None,
         is_write: bool,
         json_body: dict[str, Any] | None = None,
+        skip_error_envelope: bool = False,
     ) -> dict[str, Any] | list[dict[str, Any]]:
         """Execute an HTTP request and return parsed JSON.
 
@@ -407,8 +409,14 @@ class GreenClient:
             raise GreenApiError(f"green {operation} returned HTTP {status}")
 
         body = _safe_json(response)
-        if isinstance(body, dict) and body.get("code") and not body.get("idInstance"):
+        if (
+            not skip_error_envelope
+            and isinstance(body, dict)
+            and body.get("code")
+            and not body.get("idInstance")
+        ):
             # Some Green error envelopes arrive on 200 with a code field.
+            # getAuthorizationCode is exempt — its `code` field is the OTP.
             raise GreenApiError(
                 f"green {operation} error {body.get('code')}: {body.get('description')}"
             )
