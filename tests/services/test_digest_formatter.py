@@ -18,6 +18,7 @@ LATER = datetime(2026, 9, 12, 10, 0, 0, tzinfo=timezone.utc)
 
 def _make_active(chat_id="972501234567@c.us", waiting_since=NOW, target_version=1):
     return WaitingForMeActive(
+        id="active-1",
         user_id="user-1",
         chat_id=chat_id,
         target_version=target_version,

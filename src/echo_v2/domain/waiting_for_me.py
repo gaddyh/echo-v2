@@ -83,12 +83,16 @@ class WaitingForMeResult:
         reason: Optional short explanation of why this decision was reached.
         target_version: The ``activity_version`` that was analyzed. Used
             by the worker's version check to discard stale results.
+        conversation_snapshot: JSON snapshot of the conversation as it
+            was at analysis time. Stored so feedback can reference the
+            exact messages the model saw, not messages loaded later.
     """
 
     decision: WaitingForMeDecision
     confidence: float | None = None
     reason: str | None = None
     target_version: int = 0
+    conversation_snapshot: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -96,6 +100,8 @@ class WaitingForMeActive:
     """Current active waiting state for a chat — one row per chat.
 
     Attributes:
+        id: Surrogate UUID identifying this active row. Used in callback IDs
+            so we don't expose provider-specific chat_id in button payloads.
         user_id: The user who owns this chat.
         chat_id: The WhatsApp chat ID.
         target_version: The ``activity_version`` this state was computed
@@ -107,11 +113,13 @@ class WaitingForMeActive:
         notified_at: When the user was last notified about this waiting
             state. ``None`` if not yet notified.
         acknowledged_at: When the user tapped "מטפל עכשיו". ``None`` if
-            not yet acknowledged.
+            not yet acknowledged. Reset to ``None`` when a new analysis
+            version arrives.
         snoozed_until: When the snooze expires. ``None`` if not snoozed.
             While snoozed, the item is suppressed from digests.
     """
 
+    id: str
     user_id: str
     chat_id: str
     target_version: int

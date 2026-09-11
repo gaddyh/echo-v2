@@ -500,6 +500,7 @@ class WaitingForMeResultRow(Base):
     decision: Mapped[str] = mapped_column(Text, nullable=False)
     confidence: Mapped[float | None] = mapped_column(nullable=True)
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    conversation_snapshot: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True),
         nullable=False,
@@ -543,13 +544,18 @@ class WaitingForMeActiveRow(Base):
 
     __tablename__ = "waiting_for_me_active"
 
+    id: Mapped[str] = mapped_column(
+        Uuid,
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+        nullable=False,
+    )
     user_id: Mapped[str] = mapped_column(
         Uuid,
         ForeignKey("users.id", ondelete="CASCADE"),
-        primary_key=True,
         nullable=False,
     )
-    chat_id: Mapped[str] = mapped_column(Text, primary_key=True, nullable=False)
+    chat_id: Mapped[str] = mapped_column(Text, nullable=False)
     target_version: Mapped[int] = mapped_column(nullable=False)
     result_id: Mapped[str] = mapped_column(
         Uuid,
@@ -617,7 +623,7 @@ class WaitingForMeFeedbackRow(Base):
     target_version: Mapped[int | None] = mapped_column(nullable=True)
     verdict: Mapped[str] = mapped_column(Text, nullable=False)
     conversation_snapshot: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-    provider_event_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    provider_message_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True),
         nullable=False,
@@ -630,13 +636,18 @@ class WaitingForMeFeedbackRow(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "verdict IN ('correct', 'false_positive', 'false_negative')",
+            "verdict IN ('correct', 'false_positive', 'false_negative', 'uncertain')",
             name="wfm_feedback_verdict_check",
         ),
         UniqueConstraint(
             "user_id",
-            "provider_event_id",
-            name="uq_wfm_feedback_event",
+            "provider_message_id",
+            name="uq_wfm_feedback_message",
+        ),
+        UniqueConstraint(
+            "user_id",
+            "result_id",
+            name="uq_wfm_feedback_user_result",
         ),
         Index(
             "ix_wfm_feedback_user_chat_created",
@@ -654,7 +665,7 @@ class WaitingForMeActionRow(Base):
     """User actions on active waiting items — what the user asked Echo to do.
 
     Each row records an action AND its handler mutates current state
-    atomically. Idempotent via ``UNIQUE(user_id, provider_event_id)``.
+    atomically. Idempotent via ``UNIQUE(user_id, provider_message_id)``.
 
     Action types:
     - ``acknowledge`` — set ``acknowledged_at`` on the active item.
@@ -677,7 +688,7 @@ class WaitingForMeActionRow(Base):
     target_version: Mapped[int | None] = mapped_column(nullable=True)
     action_type: Mapped[str] = mapped_column(Text, nullable=False)
     action_payload: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-    provider_event_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    provider_message_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True),
         nullable=False,
@@ -691,8 +702,8 @@ class WaitingForMeActionRow(Base):
         ),
         UniqueConstraint(
             "user_id",
-            "provider_event_id",
-            name="uq_wfm_actions_event",
+            "provider_message_id",
+            name="uq_wfm_actions_message",
         ),
         Index(
             "ix_wfm_actions_user_chat_created",

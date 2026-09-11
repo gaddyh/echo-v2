@@ -371,7 +371,7 @@ class WaitingForMeActiveRepository(Protocol):
         result_id: str,
         waiting_since: datetime,
         notified_at: datetime | None = None,
-    ) -> None:
+    ) -> str:
         """Insert or update the active state for a chat.
 
         On conflict (row already exists for this chat): update
@@ -379,6 +379,11 @@ class WaitingForMeActiveRepository(Protocol):
         the existing ``waiting_since`` and ``notified_at`` — the caller
         passes the *original* values, but the repository keeps whatever
         is already stored so the caller doesn't need to read first.
+
+        Also resets ``acknowledged_at`` to ``None`` on conflict (a new
+        analysis version means the user hasn't acknowledged this version).
+
+        Returns the surrogate ``id`` of the active row.
         """
         ...
 
@@ -393,6 +398,10 @@ class WaitingForMeActiveRepository(Protocol):
         chat_id: str,
     ) -> WaitingForMeActive | None:
         """Get the current active state for a chat, or ``None``."""
+        ...
+
+    async def get_by_id(self, active_id: str) -> WaitingForMeActive | None:
+        """Get an active state by its surrogate ``id``, or ``None``."""
         ...
 
     async def list_active(
@@ -442,12 +451,39 @@ class WaitingForMeActiveRepository(Protocol):
         a row was updated."""
         ...
 
+    async def apply_if_version(
+        self,
+        *,
+        active_id: str,
+        user_id: str,
+        target_version: int,
+        mutate: dict[str, datetime],
+    ) -> bool:
+        """Conditionally apply a mutation only if the row matches the
+        given ``user_id`` and ``target_version``.
+
+        Args:
+            active_id: The surrogate ``id`` of the active row.
+            user_id: The owner of the row (ownership check).
+            target_version: The version the caller expects (staleness check).
+            mutate: A dict of column → value to SET (e.g.
+                ``{"acknowledged_at": now}`` or ``{"snoozed_until": t}``).
+
+        Returns ``True`` if a row was updated (version matched), ``False``
+        if the row was not found or the version was stale.
+
+        This is an atomic conditional write — no race window between
+        validation and mutation.
+        """
+        ...
+
 
 class InMemoryWaitingForMeActiveRepository:
     """Process-local active state repository backed by a dict."""
 
     def __init__(self) -> None:
         self._rows: dict[tuple[str, str], WaitingForMeActive] = {}
+        self._by_id: dict[str, tuple[str, str]] = {}
 
     async def upsert(
         self,
@@ -458,23 +494,31 @@ class InMemoryWaitingForMeActiveRepository:
         result_id: str,
         waiting_since: datetime,
         notified_at: datetime | None = None,
-    ) -> None:
+    ) -> str:
+        import uuid
+
         key = (user_id, chat_id)
         existing = self._rows.get(key)
         if existing is not None:
-            # Preserve waiting_since, notified_at, acknowledged_at, snoozed_until.
+            # Preserve waiting_since, notified_at, snoozed_until.
+            # Reset acknowledged_at — a new analysis version means the
+            # user hasn't acknowledged this version yet.
+            new_id = existing.id
             self._rows[key] = WaitingForMeActive(
+                id=new_id,
                 user_id=user_id,
                 chat_id=chat_id,
                 target_version=target_version,
                 result_id=result_id,
                 waiting_since=existing.waiting_since,
                 notified_at=existing.notified_at,
-                acknowledged_at=existing.acknowledged_at,
+                acknowledged_at=None,
                 snoozed_until=existing.snoozed_until,
             )
         else:
+            new_id = str(uuid.uuid4())
             self._rows[key] = WaitingForMeActive(
+                id=new_id,
                 user_id=user_id,
                 chat_id=chat_id,
                 target_version=target_version,
@@ -482,11 +526,14 @@ class InMemoryWaitingForMeActiveRepository:
                 waiting_since=waiting_since,
                 notified_at=notified_at,
             )
+            self._by_id[new_id] = key
+        return new_id
 
     async def delete(self, *, user_id: str, chat_id: str) -> bool:
         key = (user_id, chat_id)
         if key in self._rows:
-            del self._rows[key]
+            row = self._rows.pop(key)
+            self._by_id.pop(row.id, None)
             return True
         return False
 
@@ -497,6 +544,12 @@ class InMemoryWaitingForMeActiveRepository:
         chat_id: str,
     ) -> WaitingForMeActive | None:
         return self._rows.get((user_id, chat_id))
+
+    async def get_by_id(self, active_id: str) -> WaitingForMeActive | None:
+        key = self._by_id.get(active_id)
+        if key is None:
+            return None
+        return self._rows.get(key)
 
     async def list_active(
         self,
@@ -530,6 +583,7 @@ class InMemoryWaitingForMeActiveRepository:
         if existing is None:
             return False
         self._rows[key] = WaitingForMeActive(
+            id=existing.id,
             user_id=existing.user_id,
             chat_id=existing.chat_id,
             target_version=existing.target_version,
@@ -553,6 +607,7 @@ class InMemoryWaitingForMeActiveRepository:
         if existing is None:
             return False
         self._rows[key] = WaitingForMeActive(
+            id=existing.id,
             user_id=existing.user_id,
             chat_id=existing.chat_id,
             target_version=existing.target_version,
@@ -562,6 +617,30 @@ class InMemoryWaitingForMeActiveRepository:
             acknowledged_at=existing.acknowledged_at,
             snoozed_until=snoozed_until,
         )
+        return True
+
+    async def apply_if_version(
+        self,
+        *,
+        active_id: str,
+        user_id: str,
+        target_version: int,
+        mutate: dict[str, datetime],
+    ) -> bool:
+        """Atomically apply a mutation if version matches."""
+        key = self._by_id.get(active_id)
+        if key is None:
+            return False
+        existing = self._rows.get(key)
+        if existing is None or existing.user_id != user_id:
+            return False
+        if existing.target_version != target_version:
+            return False
+        # Apply mutation by rebuilding the dataclass.
+        from dataclasses import replace
+
+        updates = {k: v for k, v in mutate.items()}
+        self._rows[key] = replace(existing, **updates)
         return True
 
 

@@ -193,10 +193,30 @@ class ChatAnalysisProcessor:
         if self._result_repo is None:
             return
 
+        # Build a conversation snapshot for training/feedback.
+        # This is the exact conversation the model saw — not messages
+        # loaded later when feedback arrives.
+        from dataclasses import replace
+
+        result_with_snapshot = replace(
+            result,
+            conversation_snapshot={
+                "messages": [
+                    {
+                        "direction": m.direction.value,
+                        "text": m.text or "",
+                        "timestamp": m.timestamp.isoformat() if m.timestamp else None,
+                    }
+                    for m in messages
+                ],
+                "target_version": target_version,
+            },
+        )
+
         result_id = await self._result_repo.save(
             user_id=user_id,
             chat_id=chat_id,
-            result=result,
+            result=result_with_snapshot,
         )
         _logger.info(
             "stored result for chat %s/%s (version %d)",

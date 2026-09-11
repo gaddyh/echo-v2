@@ -1,7 +1,7 @@
 """PostgreSQL implementations of feedback, action, and mute repositories.
 
 All three use ``INSERT ... ON CONFLICT DO NOTHING`` for idempotency on
-``provider_event_id``.
+``provider_message_id``.
 """
 
 from __future__ import annotations
@@ -78,7 +78,7 @@ class PostgresWaitingForMeFeedbackRepository:
         result_id: str | None = None,
         target_version: int | None = None,
         conversation_snapshot: dict | None = None,
-        provider_event_id: str | None = None,
+        provider_message_id: str | None = None,
         expires_at: datetime | None = None,
     ) -> WaitingForMeFeedback | None:
         async with self._session() as session:
@@ -91,12 +91,10 @@ class PostgresWaitingForMeFeedbackRepository:
                     target_version=target_version,
                     verdict=verdict.value,
                     conversation_snapshot=conversation_snapshot,
-                    provider_event_id=provider_event_id,
+                    provider_message_id=provider_message_id,
                     expires_at=expires_at,
                 )
-                .on_conflict_do_nothing(
-                    index_elements=["user_id", "provider_event_id"],
-                )
+                .on_conflict_do_nothing()
                 .returning(WaitingForMeFeedbackRow)
             )
             result = await session.execute(stmt)
@@ -104,26 +102,6 @@ class PostgresWaitingForMeFeedbackRepository:
             if row is None:
                 return None
             return self._row_to_domain(row)
-
-    async def count_recent_false_positives(
-        self,
-        *,
-        user_id: str,
-        chat_id: str,
-        since: datetime,
-    ) -> int:
-        async with self._session() as session:
-            stmt = (
-                select(WaitingForMeFeedbackRow)
-                .where(
-                    WaitingForMeFeedbackRow.user_id == user_id,
-                    WaitingForMeFeedbackRow.chat_id == chat_id,
-                    WaitingForMeFeedbackRow.verdict == FeedbackVerdict.FALSE_POSITIVE.value,
-                    WaitingForMeFeedbackRow.created_at >= since,
-                )
-            )
-            rows = (await session.execute(stmt)).scalars().all()
-            return len(rows)
 
     async def delete_expired(self, *, now: datetime) -> int:
         async with self._session() as session:
@@ -143,7 +121,7 @@ class PostgresWaitingForMeFeedbackRepository:
             target_version=row.target_version,
             verdict=FeedbackVerdict(row.verdict),
             conversation_snapshot=row.conversation_snapshot,
-            provider_event_id=row.provider_event_id,
+            provider_message_id=row.provider_message_id,
             created_at=row.created_at,
             expires_at=row.expires_at,
         )
@@ -178,7 +156,7 @@ class PostgresWaitingForMeActionRepository:
         active_id: str | None = None,
         target_version: int | None = None,
         action_payload: dict | None = None,
-        provider_event_id: str | None = None,
+        provider_message_id: str | None = None,
     ) -> WaitingForMeAction | None:
         async with self._session() as session:
             stmt = (
@@ -190,10 +168,10 @@ class PostgresWaitingForMeActionRepository:
                     target_version=target_version,
                     action_type=action_type.value,
                     action_payload=action_payload,
-                    provider_event_id=provider_event_id,
+                    provider_message_id=provider_message_id,
                 )
                 .on_conflict_do_nothing(
-                    index_elements=["user_id", "provider_event_id"],
+                    index_elements=["user_id", "provider_message_id"],
                 )
                 .returning(WaitingForMeActionRow)
             )
@@ -212,7 +190,7 @@ class PostgresWaitingForMeActionRepository:
             target_version=row.target_version,
             action_type=WaitingForMeActionType(row.action_type),
             action_payload=row.action_payload,
-            provider_event_id=row.provider_event_id,
+            provider_message_id=row.provider_message_id,
             created_at=row.created_at,
         )
 

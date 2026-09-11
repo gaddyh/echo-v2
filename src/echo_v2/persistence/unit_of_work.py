@@ -43,6 +43,11 @@ from echo_v2.persistence.postgres_chat import (
     PostgresWaitingForMeActiveRepository,
     PostgresWaitingForMeResultRepository,
 )
+from echo_v2.persistence.postgres_feedback import (
+    PostgresChatMuteRepository,
+    PostgresWaitingForMeActionRepository,
+    PostgresWaitingForMeFeedbackRepository,
+)
 from echo_v2.persistence.postgres_idempotency import PostgresIdempotencyStore
 from echo_v2.persistence.postgres_webhook_dedup import PostgresWebhookDedupStore
 from echo_v2.persistence.postgres_whatsapp_connections import (
@@ -68,6 +73,9 @@ class UnitOfWorkRepos:
     chat_state: PostgresChatStateRepository
     wfm_results: PostgresWaitingForMeResultRepository
     wfm_active: PostgresWaitingForMeActiveRepository
+    wfm_feedback: PostgresWaitingForMeFeedbackRepository
+    wfm_actions: PostgresWaitingForMeActionRepository
+    chat_mutes: PostgresChatMuteRepository
 
 
 class PostgresUnitOfWork:
@@ -129,6 +137,18 @@ class PostgresUnitOfWork:
                 self._session_factory,
                 session=self._session,
             ),
+            wfm_feedback=PostgresWaitingForMeFeedbackRepository(
+                self._session_factory,
+                session=self._session,
+            ),
+            wfm_actions=PostgresWaitingForMeActionRepository(
+                self._session_factory,
+                session=self._session,
+            ),
+            chat_mutes=PostgresChatMuteRepository(
+                self._session_factory,
+                session=self._session,
+            ),
         )
         return self
 
@@ -179,3 +199,18 @@ class PostgresUnitOfWork:
     def wfm_active(self) -> PostgresWaitingForMeActiveRepository:
         assert self.repos is not None, "UnitOfWork not entered"
         return self.repos.wfm_active
+
+    @property
+    def wfm_feedback(self) -> PostgresWaitingForMeFeedbackRepository:
+        assert self.repos is not None, "UnitOfWork not entered"
+        return self.repos.wfm_feedback
+
+    @property
+    def wfm_actions(self) -> PostgresWaitingForMeActionRepository:
+        assert self.repos is not None, "UnitOfWork not entered"
+        return self.repos.wfm_actions
+
+    @property
+    def chat_mutes(self) -> PostgresChatMuteRepository:
+        assert self.repos is not None, "UnitOfWork not entered"
+        return self.repos.chat_mutes

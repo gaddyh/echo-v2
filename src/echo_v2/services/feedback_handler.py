@@ -1,24 +1,30 @@
 """FeedbackHandler — handles bot callbacks for the feedback flyloop.
 
-This is the bot-side handler that:
+3-button card UX — the user answers one question:
+    "מה אני רוצה לעשות עם זה?"
 
-1. Recognizes the "צפה בשיחות" template button tap → sends up to 5
-   individual cards, each with 2 gateway buttons (מה לעשות / משוב ל־Echo).
-2. Action submenu (מה לעשות) → 3 buttons: מטפל עכשיו / הזכר לי מחר / הסר.
-3. Feedback submenu (משוב ל־Echo) → 3 buttons: כן / לא / לא בטוח.
-4. Action callbacks validate staleness; stale → reject with message.
-5. Feedback callbacks always stored (even if stale).
-6. Recognizes "פספסתי" → records false_negative.
+Card (3 buttons):
+    טופל        → resolve + CORRECT feedback (identification was right, user handled it)
+    להזכיר לי   → snooze (remind me later)
+    לא צריד    → opens dismiss submenu
 
-Callback ID format (structured, opaque to the user):
+Dismiss submenu (2 buttons):
+    לא מחכים לי       → resolve + FALSE_POSITIVE feedback (Echo was wrong)
+    לא מעניין (שיחכו) → resolve (no feedback, user chooses not to handle)
 
-- Template button: text = "צפה בשיחות"
-- Action menu:     ``menu_action:{chat_id}:{target_version}``
-- Feedback menu:   ``menu_feedback:{chat_id}:{target_version}``
-- Action:          ``action:{chat_id}:{target_version}:{action_type}``
-- Feedback:        ``feedback:{chat_id}:{target_version}:{verdict}``
-- Mute confirm:    ``wfm_mute:{chat_id}``
-- Mute decline:     ``wfm_nomute:{chat_id}``
+Feedback is implicit — a side effect of the action, not a separate question.
+The user doesn't think in terms of "feedback" vs "action"; they think:
+now, later, or don't need this.
+
+Callback ID format (opaque, uses surrogate IDs):
+
+- Card buttons:    ``action:{active_id}:{action_type}``
+  where action_type is: handled, snooze, dismiss
+- Dismiss submenu: ``dismiss:{active_id}:{reason}``
+  where reason is: not_waiting, not_interested
+
+The ``active_id`` is the surrogate UUID of the ``waiting_for_me_active``
+row. No chat_id or phone is exposed in callback IDs.
 """
 
 from __future__ import annotations
@@ -26,16 +32,22 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
-from echo_v2.domain.feedback import FeedbackVerdict
+from echo_v2.domain.feedback import HandlingOutcome
 from echo_v2.persistence.chat_repositories import (
     ChatStateRepository,
     MessageRepository,
     WaitingForMeActiveRepository,
+    WaitingForMeResultRepository,
 )
 from echo_v2.persistence.contacts import ContactRepository
-from echo_v2.persistence.feedback_repositories import ChatMuteRepository
+from echo_v2.persistence.feedback_repositories import (
+    ChatMuteRepository,
+)
 from echo_v2.ports.bot import BotChannel, BotEvent, BotEventType
-from echo_v2.services.feedback_service import FeedbackService
+from echo_v2.services.feedback_service import (
+    WaitingForMeActionService,
+    WaitingForMeFeedbackService,
+)
 
 __all__ = ["FeedbackHandler"]
 
@@ -44,26 +56,14 @@ _logger = logging.getLogger("echo_v2.services.feedback_handler")
 # Template button text (Hebrew).
 _VIEW_DETAILS_BUTTON = "צפה בשיחות"
 
-# Card gateway buttons.
-_BUTTON_ACTION_MENU = "מה לעשות"
-_BUTTON_FEEDBACK_MENU = "משוב ל־Echo"
+# Card buttons (3).
+_BUTTON_HANDLED = "טופל"
+_BUTTON_SNOOZE = "להזכיר לי"
+_BUTTON_DISMISS = "לא צריד"
 
-# Action submenu buttons.
-_BUTTON_ACKNOWLEDGE = "מטפל עכשיו"
-_BUTTON_SNOOZE = "הזכר לי מחר"
-_BUTTON_RESOLVE = "הסר"
-
-# Feedback submenu buttons.
-_BUTTON_CORRECT = "כן"
-_BUTTON_FALSE_POSITIVE = "לא"
-_BUTTON_UNCERTAIN = "לא בטוח"
-
-# Mute confirmation buttons.
-_BUTTON_MUTE_PERMANENT = "כן, השתק"
-_BUTTON_NO_MUTE = "לא, זה חד-פעמי"
-
-# Miss reporting.
-_MISS_COMMAND = "פספסתי"
+# Dismiss submenu buttons (2).
+_BUTTON_NOT_WAITING = "לא מחכים לי"
+_BUTTON_NOT_INTERESTED = "לא מעניין (שיחכו)"
 
 # Max cards to send.
 MAX_CARDS = 5
@@ -81,21 +81,25 @@ class FeedbackHandler:
 
     Args:
         bot: The :class:`BotChannel` to send messages through.
-        feedback_service: The :class:`FeedbackService` for actions + feedback.
+        action_service: The :class:`WaitingForMeActionService` for actions.
+        feedback_service: The :class:`WaitingForMeFeedbackService` for feedback.
         active_repo: The :class:`WaitingForMeActiveRepository`.
+        result_repo: The :class:`WaitingForMeResultRepository`.
         chat_state_repo: The :class:`ChatStateRepository` for version checks.
         message_repo: The :class:`MessageRepository` for latest inbound text.
         contact_repo: The :class:`ContactRepository` for name resolution.
         mute_repo: The :class:`ChatMuteRepository` for mute checks.
-        user_resolver: Callable that maps phone → user_id or ``None``.
+        user_resolver: Callable that maps phone → (user_id, status, first_name).
     """
 
     def __init__(
         self,
         *,
         bot: BotChannel,
-        feedback_service: FeedbackService,
+        action_service: WaitingForMeActionService,
+        feedback_service: WaitingForMeFeedbackService,
         active_repo: WaitingForMeActiveRepository,
+        result_repo: WaitingForMeResultRepository,
         chat_state_repo: ChatStateRepository,
         message_repo: MessageRepository,
         contact_repo: ContactRepository,
@@ -103,8 +107,10 @@ class FeedbackHandler:
         user_resolver,
     ) -> None:
         self._bot = bot
+        self._action_service = action_service
         self._feedback_service = feedback_service
         self._active_repo = active_repo
+        self._result_repo = result_repo
         self._chat_state_repo = chat_state_repo
         self._message_repo = message_repo
         self._contact_repo = contact_repo
@@ -127,31 +133,15 @@ class FeedbackHandler:
 
         # 2. Button replies — route by prefix.
         if event.type is BotEventType.BUTTON_REPLY and event.button_id:
-            if event.button_id.startswith("menu_action:"):
-                return await self._handle_action_menu(event)
-            if event.button_id.startswith("menu_feedback:"):
-                return await self._handle_feedback_menu(event)
             if event.button_id.startswith("action:"):
                 return await self._handle_action(event)
-            if event.button_id.startswith("feedback:"):
-                return await self._handle_feedback(event)
-            if event.button_id.startswith("wfm_mute:"):
-                return await self._handle_mute_confirm(event)
-            if event.button_id.startswith("wfm_nomute:"):
-                return True  # User declined mute — no action needed.
-
-        # 3. Miss reporting: "פספסתי"
-        if (
-            event.type is BotEventType.TEXT
-            and event.text
-            and event.text.strip() == _MISS_COMMAND
-        ):
-            return await self._handle_miss_report(event)
+            if event.button_id.startswith("dismiss:"):
+                return await self._handle_dismiss(event)
 
         return False
 
     async def _handle_view_details(self, event: BotEvent) -> bool:
-        """Send up to 5 individual cards, each with 2 gateway buttons."""
+        """Send up to 5 individual cards, each with 3 buttons."""
         user_info = await self._user_resolver.resolve(event.user_phone)
         if user_info is None:
             return False
@@ -159,13 +149,15 @@ class FeedbackHandler:
         user_id = user_info[0]
         now = datetime.now(timezone.utc)
 
-        # Get current, non-snoozed, non-muted active items.
+        # Get current, non-snoozed, non-muted, non-acknowledged active items.
         all_active = await self._active_repo.list_all_for_user(user_id=user_id)
         items = []
         for active in all_active:
             chat = await self._chat_state_repo.get(user_id, active.chat_id)
             if chat is None or chat.activity_version != active.target_version:
                 continue
+            if active.acknowledged_at is not None:
+                continue  # acknowledged items are excluded
             if active.snoozed_until is not None and active.snoozed_until > now:
                 continue
             if await self._mute_repo.is_muted(
@@ -193,14 +185,9 @@ class FeedbackHandler:
             body = f"{i} מתוך {total}\n\n{display_name}\n\"{last_text or 'שלח/ה הודעה'}\""
 
             buttons = [
-                {
-                    "id": f"menu_action:{active.chat_id}:{active.target_version}",
-                    "title": _BUTTON_ACTION_MENU,
-                },
-                {
-                    "id": f"menu_feedback:{active.chat_id}:{active.target_version}",
-                    "title": _BUTTON_FEEDBACK_MENU,
-                },
+                {"id": f"action:{active.id}:handled", "title": _BUTTON_HANDLED},
+                {"id": f"action:{active.id}:snooze", "title": _BUTTON_SNOOZE},
+                {"id": f"action:{active.id}:dismiss", "title": _BUTTON_DISMISS},
             ]
 
             await self._bot.send_buttons(
@@ -212,128 +199,44 @@ class FeedbackHandler:
         _logger.info("feedback: sent %d cards to %s", total, user_id)
         return True
 
-    async def _handle_action_menu(self, event: BotEvent) -> bool:
-        """Send the action submenu (3 buttons) for a specific item."""
-        user_info = await self._user_resolver.resolve(event.user_phone)
-        if user_info is None:
-            return False
-
-        user_id = user_info[0]
-        chat_id, target_version = _parse_menu_id(event.button_id, "menu_action")
-        if chat_id is None:
-            return False
-
-        # Validate the active item exists and is current.
-        active = await self._active_repo.get(user_id=user_id, chat_id=chat_id)
-        if active is None or active.target_version != target_version:
-            await self._bot.send_text(event.user_phone, _STALE_MESSAGE)
-            return True
-
-        name = await self._resolve_name(user_id, chat_id)
-        display_name = name or _phone_from_chat_id(chat_id)
-        body = f"מה לעשות עם השיחה של {display_name}?"
-
-        buttons = [
-            {"id": f"action:{chat_id}:{target_version}:acknowledge", "title": _BUTTON_ACKNOWLEDGE},
-            {"id": f"action:{chat_id}:{target_version}:snooze", "title": _BUTTON_SNOOZE},
-            {"id": f"action:{chat_id}:{target_version}:resolve", "title": _BUTTON_RESOLVE},
-        ]
-
-        await self._bot.send_buttons(
-            event.user_phone,
-            body_text=body,
-            buttons=buttons,
-        )
-        return True
-
-    async def _handle_feedback_menu(self, event: BotEvent) -> bool:
-        """Send the feedback submenu (3 buttons) for a specific item."""
-        user_info = await self._user_resolver.resolve(event.user_phone)
-        if user_info is None:
-            return False
-
-        chat_id, target_version = _parse_menu_id(event.button_id, "menu_feedback")
-        if chat_id is None:
-            return False
-
-        # Feedback can be stored even for stale items, but we still show
-        # the menu. The question is about the analysis result, not the
-        # current state.
-        body = "האם Echo זיהה נכון שהשיחה מחכה לך?"
-
-        buttons = [
-            {"id": f"feedback:{chat_id}:{target_version}:correct", "title": _BUTTON_CORRECT},
-            {"id": f"feedback:{chat_id}:{target_version}:false_positive", "title": _BUTTON_FALSE_POSITIVE},
-            {"id": f"feedback:{chat_id}:{target_version}:uncertain", "title": _BUTTON_UNCERTAIN},
-        ]
-
-        await self._bot.send_buttons(
-            event.user_phone,
-            body_text=body,
-            buttons=buttons,
-        )
-        return True
-
     async def _handle_action(self, event: BotEvent) -> bool:
-        """Execute an action (acknowledge/snooze/resolve)."""
+        """Execute an action (handled/snooze/dismiss)."""
         user_info = await self._user_resolver.resolve(event.user_phone)
         if user_info is None:
             return False
 
         user_id = user_info[0]
-        # Parse: action:{chat_id}:{target_version}:{action_type}
-        parts = event.button_id.split(":", 4)
-        if len(parts) < 4:
+        # Parse: action:{active_id}:{action_type}
+        parts = event.button_id.split(":", 2)
+        if len(parts) < 3:
             return False
-        chat_id = parts[1]
-        try:
-            target_version = int(parts[2])
-        except ValueError:
-            return False
-        action_type = parts[3]
+        active_id = parts[1]
+        action_type = parts[2]
 
-        active_id = f"{user_id}:{chat_id}"
+        # Get the target_version from the active item.
+        target_version = await self._get_version_for_active(active_id)
 
-        if action_type == "acknowledge":
-            result = await self._feedback_service.handle_acknowledge(
+        if action_type == "handled":
+            outcome = await self._action_service.handled(
                 user_id=user_id,
-                chat_id=chat_id,
                 active_id=active_id,
                 target_version=target_version,
-                provider_event_id=event.event_id,
+                provider_message_id=event.event_id,
             )
-            if result:
-                await self._bot.send_text(event.user_phone, "👍 סימנתי כמטופל.")
-            else:
-                await self._bot.send_text(event.user_phone, _STALE_MESSAGE)
+            await self._send_action_response(event.user_phone, outcome, "handled")
 
         elif action_type == "snooze":
-            result = await self._feedback_service.handle_snooze(
+            outcome = await self._action_service.snooze(
                 user_id=user_id,
-                chat_id=chat_id,
                 active_id=active_id,
                 target_version=target_version,
-                provider_event_id=event.event_id,
+                provider_message_id=event.event_id,
             )
-            if result:
-                await self._bot.send_text(event.user_phone, "⏰ אזכיר לך שוב מחר.")
-            else:
-                await self._bot.send_text(event.user_phone, _STALE_MESSAGE)
+            await self._send_action_response(event.user_phone, outcome, "snooze")
 
-        elif action_type == "resolve":
-            result = await self._feedback_service.handle_resolve(
-                user_id=user_id,
-                chat_id=chat_id,
-                active_id=active_id,
-                target_version=target_version,
-                provider_event_id=event.event_id,
-            )
-            if result:
-                await self._bot.send_text(
-                    event.user_phone, "✅ הוסר מהרשימה."
-                )
-            else:
-                await self._bot.send_text(event.user_phone, _STALE_MESSAGE)
+        elif action_type == "dismiss":
+            # Send the dismiss submenu.
+            await self._send_dismiss_menu(event.user_phone, user_id, active_id)
 
         else:
             _logger.warning("feedback: unknown action type %s", action_type)
@@ -341,111 +244,93 @@ class FeedbackHandler:
 
         return True
 
-    async def _handle_feedback(self, event: BotEvent) -> bool:
-        """Record a feedback verdict (correct/false_positive/uncertain)."""
+    async def _handle_dismiss(self, event: BotEvent) -> bool:
+        """Handle dismiss submenu selection (not_waiting / not_interested)."""
         user_info = await self._user_resolver.resolve(event.user_phone)
         if user_info is None:
             return False
 
         user_id = user_info[0]
-        # Parse: feedback:{chat_id}:{target_version}:{verdict}
-        parts = event.button_id.split(":", 4)
-        if len(parts) < 4:
-            return False
-        chat_id = parts[1]
-        try:
-            target_version = int(parts[2])
-        except ValueError:
-            return False
-        verdict_str = parts[3]
-
-        verdict_map = {
-            "correct": FeedbackVerdict.CORRECT,
-            "false_positive": FeedbackVerdict.FALSE_POSITIVE,
-            "uncertain": FeedbackVerdict.UNCERTAIN,
-        }
-        verdict = verdict_map.get(verdict_str)
-        if verdict is None:
-            _logger.warning("feedback: unknown verdict %s", verdict_str)
-            return False
-
-        # Feedback is always stored — even for stale items.
-        await self._feedback_service.record_feedback(
-            user_id=user_id,
-            chat_id=chat_id,
-            verdict=verdict,
-            target_version=target_version,
-            provider_event_id=event.event_id,
-        )
-
-        if verdict == FeedbackVerdict.FALSE_POSITIVE:
-            # Check if we should offer permanent mute.
-            if await self._feedback_service.should_offer_mute(
-                user_id=user_id, chat_id=chat_id
-            ):
-                body = "נראה ששיחה זו לא רלוונטית שוב ושוב. להשתיק אותה לתמיד?"
-                buttons = [
-                    {"id": f"wfm_mute:{chat_id}", "title": _BUTTON_MUTE_PERMANENT},
-                    {"id": f"wfm_nomute:{chat_id}", "title": _BUTTON_NO_MUTE},
-                ]
-                await self._bot.send_buttons(
-                    event.user_phone,
-                    body_text=body,
-                    buttons=buttons,
-                )
-            else:
-                await self._bot.send_text(
-                    event.user_phone, "תודה על המשוב! אני אלמד מזה."
-                )
-        elif verdict == FeedbackVerdict.CORRECT:
-            await self._bot.send_text(event.user_phone, "👍 תודה על המשוב!")
-        else:
-            await self._bot.send_text(
-                event.user_phone, "תודה! אשתדל להשתפר בעתיד."
-            )
-
-        return True
-
-    async def _handle_mute_confirm(self, event: BotEvent) -> bool:
-        """Handle permanent mute confirmation."""
-        user_info = await self._user_resolver.resolve(event.user_phone)
-        if user_info is None:
-            return False
-
-        user_id = user_info[0]
+        # Parse: dismiss:{active_id}:{reason}
         parts = event.button_id.split(":", 2)
-        if len(parts) < 2:
+        if len(parts) < 3:
             return False
-        chat_id = parts[1]
+        active_id = parts[1]
+        reason = parts[2]
 
-        await self._feedback_service.handle_mute_chat(
-            user_id=user_id,
-            chat_id=chat_id,
-            permanent=True,
-            provider_event_id=event.event_id,
-        )
-        await self._bot.send_text(event.user_phone, "🔇 השיחה הושתקה. לא אציג אותה שוב.")
+        target_version = await self._get_version_for_active(active_id)
+
+        if reason == "not_waiting":
+            outcome = await self._action_service.dismiss_not_waiting(
+                user_id=user_id,
+                active_id=active_id,
+                target_version=target_version,
+                provider_message_id=event.event_id,
+            )
+            await self._send_action_response(event.user_phone, outcome, "dismiss_not_waiting")
+
+        elif reason == "not_interested":
+            outcome = await self._action_service.dismiss_not_interested(
+                user_id=user_id,
+                active_id=active_id,
+                target_version=target_version,
+                provider_message_id=event.event_id,
+            )
+            await self._send_action_response(event.user_phone, outcome, "dismiss_not_interested")
+
+        else:
+            _logger.warning("feedback: unknown dismiss reason %s", reason)
+            return False
+
         return True
 
-    async def _handle_miss_report(self, event: BotEvent) -> bool:
-        """Handle 'פספסתי' — record a false negative."""
-        user_info = await self._user_resolver.resolve(event.user_phone)
-        if user_info is None:
-            return False
+    async def _send_dismiss_menu(
+        self,
+        phone: str,
+        user_id: str,
+        active_id: str,
+    ) -> None:
+        """Send the dismiss submenu (2 buttons)."""
+        body = "למה לא צריך?"
 
-        user_id = user_info[0]
-        await self._feedback_service.record_feedback(
-            user_id=user_id,
-            chat_id="*",
-            verdict=FeedbackVerdict.FALSE_NEGATIVE,
-            provider_event_id=event.event_id,
+        buttons = [
+            {"id": f"dismiss:{active_id}:not_waiting", "title": _BUTTON_NOT_WAITING},
+            {"id": f"dismiss:{active_id}:not_interested", "title": _BUTTON_NOT_INTERESTED},
+        ]
+
+        await self._bot.send_buttons(
+            phone,
+            body_text=body,
+            buttons=buttons,
         )
-        await self._bot.send_text(
-            event.user_phone,
-            "תודה שדיווחת! אני אלמד מזה לפעם הבאה. 🙏",
-        )
-        _logger.info("feedback: miss report from user %s", user_id)
-        return True
+
+    async def _get_version_for_active(self, active_id: str) -> int:
+        """Get the target_version for an active item by ID."""
+        active = await self._active_repo.get_by_id(active_id)
+        return active.target_version if active else 0
+
+    async def _send_action_response(
+        self,
+        phone: str,
+        outcome: HandlingOutcome,
+        action_type: str,
+    ) -> None:
+        """Send the appropriate response based on the handling outcome."""
+        if outcome == HandlingOutcome.APPLIED:
+            if action_type == "handled":
+                await self._bot.send_text(phone, "👍 סימנתי שטופל.")
+            elif action_type == "snooze":
+                await self._bot.send_text(phone, "⏰ אזכיר לך שוב מחר.")
+            elif action_type == "dismiss_not_waiting":
+                await self._bot.send_text(phone, "תודה על המשוב! אני אלמד מזה.")
+            elif action_type == "dismiss_not_interested":
+                await self._bot.send_text(phone, "✅ הוסר מהרשימה.")
+        elif outcome == HandlingOutcome.DUPLICATE:
+            # Already processed — don't send a duplicate message.
+            _logger.info("action: duplicate callback for %s, skipping", action_type)
+        else:
+            # STALE or NOT_FOUND
+            await self._bot.send_text(phone, _STALE_MESSAGE)
 
     async def _resolve_name(self, user_id: str, chat_id: str) -> str | None:
         """Resolve contact name for a chat."""
@@ -469,22 +354,6 @@ class FeedbackHandler:
             user_id=user_id, chat_id=chat_id
         )
         return msg.text if msg and msg.text else None
-
-
-def _parse_menu_id(button_id: str, prefix: str) -> tuple[str | None, int | None]:
-    """Parse menu_action:{chat_id}:{target_version} or menu_feedback:...
-
-    Returns (chat_id, target_version) or (None, None) if malformed.
-    """
-    parts = button_id.split(":", 2)
-    if len(parts) < 3:
-        return None, None
-    chat_id = parts[1]
-    try:
-        target_version = int(parts[2])
-    except ValueError:
-        return None, None
-    return chat_id, target_version
 
 
 def _phone_from_chat_id(chat_id: str) -> str:

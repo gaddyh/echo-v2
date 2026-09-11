@@ -6,7 +6,7 @@ Clean separation:
 * :class:`WaitingForMeActionRepository` — stores user actions (state mutations).
 * :class:`ChatMuteRepository` — stores and queries chat mutes.
 
-All three are idempotent via ``UNIQUE(user_id, provider_event_id)`` on
+All three are idempotent via ``UNIQUE(user_id, provider_message_id)`` on
 feedback and actions.
 """
 
@@ -48,24 +48,14 @@ class WaitingForMeFeedbackRepository(Protocol):
         result_id: str | None = None,
         target_version: int | None = None,
         conversation_snapshot: dict | None = None,
-        provider_event_id: str | None = None,
+        provider_message_id: str | None = None,
         expires_at: datetime | None = None,
     ) -> WaitingForMeFeedback | None:
-        """Record a feedback verdict. Returns ``None`` if duplicate
-        (same ``provider_event_id`` already recorded)."""
-        ...
+        """Record a feedback verdict.
 
-    async def count_recent_false_positives(
-        self,
-        *,
-        user_id: str,
-        chat_id: str,
-        since: datetime,
-    ) -> int:
-        """Count false_positive verdicts for a chat since a timestamp.
-
-        Used to decide whether to offer permanent mute after repeated
-        dismissals.
+        Returns ``None`` if duplicate (either the same
+        ``provider_message_id`` was already recorded, or a feedback for
+        the same ``result_id`` already exists — first feedback wins).
         """
         ...
 
@@ -92,15 +82,24 @@ class InMemoryWaitingForMeFeedbackRepository:
         result_id: str | None = None,
         target_version: int | None = None,
         conversation_snapshot: dict | None = None,
-        provider_event_id: str | None = None,
+        provider_message_id: str | None = None,
         expires_at: datetime | None = None,
     ) -> WaitingForMeFeedback | None:
-        # Idempotency: check for duplicate provider_event_id.
-        if provider_event_id is not None:
+        # Idempotency: check for duplicate provider_message_id.
+        if provider_message_id is not None:
             for row in self._rows:
                 if (
                     row.user_id == user_id
-                    and row.provider_event_id == provider_event_id
+                    and row.provider_message_id == provider_message_id
+                ):
+                    return None
+
+        # Semantic dedup: first feedback for a result_id wins.
+        if result_id is not None:
+            for row in self._rows:
+                if (
+                    row.user_id == user_id
+                    and row.result_id == result_id
                 ):
                     return None
 
@@ -111,29 +110,12 @@ class InMemoryWaitingForMeFeedbackRepository:
             target_version=target_version,
             verdict=verdict,
             conversation_snapshot=conversation_snapshot,
-            provider_event_id=provider_event_id,
+            provider_message_id=provider_message_id,
             created_at=datetime.now(timezone.utc),
             expires_at=expires_at,
         )
         self._rows.append(feedback)
         return feedback
-
-    async def count_recent_false_positives(
-        self,
-        *,
-        user_id: str,
-        chat_id: str,
-        since: datetime,
-    ) -> int:
-        return sum(
-            1
-            for r in self._rows
-            if r.user_id == user_id
-            and r.chat_id == chat_id
-            and r.verdict == FeedbackVerdict.FALSE_POSITIVE
-            and r.created_at is not None
-            and r.created_at >= since
-        )
 
     async def delete_expired(self, *, now: datetime) -> int:
         before = len(self._rows)
@@ -159,10 +141,10 @@ class WaitingForMeActionRepository(Protocol):
         active_id: str | None = None,
         target_version: int | None = None,
         action_payload: dict | None = None,
-        provider_event_id: str | None = None,
+        provider_message_id: str | None = None,
     ) -> WaitingForMeAction | None:
         """Record an action. Returns ``None`` if duplicate
-        (same ``provider_event_id`` already recorded)."""
+        (same ``provider_message_id`` already recorded)."""
         ...
 
 
@@ -181,14 +163,14 @@ class InMemoryWaitingForMeActionRepository:
         active_id: str | None = None,
         target_version: int | None = None,
         action_payload: dict | None = None,
-        provider_event_id: str | None = None,
+        provider_message_id: str | None = None,
     ) -> WaitingForMeAction | None:
-        # Idempotency: check for duplicate provider_event_id.
-        if provider_event_id is not None:
+        # Idempotency: check for duplicate provider_message_id.
+        if provider_message_id is not None:
             for row in self._rows:
                 if (
                     row.user_id == user_id
-                    and row.provider_event_id == provider_event_id
+                    and row.provider_message_id == provider_message_id
                 ):
                     return None
 
@@ -199,7 +181,7 @@ class InMemoryWaitingForMeActionRepository:
             target_version=target_version,
             action_type=action_type,
             action_payload=action_payload,
-            provider_event_id=provider_event_id,
+            provider_message_id=provider_message_id,
             created_at=datetime.now(timezone.utc),
         )
         self._rows.append(action)

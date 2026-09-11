@@ -238,6 +238,9 @@ class DigestWorker:
         for active in all_active:
             chat = await self._chat_state_repo.get(user_id, active.chat_id)
             if chat is not None and chat.activity_version == active.target_version:
+                # Skip acknowledged items — user already handling them.
+                if active.acknowledged_at is not None:
+                    continue
                 # Skip snoozed items.
                 if active.snoozed_until is not None and active.snoozed_until > now:
                     continue

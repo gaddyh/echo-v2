@@ -261,18 +261,28 @@ def create_app() -> FastAPI:
 
     # --- feedback flyloop (actions + feedback on waiting items) -------------
     from echo_v2.services.feedback_handler import FeedbackHandler
-    from echo_v2.services.feedback_service import FeedbackService
+    from echo_v2.services.feedback_service import (
+        WaitingForMeActionService,
+        WaitingForMeFeedbackService,
+    )
 
-    feedback_service = FeedbackService(
+    action_service = WaitingForMeActionService(
         active_repo=repos.wfm_active,
         action_repo=repos.wfm_actions,
-        feedback_repo=repos.wfm_feedback,
         mute_repo=repos.chat_mutes,
+        feedback_repo=repos.wfm_feedback,
+        result_repo=repos.wfm_results,
+    )
+    feedback_service = WaitingForMeFeedbackService(
+        feedback_repo=repos.wfm_feedback,
+        result_repo=repos.wfm_results,
     )
     feedback_handler = FeedbackHandler(
         bot=d360_client,
+        action_service=action_service,
         feedback_service=feedback_service,
         active_repo=repos.wfm_active,
+        result_repo=repos.wfm_results,
         chat_state_repo=repos.chat_state,
         message_repo=repos.messages,
         contact_repo=contact_repo,

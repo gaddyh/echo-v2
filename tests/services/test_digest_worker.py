@@ -51,6 +51,7 @@ class FakeBot:
 
 def _make_active(chat_id="972508765432@c.us", waiting_since=NOW, target_version=1):
     return WaitingForMeActive(
+        id="active-1",
         user_id=USER_ID,
         chat_id=chat_id,
         target_version=target_version,
@@ -398,3 +399,223 @@ async def test_run_loop_cancellable():
         await task
     except asyncio.CancelledError:
         pass
+
+
+async def test_digest_excludes_acknowledged_items():
+    """Acknowledged items are excluded from digest."""
+    from dataclasses import replace
+
+    digest_repo = InMemoryDailyDigestRepository()
+    active_repo = InMemoryWaitingForMeActiveRepository()
+    chat_state_repo = InMemoryChatStateRepository()
+    message_repo = InMemoryMessageRepository()
+    contact_repo = InMemoryContactRepository()
+    bot = FakeBot()
+
+    await _setup_chat_with_active(chat_state_repo, active_repo)
+    # Acknowledge the item.
+    await active_repo.acknowledge(
+        user_id=USER_ID, chat_id="972508765432@c.us", acknowledged_at=NOW,
+    )
+
+    worker = DigestWorker(
+        digest_repo=digest_repo,
+        active_repo=active_repo,
+        chat_state_repo=chat_state_repo,
+        message_repo=message_repo,
+        contact_repo=contact_repo,
+        bot=bot,
+        user_provider=_make_user_provider([(USER_ID, USER_PHONE, "Asia/Jerusalem", "גדי")]),
+    )
+    sent = await worker.run_once(now_utc=NOW)
+    assert sent == 0  # no items → no digest sent
+
+
+async def test_digest_excludes_snoozed_items():
+    """Snoozed items are excluded from digest."""
+    from datetime import timedelta
+
+    digest_repo = InMemoryDailyDigestRepository()
+    active_repo = InMemoryWaitingForMeActiveRepository()
+    chat_state_repo = InMemoryChatStateRepository()
+    message_repo = InMemoryMessageRepository()
+    contact_repo = InMemoryContactRepository()
+    bot = FakeBot()
+
+    await _setup_chat_with_active(chat_state_repo, active_repo)
+    future = NOW + timedelta(hours=10)
+    await active_repo.snooze(
+        user_id=USER_ID, chat_id="972508765432@c.us", snoozed_until=future,
+    )
+
+    worker = DigestWorker(
+        digest_repo=digest_repo,
+        active_repo=active_repo,
+        chat_state_repo=chat_state_repo,
+        message_repo=message_repo,
+        contact_repo=contact_repo,
+        bot=bot,
+        user_provider=_make_user_provider([(USER_ID, USER_PHONE, "Asia/Jerusalem", "גדי")]),
+    )
+    sent = await worker.run_once(now_utc=NOW)
+    assert sent == 0
+
+
+async def test_digest_excludes_muted_chats():
+    """Muted chats are excluded from digest."""
+    from echo_v2.persistence.feedback_repositories import InMemoryChatMuteRepository
+
+    digest_repo = InMemoryDailyDigestRepository()
+    active_repo = InMemoryWaitingForMeActiveRepository()
+    chat_state_repo = InMemoryChatStateRepository()
+    message_repo = InMemoryMessageRepository()
+    contact_repo = InMemoryContactRepository()
+    mute_repo = InMemoryChatMuteRepository()
+    bot = FakeBot()
+
+    await _setup_chat_with_active(chat_state_repo, active_repo)
+    await mute_repo.mute_permanent(user_id=USER_ID, chat_id="972508765432@c.us")
+
+    worker = DigestWorker(
+        digest_repo=digest_repo,
+        active_repo=active_repo,
+        chat_state_repo=chat_state_repo,
+        message_repo=message_repo,
+        contact_repo=contact_repo,
+        bot=bot,
+        user_provider=_make_user_provider([(USER_ID, USER_PHONE, "Asia/Jerusalem", "גדי")]),
+        mute_repo=mute_repo,
+    )
+    sent = await worker.run_once(now_utc=NOW)
+    assert sent == 0
+
+
+async def test_digest_name_fallback_to_contact():
+    """Contact name is used when chat_state has no chat_name."""
+    from echo_v2.persistence.contacts import ContactRecord
+
+    digest_repo = InMemoryDailyDigestRepository()
+    active_repo = InMemoryWaitingForMeActiveRepository()
+    chat_state_repo = InMemoryChatStateRepository()
+    message_repo = InMemoryMessageRepository()
+    contact_repo = InMemoryContactRepository()
+    bot = FakeBot()
+
+    await _setup_chat_with_active(chat_state_repo, active_repo)
+    await contact_repo.save(
+        ContactRecord(
+            user_id=USER_ID,
+            phone_number="972508765432",
+            display_name="דנה",
+        )
+    )
+
+    worker = DigestWorker(
+        digest_repo=digest_repo,
+        active_repo=active_repo,
+        chat_state_repo=chat_state_repo,
+        message_repo=message_repo,
+        contact_repo=contact_repo,
+        bot=bot,
+        user_provider=_make_user_provider([(USER_ID, USER_PHONE, "Asia/Jerusalem", "גדי")]),
+    )
+    sent = await worker.run_once(now_utc=NOW)
+    assert sent == 1
+
+
+async def test_digest_name_fallback_to_message():
+    """Message chat_name/sender_name is used when no chat/contact name."""
+    from echo_v2.domain.chat import Message
+    from echo_v2.ports.whatsapp import MessageDirection
+
+    digest_repo = InMemoryDailyDigestRepository()
+    active_repo = InMemoryWaitingForMeActiveRepository()
+    chat_state_repo = InMemoryChatStateRepository()
+    message_repo = InMemoryMessageRepository()
+    contact_repo = InMemoryContactRepository()
+    bot = FakeBot()
+
+    await _setup_chat_with_active(chat_state_repo, active_repo)
+    await message_repo.save(
+        Message(
+            id="msg-1",
+            user_id=USER_ID,
+            connection_id="conn-1",
+            chat_id="972508765432@c.us",
+            provider_message_id="msg-1",
+            direction=MessageDirection.INBOUND,
+            sender_id=None,
+            text="היי",
+            chat_name="שרה",
+            sender_name="שרה",
+            timestamp=NOW,
+        )
+    )
+
+    worker = DigestWorker(
+        digest_repo=digest_repo,
+        active_repo=active_repo,
+        chat_state_repo=chat_state_repo,
+        message_repo=message_repo,
+        contact_repo=contact_repo,
+        bot=bot,
+        user_provider=_make_user_provider([(USER_ID, USER_PHONE, "Asia/Jerusalem", "גדי")]),
+    )
+    sent = await worker.run_once(now_utc=NOW)
+    assert sent == 1
+
+
+async def test_digest_run_once_exception_continues():
+    """run_once continues when a user fails with unexpected exception."""
+    digest_repo = InMemoryDailyDigestRepository()
+    active_repo = InMemoryWaitingForMeActiveRepository()
+    chat_state_repo = InMemoryChatStateRepository()
+    message_repo = InMemoryMessageRepository()
+    contact_repo = InMemoryContactRepository()
+    bot = FakeBot()
+
+    # User with no chat state → will fail, but shouldn't crash.
+    await active_repo.upsert(
+        user_id="bad-user",
+        chat_id="972508765432@c.us",
+        target_version=1,
+        result_id="r1",
+        waiting_since=NOW,
+    )
+
+    worker = DigestWorker(
+        digest_repo=digest_repo,
+        active_repo=active_repo,
+        chat_state_repo=chat_state_repo,
+        message_repo=message_repo,
+        contact_repo=contact_repo,
+        bot=bot,
+        user_provider=_make_user_provider([("bad-user", USER_PHONE, "Asia/Jerusalem", "גדי")]),
+    )
+    sent = await worker.run_once(now_utc=NOW)
+    assert sent == 0
+
+
+async def test_digest_unexpected_error_marks_failed():
+    """Unexpected error in _process_user marks digest as FAILED."""
+    digest_repo = InMemoryDailyDigestRepository()
+    active_repo = InMemoryWaitingForMeActiveRepository()
+    chat_state_repo = InMemoryChatStateRepository()
+    message_repo = InMemoryMessageRepository()
+    contact_repo = InMemoryContactRepository()
+    bot = FakeBot()
+    bot.error = RuntimeError("unexpected crash")
+
+    await _setup_chat_with_active(chat_state_repo, active_repo)
+
+    worker = DigestWorker(
+        digest_repo=digest_repo,
+        active_repo=active_repo,
+        chat_state_repo=chat_state_repo,
+        message_repo=message_repo,
+        contact_repo=contact_repo,
+        bot=bot,
+        user_provider=_make_user_provider([(USER_ID, USER_PHONE, "Asia/Jerusalem", "גדי")]),
+    )
+    sent = await worker.run_once(now_utc=NOW)
+    assert sent == 0

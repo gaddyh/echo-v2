@@ -420,6 +420,7 @@ class PostgresWaitingForMeResultRepository:
                     decision=result.decision.value,
                     confidence=result.confidence,
                     reason=result.reason,
+                    conversation_snapshot=result.conversation_snapshot,
                 )
                 .returning(WaitingForMeResultRow.id)
             )
@@ -453,6 +454,7 @@ class PostgresWaitingForMeResultRepository:
             confidence=row.confidence,
             reason=row.reason,
             target_version=row.target_version,
+            conversation_snapshot=row.conversation_snapshot,
         )
 
 
@@ -490,7 +492,7 @@ class PostgresWaitingForMeActiveRepository:
         result_id: str,
         waiting_since: datetime,
         notified_at: datetime | None = None,
-    ) -> None:
+    ) -> str:
         async with self._session() as session:
             stmt = (
                 pg_insert(WaitingForMeActiveRow)
@@ -507,11 +509,14 @@ class PostgresWaitingForMeActiveRepository:
                     set_={
                         "target_version": target_version,
                         "result_id": result_id,
+                        "acknowledged_at": None,
                         "updated_at": datetime.now(timezone.utc),
                     },
                 )
+                .returning(WaitingForMeActiveRow.id)
             )
-            await session.execute(stmt)
+            result = await session.execute(stmt)
+            return str(result.scalar_one())
 
     async def delete(self, *, user_id: str, chat_id: str) -> bool:
         from sqlalchemy import delete as sa_delete
@@ -534,6 +539,16 @@ class PostgresWaitingForMeActiveRepository:
             stmt = select(WaitingForMeActiveRow).where(
                 WaitingForMeActiveRow.user_id == user_id,
                 WaitingForMeActiveRow.chat_id == chat_id,
+            )
+            row = (await session.execute(stmt)).scalar_one_or_none()
+            if row is None:
+                return None
+            return self._row_to_domain(row)
+
+    async def get_by_id(self, active_id: str) -> WaitingForMeActive | None:
+        async with self._session() as session:
+            stmt = select(WaitingForMeActiveRow).where(
+                WaitingForMeActiveRow.id == active_id,
             )
             row = (await session.execute(stmt)).scalar_one_or_none()
             if row is None:
@@ -613,9 +628,37 @@ class PostgresWaitingForMeActiveRepository:
             result = await session.execute(stmt)
             return result.rowcount > 0
 
+    async def apply_if_version(
+        self,
+        *,
+        active_id: str,
+        user_id: str,
+        target_version: int,
+        mutate: dict[str, datetime],
+    ) -> bool:
+        """Atomically apply a mutation if version matches."""
+        from sqlalchemy import update as sa_update
+
+        async with self._session() as session:
+            stmt = (
+                sa_update(WaitingForMeActiveRow)
+                .where(
+                    WaitingForMeActiveRow.id == active_id,
+                    WaitingForMeActiveRow.user_id == user_id,
+                    WaitingForMeActiveRow.target_version == target_version,
+                )
+                .values(
+                    **mutate,
+                    updated_at=datetime.now(timezone.utc),
+                )
+            )
+            result = await session.execute(stmt)
+            return result.rowcount > 0
+
     @staticmethod
     def _row_to_domain(row: WaitingForMeActiveRow) -> WaitingForMeActive:
         return WaitingForMeActive(
+            id=str(row.id),
             user_id=str(row.user_id),
             chat_id=row.chat_id,
             target_version=row.target_version,

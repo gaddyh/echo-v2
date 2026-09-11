@@ -22,10 +22,34 @@ from enum import Enum
 __all__ = [
     "ChatMute",
     "FeedbackVerdict",
+    "HandlingOutcome",
     "WaitingForMeAction",
     "WaitingForMeActionType",
     "WaitingForMeFeedback",
 ]
+
+
+class HandlingOutcome(str, Enum):
+    """Explicit outcome of handling a callback.
+
+    Used by both action and feedback services instead of inconsistent
+    booleans. The handler maps these to user-facing messages.
+    """
+
+    APPLIED = "applied"
+    """The action/feedback was successfully applied."""
+
+    DUPLICATE = "duplicate"
+    """The callback was already processed (idempotent skip)."""
+
+    STALE = "stale"
+    """The callback references an old version; the active item moved on."""
+
+    NOT_FOUND = "not_found"
+    """The referenced active item or result does not exist."""
+
+    INVALID = "invalid"
+    """The callback is malformed or fails validation (bad verdict, etc.)."""
 
 
 class FeedbackVerdict(str, Enum):
@@ -75,7 +99,7 @@ class WaitingForMeFeedback:
         target_version: The activity_version the result was computed from.
         verdict: Whether the model was correct.
         conversation_snapshot: JSON of the conversation for training.
-        provider_event_id: The WhatsApp callback message ID for dedup.
+        provider_message_id: The WhatsApp callback message ID for dedup.
         created_at: When the feedback was recorded.
         expires_at: When the conversation snapshot should be deleted.
     """
@@ -86,7 +110,7 @@ class WaitingForMeFeedback:
     target_version: int | None
     verdict: FeedbackVerdict
     conversation_snapshot: dict | None = None
-    provider_event_id: str | None = None
+    provider_message_id: str | None = None
     created_at: datetime | None = None
     expires_at: datetime | None = None
 
@@ -102,7 +126,7 @@ class WaitingForMeAction:
         target_version: The activity_version the active item was at.
         action_type: What the user asked to do.
         action_payload: Additional data (e.g. snoozed_until timestamp).
-        provider_event_id: The WhatsApp callback message ID for dedup.
+        provider_message_id: The WhatsApp callback message ID for dedup.
         created_at: When the action was recorded.
     """
 
@@ -112,7 +136,7 @@ class WaitingForMeAction:
     target_version: int | None
     action_type: WaitingForMeActionType
     action_payload: dict | None = None
-    provider_event_id: str | None = None
+    provider_message_id: str | None = None
     created_at: datetime | None = None
 
 

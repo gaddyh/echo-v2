@@ -14,7 +14,7 @@ from echo_v2.domain.feedback import (
     WaitingForMeActionType,
 )
 
-from .conftest import insert_user
+from .conftest import insert_result, insert_user
 
 pytestmark = pytest.mark.asyncio
 
@@ -34,49 +34,47 @@ async def test_pg_feedback_record_and_idempotent(feedback_repo, session_factory)
         chat_id=CHAT_ID,
         verdict=FeedbackVerdict.FALSE_POSITIVE,
         target_version=1,
-        provider_event_id="evt-pg-fb-1",
+        provider_message_id="evt-pg-fb-1",
     )
     assert result1 is not None
     assert result1.verdict == FeedbackVerdict.FALSE_POSITIVE
 
-    # Duplicate — same provider_event_id.
+    # Duplicate — same provider_message_id.
     result2 = await feedback_repo.record(
         user_id=user_id,
         chat_id=CHAT_ID,
         verdict=FeedbackVerdict.FALSE_POSITIVE,
         target_version=1,
-        provider_event_id="evt-pg-fb-1",
+        provider_message_id="evt-pg-fb-1",
     )
     assert result2 is None
 
 
-async def test_pg_feedback_count_recent_false_positives(feedback_repo, session_factory):
-    """Count recent false positives in a time window."""
+async def test_pg_feedback_semantic_dedup(feedback_repo, session_factory):
+    """First feedback for a result_id wins (semantic dedup)."""
     user_id = await insert_user(session_factory)
+    result_id = await insert_result(session_factory, user_id)
 
-    for i in range(3):
-        await feedback_repo.record(
-            user_id=user_id,
-            chat_id=CHAT_ID,
-            verdict=FeedbackVerdict.FALSE_POSITIVE,
-            target_version=1,
-            provider_event_id=f"evt-pg-fp-{i}",
-        )
-
-    # Record a correct verdict (should not count).
-    await feedback_repo.record(
+    r1 = await feedback_repo.record(
         user_id=user_id,
         chat_id=CHAT_ID,
         verdict=FeedbackVerdict.CORRECT,
+        result_id=result_id,
         target_version=1,
-        provider_event_id="evt-pg-correct-1",
+        provider_message_id="evt-pg-fb-a",
     )
+    assert r1 is not None
 
-    since = datetime.now(timezone.utc) - timedelta(days=30)
-    count = await feedback_repo.count_recent_false_positives(
-        user_id=user_id, chat_id=CHAT_ID, since=since
+    # Different message_id, same result_id → duplicate.
+    r2 = await feedback_repo.record(
+        user_id=user_id,
+        chat_id=CHAT_ID,
+        verdict=FeedbackVerdict.FALSE_POSITIVE,
+        result_id=result_id,
+        target_version=1,
+        provider_message_id="evt-pg-fb-b",
     )
-    assert count == 3
+    assert r2 is None
 
 
 async def test_pg_feedback_delete_expired(feedback_repo, session_factory):
@@ -89,7 +87,7 @@ async def test_pg_feedback_delete_expired(feedback_repo, session_factory):
         user_id=user_id,
         chat_id=CHAT_ID,
         verdict=FeedbackVerdict.CORRECT,
-        provider_event_id="evt-pg-expired",
+        provider_message_id="evt-pg-expired",
         expires_at=past,
     )
 
@@ -98,7 +96,7 @@ async def test_pg_feedback_delete_expired(feedback_repo, session_factory):
         user_id=user_id,
         chat_id=CHAT_ID,
         verdict=FeedbackVerdict.CORRECT,
-        provider_event_id="evt-pg-active",
+        provider_message_id="evt-pg-active",
     )
 
     now = datetime.now(timezone.utc)
@@ -117,9 +115,9 @@ async def test_pg_action_record_and_idempotent(action_repo, session_factory):
         user_id=user_id,
         chat_id=CHAT_ID,
         action_type=WaitingForMeActionType.ACKNOWLEDGE,
-        active_id=f"{user_id}:{CHAT_ID}",
+        active_id="active-1",
         target_version=1,
-        provider_event_id="evt-pg-act-1",
+        provider_message_id="evt-pg-act-1",
     )
     assert result1 is not None
     assert result1.action_type == WaitingForMeActionType.ACKNOWLEDGE
@@ -129,9 +127,9 @@ async def test_pg_action_record_and_idempotent(action_repo, session_factory):
         user_id=user_id,
         chat_id=CHAT_ID,
         action_type=WaitingForMeActionType.ACKNOWLEDGE,
-        active_id=f"{user_id}:{CHAT_ID}",
+        active_id="active-1",
         target_version=1,
-        provider_event_id="evt-pg-act-1",
+        provider_message_id="evt-pg-act-1",
     )
     assert result2 is None
 
@@ -145,10 +143,10 @@ async def test_pg_action_record_snooze_with_payload(action_repo, session_factory
         user_id=user_id,
         chat_id=CHAT_ID,
         action_type=WaitingForMeActionType.SNOOZE,
-        active_id=f"{user_id}:{CHAT_ID}",
+        active_id="active-1",
         target_version=1,
         action_payload={"snoozed_until": snoozed_until.isoformat()},
-        provider_event_id="evt-pg-snooze-1",
+        provider_message_id="evt-pg-snooze-1",
     )
     assert result is not None
     assert result.action_payload is not None

@@ -242,3 +242,26 @@ async def insert_user(session_factory, phone: str = "+972546610653") -> str:
         user_id = str(result.scalar_one())
         await session.commit()
     return user_id
+
+
+async def insert_result(
+    session_factory,
+    user_id: str,
+    chat_id: str = "972508765432@c.us",
+    target_version: int = 1,
+) -> str:
+    """Insert a waiting_for_me_results row and return its id (UUID string)."""
+    from sqlalchemy import text
+
+    async with session_factory() as session:
+        result = await session.execute(
+            text(
+                "INSERT INTO waiting_for_me_results "
+                "(user_id, chat_id, target_version, decision) "
+                "VALUES (:u, :c, :v, 'waiting_for_me') RETURNING id"
+            ),
+            {"u": user_id, "c": chat_id, "v": target_version},
+        )
+        result_id = str(result.scalar_one())
+        await session.commit()
+    return result_id
