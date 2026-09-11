@@ -123,11 +123,11 @@ class FeedbackHandler:
         Returns ``True`` if handled, ``False`` if the event should be
         passed to the next handler.
         """
-        # 1. Template button tap: "צפה בשיחות"
+        # 1. Template button tap: "צפה בשיחות" (with or without brackets)
         if (
             event.type is BotEventType.TEXT
             and event.text
-            and event.text.strip() == _VIEW_DETAILS_BUTTON
+            and event.text.strip().strip("[]") == _VIEW_DETAILS_BUTTON
         ):
             return await self._handle_view_details(event)
 
