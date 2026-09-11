@@ -40,6 +40,9 @@ class FeedbackVerdict(str, Enum):
     FALSE_NEGATIVE = "false_negative"
     """Echo missed a waiting chat (reported via פספסתי)."""
 
+    UNCERTAIN = "uncertain"
+    """User is not sure whether Echo was correct."""
+
 
 class WaitingForMeActionType(str, Enum):
     """What the user asked Echo to do with an active item."""
