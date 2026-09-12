@@ -433,7 +433,7 @@ async def test_api_action_snooze_custom_datetime():
     app, token_service, service, active_repo = _make_app()
     _, raw_token = await token_service.issue(USER_ID)
     active_id = await _setup_active(active_repo, service._chat_state_repo)
-    future = (NOW + timedelta(hours=6)).isoformat()
+    future = (datetime.now(timezone.utc) + timedelta(hours=6)).isoformat()
     async with _client(app) as client:
         await client.get(f"/q/{raw_token}")
         resp = await client.post(
@@ -532,7 +532,7 @@ async def test_snooze_until_naive_datetime_treated_as_utc():
     app, token_service, service, active_repo = _make_app()
     _, raw_token = await token_service.issue(USER_ID)
     active_id = await _setup_active(active_repo, service._chat_state_repo)
-    future = (NOW + timedelta(hours=6)).replace(tzinfo=None).isoformat()
+    future = (datetime.now(timezone.utc) + timedelta(hours=6)).replace(tzinfo=None).isoformat()
     async with _client(app) as client:
         await client.get(f"/q/{raw_token}")
         resp = await client.post(
@@ -623,7 +623,7 @@ async def test_snooze_until_with_z_suffix():
     app, token_service, service, active_repo = _make_app()
     _, raw_token = await token_service.issue(USER_ID)
     active_id = await _setup_active(active_repo, service._chat_state_repo)
-    future = (NOW + timedelta(hours=6)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    future = (datetime.now(timezone.utc) + timedelta(hours=6)).strftime("%Y-%m-%dT%H:%M:%SZ")
     async with _client(app) as client:
         await client.get(f"/q/{raw_token}")
         resp = await client.post(
