@@ -833,6 +833,11 @@ async def test_snooze_schedules_reminder():
     assert "טופל" in titles
     assert "נודניק עוד שעה" in titles
     assert "לא להיום" in titles
+    # Self-validation fields for the reminder.
+    assert created["payload"]["kind"] == "waiting_for_me_reminder"
+    assert created["payload"]["active_id"] == active_id
+    assert created["payload"]["target_version"] == 1
+    assert created["payload"]["expected_snoozed_until"] == (NOW + timedelta(hours=1)).isoformat()
 
 
 async def test_snooze_without_scheduling_service_does_not_schedule():
@@ -943,3 +948,140 @@ async def test_snooze_scheduling_no_name_uses_fallback():
     assert outcome == HandlingOutcome.APPLIED
     assert len(sched.created) == 1
     assert "לקוח" in sched.created[0]["payload"]["message"]
+
+
+# --- snooze reminder self-validation ----------------------------------------
+
+
+async def test_snooze_reminder_validator_sends_when_active_matches():
+    """Validator returns True when active item matches the payload."""
+    from echo_v2.services.feedback_service import make_snooze_reminder_validator
+
+    active_repo = InMemoryWaitingForMeActiveRepository()
+    active_id = await _setup_active(active_repo)
+    snoozed_until = NOW + timedelta(hours=1)
+    await active_repo.snooze(
+        user_id=USER_ID, chat_id=CHAT_ID, snoozed_until=snoozed_until,
+    )
+
+    validator = make_snooze_reminder_validator(active_repo)
+    payload = {
+        "kind": "waiting_for_me_reminder",
+        "active_id": active_id,
+        "target_version": 1,
+        "expected_snoozed_until": snoozed_until.isoformat(),
+    }
+    result = await validator(payload)
+    assert result is True
+
+
+async def test_snooze_reminder_validator_skips_when_done():
+    """Validator returns False when the active item was deleted (done)."""
+    from echo_v2.services.feedback_service import make_snooze_reminder_validator
+
+    active_repo = InMemoryWaitingForMeActiveRepository()
+    active_id = await _setup_active(active_repo)
+    snoozed_until = NOW + timedelta(hours=1)
+    await active_repo.snooze(
+        user_id=USER_ID, chat_id=CHAT_ID, snoozed_until=snoozed_until,
+    )
+    # Delete the active item (simulating done).
+    await active_repo.delete(user_id=USER_ID, chat_id=CHAT_ID)
+
+    validator = make_snooze_reminder_validator(active_repo)
+    payload = {
+        "kind": "waiting_for_me_reminder",
+        "active_id": active_id,
+        "target_version": 1,
+        "expected_snoozed_until": snoozed_until.isoformat(),
+    }
+    result = await validator(payload)
+    assert result is False
+
+
+async def test_snooze_reminder_validator_skips_on_version_change():
+    """Validator returns False when target_version changed (new message)."""
+    from echo_v2.services.feedback_service import make_snooze_reminder_validator
+
+    active_repo = InMemoryWaitingForMeActiveRepository()
+    active_id = await _setup_active(active_repo, target_version=1)
+    snoozed_until = NOW + timedelta(hours=1)
+    await active_repo.snooze(
+        user_id=USER_ID, chat_id=CHAT_ID, snoozed_until=snoozed_until,
+    )
+    # Simulate a new message bumping the version.
+    await active_repo.upsert(
+        user_id=USER_ID,
+        chat_id=CHAT_ID,
+        target_version=2,
+        result_id=RESULT_ID,
+        waiting_since=NOW,
+    )
+
+    validator = make_snooze_reminder_validator(active_repo)
+    payload = {
+        "kind": "waiting_for_me_reminder",
+        "active_id": active_id,
+        "target_version": 1,  # old version
+        "expected_snoozed_until": snoozed_until.isoformat(),
+    }
+    result = await validator(payload)
+    assert result is False
+
+
+async def test_snooze_reminder_validator_skips_on_resnooze():
+    """Validator returns False when snoozed_until changed (re-snoozed)."""
+    from echo_v2.services.feedback_service import make_snooze_reminder_validator
+
+    active_repo = InMemoryWaitingForMeActiveRepository()
+    active_id = await _setup_active(active_repo)
+    old_snoozed = NOW + timedelta(hours=1)
+    new_snoozed = NOW + timedelta(hours=3)
+    await active_repo.snooze(
+        user_id=USER_ID, chat_id=CHAT_ID, snoozed_until=old_snoozed,
+    )
+    # Re-snooze to a different time.
+    await active_repo.snooze(
+        user_id=USER_ID, chat_id=CHAT_ID, snoozed_until=new_snoozed,
+    )
+
+    validator = make_snooze_reminder_validator(active_repo)
+    payload = {
+        "kind": "waiting_for_me_reminder",
+        "active_id": active_id,
+        "target_version": 1,
+        "expected_snoozed_until": old_snoozed.isoformat(),  # old time
+    }
+    result = await validator(payload)
+    assert result is False
+
+
+async def test_snooze_reminder_validator_skips_when_not_snoozed():
+    """Validator returns False when snoozed_until is None (no longer snoozed)."""
+    from echo_v2.services.feedback_service import make_snooze_reminder_validator
+
+    active_repo = InMemoryWaitingForMeActiveRepository()
+    active_id = await _setup_active(active_repo)
+    # Don't snooze — active item is not snoozed.
+
+    validator = make_snooze_reminder_validator(active_repo)
+    payload = {
+        "kind": "waiting_for_me_reminder",
+        "active_id": active_id,
+        "target_version": 1,
+        "expected_snoozed_until": (NOW + timedelta(hours=1)).isoformat(),
+    }
+    result = await validator(payload)
+    assert result is False
+
+
+async def test_snooze_reminder_validator_passes_without_validation_fields():
+    """Validator returns True when payload lacks validation fields."""
+    from echo_v2.services.feedback_service import make_snooze_reminder_validator
+
+    active_repo = InMemoryWaitingForMeActiveRepository()
+    validator = make_snooze_reminder_validator(active_repo)
+
+    # Missing active_id, target_version, expected_snoozed_until.
+    result = await validator({"kind": "waiting_for_me_reminder"})
+    assert result is True

@@ -444,7 +444,7 @@ async def test_digest_excludes_snoozed_items():
     bot = FakeBot()
 
     await _setup_chat_with_active(chat_state_repo, active_repo)
-    future = NOW + timedelta(hours=10)
+    future = datetime.now(timezone.utc) + timedelta(hours=10)
     await active_repo.snooze(
         user_id=USER_ID, chat_id="972508765432@c.us", snoozed_until=future,
     )
@@ -458,7 +458,7 @@ async def test_digest_excludes_snoozed_items():
         bot=bot,
         user_provider=_make_user_provider([(USER_ID, USER_PHONE, "Asia/Jerusalem", "גדי")]),
     )
-    sent = await worker.run_once(now_utc=NOW)
+    sent = await worker.run_once(now_utc=datetime.now(timezone.utc))
     assert sent == 0
 
 

@@ -132,6 +132,15 @@ def create_app() -> FastAPI:
     # idempotency is primarily enforced by the ScheduledAction status
     # machine (claim → in_progress → succeeded) plus this store.
     idempotency_store = InMemoryIdempotencyStore()
+    # --- snooze reminder validator --------------------------------------
+    # Before sending a snooze reminder, check that the active item still
+    # matches the state when the reminder was scheduled. This prevents
+    # stale reminders from firing after the item was done, dismissed,
+    # re-snoozed, or received a new message (version change).
+    from echo_v2.services.feedback_service import make_snooze_reminder_validator
+
+    snooze_validator = make_snooze_reminder_validator(repos.wfm_active)
+
     scheduling_service = SchedulingService(
         action_repo=repos.scheduled_actions,
         connection_repo=repos.connections,
@@ -139,6 +148,7 @@ def create_app() -> FastAPI:
         idempotency_store=idempotency_store,
         event_sink=InMemoryEventSink(),
         bot_channel=d360_client,
+        send_validator=snooze_validator,
     )
 
     # --- time parser (regex first, LLM fallback) --------------------------

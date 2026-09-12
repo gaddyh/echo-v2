@@ -530,3 +530,110 @@ async def test_bot_send_missing_message_fails():
 
     with pytest.raises(PermanentError, match="missing message"):
         await service.execute(action)
+
+
+# --- SEND_BOT_MESSAGE with send_validator (snooze reminder self-validation) --
+
+
+async def test_bot_send_validator_skips_when_returns_false():
+    """When send_validator returns False, the send is skipped."""
+    bot = FakeBotWithButtons()
+    service, _ = _make_bot_service(bot=bot)
+
+    async def validator(payload: dict) -> bool:
+        return False
+
+    service._send_validator = validator
+    action = _make_bot_action(
+        payload={
+            "kind": "waiting_for_me_reminder",
+            "active_id": "active-1",
+            "target_version": 1,
+            "expected_snoozed_until": "2026-09-05T10:00:00+00:00",
+            "chat_id": "972500000001",
+            "message": "🔔 תזכורת",
+            "buttons": [{"id": "b1", "title": "טופל"}],
+        },
+    )
+    await service._action_repo.save(action)
+    result = await service.execute(action)
+
+    assert result == "bot_skipped"
+    assert len(bot.button_sends) == 0  # nothing sent
+
+    fetched = await service._action_repo.get("bot-act-1")
+    assert fetched.status is ScheduledActionStatus.SUCCEEDED
+    assert fetched.result == {"skipped": True}
+
+
+async def test_bot_send_validator_passes_when_returns_true():
+    """When send_validator returns True, the send proceeds normally."""
+    bot = FakeBotWithButtons()
+    service, _ = _make_bot_service(bot=bot)
+
+    async def validator(payload: dict) -> bool:
+        return True
+
+    service._send_validator = validator
+    action = _make_bot_action(
+        payload={
+            "kind": "waiting_for_me_reminder",
+            "active_id": "active-1",
+            "target_version": 1,
+            "expected_snoozed_until": "2026-09-05T10:00:00+00:00",
+            "chat_id": "972500000001",
+            "message": "🔔 תזכורת",
+            "buttons": [{"id": "b1", "title": "טופל"}],
+        },
+    )
+    await service._action_repo.save(action)
+    result = await service.execute(action)
+
+    assert result == "wamid.BUTTONS"
+    assert len(bot.button_sends) == 1
+
+
+async def test_bot_send_validator_not_called_for_non_reminder():
+    """send_validator is not called for non-reminder SEND_BOT_MESSAGE."""
+    bot = FakeBot()
+    service, _ = _make_bot_service(bot=bot)
+
+    called = []
+
+    async def validator(payload: dict) -> bool:
+        called.append(True)
+        return False
+
+    service._send_validator = validator
+    action = _make_bot_action(
+        payload={"chat_id": "972500000001", "message": "hello"},
+    )
+    await service._action_repo.save(action)
+    result = await service.execute(action)
+
+    assert result == "bot_sent"
+    assert len(called) == 0  # validator not called
+    assert len(bot.sent) == 1
+
+
+async def test_bot_send_no_validator_sends_normally():
+    """Without a send_validator, reminders send normally."""
+    bot = FakeBotWithButtons()
+    service, _ = _make_bot_service(bot=bot)
+    # No send_validator set.
+    action = _make_bot_action(
+        payload={
+            "kind": "waiting_for_me_reminder",
+            "active_id": "active-1",
+            "target_version": 1,
+            "expected_snoozed_until": "2026-09-05T10:00:00+00:00",
+            "chat_id": "972500000001",
+            "message": "🔔 תזכורת",
+            "buttons": [{"id": "b1", "title": "טופל"}],
+        },
+    )
+    await service._action_repo.save(action)
+    result = await service.execute(action)
+
+    assert result == "wamid.BUTTONS"
+    assert len(bot.button_sends) == 1

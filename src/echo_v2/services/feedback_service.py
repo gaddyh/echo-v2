@@ -147,6 +147,37 @@ def _snooze_preset_to_utc(
 _MAX_SNOOZE_DAYS = 7
 
 
+def make_snooze_reminder_validator(active_repo):
+    """Build a send_validator for SchedulingService that suppresses stale snooze reminders.
+
+    Before sending a snooze reminder, checks that the active item still
+    matches the state when the reminder was scheduled. Returns ``True``
+    if the reminder should still fire, ``False`` if it should be skipped.
+
+    This handles:
+    * Done/dismissed after snooze (active row deleted).
+    * New message changing the chat version (target_version mismatch).
+    * Re-snooze to a different time (snoozed_until mismatch).
+    """
+
+    async def _validate(payload: dict) -> bool:
+        active_id = payload.get("active_id")
+        target_version = payload.get("target_version")
+        expected_snoozed_until = payload.get("expected_snoozed_until")
+        if not active_id or target_version is None or not expected_snoozed_until:
+            return True  # can't validate, let it through
+        active = await active_repo.get_by_id(active_id)
+        if active is None:
+            return False  # item was done/dismissed/deleted
+        if active.target_version != target_version:
+            return False  # version changed (new message)
+        if active.snoozed_until is None:
+            return False  # no longer snoozed
+        return active.snoozed_until.isoformat() == expected_snoozed_until
+
+    return _validate
+
+
 class WaitingForMeActionService:
     """Execute user actions on active waiting items.
 
@@ -344,6 +375,7 @@ class WaitingForMeActionService:
                 user_id=user_id,
                 active_id=active_id,
                 chat_id=active.chat_id,
+                target_version=active.target_version,
                 snoozed_until=snoozed_until,
             )
 
@@ -355,6 +387,7 @@ class WaitingForMeActionService:
         user_id: str,
         active_id: str,
         chat_id: str,
+        target_version: int,
         snoozed_until: datetime,
     ) -> None:
         """Schedule a SEND_BOT_MESSAGE for the snooze expiry.
@@ -398,6 +431,10 @@ class WaitingForMeActionService:
                 execute_at_utc=snoozed_until,
                 timezone_name="UTC",
                 payload={
+                    "kind": "waiting_for_me_reminder",
+                    "active_id": active_id,
+                    "target_version": target_version,
+                    "expected_snoozed_until": snoozed_until.isoformat(),
                     "chat_id": phone,
                     "message": body,
                     "buttons": buttons,

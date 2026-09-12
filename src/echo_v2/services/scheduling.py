@@ -73,6 +73,7 @@ class SchedulingService:
         idempotency_store: IdempotencyStore[str],
         event_sink: EventSink | None = None,
         bot_channel: BotChannel | None = None,
+        send_validator=None,
     ) -> None:
         self._action_repo = action_repo
         self._connection_repo = connection_repo
@@ -80,6 +81,7 @@ class SchedulingService:
         self._idempotency_store = idempotency_store
         self._event_sink = event_sink or NO_OP_SINK
         self._bot_channel = bot_channel
+        self._send_validator = send_validator
 
     async def create(
         self,
@@ -184,7 +186,27 @@ class SchedulingService:
         * ``message`` (required for text) — body text.
         * ``buttons`` (optional) — list of ``{id, title}`` dicts. When
           present, sends an interactive button message instead of text.
+        * ``kind`` (optional) — when ``"waiting_for_me_reminder"``, the
+          ``send_validator`` is called to check whether the reminder is
+          still relevant. If it returns ``False``, the send is skipped.
         """
+        # Self-validation for waiting-for-me reminders.
+        if (
+            self._send_validator is not None
+            and action.payload.get("kind") == "waiting_for_me_reminder"
+        ):
+            should_send = await self._send_validator(action.payload)
+            if not should_send:
+                _logger.info(
+                    "scheduling: skipping stale reminder action %s "
+                    "(active item no longer matches)",
+                    action.id,
+                )
+                await self._action_repo.mark_succeeded(
+                    action.id, {"skipped": True}
+                )
+                return "bot_skipped"
+
         if self._bot_channel is None:
             error = "no bot channel configured for SEND_BOT_MESSAGE"
             await self._action_repo.mark_failed(action.id, error)
