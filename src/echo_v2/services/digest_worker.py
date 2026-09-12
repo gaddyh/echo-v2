@@ -82,7 +82,7 @@ class DigestWorker:
         token_service=None,
         query_service=None,
         poll_interval_seconds: float = 300.0,
-        template_name: str = "morning_waiting_digest4",
+        template_name: str = "morning_waiting_digest6",
     ) -> None:
         self._digest_repo = digest_repo
         self._active_repo = active_repo

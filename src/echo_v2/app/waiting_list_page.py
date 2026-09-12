@@ -44,6 +44,19 @@ body {
 .header { padding: 12px 0 20px; text-align: center; }
 .header h1 { font-size: 1.4rem; font-weight: 600; }
 .header .oldest { font-size: 0.85rem; color: var(--text-secondary); margin-top: 4px; }
+.back-bar { text-align: center; padding: 8px 0 16px; }
+.back-bar a {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 20px;
+  background: var(--card);
+  color: var(--text-secondary);
+  text-decoration: none;
+  border-radius: 20px;
+  font-size: 0.85rem;
+  border: 1px solid var(--border);
+}
 .card {
   background: var(--card);
   border-radius: 12px;
@@ -233,7 +246,9 @@ function renderItems(data) {
     return;
   }
   const oldestHours = data.items[0].waiting_hours;
-  let html = '<div class="header"><h1>' + data.items.length + ' ממתינים לטיפול</h1>';
+  const backUrl = "https://wa.me/" + BOT_PHONE + "?text=" + encodeURIComponent("חזרתי");
+  let html = '<div class="back-bar"><a href="' + backUrl + '">← חזרה ל־WhatsApp</a></div>';
+  html += '<div class="header"><h1>' + data.items.length + ' ממתינים לטיפול</h1>';
   if (oldestHours > 0) {
     html += '<div class="oldest">הוותיק ביותר מחכה ' + formatHours(oldestHours) + '</div>';
   }
@@ -242,6 +257,11 @@ function renderItems(data) {
     html += renderCard(item);
   }
   app.innerHTML = html;
+  // Set text content safely (textContent, not innerHTML) for XSS safety.
+  const cards = document.querySelectorAll(".card");
+  data.items.forEach((item, i) => {
+    if (cards[i]) setCardText(cards[i], item);
+  });
   attachCardListeners();
 }
 

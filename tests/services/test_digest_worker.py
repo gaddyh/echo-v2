@@ -125,7 +125,7 @@ async def test_digest_sent_when_in_window_and_has_active():
     assert sent == 1
     assert len(bot.sent) == 1
     _phone, template_name, language, body_params = bot.sent[0]
-    assert template_name == "morning_waiting_digest4"
+    assert template_name == "morning_waiting_digest6"
     assert language == "he"
     assert body_params[0] == "גדי"  # first_name
     assert body_params[1] == "1"  # count
