@@ -59,6 +59,12 @@ class DigestWorker:
         contact_repo: The :class:`ContactRepository` for name resolution.
         bot: The :class:`BotChannel` to send the digest through.
         user_provider: Callable that returns a list of (user_id, phone, timezone).
+        mute_repo: Optional :class:`ChatMuteRepository` for mute filtering.
+        token_service: Optional :class:`WaitingListTokenService` for issuing
+            waiting-list web sessions. When provided, the digest template
+            is sent with a ``url_suffix`` containing the session token.
+        query_service: Optional shared :class:`WaitingListQueryService`.
+            When provided, used instead of the internal ``_get_current_active``.
         poll_interval_seconds: How often to poll. Default 300 (5 min).
     """
 
@@ -73,6 +79,8 @@ class DigestWorker:
         bot: BotChannel,
         user_provider,
         mute_repo: ChatMuteRepository | None = None,
+        token_service=None,
+        query_service=None,
         poll_interval_seconds: float = 300.0,
         template_name: str = "morning_waiting_digest4",
     ) -> None:
@@ -84,6 +92,8 @@ class DigestWorker:
         self._bot = bot
         self._user_provider = user_provider
         self._mute_repo = mute_repo
+        self._token_service = token_service
+        self._query_service = query_service
         self._poll_interval = poll_interval_seconds
         self._template_name = template_name
         self._formatter = DigestFormatter()
@@ -153,7 +163,10 @@ class DigestWorker:
             return False
 
         # Query active waiting chats with version match.
-        active_states = await self._get_current_active(user_id)
+        if self._query_service is not None:
+            active_states = await self._query_service.current_actionable(user_id)
+        else:
+            active_states = await self._get_current_active(user_id)
 
         if not active_states:
             # No waiting chats — mark as empty so we don't retry later today.
@@ -172,6 +185,18 @@ class DigestWorker:
         name = first_name or "חבר"  # fallback if user has no first_name
         params = self._formatter.format(items, first_name=name)
 
+        # Issue a waiting-list web session token (if token service is wired).
+        url_suffix: str | None = None
+        if self._token_service is not None:
+            try:
+                _session_id, raw_token = await self._token_service.issue(user_id)
+                url_suffix = raw_token
+            except Exception:
+                _logger.exception(
+                    "failed to issue waiting-list token for user %s, "
+                    "sending digest without URL button", user_id
+                )
+
         # Send via bot template (2 params: first_name, count).
         try:
             msg_id = await self._bot.send_template(
@@ -179,6 +204,7 @@ class DigestWorker:
                 self._template_name,
                 "he",
                 [params.first_name, params.count],
+                url_suffix=url_suffix,
             )
         except IndeterminateError as exc:
             _logger.warning(

@@ -224,8 +224,21 @@ def create_app() -> FastAPI:
     # --- digest worker (NOT started by default — DIGEST_ENABLED) -------------
     from echo_v2.persistence.contacts import PostgresContactRepository
     from echo_v2.services.digest_worker import DigestWorker
+    from echo_v2.services.waiting_list_query import WaitingListQueryService
+    from echo_v2.services.waiting_list_token_service import WaitingListTokenService
 
     contact_repo = PostgresContactRepository(repos.session_factory)
+
+    # --- waiting-list web app (token service + query service) ---------------
+    token_service = WaitingListTokenService(
+        repos.waiting_list_sessions,
+        ttl_hours=int(os.environ.get("ECHO_WAITING_LIST_TOKEN_TTL_HOURS", "48")),
+    )
+    query_service = WaitingListQueryService(
+        active_repo=repos.wfm_active,
+        chat_state_repo=repos.chat_state,
+        mute_repo=repos.chat_mutes,
+    )
 
     async def user_provider():
         """Return all active users as (user_id, phone, timezone, first_name)."""
@@ -250,8 +263,10 @@ def create_app() -> FastAPI:
         bot=d360_client,
         user_provider=user_provider,
         mute_repo=repos.chat_mutes,
+        token_service=token_service,
+        query_service=query_service,
         poll_interval_seconds=float(os.environ.get("DIGEST_POLL_INTERVAL", "300")),
-        template_name=os.environ.get("DIGEST_TEMPLATE_NAME", "morning_waiting_digest4"),
+        template_name=os.environ.get("DIGEST_TEMPLATE_NAME", "morning_waiting_digest5"),
     )
     digest_enabled = os.environ.get("DIGEST_ENABLED", "false").lower() in (
         "1",
@@ -288,6 +303,26 @@ def create_app() -> FastAPI:
         contact_repo=contact_repo,
         mute_repo=repos.chat_mutes,
         user_resolver=flow_service._user_resolver,
+    )
+
+    # --- waiting-list mini web app (service + router) -----------------------
+    from echo_v2.app.waiting_list_routes import build_waiting_list_router
+    from echo_v2.services.waiting_list_service import WaitingListService
+
+    bot_phone = os.environ.get("ECHO_BOT_PHONE", "")
+    waiting_list_service = WaitingListService(
+        token_service=token_service,
+        query_service=query_service,
+        action_service=action_service,
+        action_repo=repos.wfm_actions,
+        chat_state_repo=repos.chat_state,
+        message_repo=repos.messages,
+        contact_repo=contact_repo,
+    )
+    waiting_list_router = build_waiting_list_router(
+        token_service=token_service,
+        waiting_list_service=waiting_list_service,
+        bot_phone=bot_phone,
     )
 
     # --- FastAPI app with lifespan (scheduler + worker start/stop with app) --
@@ -367,6 +402,9 @@ def create_app() -> FastAPI:
         feedback_handler=feedback_handler,
     )
     app.include_router(dialog360_router)
+
+    # Waiting-list mini web app: token→cookie exchange + JSON API.
+    app.include_router(waiting_list_router)
 
     @app.get("/health")
     async def health() -> dict[str, str]:

@@ -529,6 +529,32 @@ class PostgresWaitingForMeActiveRepository:
             result = await session.execute(stmt)
             return result.rowcount > 0
 
+    async def delete_if_version(
+        self,
+        *,
+        active_id: str,
+        user_id: str,
+        target_version: int,
+    ) -> WaitingForMeActive | None:
+        """Atomically delete if id + user_id + target_version match."""
+        from sqlalchemy import delete as sa_delete
+
+        async with self._session() as session:
+            stmt = (
+                sa_delete(WaitingForMeActiveRow)
+                .where(
+                    WaitingForMeActiveRow.id == active_id,
+                    WaitingForMeActiveRow.user_id == user_id,
+                    WaitingForMeActiveRow.target_version == target_version,
+                )
+                .returning(WaitingForMeActiveRow)
+            )
+            result = await session.execute(stmt)
+            row = result.scalar_one_or_none()
+            if row is None:
+                return None
+            return self._row_to_domain(row)
+
     async def get(
         self,
         *,

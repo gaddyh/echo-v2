@@ -888,6 +888,95 @@ async def test_wfm_active_list_active(wfm_active_repo, session_factory):
     assert active[0].chat_id == "chat-1@c.us"
 
 
+async def test_wfm_active_delete_if_version_succeeds(wfm_active_repo, session_factory):
+    """delete_if_version deletes when id + user + version match."""
+    user_id = await insert_user(session_factory)
+    result_id = await _seed_wfm_result(session_factory, user_id)
+
+    await wfm_active_repo.upsert(
+        user_id=user_id,
+        chat_id="chat-1@c.us",
+        target_version=1,
+        result_id=result_id,
+        waiting_since=datetime.now(timezone.utc),
+    )
+    active = await wfm_active_repo.get(user_id=user_id, chat_id="chat-1@c.us")
+    assert active is not None
+
+    deleted = await wfm_active_repo.delete_if_version(
+        active_id=active.id,
+        user_id=user_id,
+        target_version=1,
+    )
+    assert deleted is not None
+    assert deleted.chat_id == "chat-1@c.us"
+
+    row = await wfm_active_repo.get(user_id=user_id, chat_id="chat-1@c.us")
+    assert row is None
+
+
+async def test_wfm_active_delete_if_version_stale_returns_none(wfm_active_repo, session_factory):
+    """delete_if_version returns None when version doesn't match."""
+    user_id = await insert_user(session_factory)
+    result_id = await _seed_wfm_result(session_factory, user_id)
+
+    await wfm_active_repo.upsert(
+        user_id=user_id,
+        chat_id="chat-1@c.us",
+        target_version=2,
+        result_id=result_id,
+        waiting_since=datetime.now(timezone.utc),
+    )
+    active = await wfm_active_repo.get(user_id=user_id, chat_id="chat-1@c.us")
+    assert active is not None
+
+    # Wrong version → None.
+    deleted = await wfm_active_repo.delete_if_version(
+        active_id=active.id,
+        user_id=user_id,
+        target_version=1,
+    )
+    assert deleted is None
+    # Row still exists.
+    row = await wfm_active_repo.get(user_id=user_id, chat_id="chat-1@c.us")
+    assert row is not None
+
+
+async def test_wfm_active_delete_if_version_wrong_user_returns_none(wfm_active_repo, session_factory):
+    """delete_if_version returns None when user_id doesn't match."""
+    user_id = await insert_user(session_factory)
+    result_id = await _seed_wfm_result(session_factory, user_id)
+
+    await wfm_active_repo.upsert(
+        user_id=user_id,
+        chat_id="chat-1@c.us",
+        target_version=1,
+        result_id=result_id,
+        waiting_since=datetime.now(timezone.utc),
+    )
+    active = await wfm_active_repo.get(user_id=user_id, chat_id="chat-1@c.us")
+    assert active is not None
+
+    # Wrong user → None.
+    deleted = await wfm_active_repo.delete_if_version(
+        active_id=active.id,
+        user_id="00000000-0000-0000-0000-000000000000",
+        target_version=1,
+    )
+    assert deleted is None
+
+
+async def test_wfm_active_delete_if_version_nonexistent_returns_none(wfm_active_repo, session_factory):
+    """delete_if_version returns None when the row doesn't exist."""
+    user_id = await insert_user(session_factory)
+    deleted = await wfm_active_repo.delete_if_version(
+        active_id=str(uuid.uuid4()),
+        user_id=user_id,
+        target_version=1,
+    )
+    assert deleted is None
+
+
 # --- PostgresDailyDigestRepository ------------------------------------------
 
 

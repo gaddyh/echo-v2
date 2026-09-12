@@ -1,7 +1,14 @@
-"""Send the full digest as individual cards (bypasses template).
+"""Send the morning digest as individual cards.
 
 Usage:
     .venv/bin/python scripts/send_digest.py
+
+Sends a header text followed by up to 5 individual cards, each with
+3 buttons: טופל / להזכיר לי / לא צריד.
+
+When a UTILITY template is approved, this can be switched to send the
+template first (with a "צפה בשיחות" quick reply button) and then send
+cards only when the user taps it.
 
 Reads DATABASE_URL, D360_API_KEY from .env.
 """
@@ -40,6 +47,9 @@ async def main() -> None:
         if chat is None or chat.activity_version != active.target_version:
             print(f"  SKIP (stale): {active.chat_id} v={active.target_version}")
             continue
+        if active.acknowledged_at is not None:
+            print(f"  SKIP (acknowledged): {active.chat_id}")
+            continue
         if active.snoozed_until is not None and active.snoozed_until > now:
             print(f"  SKIP (snoozed): {active.chat_id}")
             continue
@@ -54,7 +64,8 @@ async def main() -> None:
     current.sort(key=lambda a: a.waiting_since)
     current = current[:5]
 
-    print(f"Active items: {len(current)}")
+    count = len(current)
+    print(f"Active items: {count}")
     if not current:
         print("No active items to send.")
         return
@@ -66,7 +77,7 @@ async def main() -> None:
         # Send header text.
         await client.send_text(
             USER_PHONE,
-            f"בוקר טוב גדי 👋\n\nEcho מצא {len(current)} שיחות שאולי מחכות לתגובה שלך.",
+            f"בוקר טוב גדי 👋\n\nEcho מצא {count} שיחות שאולי מחכות לתגובה שלך.",
         )
         print("Sent header.")
 
@@ -93,12 +104,16 @@ async def main() -> None:
 
             buttons = [
                 {
-                    "id": f"menu_action:{active.chat_id}:{active.target_version}",
-                    "title": "מה לעשות",
+                    "id": f"action:{active.id}:handled",
+                    "title": "טופל",
                 },
                 {
-                    "id": f"menu_feedback:{active.chat_id}:{active.target_version}",
-                    "title": "משוב ל־Echo",
+                    "id": f"action:{active.id}:snooze",
+                    "title": "להזכיר לי",
+                },
+                {
+                    "id": f"action:{active.id}:dismiss",
+                    "title": "לא צריד",
                 },
             ]
 

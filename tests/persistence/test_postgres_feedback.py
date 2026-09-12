@@ -153,6 +153,58 @@ async def test_pg_action_record_snooze_with_payload(action_repo, session_factory
     assert "snoozed_until" in result.action_payload
 
 
+async def test_pg_action_list_by_session(action_repo, session_factory):
+    """list_by_session returns actions matching waiting_list_session_id."""
+    user_id = await insert_user(session_factory)
+    session_id = "test-session-1"
+
+    # Record two actions for this session.
+    await action_repo.record(
+        user_id=user_id,
+        chat_id=CHAT_ID,
+        action_type=WaitingForMeActionType.RESOLVE,
+        active_id="active-1",
+        target_version=1,
+        action_payload={
+            "source": "waiting_list_web",
+            "waiting_list_session_id": session_id,
+        },
+        provider_message_id="evt-pg-session-1",
+    )
+    await action_repo.record(
+        user_id=user_id,
+        chat_id=CHAT_ID,
+        action_type=WaitingForMeActionType.SNOOZE,
+        active_id="active-2",
+        target_version=1,
+        action_payload={
+            "source": "waiting_list_web",
+            "waiting_list_session_id": session_id,
+        },
+        provider_message_id="evt-pg-session-2",
+    )
+    # Record an action for a different session.
+    await action_repo.record(
+        user_id=user_id,
+        chat_id=CHAT_ID,
+        action_type=WaitingForMeActionType.RESOLVE,
+        active_id="active-3",
+        target_version=1,
+        action_payload={
+            "source": "waiting_list_web",
+            "waiting_list_session_id": "other-session",
+        },
+        provider_message_id="evt-pg-session-3",
+    )
+
+    actions = await action_repo.list_by_session(
+        user_id=user_id, session_id=session_id
+    )
+    assert len(actions) == 2
+    for a in actions:
+        assert a.action_payload["waiting_list_session_id"] == session_id
+
+
 # --- Mute repo ---------------------------------------------------------------
 
 

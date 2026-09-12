@@ -56,6 +56,7 @@ __all__ = [
     "WaitingForMeActionRow",
     "WaitingForMeActiveRow",
     "WaitingForMeFeedbackRow",
+    "WaitingListSessionRow",
     "WhatsAppConnectionRow",
 ]
 
@@ -796,4 +797,65 @@ class DailyDigestRow(Base):
             name="daily_digests_status_check",
         ),
         Index("ix_daily_digests_user_date", "user_id", "local_date"),
+    )
+
+
+# --- waiting_list_sessions --------------------------------------------------
+
+
+class WaitingListSessionRow(Base):
+    """One-time URL token session for the waiting-list mini web app.
+
+    The raw token is never stored — only its SHA-256 hash. The token is
+    used once (``GET /q/{token}``) to set a Secure HttpOnly cookie, then
+    all subsequent API calls use the cookie (``session_id``) for auth.
+
+    Lifecycle:
+    * Created by the digest worker when sending the template.
+    * ``opened_at`` set on first page open (idempotent).
+    * ``last_action_at`` touched on each action.
+    * ``revoked_at`` set when the session is revoked.
+    * ``expires_at`` — when the session expires (default 48h).
+    """
+
+    __tablename__ = "waiting_list_sessions"
+
+    id: Mapped[str] = mapped_column(
+        Uuid,
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+        nullable=False,
+    )
+    token_hash: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    user_id: Mapped[str] = mapped_column(
+        Uuid,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+    )
+    opened_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=True,
+    )
+    last_action_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=True,
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=True,
+    )
+
+    __table_args__ = (
+        UniqueConstraint("token_hash", name="uq_wls_token_hash"),
+        Index("ix_wls_user_id", "user_id"),
+        Index("ix_wls_expires_at", "expires_at"),
     )

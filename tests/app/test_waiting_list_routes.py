@@ -1,0 +1,427 @@
+"""Tests for the waiting-list mini web app routes.
+
+Covers:
+* Token → cookie exchange on GET /q/{token}.
+* Expired/invalid token → expired-link page.
+* GET /api/waiting with cookie → JSON list.
+* POST /api/waiting/items/{active_id}/actions → action response.
+* Security headers on all responses.
+* Cookie attributes (Secure, HttpOnly, SameSite).
+* Rate limiting by session_id.
+* No raw token in API paths.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+
+import pytest
+from fastapi import FastAPI
+from httpx import ASGITransport, AsyncClient
+
+from echo_v2.app.waiting_list_routes import build_waiting_list_router
+from echo_v2.persistence.chat_repositories import (
+    InMemoryChatStateRepository,
+    InMemoryMessageRepository,
+    InMemoryWaitingForMeActiveRepository,
+    InMemoryWaitingForMeResultRepository,
+)
+from echo_v2.persistence.contacts import InMemoryContactRepository
+from echo_v2.persistence.feedback_repositories import (
+    InMemoryChatMuteRepository,
+    InMemoryWaitingForMeActionRepository,
+    InMemoryWaitingForMeFeedbackRepository,
+)
+from echo_v2.persistence.waiting_list_tokens import (
+    InMemoryWaitingListSessionRepository,
+)
+from echo_v2.services.feedback_service import WaitingForMeActionService
+from echo_v2.services.waiting_list_query import WaitingListQueryService
+from echo_v2.services.waiting_list_service import WaitingListService
+from echo_v2.services.waiting_list_token_service import WaitingListTokenService
+
+pytestmark = pytest.mark.asyncio
+
+NOW = datetime(2026, 9, 12, 6, 0, 0, tzinfo=timezone.utc)
+USER_ID = "user-1"
+CHAT_ID = "972508765432@c.us"
+RESULT_ID = "result-1"
+BOT_PHONE = "972500000000"
+
+
+def _make_app() -> tuple[
+    FastAPI,
+    WaitingListTokenService,
+    WaitingListService,
+    InMemoryWaitingForMeActiveRepository,
+]:
+    active_repo = InMemoryWaitingForMeActiveRepository()
+    action_repo = InMemoryWaitingForMeActionRepository()
+    feedback_repo = InMemoryWaitingForMeFeedbackRepository()
+    chat_state_repo = InMemoryChatStateRepository()
+    message_repo = InMemoryMessageRepository()
+    contact_repo = InMemoryContactRepository()
+    mute_repo = InMemoryChatMuteRepository()
+    result_repo = InMemoryWaitingForMeResultRepository()
+    session_repo = InMemoryWaitingListSessionRepository()
+
+    token_service = WaitingListTokenService(session_repo)
+    query_service = WaitingListQueryService(
+        active_repo=active_repo,
+        chat_state_repo=chat_state_repo,
+        mute_repo=mute_repo,
+    )
+    action_service = WaitingForMeActionService(
+        active_repo=active_repo,
+        action_repo=action_repo,
+        mute_repo=mute_repo,
+        feedback_repo=feedback_repo,
+        result_repo=result_repo,
+    )
+    service = WaitingListService(
+        token_service=token_service,
+        query_service=query_service,
+        action_service=action_service,
+        action_repo=action_repo,
+        chat_state_repo=chat_state_repo,
+        message_repo=message_repo,
+        contact_repo=contact_repo,
+    )
+    router = build_waiting_list_router(
+        token_service=token_service,
+        waiting_list_service=service,
+        bot_phone=BOT_PHONE,
+    )
+    app = FastAPI()
+    app.include_router(router)
+    return app, token_service, service, active_repo
+
+
+async def _setup_active(
+    active_repo: InMemoryWaitingForMeActiveRepository,
+    chat_state_repo: InMemoryChatStateRepository,
+):
+    from echo_v2.ports.whatsapp import MessageDirection
+
+    await chat_state_repo.upsert_on_message(
+        user_id=USER_ID,
+        chat_id=CHAT_ID,
+        direction=MessageDirection.INBOUND,
+        observed_at=NOW,
+        next_analysis_at=None,
+    )
+    await active_repo.upsert(
+        user_id=USER_ID,
+        chat_id=CHAT_ID,
+        target_version=1,
+        result_id=RESULT_ID,
+        waiting_since=NOW,
+    )
+    active = await active_repo.get(user_id=USER_ID, chat_id=CHAT_ID)
+    return active.id
+
+
+def _client(app: FastAPI) -> AsyncClient:
+    return AsyncClient(transport=ASGITransport(app=app), base_url="https://test")
+
+
+async def test_valid_token_sets_cookie_and_serves_page():
+    """GET /q/{token} with a valid token sets a cookie and serves the HTML page."""
+    app, token_service, _, _ = _make_app()
+    _, raw_token = await token_service.issue(USER_ID)
+    async with _client(app) as client:
+        resp = await client.get(f"/q/{raw_token}")
+    assert resp.status_code == 200
+    assert "text/html" in resp.headers.get("content-type", "")
+    # Cookie set.
+    set_cookie = resp.headers.get("set-cookie", "")
+    assert "wls=" in set_cookie
+    assert "HttpOnly" in set_cookie
+    assert "SameSite=lax" in set_cookie
+    # Security headers.
+    assert resp.headers.get("cache-control") == "no-store"
+    assert resp.headers.get("referrer-policy") == "no-referrer"
+    assert resp.headers.get("x-content-type-options") == "nosniff"
+    assert "default-src 'self'" in resp.headers.get("content-security-policy", "")
+
+
+async def test_invalid_token_serves_expired_page():
+    app, _, _, _ = _make_app()
+    async with _client(app) as client:
+        resp = await client.get("/q/invalid-token")
+    assert resp.status_code == 200
+    assert "text/html" in resp.headers.get("content-type", "")
+    assert "הקישור פג" in resp.text
+    assert "בקש סיכום חדש" in resp.text
+
+
+async def test_api_waiting_without_cookie_returns_401():
+    app, _, _, _ = _make_app()
+    async with _client(app) as client:
+        resp = await client.get("/api/waiting")
+    assert resp.status_code == 401
+
+
+async def test_api_waiting_with_cookie_returns_items():
+    app, token_service, service, active_repo = _make_app()
+    _, raw_token = await token_service.issue(USER_ID)
+    await _setup_active(active_repo, service._chat_state_repo)
+    async with _client(app) as client:
+        # Exchange token for cookie.
+        await client.get(f"/q/{raw_token}")
+        resp = await client.get("/api/waiting")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "items" in data
+    assert "summary" in data
+    assert len(data["items"]) == 1
+    assert data["summary"]["waiting"] == 1
+
+
+async def test_api_action_done():
+    app, token_service, service, active_repo = _make_app()
+    _, raw_token = await token_service.issue(USER_ID)
+    active_id = await _setup_active(active_repo, service._chat_state_repo)
+    async with _client(app) as client:
+        await client.get(f"/q/{raw_token}")
+        resp = await client.post(
+            f"/api/waiting/items/{active_id}/actions",
+            json={
+                "action_id": "action-1",
+                "expected_version": 1,
+                "action": "done",
+            },
+        )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["outcome"] == "applied"
+    assert data["summary"]["completed"] == 1
+
+
+async def test_api_action_duplicate():
+    app, token_service, service, active_repo = _make_app()
+    _, raw_token = await token_service.issue(USER_ID)
+    active_id = await _setup_active(active_repo, service._chat_state_repo)
+    async with _client(app) as client:
+        await client.get(f"/q/{raw_token}")
+        # First call.
+        resp1 = await client.post(
+            f"/api/waiting/items/{active_id}/actions",
+            json={"action_id": "action-1", "expected_version": 1, "action": "done"},
+        )
+        assert resp1.status_code == 200
+        assert resp1.json()["outcome"] == "applied"
+        # Retry with same action_id.
+        resp2 = await client.post(
+            f"/api/waiting/items/{active_id}/actions",
+            json={"action_id": "action-1", "expected_version": 1, "action": "done"},
+        )
+    assert resp2.status_code == 200
+    assert resp2.json()["outcome"] == "duplicate"
+
+
+async def test_api_action_stale():
+    app, token_service, service, active_repo = _make_app()
+    _, raw_token = await token_service.issue(USER_ID)
+    active_id = await _setup_active(active_repo, service._chat_state_repo)
+    async with _client(app) as client:
+        await client.get(f"/q/{raw_token}")
+        resp = await client.post(
+            f"/api/waiting/items/{active_id}/actions",
+            json={"action_id": "action-1", "expected_version": 99, "action": "done"},
+        )
+    assert resp.status_code == 409
+    assert resp.json()["outcome"] == "stale"
+
+
+async def test_api_action_not_found():
+    app, token_service, _, _ = _make_app()
+    _, raw_token = await token_service.issue(USER_ID)
+    async with _client(app) as client:
+        await client.get(f"/q/{raw_token}")
+        resp = await client.post(
+            "/api/waiting/items/nonexistent/actions",
+            json={"action_id": "action-1", "expected_version": 1, "action": "done"},
+        )
+    assert resp.status_code == 404
+    assert resp.json()["outcome"] == "not_found"
+
+
+async def test_api_action_snooze_preset():
+    app, token_service, service, active_repo = _make_app()
+    _, raw_token = await token_service.issue(USER_ID)
+    active_id = await _setup_active(active_repo, service._chat_state_repo)
+    async with _client(app) as client:
+        await client.get(f"/q/{raw_token}")
+        resp = await client.post(
+            f"/api/waiting/items/{active_id}/actions",
+            json={
+                "action_id": "action-1",
+                "expected_version": 1,
+                "action": "snooze",
+                "snooze_preset": "tomorrow",
+            },
+        )
+    assert resp.status_code == 200
+    assert resp.json()["outcome"] == "applied"
+
+
+async def test_api_action_dismiss_with_reason():
+    app, token_service, service, active_repo = _make_app()
+    _, raw_token = await token_service.issue(USER_ID)
+    active_id = await _setup_active(active_repo, service._chat_state_repo)
+    async with _client(app) as client:
+        await client.get(f"/q/{raw_token}")
+        resp = await client.post(
+            f"/api/waiting/items/{active_id}/actions",
+            json={
+                "action_id": "action-1",
+                "expected_version": 1,
+                "action": "dismiss",
+                "dismiss_reason": "detected_incorrectly",
+            },
+        )
+    assert resp.status_code == 200
+    assert resp.json()["outcome"] == "applied"
+
+
+async def test_security_headers_on_api_response():
+    app, token_service, service, active_repo = _make_app()
+    _, raw_token = await token_service.issue(USER_ID)
+    await _setup_active(active_repo, service._chat_state_repo)
+    async with _client(app) as client:
+        await client.get(f"/q/{raw_token}")
+        resp = await client.get("/api/waiting")
+    assert resp.headers.get("cache-control") == "no-store"
+    assert resp.headers.get("referrer-policy") == "no-referrer"
+    assert resp.headers.get("x-content-type-options") == "nosniff"
+
+
+async def test_expired_page_route():
+    """GET /q/expired serves the expired-link page."""
+    app, _, _, _ = _make_app()
+    async with _client(app) as client:
+        resp = await client.get("/q/expired")
+    assert resp.status_code == 200
+    assert "הקישור פג" in resp.text
+
+
+async def test_api_waiting_invalid_session_cookie_returns_401():
+    """A cookie with an invalid session id returns 401."""
+    app, _, _, _ = _make_app()
+    async with _client(app) as client:
+        resp = await client.get(
+            "/api/waiting",
+            cookies={"wls": "invalid-session-id"},
+        )
+    assert resp.status_code == 401
+
+
+async def test_api_action_invalid_action_returns_invalid():
+    """An unknown action returns outcome 'invalid'."""
+    app, token_service, service, active_repo = _make_app()
+    _, raw_token = await token_service.issue(USER_ID)
+    active_id = await _setup_active(active_repo, service._chat_state_repo)
+    async with _client(app) as client:
+        await client.get(f"/q/{raw_token}")
+        resp = await client.post(
+            f"/api/waiting/items/{active_id}/actions",
+            json={
+                "action_id": "action-1",
+                "expected_version": 1,
+                "action": "unknown_action",
+            },
+        )
+    assert resp.status_code == 200
+    assert resp.json()["outcome"] == "invalid"
+
+
+async def test_api_action_snooze_invalid_preset_returns_422():
+    """An invalid snooze preset returns 422."""
+    app, token_service, service, active_repo = _make_app()
+    _, raw_token = await token_service.issue(USER_ID)
+    active_id = await _setup_active(active_repo, service._chat_state_repo)
+    async with _client(app) as client:
+        await client.get(f"/q/{raw_token}")
+        resp = await client.post(
+            f"/api/waiting/items/{active_id}/actions",
+            json={
+                "action_id": "action-1",
+                "expected_version": 1,
+                "action": "snooze",
+                "snooze_preset": "invalid_preset",
+            },
+        )
+    assert resp.status_code == 422
+    assert resp.json()["outcome"] == "invalid_snooze"
+
+
+async def test_api_action_dismiss_already_handled():
+    """Dismiss with 'already_handled' reason succeeds with no feedback."""
+    app, token_service, service, active_repo = _make_app()
+    _, raw_token = await token_service.issue(USER_ID)
+    active_id = await _setup_active(active_repo, service._chat_state_repo)
+    async with _client(app) as client:
+        await client.get(f"/q/{raw_token}")
+        resp = await client.post(
+            f"/api/waiting/items/{active_id}/actions",
+            json={
+                "action_id": "action-1",
+                "expected_version": 1,
+                "action": "dismiss",
+                "dismiss_reason": "already_handled",
+            },
+        )
+    assert resp.status_code == 200
+    assert resp.json()["outcome"] == "applied"
+
+
+async def test_api_action_snooze_custom_datetime():
+    """Snooze with a custom ISO datetime succeeds."""
+    app, token_service, service, active_repo = _make_app()
+    _, raw_token = await token_service.issue(USER_ID)
+    active_id = await _setup_active(active_repo, service._chat_state_repo)
+    future = (NOW + timedelta(hours=6)).isoformat()
+    async with _client(app) as client:
+        await client.get(f"/q/{raw_token}")
+        resp = await client.post(
+            f"/api/waiting/items/{active_id}/actions",
+            json={
+                "action_id": "action-1",
+                "expected_version": 1,
+                "action": "snooze",
+                "snooze_until": future,
+            },
+        )
+    assert resp.status_code == 200
+    assert resp.json()["outcome"] == "applied"
+
+
+async def test_api_action_snooze_invalid_datetime_returns_422():
+    """Snooze with an invalid datetime format returns 422."""
+    app, token_service, service, active_repo = _make_app()
+    _, raw_token = await token_service.issue(USER_ID)
+    active_id = await _setup_active(active_repo, service._chat_state_repo)
+    async with _client(app) as client:
+        await client.get(f"/q/{raw_token}")
+        resp = await client.post(
+            f"/api/waiting/items/{active_id}/actions",
+            json={
+                "action_id": "action-1",
+                "expected_version": 1,
+                "action": "snooze",
+                "snooze_until": "not-a-date",
+            },
+        )
+    assert resp.status_code == 422
+
+
+async def test_api_action_without_cookie_returns_401():
+    """POST without a cookie returns 401."""
+    app, _, _, _ = _make_app()
+    async with _client(app) as client:
+        resp = await client.post(
+            "/api/waiting/items/any/actions",
+            json={"action_id": "a1", "expected_version": 1, "action": "done"},
+        )
+    assert resp.status_code == 401

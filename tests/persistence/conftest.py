@@ -163,6 +163,7 @@ async def clean_db(engine) -> AsyncIterator[None]:
             "provider_webhook_events, "
             "contacts, "
             "whatsapp_connections, "
+            "waiting_list_sessions, "
             "users "
             "RESTART IDENTITY CASCADE"
         )
@@ -212,13 +213,17 @@ async def chat_state_repo(session_factory, clean_db):
 
 @pytest_asyncio.fixture
 async def feedback_repo(session_factory, clean_db):
-    from echo_v2.persistence.postgres_feedback import PostgresWaitingForMeFeedbackRepository
+    from echo_v2.persistence.postgres_feedback import (
+        PostgresWaitingForMeFeedbackRepository,
+    )
     return PostgresWaitingForMeFeedbackRepository(session_factory)
 
 
 @pytest_asyncio.fixture
 async def action_repo(session_factory, clean_db):
-    from echo_v2.persistence.postgres_feedback import PostgresWaitingForMeActionRepository
+    from echo_v2.persistence.postgres_feedback import (
+        PostgresWaitingForMeActionRepository,
+    )
     return PostgresWaitingForMeActionRepository(session_factory)
 
 
@@ -226,6 +231,22 @@ async def action_repo(session_factory, clean_db):
 async def mute_repo(session_factory, clean_db):
     from echo_v2.persistence.postgres_feedback import PostgresChatMuteRepository
     return PostgresChatMuteRepository(session_factory)
+
+
+@pytest_asyncio.fixture
+async def waiting_list_sessions_repo(session_factory, clean_db):
+    from echo_v2.persistence.waiting_list_tokens import (
+        PostgresWaitingListSessionRepository,
+    )
+    return PostgresWaitingListSessionRepository(session_factory)
+
+
+@pytest_asyncio.fixture
+async def active_repo(session_factory, clean_db):
+    from echo_v2.persistence.postgres_chat import (
+        PostgresWaitingForMeActiveRepository,
+    )
+    return PostgresWaitingForMeActiveRepository(session_factory)
 
 
 # --- user helper ------------------------------------------------------------

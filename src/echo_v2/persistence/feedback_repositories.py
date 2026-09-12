@@ -147,6 +147,19 @@ class WaitingForMeActionRepository(Protocol):
         (same ``provider_message_id`` already recorded)."""
         ...
 
+    async def list_by_session(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+    ) -> list[WaitingForMeAction]:
+        """List actions recorded for a waiting-list session.
+
+        Filters by ``action_payload->>'waiting_list_session_id' == session_id``.
+        Used to compute the per-session summary (completed/snoozed counts).
+        """
+        ...
+
 
 class InMemoryWaitingForMeActionRepository:
     """Process-local action repository backed by a list."""
@@ -186,6 +199,21 @@ class InMemoryWaitingForMeActionRepository:
         )
         self._rows.append(action)
         return action
+
+    async def list_by_session(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+    ) -> list[WaitingForMeAction]:
+        """List actions for a waiting-list session."""
+        return [
+            row
+            for row in self._rows
+            if row.user_id == user_id
+            and row.action_payload
+            and row.action_payload.get("waiting_list_session_id") == session_id
+        ]
 
 
 # --- Chat mute repository ---------------------------------------------------

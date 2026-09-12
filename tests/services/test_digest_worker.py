@@ -42,6 +42,8 @@ class FakeBot:
         template_name: str,
         language: str,
         body_params: list[str],
+        *,
+        url_suffix: str | None = None,
     ) -> str:
         if self.error is not None:
             raise self.error

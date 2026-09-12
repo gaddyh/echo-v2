@@ -391,6 +391,23 @@ class WaitingForMeActiveRepository(Protocol):
         """Delete the active state. Returns ``True`` if a row was deleted."""
         ...
 
+    async def delete_if_version(
+        self,
+        *,
+        active_id: str,
+        user_id: str,
+        target_version: int,
+    ) -> WaitingForMeActive | None:
+        """Atomically delete if ``id``, ``user_id`` and ``target_version`` match.
+
+        Returns the deleted :class:`WaitingForMeActive` if the delete
+        succeeded (version matched), or ``None`` if 0 rows were deleted
+        (row not found, wrong owner, or version mismatch). The caller
+        can follow up with :meth:`get_by_id` to distinguish stale from
+        not_found.
+        """
+        ...
+
     async def get(
         self,
         *,
@@ -536,6 +553,25 @@ class InMemoryWaitingForMeActiveRepository:
             self._by_id.pop(row.id, None)
             return True
         return False
+
+    async def delete_if_version(
+        self,
+        *,
+        active_id: str,
+        user_id: str,
+        target_version: int,
+    ) -> WaitingForMeActive | None:
+        row = self._rows.get(self._by_id.get(active_id, ("", "")))
+        if (
+            row is not None
+            and row.user_id == user_id
+            and row.target_version == target_version
+        ):
+            key = (row.user_id, row.chat_id)
+            self._rows.pop(key, None)
+            self._by_id.pop(row.id, None)
+            return row
+        return None
 
     async def get(
         self,

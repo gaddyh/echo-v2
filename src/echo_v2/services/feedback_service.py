@@ -84,6 +84,54 @@ def _next_digest_at(
     return target.astimezone(timezone.utc)
 
 
+# Snooze preset → local hour mapping.
+_SNOOZE_PRESET_HOURS: dict[str, int] = {
+    "morning": 8,
+    "afternoon": 14,
+    "evening": 18,
+}
+
+
+def _snooze_preset_to_utc(
+    preset: str,
+    *,
+    now_utc: datetime,
+    tz_name: str = DEFAULT_TZ,
+) -> datetime:
+    """Map a snooze preset to a UTC datetime.
+
+    Presets:
+    * ``morning`` → next 08:00 local
+    * ``afternoon`` → next 14:00 local
+    * ``evening`` → next 18:00 local
+    * ``tomorrow`` → tomorrow 08:00 local
+
+    "Next" means: if the target hour hasn't passed today, use today;
+    otherwise use tomorrow. ``tomorrow`` always uses the next day.
+    """
+    tz = ZoneInfo(tz_name)
+    local_now = now_utc.astimezone(tz)
+
+    if preset == "tomorrow":
+        target = (local_now + timedelta(days=1)).replace(
+            hour=_SNOOZE_PRESET_HOURS["morning"], minute=0, second=0, microsecond=0
+        )
+        return target.astimezone(timezone.utc)
+
+    hour = _SNOOZE_PRESET_HOURS.get(preset)
+    if hour is None:
+        raise ValueError(f"unknown snooze preset: {preset}")
+
+    target = local_now.replace(hour=hour, minute=0, second=0, microsecond=0)
+    if target <= local_now:
+        target += timedelta(days=1)
+    return target.astimezone(timezone.utc)
+
+
+# Max snooze duration from now (7 days).
+_MAX_SNOOZE_DAYS = 7
+
+
 class WaitingForMeActionService:
     """Execute user actions on active waiting items.
 
@@ -180,13 +228,61 @@ class WaitingForMeActionService:
         target_version: int,
         provider_message_id: str,
         tz_name: str = DEFAULT_TZ,
+        snooze_preset: str | None = None,
+        snooze_until: datetime | None = None,
+        now_utc: datetime | None = None,
+        session_id: str | None = None,
     ) -> HandlingOutcome:
-        """Handle 'להזכיר לי' — set snoozed_until to next local digest hour.
+        """Handle 'להזכיר לי' — set snoozed_until.
+
+        Three modes:
+        * ``snooze_until`` provided → use it directly (validated: future,
+          ≤ 7 days ahead).
+        * ``snooze_preset`` provided → map to a local-time target
+          (morning/afternoon/evening/tomorrow) using the user's timezone.
+        * Neither → default: next local digest hour (08:00).
 
         Returns APPLIED, DUPLICATE, STALE, or NOT_FOUND.
         """
-        now = datetime.now(timezone.utc)
-        snoozed_until = _next_digest_at(now_utc=now, tz_name=tz_name)
+        now = now_utc or datetime.now(timezone.utc)
+
+        if snooze_until is not None:
+            # Validate: must be in the future and ≤ 7 days ahead.
+            if snooze_until <= now:
+                _logger.warning(
+                    "action: snooze_until in the past user=%s active_id=%s",
+                    user_id, active_id,
+                )
+                return HandlingOutcome.INVALID
+            if snooze_until > now + timedelta(days=_MAX_SNOOZE_DAYS):
+                _logger.warning(
+                    "action: snooze_until too far user=%s active_id=%s",
+                    user_id, active_id,
+                )
+                return HandlingOutcome.INVALID
+            snoozed_until = snooze_until
+        elif snooze_preset is not None:
+            try:
+                snoozed_until = _snooze_preset_to_utc(
+                    snooze_preset, now_utc=now, tz_name=tz_name
+                )
+            except ValueError:
+                _logger.warning(
+                    "action: invalid snooze preset %s user=%s",
+                    snooze_preset, user_id,
+                )
+                return HandlingOutcome.INVALID
+        else:
+            snoozed_until = _next_digest_at(now_utc=now, tz_name=tz_name)
+
+        action_payload: dict = {"snoozed_until": snoozed_until.isoformat()}
+        if snooze_preset is not None:
+            action_payload["snooze_preset"] = snooze_preset
+        if snooze_until is not None:
+            action_payload["snooze_custom"] = True
+        if session_id is not None:
+            action_payload["source"] = "waiting_list_web"
+            action_payload["waiting_list_session_id"] = session_id
 
         action = await self._action_repo.record(
             user_id=user_id,
@@ -194,7 +290,7 @@ class WaitingForMeActionService:
             action_type=WaitingForMeActionType.SNOOZE,
             active_id=active_id,
             target_version=target_version,
-            action_payload={"snoozed_until": snoozed_until.isoformat()},
+            action_payload=action_payload,
             provider_message_id=provider_message_id,
         )
         if action is None:
@@ -321,6 +417,143 @@ class WaitingForMeActionService:
         _logger.info(
             "action: dismiss_not_interested user=%s active_id=%s version=%d",
             user_id, active_id, target_version,
+        )
+        return HandlingOutcome.APPLIED
+
+    async def done(
+        self,
+        *,
+        user_id: str,
+        active_id: str,
+        target_version: int,
+        provider_message_id: str,
+        session_id: str | None = None,
+    ) -> HandlingOutcome:
+        """Handle 'בוצע' from the web app — resolve the active item.
+
+        Operational action only — does NOT record CORRECT feedback.
+        "Done" means the owner completed something; it does not prove
+        the detector's classification was correct.
+
+        Uses atomic version-checked delete (``delete_if_version``).
+        Idempotency is checked before item existence via the action
+        record's unique constraint on ``provider_message_id``.
+
+        Returns APPLIED, DUPLICATE, STALE, or NOT_FOUND.
+        """
+        action_payload: dict = {"source": "waiting_list_web"}
+        if session_id is not None:
+            action_payload["waiting_list_session_id"] = session_id
+
+        action = await self._action_repo.record(
+            user_id=user_id,
+            chat_id="",
+            action_type=WaitingForMeActionType.RESOLVE,
+            active_id=active_id,
+            target_version=target_version,
+            action_payload=action_payload,
+            provider_message_id=provider_message_id,
+        )
+        if action is None:
+            return HandlingOutcome.DUPLICATE
+
+        # Atomic version-checked delete.
+        deleted = await self._active_repo.delete_if_version(
+            active_id=active_id,
+            user_id=user_id,
+            target_version=target_version,
+        )
+        if deleted is not None:
+            _logger.info(
+                "action: done user=%s active_id=%s version=%d",
+                user_id, active_id, target_version,
+            )
+            return HandlingOutcome.APPLIED
+
+        # Delete failed — distinguish stale from not_found.
+        active = await self._active_repo.get_by_id(active_id)
+        if active is None:
+            return HandlingOutcome.NOT_FOUND
+        _logger.warning(
+            "action: done stale user=%s active_id=%s version=%d",
+            user_id, active_id, target_version,
+        )
+        return HandlingOutcome.STALE
+
+    async def dismiss_with_reason(
+        self,
+        *,
+        user_id: str,
+        active_id: str,
+        target_version: int,
+        provider_message_id: str,
+        reason: str,
+        session_id: str | None = None,
+    ) -> HandlingOutcome:
+        """Handle 'לא נדרש' from the web app — resolve with a reason.
+
+        Reasons:
+        * ``already_handled`` → resolve, no feedback.
+        * ``no_response_required`` → resolve, no feedback.
+        * ``detected_incorrectly`` → resolve + FALSE_POSITIVE feedback.
+
+        Uses atomic version-checked delete (``delete_if_version``).
+        Idempotency is checked before item existence via the action
+        record's unique constraint on ``provider_message_id``.
+
+        Returns APPLIED, DUPLICATE, STALE, or NOT_FOUND.
+        """
+        action_payload: dict = {
+            "source": "waiting_list_web",
+            "dismiss_reason": reason,
+        }
+        if session_id is not None:
+            action_payload["waiting_list_session_id"] = session_id
+
+        action = await self._action_repo.record(
+            user_id=user_id,
+            chat_id="",
+            action_type=WaitingForMeActionType.RESOLVE,
+            active_id=active_id,
+            target_version=target_version,
+            action_payload=action_payload,
+            provider_message_id=provider_message_id,
+        )
+        if action is None:
+            return HandlingOutcome.DUPLICATE
+
+        # Atomic version-checked delete.
+        deleted = await self._active_repo.delete_if_version(
+            active_id=active_id,
+            user_id=user_id,
+            target_version=target_version,
+        )
+        if deleted is None:
+            # Distinguish stale from not_found.
+            active = await self._active_repo.get_by_id(active_id)
+            if active is None:
+                return HandlingOutcome.NOT_FOUND
+            _logger.warning(
+                "action: dismiss_with_reason stale "
+                "user=%s active_id=%s version=%d reason=%s",
+                user_id, active_id, target_version, reason,
+            )
+            return HandlingOutcome.STALE
+
+        # Record FALSE_POSITIVE feedback only for "detected_incorrectly".
+        if reason == "detected_incorrectly" and self._feedback_repo is not None:
+            await self._feedback_repo.record(
+                user_id=user_id,
+                chat_id=deleted.chat_id,
+                verdict=FeedbackVerdict.FALSE_POSITIVE,
+                result_id=deleted.result_id,
+                target_version=target_version,
+                provider_message_id=f"implicit:{provider_message_id}",
+            )
+
+        _logger.info(
+            "action: dismiss_with_reason user=%s active_id=%s version=%d reason=%s",
+            user_id, active_id, target_version, reason,
         )
         return HandlingOutcome.APPLIED
 

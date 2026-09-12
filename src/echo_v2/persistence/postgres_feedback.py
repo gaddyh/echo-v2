@@ -194,6 +194,22 @@ class PostgresWaitingForMeActionRepository:
             created_at=row.created_at,
         )
 
+    async def list_by_session(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+    ) -> list[WaitingForMeAction]:
+        """List actions for a waiting-list session."""
+        async with self._session() as session:
+            stmt = select(WaitingForMeActionRow).where(
+                WaitingForMeActionRow.user_id == user_id,
+                WaitingForMeActionRow.action_payload["waiting_list_session_id"].astext
+                == session_id,
+            )
+            rows = (await session.execute(stmt)).scalars().all()
+            return [self._row_to_domain(r) for r in rows]
+
 
 # --- PostgresChatMuteRepository --------------------------------------------
 

@@ -84,6 +84,8 @@ class Dialog360Client:
         template_name: str,
         language: str,
         body_params: list[str],
+        *,
+        url_suffix: str | None = None,
     ) -> str:
         """Send a template message from the bot to ``recipient``.
 
@@ -93,10 +95,32 @@ class Dialog360Client:
                 ``morning_waiting_digest``).
             language: The language code (e.g. ``he``).
             body_params: Body parameter values, in order ({{1}}, {{2}}, ...).
+            url_suffix: Optional dynamic value for a URL button's
+                variable. The template must be approved with a URL
+                button containing ``{{1}}``. When provided, a button
+                component is added to the payload.
 
         Returns the message ID assigned by 360dialog.
         """
         phone = _normalize_phone(recipient)
+        components: list[dict[str, Any]] = [
+            {
+                "type": "body",
+                "parameters": [
+                    {"type": "text", "text": param}
+                    for param in body_params
+                ],
+            }
+        ]
+        if url_suffix is not None:
+            components.append(
+                {
+                    "type": "button",
+                    "sub_type": "url",
+                    "index": 0,
+                    "parameters": [{"type": "text", "text": url_suffix}],
+                }
+            )
         payload: dict[str, Any] = {
             "messaging_product": "whatsapp",
             "recipient_type": "individual",
@@ -105,15 +129,7 @@ class Dialog360Client:
             "template": {
                 "name": template_name,
                 "language": {"code": language},
-                "components": [
-                    {
-                        "type": "body",
-                        "parameters": [
-                            {"type": "text", "text": param}
-                            for param in body_params
-                        ],
-                    }
-                ],
+                "components": components,
             },
         }
         data = await self._post_json(
