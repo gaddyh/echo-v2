@@ -27,8 +27,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
+from typing import Literal
 
 __all__ = [
+    "AnalysisCommitOutcome",
+    "PreparedAnalysis",
     "WaitingForMeActive",
     "WaitingForMeDecision",
     "WaitingForMeResult",
@@ -133,3 +136,37 @@ class WaitingForMeActive:
     notified_at: datetime | None = None
     acknowledged_at: datetime | None = None
     snoozed_until: datetime | None = None
+
+
+@dataclass(frozen=True)
+class PreparedAnalysis:
+    """Analysis result ready for atomic commit — no persistence yet.
+
+    The ``result`` is the LLM output without ``conversation_snapshot`` set.
+    The ``conversation_snapshot`` is the raw message dict built by the
+    processor. The :class:`AnalysisCommitRepository` merges them when
+    persisting, so the stored result has the snapshot attached.
+
+    Separating them keeps the LLM output pure (no message data) while
+    allowing the commit repo to decide what to store.
+    """
+
+    result: WaitingForMeResult
+    conversation_snapshot: dict
+
+
+@dataclass(frozen=True)
+class AnalysisCommitOutcome:
+    """Result of attempting to commit an analysis atomically.
+
+    Attributes:
+        status: ``"committed"`` if the result was persisted and the chat
+            marked processed. ``"stale"`` if the ``activity_version`` changed
+            during processing (new message arrived) — nothing was written.
+            ``"missing"`` if the chat row disappeared during processing —
+            nothing was written.
+        result_id: The persisted result row ID, or ``None`` if not committed.
+    """
+
+    status: Literal["committed", "stale", "missing"]
+    result_id: str | None = None

@@ -22,6 +22,7 @@ from echo_v2.persistence.db import (
     create_async_engine_from_settings,
 )
 from echo_v2.persistence.postgres_chat import (
+    PostgresAnalysisCommitRepository,
     PostgresChatStateRepository,
     PostgresMessageRepository,
     PostgresWaitingForMeActiveRepository,
@@ -62,6 +63,7 @@ class PostgresRepos:
     chat_state: PostgresChatStateRepository
     wfm_results: PostgresWaitingForMeResultRepository
     wfm_active: PostgresWaitingForMeActiveRepository
+    analysis_commit: PostgresAnalysisCommitRepository
     wfm_feedback: PostgresWaitingForMeFeedbackRepository
     wfm_actions: PostgresWaitingForMeActionRepository
     chat_mutes: PostgresChatMuteRepository
@@ -95,6 +97,7 @@ def build_postgres_repos(settings: DBSettings) -> PostgresRepos:
     chat_state = PostgresChatStateRepository(factory)
     wfm_results = PostgresWaitingForMeResultRepository(factory)
     wfm_active = PostgresWaitingForMeActiveRepository(factory)
+    analysis_commit = PostgresAnalysisCommitRepository(factory)
     wfm_feedback = PostgresWaitingForMeFeedbackRepository(factory)
     wfm_actions = PostgresWaitingForMeActionRepository(factory)
     chat_mutes = PostgresChatMuteRepository(factory)
@@ -115,6 +118,7 @@ def build_postgres_repos(settings: DBSettings) -> PostgresRepos:
         chat_state=chat_state,
         wfm_results=wfm_results,
         wfm_active=wfm_active,
+        analysis_commit=analysis_commit,
         wfm_feedback=wfm_feedback,
         wfm_actions=wfm_actions,
         chat_mutes=chat_mutes,

@@ -24,11 +24,19 @@ from datetime import datetime
 from typing import Protocol, runtime_checkable
 
 from echo_v2.domain.chat import ChatState, Message
-from echo_v2.domain.waiting_for_me import WaitingForMeActive, WaitingForMeResult
+from echo_v2.domain.waiting_for_me import (
+    AnalysisCommitOutcome,
+    PreparedAnalysis,
+    WaitingForMeActive,
+    WaitingForMeDecision,
+    WaitingForMeResult,
+)
 from echo_v2.ports.whatsapp import MessageDirection
 
 __all__ = [
+    "AnalysisCommitRepository",
     "ChatStateRepository",
+    "InMemoryAnalysisCommitRepository",
     "InMemoryChatStateRepository",
     "InMemoryMessageRepository",
     "InMemoryWaitingForMeActiveRepository",
@@ -726,3 +734,115 @@ class InMemoryWaitingForMeActiveRepository:
 
 
 _wfm_active_repo: WaitingForMeActiveRepository = InMemoryWaitingForMeActiveRepository()  # type: ignore[assignment]
+
+
+# --- AnalysisCommitRepository -----------------------------------------------
+
+
+@runtime_checkable
+class AnalysisCommitRepository(Protocol):
+    """Atomically commit an analysis result if the chat version is still current.
+
+    This is the single transaction boundary for analysis persistence. It
+    replaces the old pattern where ``ChatAnalysisProcessor`` saved the
+    result and updated active state, and only afterward did the worker
+    check whether the version had changed — allowing stale results to be
+    persisted.
+
+    The implementation must:
+
+    1. Lock the chat row (``SELECT ... FOR UPDATE`` in Postgres, or the
+       equivalent in-memory read).
+    2. Compare ``activity_version`` to ``target_version``.
+    3. If different (or the chat disappeared), return ``stale`` or
+       ``missing`` without writing anything.
+    4. If same: insert the result, upsert/delete active state, mark the
+       chat processed, and commit — all in one transaction.
+    """
+
+    async def commit_if_current(
+        self,
+        *,
+        user_id: str,
+        chat_id: str,
+        target_version: int,
+        analysis: PreparedAnalysis,
+    ) -> AnalysisCommitOutcome:
+        ...
+
+
+class InMemoryAnalysisCommitRepository:
+    """In-memory implementation of :class:`AnalysisCommitRepository`.
+
+    Composes three existing in-memory repositories. The "lock" is a
+    no-op (single-threaded async), but the version check and conditional
+    write logic mirrors the Postgres implementation.
+    """
+
+    def __init__(
+        self,
+        chat_state_repo: ChatStateRepository,
+        result_repo: WaitingForMeResultRepository,
+        active_repo: WaitingForMeActiveRepository,
+    ) -> None:
+        self._chat_state = chat_state_repo
+        self._results = result_repo
+        self._active = active_repo
+
+    async def commit_if_current(
+        self,
+        *,
+        user_id: str,
+        chat_id: str,
+        target_version: int,
+        analysis: PreparedAnalysis,
+    ) -> AnalysisCommitOutcome:
+        from dataclasses import replace
+        from datetime import datetime, timezone
+
+        # 1. Read chat state (in-memory: no lock needed).
+        chat = await self._chat_state.get(user_id, chat_id)
+        if chat is None:
+            return AnalysisCommitOutcome(status="missing", result_id=None)
+
+        # 2. Version check.
+        if chat.activity_version != target_version:
+            return AnalysisCommitOutcome(status="stale", result_id=None)
+
+        # 3. Insert result (merge conversation_snapshot).
+        result_to_save = replace(
+            analysis.result,
+            conversation_snapshot=analysis.conversation_snapshot,
+        )
+        result_id = await self._results.save(
+            user_id=user_id,
+            chat_id=chat_id,
+            result=result_to_save,
+        )
+
+        # 4. Manage active state.
+        if result_to_save.decision == WaitingForMeDecision.WAITING_FOR_ME:
+            existing = await self._active.get(user_id=user_id, chat_id=chat_id)
+            now = datetime.now(timezone.utc)
+            await self._active.upsert(
+                user_id=user_id,
+                chat_id=chat_id,
+                target_version=target_version,
+                result_id=result_id,
+                waiting_since=existing.waiting_since if existing else now,
+                notified_at=existing.notified_at if existing else None,
+            )
+        else:
+            await self._active.delete(user_id=user_id, chat_id=chat_id)
+
+        # 5. Mark processed.
+        await self._chat_state.mark_processed(user_id, chat_id, target_version)
+
+        return AnalysisCommitOutcome(status="committed", result_id=result_id)
+
+
+_commit_repo: AnalysisCommitRepository = InMemoryAnalysisCommitRepository(  # type: ignore[assignment]
+    InMemoryChatStateRepository(),
+    InMemoryWaitingForMeResultRepository(),
+    InMemoryWaitingForMeActiveRepository(),
+)

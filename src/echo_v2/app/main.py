@@ -215,14 +215,13 @@ def create_app() -> FastAPI:
     analysis_processor = ChatAnalysisProcessor(
         message_repo=repos.messages,
         analyzer=analyzer,
-        result_repo=repos.wfm_results,
-        active_repo=repos.wfm_active,
         context_messages=5,
         max_no_outbound=20,
     )
     analysis_worker = ChatAnalysisWorker(
         chat_state_repo=repos.chat_state,
         processor=analysis_processor,
+        commit_repo=repos.analysis_commit,
         poll_interval_seconds=float(os.environ.get("CHAT_ANALYSIS_POLL_INTERVAL", "60")),
     )
     chat_analysis_enabled = os.environ.get("CHAT_ANALYSIS_ENABLED", "false").lower() in (

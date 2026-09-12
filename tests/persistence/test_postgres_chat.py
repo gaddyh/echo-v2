@@ -1121,3 +1121,274 @@ async def test_message_get_latest_inbound_returns_none_if_empty(session_factory,
         chat_id="chat-1@c.us",
     )
     assert latest is None
+
+
+# --- PostgresAnalysisCommitRepository ----------------------------------------
+
+
+@pytest_asyncio.fixture
+async def commit_repo(session_factory, clean_db):
+    from echo_v2.persistence.postgres_chat import PostgresAnalysisCommitRepository
+
+    return PostgresAnalysisCommitRepository(session_factory)
+
+
+async def _seed_chat_row(session_factory, user_id, chat_id="chat-1@c.us", version=1):
+    """Insert a chats row and return it."""
+    from sqlalchemy import insert
+
+    from echo_v2.persistence.orm import ChatRow
+
+    async with session_factory() as session:
+        stmt = (
+            insert(ChatRow)
+            .values(
+                user_id=user_id,
+                chat_id=chat_id,
+                activity_version=version,
+                last_message_at=datetime.now(timezone.utc),
+                last_direction="inbound",
+                next_analysis_at=datetime.now(timezone.utc) - timedelta(minutes=5),
+                last_processed_version=0,
+            )
+        )
+        await session.execute(stmt)
+        await session.commit()
+
+
+async def test_commit_if_current_commits_on_matching_version(
+    commit_repo, session_factory,
+):
+    """When version matches, result + active + mark_processed all commit."""
+    from echo_v2.domain.waiting_for_me import (
+        PreparedAnalysis,
+        WaitingForMeDecision,
+        WaitingForMeResult,
+    )
+
+    user_id = await insert_user(session_factory)
+    await _seed_chat_row(session_factory, user_id, version=1)
+
+    outcome = await commit_repo.commit_if_current(
+        user_id=user_id,
+        chat_id="chat-1@c.us",
+        target_version=1,
+        analysis=PreparedAnalysis(
+            result=WaitingForMeResult(
+                decision=WaitingForMeDecision.WAITING_FOR_ME,
+                confidence=0.9,
+                reason="test",
+                target_version=1,
+            ),
+            conversation_snapshot={"messages": [], "target_version": 1},
+        ),
+    )
+
+    assert outcome.status == "committed"
+    assert outcome.result_id is not None
+
+    # Result persisted
+    from echo_v2.persistence.postgres_chat import PostgresWaitingForMeResultRepository
+    result_repo = PostgresWaitingForMeResultRepository(session_factory)
+    results = await result_repo.list_recent(user_id=user_id, chat_id="chat-1@c.us")
+    assert len(results) == 1
+    assert results[0].decision == WaitingForMeDecision.WAITING_FOR_ME
+
+    # Active state created
+    from echo_v2.persistence.postgres_chat import PostgresWaitingForMeActiveRepository
+    active_repo = PostgresWaitingForMeActiveRepository(session_factory)
+    active = await active_repo.get(user_id=user_id, chat_id="chat-1@c.us")
+    assert active is not None
+    assert active.target_version == 1
+
+    # Chat marked processed
+    from echo_v2.persistence.postgres_chat import PostgresChatStateRepository
+    chat_repo = PostgresChatStateRepository(session_factory)
+    chat = await chat_repo.get(user_id, "chat-1@c.us")
+    assert chat is not None
+    assert chat.last_processed_version == 1
+    assert chat.next_analysis_at is None
+
+
+async def test_commit_if_current_returns_stale_on_version_mismatch(
+    commit_repo, session_factory,
+):
+    """When version changed, nothing is written."""
+    from echo_v2.domain.waiting_for_me import (
+        PreparedAnalysis,
+        WaitingForMeDecision,
+        WaitingForMeResult,
+    )
+
+    user_id = await insert_user(session_factory)
+    await _seed_chat_row(session_factory, user_id, version=2)  # version bumped
+
+    outcome = await commit_repo.commit_if_current(
+        user_id=user_id,
+        chat_id="chat-1@c.us",
+        target_version=1,  # stale
+        analysis=PreparedAnalysis(
+            result=WaitingForMeResult(
+                decision=WaitingForMeDecision.WAITING_FOR_ME,
+                confidence=0.9,
+                reason="test",
+                target_version=1,
+            ),
+            conversation_snapshot={},
+        ),
+    )
+
+    assert outcome.status == "stale"
+    assert outcome.result_id is None
+
+    # Nothing persisted
+    from echo_v2.persistence.postgres_chat import PostgresWaitingForMeResultRepository
+    result_repo = PostgresWaitingForMeResultRepository(session_factory)
+    results = await result_repo.list_recent(user_id=user_id, chat_id="chat-1@c.us")
+    assert len(results) == 0
+
+
+async def test_commit_if_current_returns_missing_when_chat_deleted(
+    commit_repo, session_factory,
+):
+    """When chat row doesn't exist, nothing is written."""
+    from echo_v2.domain.waiting_for_me import (
+        PreparedAnalysis,
+        WaitingForMeDecision,
+        WaitingForMeResult,
+    )
+
+    user_id = await insert_user(session_factory)
+    # No chat row seeded
+
+    outcome = await commit_repo.commit_if_current(
+        user_id=user_id,
+        chat_id="nonexistent@c.us",
+        target_version=1,
+        analysis=PreparedAnalysis(
+            result=WaitingForMeResult(
+                decision=WaitingForMeDecision.WAITING_FOR_ME,
+                confidence=0.9,
+                reason="test",
+                target_version=1,
+            ),
+            conversation_snapshot={},
+        ),
+    )
+
+    assert outcome.status == "missing"
+    assert outcome.result_id is None
+
+
+async def test_commit_if_current_deletes_active_on_not_waiting(
+    commit_repo, session_factory,
+):
+    """NOT_WAITING_FOR_ME → active state deleted, result persisted."""
+    from echo_v2.domain.waiting_for_me import (
+        PreparedAnalysis,
+        WaitingForMeDecision,
+        WaitingForMeResult,
+    )
+
+    user_id = await insert_user(session_factory)
+    await _seed_chat_row(session_factory, user_id, version=2)
+
+    # Seed an existing active state from a previous analysis at version=1
+    result_id = await _seed_wfm_result(session_factory, user_id, version=1)
+    from echo_v2.persistence.postgres_chat import PostgresWaitingForMeActiveRepository
+    active_repo = PostgresWaitingForMeActiveRepository(session_factory)
+    await active_repo.upsert(
+        user_id=user_id,
+        chat_id="chat-1@c.us",
+        target_version=1,
+        result_id=result_id,
+        waiting_since=datetime.now(timezone.utc),
+    )
+
+    # New analysis at version=2 says NOT_WAITING_FOR_ME
+    outcome = await commit_repo.commit_if_current(
+        user_id=user_id,
+        chat_id="chat-1@c.us",
+        target_version=2,
+        analysis=PreparedAnalysis(
+            result=WaitingForMeResult(
+                decision=WaitingForMeDecision.NOT_WAITING_FOR_ME,
+                confidence=0.95,
+                reason="closing",
+                target_version=2,
+            ),
+            conversation_snapshot={},
+        ),
+    )
+
+    assert outcome.status == "committed"
+
+    active = await active_repo.get(user_id=user_id, chat_id="chat-1@c.us")
+    assert active is None
+
+
+async def test_commit_if_current_preserves_waiting_since(
+    commit_repo, session_factory,
+):
+    """Re-analysis with WAITING_FOR_ME preserves waiting_since."""
+    from echo_v2.domain.waiting_for_me import (
+        PreparedAnalysis,
+        WaitingForMeDecision,
+        WaitingForMeResult,
+    )
+
+    user_id = await insert_user(session_factory)
+    await _seed_chat_row(session_factory, user_id, version=1)
+
+    # First commit
+    await commit_repo.commit_if_current(
+        user_id=user_id,
+        chat_id="chat-1@c.us",
+        target_version=1,
+        analysis=PreparedAnalysis(
+            result=WaitingForMeResult(
+                decision=WaitingForMeDecision.WAITING_FOR_ME,
+                confidence=0.9,
+                reason="test",
+                target_version=1,
+            ),
+            conversation_snapshot={},
+        ),
+    )
+
+    from echo_v2.persistence.postgres_chat import PostgresWaitingForMeActiveRepository
+    active_repo = PostgresWaitingForMeActiveRepository(session_factory)
+    first_active = await active_repo.get(user_id=user_id, chat_id="chat-1@c.us")
+    assert first_active is not None
+
+    # Bump version (new message)
+    from echo_v2.persistence.postgres_chat import PostgresChatStateRepository
+    chat_repo = PostgresChatStateRepository(session_factory)
+    await chat_repo.upsert_on_message(
+        user_id=user_id,
+        chat_id="chat-1@c.us",
+        direction=MessageDirection.INBOUND,
+        observed_at=datetime.now(timezone.utc),
+        next_analysis_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+    )
+
+    # Second commit at version 2
+    await commit_repo.commit_if_current(
+        user_id=user_id,
+        chat_id="chat-1@c.us",
+        target_version=2,
+        analysis=PreparedAnalysis(
+            result=WaitingForMeResult(
+                decision=WaitingForMeDecision.WAITING_FOR_ME,
+                confidence=0.9,
+                reason="test",
+                target_version=2,
+            ),
+            conversation_snapshot={},
+        ),
+    )
+
+    second_active = await active_repo.get(user_id=user_id, chat_id="chat-1@c.us")
+    assert second_active is not None
+    assert second_active.target_version == 2
+    assert second_active.waiting_since == first_active.waiting_since

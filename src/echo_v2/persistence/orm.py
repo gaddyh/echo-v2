@@ -520,6 +520,12 @@ class WaitingForMeResultRow(Base):
             "chat_id",
             "created_at",
         ),
+        UniqueConstraint(
+            "user_id",
+            "chat_id",
+            "target_version",
+            name="uq_wfm_results_user_chat_version",
+        ),
     )
 
 

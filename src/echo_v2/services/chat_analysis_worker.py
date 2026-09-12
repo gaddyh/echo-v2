@@ -1,28 +1,28 @@
 """ChatAnalysisWorker — single-worker poller that processes due chats.
 
 The worker polls :meth:`ChatStateRepository.list_due` once a minute,
-processes each due chat, and commits the result only if
-``activity_version`` hasn't changed during processing (conditional
-``mark_processed``).
+processes each due chat, and commits the result atomically via
+:meth:`AnalysisCommitRepository.commit_if_current`.
 
 Safety properties:
 
-* **Version check after processing**: The worker reads
-  ``activity_version`` before processing, processes the chat, then
-  re-reads. If the version changed (new message arrived during
-  processing), the result is discarded. The chat stays due and gets
-  reprocessed on the next poll.
+* **Atomic version-checked commit**: The processor runs the LLM and
+  returns a :class:`PreparedAnalysis` without persisting. The
+  :class:`AnalysisCommitRepository` then locks the chat row, checks
+  ``activity_version``, and only commits (insert result + update active +
+  mark processed) if the version is still current. If a new message
+  arrived during processing, nothing is written.
 
 * **Worker crash = reprocess**: No lease or claim_token. If the worker
   crashes mid-processing, the chat still has ``next_analysis_at`` in
   the past and ``activity_version > last_processed_version``. After
   restart, the worker picks it up again. At-least-once processing;
-  result committed at most once (version check).
+  result committed at most once (atomic version check).
 
-* **Single worker only**: No ``FOR UPDATE SKIP LOCKED`` — the
-  ``list_due`` query is a plain SELECT. For POC with one worker, this
-  is fine. When a real processor with side effects is added, we'll
-  need idempotency (e.g., key based on version).
+* **Single worker only**: No ``FOR UPDATE SKIP LOCKED`` on
+  ``list_due`` — it is a plain SELECT. For POC with one worker, this
+  is fine. The atomic commit handles races if a message arrives during
+  processing.
 
 The worker is **not started in production** by default
 (``CHAT_ANALYSIS_ENABLED=false``). It is constructed and tested but
@@ -36,15 +36,18 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Protocol, runtime_checkable
+from typing import Literal, Protocol, runtime_checkable
 
 from echo_v2.domain.chat import ChatState
-from echo_v2.domain.waiting_for_me import WaitingForMeDecision
+from echo_v2.domain.waiting_for_me import (
+    PreparedAnalysis,
+    WaitingForMeDecision,
+    WaitingForMeResult,
+)
 from echo_v2.persistence.chat_repositories import (
+    AnalysisCommitRepository,
     ChatStateRepository,
     MessageRepository,
-    WaitingForMeActiveRepository,
-    WaitingForMeResultRepository,
 )
 from echo_v2.services.waiting_for_me_analyzer import WaitingForMeAnalyzer
 
@@ -81,7 +84,11 @@ class AnalysisProcessor(Protocol):
     The default :class:`RecordingAnalysisProcessor` records calls without
     doing real analysis. :class:`ChatAnalysisProcessor` loads messages,
     builds a :class:`ConversationInput`, and calls a
-    :class:`WaitingForMeAnalyzer` to produce a :class:`WaitingForMeResult`.
+    :class:`WaitingForMeAnalyzer` to produce a :class:`PreparedAnalysis`.
+
+    The processor does NOT persist — it returns the analysis result and
+    conversation snapshot. The :class:`ChatAnalysisWorker` commits the
+    result atomically via :class:`AnalysisCommitRepository`.
     """
 
     async def process(
@@ -89,15 +96,16 @@ class AnalysisProcessor(Protocol):
         user_id: str,
         chat_id: str,
         target_version: int,
-    ) -> None: ...
+    ) -> PreparedAnalysis: ...
 
 
 class RecordingAnalysisProcessor:
     """Test/development processor that records calls without real analysis.
 
     Records every call as a ``(user_id, chat_id, target_version)`` tuple.
-    Does not modify any state — safe to use in tests and as a placeholder
-    in production wiring (though the worker is not started by default).
+    Returns a dummy :class:`PreparedAnalysis` with an ``UNCERTAIN`` decision
+    — safe to use in tests and as a placeholder in production wiring (though
+    the worker is not started by default).
     """
 
     def __init__(self) -> None:
@@ -108,19 +116,31 @@ class RecordingAnalysisProcessor:
         user_id: str,
         chat_id: str,
         target_version: int,
-    ) -> None:
+    ) -> PreparedAnalysis:
         self.calls.append((user_id, chat_id, target_version))
+        return PreparedAnalysis(
+            result=WaitingForMeResult(
+                decision=WaitingForMeDecision.UNCERTAIN,
+                confidence=1.0,
+                reason="Recording processor — no real analysis.",
+                target_version=target_version,
+            ),
+            conversation_snapshot={},
+        )
 
 
 class ChatAnalysisProcessor:
-    """Loads messages, builds conversation input, runs analysis, stores result.
+    """Loads messages, builds conversation input, runs analysis.
 
-    Stage 4: message loading + LLM analysis + result storage + active state
-    management. The processor loads messages via
-    :meth:`MessageRepository.list_for_analysis`, builds a
+    Stage 4: message loading + LLM analysis. The processor loads messages
+    via :meth:`MessageRepository.list_for_analysis`, builds a
     :class:`ConversationInput`, passes it to a :class:`WaitingForMeAnalyzer`,
-    stores the :class:`WaitingForMeResult`, and manages the
-    :class:`WaitingForMeActive` state:
+    and returns a :class:`PreparedAnalysis` containing the result and a
+    conversation snapshot for training/feedback.
+
+    The processor does NOT persist. The :class:`ChatAnalysisWorker`
+    commits the result atomically via :class:`AnalysisCommitRepository`,
+    which handles:
 
     - ``WAITING_FOR_ME`` → upsert active (preserve ``waiting_since`` and
       ``notified_at`` if a row already exists).
@@ -131,11 +151,6 @@ class ChatAnalysisProcessor:
             :meth:`list_for_analysis`.
         analyzer: The :class:`WaitingForMeAnalyzer` that produces the
             :class:`WaitingForMeResult`.
-        result_repo: The :class:`WaitingForMeResultRepository` that stores
-            the result. If ``None``, results are logged but not persisted.
-        active_repo: The :class:`WaitingForMeActiveRepository` that manages
-            the current active state. If ``None``, active state is not
-            managed.
         context_messages: Number of messages before the last outbound
             to include for context. Default 5.
         max_no_outbound: If no outbound exists, load this many recent
@@ -146,16 +161,12 @@ class ChatAnalysisProcessor:
         self,
         message_repo: MessageRepository,
         analyzer: WaitingForMeAnalyzer,
-        result_repo: WaitingForMeResultRepository | None = None,
-        active_repo: WaitingForMeActiveRepository | None = None,
         *,
         context_messages: int = 5,
         max_no_outbound: int = 20,
     ) -> None:
         self._messages = message_repo
         self._analyzer = analyzer
-        self._result_repo = result_repo
-        self._active_repo = active_repo
         self._context_messages = context_messages
         self._max_no_outbound = max_no_outbound
 
@@ -164,7 +175,7 @@ class ChatAnalysisProcessor:
         user_id: str,
         chat_id: str,
         target_version: int,
-    ) -> None:
+    ) -> PreparedAnalysis:
         messages = await self._messages.list_for_analysis(
             user_id=user_id,
             chat_id=chat_id,
@@ -190,102 +201,37 @@ class ChatAnalysisProcessor:
             result.confidence,
             result.reason,
         )
-        if self._result_repo is None:
-            return
 
         # Build a conversation snapshot for training/feedback.
         # This is the exact conversation the model saw — not messages
         # loaded later when feedback arrives.
-        from dataclasses import replace
+        conversation_snapshot = {
+            "messages": [
+                {
+                    "direction": m.direction.value,
+                    "text": m.text or "",
+                    "timestamp": m.timestamp.isoformat() if m.timestamp else None,
+                }
+                for m in messages
+            ],
+            "target_version": target_version,
+        }
 
-        result_with_snapshot = replace(
-            result,
-            conversation_snapshot={
-                "messages": [
-                    {
-                        "direction": m.direction.value,
-                        "text": m.text or "",
-                        "timestamp": m.timestamp.isoformat() if m.timestamp else None,
-                    }
-                    for m in messages
-                ],
-                "target_version": target_version,
-            },
+        return PreparedAnalysis(
+            result=result,
+            conversation_snapshot=conversation_snapshot,
         )
-
-        result_id = await self._result_repo.save(
-            user_id=user_id,
-            chat_id=chat_id,
-            result=result_with_snapshot,
-        )
-        _logger.info(
-            "stored result for chat %s/%s (version %d)",
-            user_id,
-            chat_id,
-            target_version,
-        )
-
-        if self._active_repo is None:
-            return
-
-        await self._manage_active_state(
-            user_id=user_id,
-            chat_id=chat_id,
-            target_version=target_version,
-            result_id=result_id,
-            decision=result.decision,
-        )
-
-    async def _manage_active_state(
-        self,
-        *,
-        user_id: str,
-        chat_id: str,
-        target_version: int,
-        result_id: str,
-        decision: WaitingForMeDecision,
-    ) -> None:
-        """Update or delete the active state based on the decision."""
-        from datetime import datetime, timezone
-
-        if decision == WaitingForMeDecision.WAITING_FOR_ME:
-            existing = await self._active_repo.get(user_id=user_id, chat_id=chat_id)
-            now = datetime.now(timezone.utc)
-            await self._active_repo.upsert(
-                user_id=user_id,
-                chat_id=chat_id,
-                target_version=target_version,
-                result_id=result_id,
-                waiting_since=existing.waiting_since if existing else now,
-                notified_at=existing.notified_at if existing else None,
-            )
-            _logger.info(
-                "active state upserted for chat %s/%s (version %d)",
-                user_id,
-                chat_id,
-                target_version,
-            )
-        else:
-            deleted = await self._active_repo.delete(
-                user_id=user_id,
-                chat_id=chat_id,
-            )
-            if deleted:
-                _logger.info(
-                    "active state cleared for chat %s/%s (decision=%s)",
-                    user_id,
-                    chat_id,
-                    decision.value,
-                )
 
 
 class ChatAnalysisWorker:
     """Single-worker poller that processes due chats.
 
     Args:
-        chat_state_repo: The repository for ``list_due``, ``get``, and
-            ``mark_processed``.
-        processor: The :class:`AnalysisProcessor` that analyzes each chat.
+        chat_state_repo: The repository for ``list_due`` and ``get``.
+        processor: The :class:`AnalysisProcessor` that analyzes each chat
+            and returns a :class:`PreparedAnalysis` (no persistence).
+        commit_repo: The :class:`AnalysisCommitRepository` that atomically
+            commits the analysis if the chat version is still current.
         poll_interval_seconds: How often ``run_loop`` polls for due chats.
             Default 60 seconds.
     """
@@ -294,11 +240,13 @@ class ChatAnalysisWorker:
         self,
         chat_state_repo: ChatStateRepository,
         processor: AnalysisProcessor,
+        commit_repo: AnalysisCommitRepository,
         *,
         poll_interval_seconds: float = 60.0,
     ) -> None:
         self._chat_state_repo = chat_state_repo
         self._processor = processor
+        self._commit_repo = commit_repo
         self._poll_interval = poll_interval_seconds
 
     async def run_once(self, *, limit: int = 20) -> bool:
@@ -343,60 +291,61 @@ class ChatAnalysisWorker:
                 _logger.info("chat analysis worker loop cancelled during sleep")
                 raise
 
-    async def _process_chat(self, chat: ChatState) -> None:
-        """Process a single due chat with version-check safety.
+    async def _process_chat(
+        self,
+        chat: ChatState,
+    ) -> Literal["committed", "stale", "missing"]:
+        """Process a single due chat with atomic version-checked commit.
 
-        1. Record ``activity_version`` before processing.
-        2. Call the processor (outside any transaction — no lock held).
-        3. Re-read the chat. If ``activity_version`` is unchanged,
-           ``mark_processed`` (conditional UPDATE). If it changed,
-           discard the result — the chat is still due and will be
-           reprocessed on the next poll.
+        1. Call the processor (outside any transaction — no lock held).
+           The processor runs the LLM and returns a
+           :class:`PreparedAnalysis` without persisting.
+        2. Call :meth:`AnalysisCommitRepository.commit_if_current`, which
+           locks the chat row, checks the version, and commits the result
+           + active state + mark_processed in one transaction.
+
+        Returns ``"committed"`` if the result was persisted, ``"stale"``
+        if the version changed during processing (nothing written), or
+        ``"missing"`` if the chat disappeared during processing.
         """
         version_being_processed = chat.activity_version
 
         # Process (outside any transaction — no lock held)
-        await self._processor.process(
+        prepared = await self._processor.process(
             chat.user_id,
             chat.chat_id,
             version_being_processed,
         )
 
-        # Version check: only accept result if version is still current
-        fresh_chat = await self._chat_state_repo.get(chat.user_id, chat.chat_id)
-        if fresh_chat is None:
+        # Atomic commit: lock, version check, insert, upsert, mark processed.
+        outcome = await self._commit_repo.commit_if_current(
+            user_id=chat.user_id,
+            chat_id=chat.chat_id,
+            target_version=version_being_processed,
+            analysis=prepared,
+        )
+
+        if outcome.status == "committed":
+            _logger.info(
+                "committed analysis for chat %s/%s (version %d, result_id=%s)",
+                chat.user_id,
+                chat.chat_id,
+                version_being_processed,
+                outcome.result_id,
+            )
+        elif outcome.status == "stale":
+            _logger.info(
+                "chat %s/%s version changed during processing (%d), "
+                "discarding result",
+                chat.user_id,
+                chat.chat_id,
+                version_being_processed,
+            )
+        else:  # missing
             _logger.warning(
                 "chat %s/%s disappeared during processing, discarding result",
                 chat.user_id,
                 chat.chat_id,
             )
-            return
 
-        if fresh_chat.activity_version == version_being_processed:
-            # Version unchanged — accept result, mark processed
-            updated = await self._chat_state_repo.mark_processed(
-                chat.user_id,
-                chat.chat_id,
-                version_being_processed,
-            )
-            if not updated:
-                # Race: version changed between our get and mark_processed.
-                # The chat will be reprocessed on the next poll.
-                _logger.info(
-                    "chat %s/%s version changed during mark_processed, "
-                    "result discarded",
-                    chat.user_id,
-                    chat.chat_id,
-                )
-        else:
-            # New message arrived during processing — discard result.
-            # The chat is still due (next_analysis_at set by the new message)
-            # and will be reprocessed on the next poll.
-            _logger.info(
-                "chat %s/%s version changed during processing (%d -> %d), "
-                "discarding result",
-                chat.user_id,
-                chat.chat_id,
-                version_being_processed,
-                fresh_chat.activity_version,
-            )
+        return outcome.status

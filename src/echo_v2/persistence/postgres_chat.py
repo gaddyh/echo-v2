@@ -22,6 +22,8 @@ from sqlalchemy.ext.asyncio import (
 
 from echo_v2.domain.chat import ChatState, Message
 from echo_v2.domain.waiting_for_me import (
+    AnalysisCommitOutcome,
+    PreparedAnalysis,
     WaitingForMeActive,
     WaitingForMeDecision,
     WaitingForMeResult,
@@ -35,6 +37,7 @@ from echo_v2.persistence.orm import (
 from echo_v2.ports.whatsapp import MessageDirection
 
 __all__ = [
+    "PostgresAnalysisCommitRepository",
     "PostgresChatStateRepository",
     "PostgresMessageRepository",
     "PostgresWaitingForMeActiveRepository",
@@ -750,3 +753,148 @@ class PostgresWaitingForMeActiveRepository:
             acknowledged_at=row.acknowledged_at,
             snoozed_until=row.snoozed_until,
         )
+
+
+# --- PostgresAnalysisCommitRepository ----------------------------------------
+
+
+class PostgresAnalysisCommitRepository:
+    """PostgreSQL implementation of :class:`AnalysisCommitRepository`.
+
+    All four steps (lock, version check, insert result, manage active,
+    mark processed) run in one transaction with ``SELECT ... FOR UPDATE``
+    on the chat row. If the version changed during processing, the
+    transaction rolls back without writing anything.
+    """
+
+    def __init__(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+    ) -> None:
+        self._session_factory = session_factory
+
+    async def commit_if_current(
+        self,
+        *,
+        user_id: str,
+        chat_id: str,
+        target_version: int,
+        analysis: PreparedAnalysis,
+    ) -> AnalysisCommitOutcome:
+        from dataclasses import replace
+
+        from sqlalchemy import delete as sa_delete
+        from sqlalchemy import update as sa_update
+
+        async with self._session_factory() as session:
+            try:
+                # 1. Lock the chat row.
+                lock_stmt = (
+                    select(ChatRow)
+                    .where(
+                        ChatRow.user_id == user_id,
+                        ChatRow.chat_id == chat_id,
+                    )
+                    .with_for_update()
+                )
+                chat_row = (await session.execute(lock_stmt)).scalar_one_or_none()
+
+                if chat_row is None:
+                    await session.rollback()
+                    return AnalysisCommitOutcome(status="missing", result_id=None)
+
+                # 2. Version check.
+                if chat_row.activity_version != target_version:
+                    await session.rollback()
+                    return AnalysisCommitOutcome(status="stale", result_id=None)
+
+                # 3. Insert result (merge conversation_snapshot).
+                result_to_save = replace(
+                    analysis.result,
+                    conversation_snapshot=analysis.conversation_snapshot,
+                )
+                result_stmt = (
+                    pg_insert(WaitingForMeResultRow)
+                    .values(
+                        user_id=user_id,
+                        chat_id=chat_id,
+                        target_version=target_version,
+                        decision=result_to_save.decision.value,
+                        confidence=result_to_save.confidence,
+                        reason=result_to_save.reason,
+                        summary=result_to_save.summary,
+                        conversation_snapshot=result_to_save.conversation_snapshot,
+                    )
+                    .returning(WaitingForMeResultRow.id)
+                )
+                result_id = str(
+                    (await session.execute(result_stmt)).scalar_one()
+                )
+
+                # 4. Manage active state.
+                now = datetime.now(timezone.utc)
+                if result_to_save.decision == WaitingForMeDecision.WAITING_FOR_ME:
+                    # Read existing for waiting_since preservation.
+                    active_stmt = select(WaitingForMeActiveRow).where(
+                        WaitingForMeActiveRow.user_id == user_id,
+                        WaitingForMeActiveRow.chat_id == chat_id,
+                    )
+                    existing = (
+                        await session.execute(active_stmt)
+                    ).scalar_one_or_none()
+
+                    upsert_stmt = (
+                        pg_insert(WaitingForMeActiveRow)
+                        .values(
+                            user_id=user_id,
+                            chat_id=chat_id,
+                            target_version=target_version,
+                            result_id=result_id,
+                            waiting_since=(
+                                existing.waiting_since if existing else now
+                            ),
+                            notified_at=(
+                                existing.notified_at if existing else None
+                            ),
+                        )
+                        .on_conflict_do_update(
+                            index_elements=["user_id", "chat_id"],
+                            set_={
+                                "target_version": target_version,
+                                "result_id": result_id,
+                                "acknowledged_at": None,
+                                "updated_at": now,
+                            },
+                        )
+                    )
+                    await session.execute(upsert_stmt)
+                else:
+                    delete_stmt = sa_delete(WaitingForMeActiveRow).where(
+                        WaitingForMeActiveRow.user_id == user_id,
+                        WaitingForMeActiveRow.chat_id == chat_id,
+                    )
+                    await session.execute(delete_stmt)
+
+                # 5. Mark processed.
+                mark_stmt = (
+                    sa_update(ChatRow)
+                    .where(
+                        ChatRow.user_id == user_id,
+                        ChatRow.chat_id == chat_id,
+                        ChatRow.activity_version == target_version,
+                    )
+                    .values(
+                        last_processed_version=target_version,
+                        next_analysis_at=None,
+                        updated_at=now,
+                    )
+                )
+                await session.execute(mark_stmt)
+
+                await session.commit()
+                return AnalysisCommitOutcome(
+                    status="committed", result_id=result_id,
+                )
+            except Exception:
+                await session.rollback()
+                raise

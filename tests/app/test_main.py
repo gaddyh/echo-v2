@@ -82,15 +82,26 @@ def test_worker_constructed_but_not_started_when_disabled(monkeypatch):
     """Verify ChatAnalysisWorker can be constructed with a recording processor
     but the flag prevents it from being started in the lifespan."""
     monkeypatch.setenv("CHAT_ANALYSIS_ENABLED", "false")
-    from echo_v2.persistence.chat_repositories import InMemoryChatStateRepository
+    from echo_v2.persistence.chat_repositories import (
+        InMemoryAnalysisCommitRepository,
+        InMemoryChatStateRepository,
+        InMemoryWaitingForMeActiveRepository,
+        InMemoryWaitingForMeResultRepository,
+    )
     from echo_v2.services.chat_analysis_worker import (
         ChatAnalysisWorker,
         RecordingAnalysisProcessor,
     )
 
+    chat_state = InMemoryChatStateRepository()
     worker = ChatAnalysisWorker(
-        chat_state_repo=InMemoryChatStateRepository(),
+        chat_state_repo=chat_state,
         processor=RecordingAnalysisProcessor(),
+        commit_repo=InMemoryAnalysisCommitRepository(
+            chat_state,
+            InMemoryWaitingForMeResultRepository(),
+            InMemoryWaitingForMeActiveRepository(),
+        ),
         poll_interval_seconds=60.0,
     )
     assert worker is not None
@@ -102,15 +113,26 @@ def test_worker_run_once_does_nothing_when_nothing_due():
     doesn't drain or mark chats when there's nothing to process."""
     import asyncio
 
-    from echo_v2.persistence.chat_repositories import InMemoryChatStateRepository
+    from echo_v2.persistence.chat_repositories import (
+        InMemoryAnalysisCommitRepository,
+        InMemoryChatStateRepository,
+        InMemoryWaitingForMeActiveRepository,
+        InMemoryWaitingForMeResultRepository,
+    )
     from echo_v2.services.chat_analysis_worker import (
         ChatAnalysisWorker,
         RecordingAnalysisProcessor,
     )
 
+    chat_state = InMemoryChatStateRepository()
     worker = ChatAnalysisWorker(
-        chat_state_repo=InMemoryChatStateRepository(),
+        chat_state_repo=chat_state,
         processor=RecordingAnalysisProcessor(),
+        commit_repo=InMemoryAnalysisCommitRepository(
+            chat_state,
+            InMemoryWaitingForMeResultRepository(),
+            InMemoryWaitingForMeActiveRepository(),
+        ),
     )
     result = asyncio.run(worker.run_once())
     assert result is False
