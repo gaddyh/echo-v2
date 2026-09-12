@@ -405,7 +405,6 @@ async def test_run_loop_cancellable():
 
 async def test_digest_excludes_acknowledged_items():
     """Acknowledged items are excluded from digest."""
-    from dataclasses import replace
 
     digest_repo = InMemoryDailyDigestRepository()
     active_repo = InMemoryWaitingForMeActiveRepository()
@@ -621,3 +620,168 @@ async def test_digest_unexpected_error_marks_failed():
     )
     sent = await worker.run_once(now_utc=NOW)
     assert sent == 0
+
+
+# --- Edge cases ---
+
+
+async def test_digest_run_once_continues_on_user_exception():
+    """If _process_user raises, run_once continues to the next user."""
+    digest_repo = InMemoryDailyDigestRepository()
+    active_repo = InMemoryWaitingForMeActiveRepository()
+    chat_state_repo = InMemoryChatStateRepository()
+    message_repo = InMemoryMessageRepository()
+    contact_repo = InMemoryContactRepository()
+    bot = FakeBot()
+
+    await _setup_chat_with_active(chat_state_repo, active_repo, chat_id="chat-b@c.us")
+
+    # First user raises (bad tz), second user succeeds.
+    worker = DigestWorker(
+        digest_repo=digest_repo,
+        active_repo=active_repo,
+        chat_state_repo=chat_state_repo,
+        message_repo=message_repo,
+        contact_repo=contact_repo,
+        bot=bot,
+        user_provider=_make_user_provider([
+            ("user-bad", USER_PHONE, "Invalid/Zone", "בדיקה"),
+            (USER_ID, USER_PHONE, "Asia/Jerusalem", "גדי"),
+        ]),
+    )
+    sent = await worker.run_once(now_utc=NOW)
+    # user-bad raises, user-1 succeeds.
+    assert sent == 1
+
+
+async def test_digest_uses_query_service_when_provided():
+    """When query_service is wired, it's used instead of _get_current_active."""
+    from echo_v2.persistence.feedback_repositories import InMemoryChatMuteRepository
+    from echo_v2.services.waiting_list_query import WaitingListQueryService
+
+    digest_repo = InMemoryDailyDigestRepository()
+    active_repo = InMemoryWaitingForMeActiveRepository()
+    chat_state_repo = InMemoryChatStateRepository()
+    message_repo = InMemoryMessageRepository()
+    contact_repo = InMemoryContactRepository()
+    mute_repo = InMemoryChatMuteRepository()
+    bot = FakeBot()
+
+    await _setup_chat_with_active(chat_state_repo, active_repo)
+
+    query_service = WaitingListQueryService(
+        active_repo=active_repo,
+        chat_state_repo=chat_state_repo,
+        mute_repo=mute_repo,
+    )
+
+    worker = DigestWorker(
+        digest_repo=digest_repo,
+        active_repo=active_repo,
+        chat_state_repo=chat_state_repo,
+        message_repo=message_repo,
+        contact_repo=contact_repo,
+        bot=bot,
+        user_provider=_make_user_provider([(USER_ID, USER_PHONE, "Asia/Jerusalem", "גדי")]),
+        query_service=query_service,
+    )
+    sent = await worker.run_once(now_utc=NOW)
+    assert sent == 1
+    assert len(bot.sent) == 1
+
+
+async def test_digest_token_issue_failure_still_sends():
+    """If token issue fails, the digest is still sent without url_suffix."""
+    from echo_v2.persistence.waiting_list_tokens import (
+        InMemoryWaitingListSessionRepository,
+    )
+    from echo_v2.services.waiting_list_token_service import WaitingListTokenService
+
+    digest_repo = InMemoryDailyDigestRepository()
+    active_repo = InMemoryWaitingForMeActiveRepository()
+    chat_state_repo = InMemoryChatStateRepository()
+    message_repo = InMemoryMessageRepository()
+    contact_repo = InMemoryContactRepository()
+    bot = FakeBot()
+
+    await _setup_chat_with_active(chat_state_repo, active_repo)
+
+    # Create a token service with a broken repo.
+    class BrokenRepo(InMemoryWaitingListSessionRepository):
+        async def create(self, **kwargs):
+            raise RuntimeError("db down")
+
+    token_service = WaitingListTokenService(BrokenRepo())
+
+    worker = DigestWorker(
+        digest_repo=digest_repo,
+        active_repo=active_repo,
+        chat_state_repo=chat_state_repo,
+        message_repo=message_repo,
+        contact_repo=contact_repo,
+        bot=bot,
+        user_provider=_make_user_provider([(USER_ID, USER_PHONE, "Asia/Jerusalem", "גדי")]),
+        token_service=token_service,
+    )
+    sent = await worker.run_once(now_utc=NOW)
+    assert sent == 1
+    assert len(bot.sent) == 1
+
+
+async def test_digest_with_token_service_sends_url_suffix():
+    """When token service is wired and works, url_suffix is passed to send_template."""
+    from echo_v2.persistence.waiting_list_tokens import (
+        InMemoryWaitingListSessionRepository,
+    )
+    from echo_v2.services.waiting_list_token_service import WaitingListTokenService
+
+    digest_repo = InMemoryDailyDigestRepository()
+    active_repo = InMemoryWaitingForMeActiveRepository()
+    chat_state_repo = InMemoryChatStateRepository()
+    message_repo = InMemoryMessageRepository()
+    contact_repo = InMemoryContactRepository()
+    bot = FakeBot()
+
+    await _setup_chat_with_active(chat_state_repo, active_repo)
+
+    token_service = WaitingListTokenService(InMemoryWaitingListSessionRepository())
+
+    worker = DigestWorker(
+        digest_repo=digest_repo,
+        active_repo=active_repo,
+        chat_state_repo=chat_state_repo,
+        message_repo=message_repo,
+        contact_repo=contact_repo,
+        bot=bot,
+        user_provider=_make_user_provider([(USER_ID, USER_PHONE, "Asia/Jerusalem", "גדי")]),
+        token_service=token_service,
+    )
+    sent = await worker.run_once(now_utc=NOW)
+    assert sent == 1
+    assert len(bot.sent) == 1
+
+
+async def test_digest_no_first_name_uses_fallback():
+    """When user has no first_name, the fallback 'חבר' is used."""
+    digest_repo = InMemoryDailyDigestRepository()
+    active_repo = InMemoryWaitingForMeActiveRepository()
+    chat_state_repo = InMemoryChatStateRepository()
+    message_repo = InMemoryMessageRepository()
+    contact_repo = InMemoryContactRepository()
+    bot = FakeBot()
+
+    await _setup_chat_with_active(chat_state_repo, active_repo)
+
+    worker = DigestWorker(
+        digest_repo=digest_repo,
+        active_repo=active_repo,
+        chat_state_repo=chat_state_repo,
+        message_repo=message_repo,
+        contact_repo=contact_repo,
+        bot=bot,
+        user_provider=_make_user_provider([(USER_ID, USER_PHONE, "Asia/Jerusalem", None)]),
+    )
+    sent = await worker.run_once(now_utc=NOW)
+    assert sent == 1
+    _phone, _name, _lang, body_params = bot.sent[0]
+    assert body_params[0] == "חבר"

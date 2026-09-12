@@ -84,3 +84,21 @@ def test_db_settings_is_frozen():
     )
     with pytest.raises(FrozenInstanceError):
         settings.database_url = "other"  # type: ignore[misc]
+
+
+def test_load_db_settings_normalizes_psycopg2_url():
+    """postgresql:// is normalized to postgresql+psycopg://."""
+    settings = load_db_settings(
+        database_url="postgresql://u:p@localhost:5432/db",
+        credential_key=b"test-key",
+    )
+    assert settings.database_url == "postgresql+psycopg://u:p@localhost:5432/db"
+
+
+def test_load_db_settings_preserves_psycopg3_url():
+    """postgresql+psycopg:// is left as-is."""
+    settings = load_db_settings(
+        database_url="postgresql+psycopg://u:p@localhost:5432/db",
+        credential_key=b"test-key",
+    )
+    assert settings.database_url == "postgresql+psycopg://u:p@localhost:5432/db"

@@ -597,3 +597,59 @@ async def test_ws_url_converts_http_to_ws():
         assert url.startswith("ws://")
     finally:
         await client.aclose()
+
+
+# --- get_authorization_code edge cases ---
+
+
+async def test_get_authorization_code_success():
+    """get_authorization_code returns the code on success."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert "getAuthorizationCode" in request.url.path
+        return _ok({"status": "ok", "code": "123456"})
+
+    client = _client_with_handler(handler)
+    try:
+        code = await client.get_authorization_code("123", "api-tok", "972501234567")
+        assert code == "123456"
+    finally:
+        await client.aclose()
+
+
+async def test_get_authorization_code_missing_status_raises():
+    """get_authorization_code raises when response has no status."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return _ok({"code": "123456"})
+
+    client = _client_with_handler(handler)
+    try:
+        with pytest.raises(GreenApiError, match="instance may already be authorized"):
+            await client.get_authorization_code("123", "api-tok", "972501234567")
+    finally:
+        await client.aclose()
+
+
+async def test_get_authorization_code_missing_code_raises():
+    """get_authorization_code raises when response has status but no code."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return _ok({"status": "ok"})
+
+    client = _client_with_handler(handler)
+    try:
+        with pytest.raises(GreenApiError, match="missing code"):
+            await client.get_authorization_code("123", "api-tok", "972501234567")
+    finally:
+        await client.aclose()
+
+
+async def test_get_authorization_code_non_dict_response_raises():
+    """get_authorization_code raises when response is not a dict."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return _ok(["not", "a", "dict"])
+
+    client = _client_with_handler(handler)
+    try:
+        with pytest.raises(GreenApiError, match="instance may already be authorized"):
+            await client.get_authorization_code("123", "api-tok", "972501234567")
+    finally:
+        await client.aclose()

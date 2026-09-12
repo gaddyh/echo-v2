@@ -396,3 +396,296 @@ async def test_snooze_dst_boundary():
     # 2026-10-25 08:00 local (UTC+2) = 06:00 UTC.
     expected = datetime(2026, 10, 25, 6, 0, 0, tzinfo=timezone.utc)
     assert active.snoozed_until == expected
+
+
+# --- Edge cases ---
+
+
+async def test_snooze_exactly_now_is_invalid():
+    """snooze_until == now is not strictly future → INVALID."""
+    service, active_repo, _, _ = _make_service()
+    active_id = await _setup_active(active_repo)
+    outcome = await service.snooze(
+        user_id=USER_ID,
+        active_id=active_id,
+        target_version=1,
+        provider_message_id="web:action-1",
+        snooze_until=NOW,
+        now_utc=NOW,
+    )
+    assert outcome == HandlingOutcome.INVALID
+
+
+async def test_snooze_exactly_7_days_is_valid():
+    """snooze_until exactly 7 days ahead is the boundary — valid."""
+    service, active_repo, _, _ = _make_service()
+    active_id = await _setup_active(active_repo)
+    snooze_until = NOW + timedelta(days=7)
+    outcome = await service.snooze(
+        user_id=USER_ID,
+        active_id=active_id,
+        target_version=1,
+        provider_message_id="web:action-1",
+        snooze_until=snooze_until,
+        now_utc=NOW,
+    )
+    assert outcome == HandlingOutcome.APPLIED
+
+
+async def test_snooze_7_days_plus_1_second_is_invalid():
+    """snooze_until 7 days + 1 second exceeds the max → INVALID."""
+    service, active_repo, _, _ = _make_service()
+    active_id = await _setup_active(active_repo)
+    snooze_until = NOW + timedelta(days=7, seconds=1)
+    outcome = await service.snooze(
+        user_id=USER_ID,
+        active_id=active_id,
+        target_version=1,
+        provider_message_id="web:action-1",
+        snooze_until=snooze_until,
+        now_utc=NOW,
+    )
+    assert outcome == HandlingOutcome.INVALID
+
+
+async def test_snooze_preserves_session_id_in_payload():
+    """Snooze with session_id records it in the action payload."""
+    service, active_repo, action_repo, _ = _make_service()
+    active_id = await _setup_active(active_repo)
+    await service.snooze(
+        user_id=USER_ID,
+        active_id=active_id,
+        target_version=1,
+        provider_message_id="web:action-1",
+        snooze_preset="tomorrow",
+        now_utc=NOW,
+        session_id="my-session",
+    )
+    assert len(action_repo._rows) == 1
+    payload = action_repo._rows[0].action_payload
+    assert payload["waiting_list_session_id"] == "my-session"
+    assert payload["source"] == "waiting_list_web"
+    assert payload["snooze_preset"] == "tomorrow"
+
+
+async def test_snooze_without_session_id_omits_web_metadata():
+    """Snooze without session_id (WhatsApp path) does not add web metadata."""
+    service, active_repo, action_repo, _ = _make_service()
+    active_id = await _setup_active(active_repo)
+    await service.snooze(
+        user_id=USER_ID,
+        active_id=active_id,
+        target_version=1,
+        provider_message_id="wa:action-1",
+        snooze_preset="tomorrow",
+        now_utc=NOW,
+    )
+    assert len(action_repo._rows) == 1
+    payload = action_repo._rows[0].action_payload
+    assert "waiting_list_session_id" not in payload
+    assert "source" not in payload
+
+
+async def test_snooze_preset_afternoon():
+    service, active_repo, _, _ = _make_service()
+    active_id = await _setup_active(active_repo)
+    outcome = await service.snooze(
+        user_id=USER_ID,
+        active_id=active_id,
+        target_version=1,
+        provider_message_id="web:action-1",
+        tz_name="Asia/Jerusalem",
+        snooze_preset="afternoon",
+        now_utc=NOW,
+    )
+    assert outcome == HandlingOutcome.APPLIED
+    active = await active_repo.get(user_id=USER_ID, chat_id=CHAT_ID)
+    assert active is not None
+    assert active.snoozed_until is not None
+
+
+async def test_snooze_preset_evening():
+    service, active_repo, _, _ = _make_service()
+    active_id = await _setup_active(active_repo)
+    outcome = await service.snooze(
+        user_id=USER_ID,
+        active_id=active_id,
+        target_version=1,
+        provider_message_id="web:action-1",
+        tz_name="Asia/Jerusalem",
+        snooze_preset="evening",
+        now_utc=NOW,
+    )
+    assert outcome == HandlingOutcome.APPLIED
+    active = await active_repo.get(user_id=USER_ID, chat_id=CHAT_ID)
+    assert active is not None
+    assert active.snoozed_until is not None
+
+
+async def test_done_then_snooze_same_action_id_returns_duplicate():
+    """After done, a snooze with the same action_id returns DUPLICATE."""
+    service, active_repo, _, _ = _make_service()
+    active_id = await _setup_active(active_repo)
+
+    outcome1 = await service.done(
+        user_id=USER_ID,
+        active_id=active_id,
+        target_version=1,
+        provider_message_id="web:same-id",
+        session_id=SESSION_ID,
+    )
+    assert outcome1 == HandlingOutcome.APPLIED
+
+    outcome2 = await service.snooze(
+        user_id=USER_ID,
+        active_id=active_id,
+        target_version=1,
+        provider_message_id="web:same-id",
+        now_utc=NOW,
+    )
+    assert outcome2 == HandlingOutcome.DUPLICATE
+
+
+async def test_dismiss_unknown_reason_no_feedback():
+    """An unknown reason still resolves the item but records no feedback."""
+    service, active_repo, _, feedback_repo = _make_service()
+    active_id = await _setup_active(active_repo)
+    outcome = await service.dismiss_with_reason(
+        user_id=USER_ID,
+        active_id=active_id,
+        target_version=1,
+        provider_message_id="web:action-1",
+        reason="some_other_reason",
+        session_id=SESSION_ID,
+    )
+    assert outcome == HandlingOutcome.APPLIED
+    assert len(feedback_repo._rows) == 0
+
+
+async def test_dismiss_stale_returns_stale():
+    service, active_repo, _, _ = _make_service()
+    active_id = await _setup_active(active_repo, target_version=2)
+    outcome = await service.dismiss_with_reason(
+        user_id=USER_ID,
+        active_id=active_id,
+        target_version=1,
+        provider_message_id="web:action-1",
+        reason="already_handled",
+        session_id=SESSION_ID,
+    )
+    assert outcome == HandlingOutcome.STALE
+
+
+async def test_dismiss_not_found_returns_not_found():
+    service, _, _, _ = _make_service()
+    outcome = await service.dismiss_with_reason(
+        user_id=USER_ID,
+        active_id="nonexistent",
+        target_version=1,
+        provider_message_id="web:action-1",
+        reason="already_handled",
+        session_id=SESSION_ID,
+    )
+    assert outcome == HandlingOutcome.NOT_FOUND
+
+
+async def test_snooze_stale_returns_stale():
+    service, active_repo, _, _ = _make_service()
+    active_id = await _setup_active(active_repo, target_version=2)
+    outcome = await service.snooze(
+        user_id=USER_ID,
+        active_id=active_id,
+        target_version=1,
+        provider_message_id="web:action-1",
+        now_utc=NOW,
+    )
+    assert outcome == HandlingOutcome.STALE
+
+
+async def test_snooze_not_found_returns_stale():
+    """Snooze on non-existent item returns STALE (apply_if_version can't
+    distinguish not-found from stale — both return False)."""
+    service, _, _, _ = _make_service()
+    outcome = await service.snooze(
+        user_id=USER_ID,
+        active_id="nonexistent",
+        target_version=1,
+        provider_message_id="web:action-1",
+        now_utc=NOW,
+    )
+    # The snooze method records the action first, then apply_if_version
+    # returns False. The code returns STALE for both cases.
+    assert outcome in (HandlingOutcome.STALE, HandlingOutcome.NOT_FOUND)
+
+
+async def test_snooze_duplicate_returns_duplicate():
+    service, active_repo, _, _ = _make_service()
+    active_id = await _setup_active(active_repo)
+    await service.snooze(
+        user_id=USER_ID,
+        active_id=active_id,
+        target_version=1,
+        provider_message_id="web:action-1",
+        snooze_preset="tomorrow",
+        now_utc=NOW,
+    )
+    outcome = await service.snooze(
+        user_id=USER_ID,
+        active_id=active_id,
+        target_version=1,
+        provider_message_id="web:action-1",
+        snooze_preset="tomorrow",
+        now_utc=NOW,
+    )
+    assert outcome == HandlingOutcome.DUPLICATE
+
+
+async def test_done_cross_user_returns_stale():
+    """done with wrong user_id returns STALE (not NOT_FOUND).
+
+    The delete_if_version checks user_id → 0 rows deleted. Then
+    get_by_id finds the row (it belongs to user-a), so the code
+    returns STALE. This is acceptable — _build_item uses the
+    session's user_id to query chat_state, so no data leaks.
+    """
+    service, active_repo, _, _ = _make_service()
+    active_id = await _setup_active(active_repo, user_id="user-a")
+    outcome = await service.done(
+        user_id="user-b",
+        active_id=active_id,
+        target_version=1,
+        provider_message_id="web:action-1",
+        session_id=SESSION_ID,
+    )
+    assert outcome == HandlingOutcome.STALE
+    # Item still exists for user-a.
+    active = await active_repo.get(user_id="user-a", chat_id=CHAT_ID)
+    assert active is not None
+
+
+async def test_snooze_on_already_snoozed_item():
+    """Snoozing an already-snoozed item updates snoozed_until."""
+    service, active_repo, _, _ = _make_service()
+    active_id = await _setup_active(active_repo)
+    # First snooze.
+    await service.snooze(
+        user_id=USER_ID,
+        active_id=active_id,
+        target_version=1,
+        provider_message_id="web:action-1",
+        snooze_preset="morning",
+        now_utc=NOW,
+    )
+    # Second snooze with different action_id.
+    outcome = await service.snooze(
+        user_id=USER_ID,
+        active_id=active_id,
+        target_version=1,
+        provider_message_id="web:action-2",
+        snooze_preset="evening",
+        now_utc=NOW,
+    )
+    assert outcome == HandlingOutcome.APPLIED
+    active = await active_repo.get(user_id=USER_ID, chat_id=CHAT_ID)
+    assert active is not None
+    assert active.snoozed_until is not None

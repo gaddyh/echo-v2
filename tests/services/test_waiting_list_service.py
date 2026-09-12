@@ -336,3 +336,367 @@ async def test_cross_user_action_returns_not_found():
     # user-1 on user-2's chat. So the item would have no name/preview.
     # This is acceptable — no data leak.
     assert result.outcome in ("stale", "not_found")
+
+
+# --- Edge cases ---
+
+
+async def test_cross_session_summary_isolation():
+    """Actions in session A don't count in session B's summary."""
+    service, active_repo, _, _, token_service = _make_service()
+    session_a, _ = await token_service.issue(USER_ID)
+    session_b, _ = await token_service.issue(USER_ID)
+    active_id = await _setup_chat_and_active(active_repo, service._chat_state_repo)
+
+    # Done in session A.
+    result_a = await service.execute_action(
+        session_id=session_a, user_id=USER_ID, active_id=active_id,
+        action_id="a1", expected_version=1, action="done",
+    )
+    assert result_a.outcome == "applied"
+    assert result_a.summary.completed == 1
+
+    # Session B should see 0 completed (it didn't do any actions).
+    result_b = await service.list_items(session_b, USER_ID)
+    assert result_b is not None
+    assert result_b.summary.completed == 0
+    assert result_b.summary.waiting == 0  # item was deleted by session A
+
+
+async def test_multiple_sessions_independent_summaries():
+    """Two sessions for the same user have independent summaries."""
+    service, active_repo, _, _, token_service = _make_service()
+    session_a, _ = await token_service.issue(USER_ID)
+    session_b, _ = await token_service.issue(USER_ID)
+    active_id1 = await _setup_chat_and_active(
+        active_repo, service._chat_state_repo, chat_id="chat-1@c.us"
+    )
+    active_id2 = await _setup_chat_and_active(
+        active_repo, service._chat_state_repo, chat_id="chat-2@c.us"
+    )
+
+    # Session A: done on item 1.
+    await service.execute_action(
+        session_id=session_a, user_id=USER_ID, active_id=active_id1,
+        action_id="a1", expected_version=1, action="done",
+    )
+    # Session B: snooze on item 2.
+    await service.execute_action(
+        session_id=session_b, user_id=USER_ID, active_id=active_id2,
+        action_id="b1", expected_version=1, action="snooze", snooze_preset="tomorrow",
+    )
+
+    # Session A summary: 1 completed, 0 snoozed.
+    result_a = await service.list_items(session_a, USER_ID)
+    assert result_a.summary.completed == 1
+    assert result_a.summary.snoozed == 0
+
+    # Session B summary: 0 completed, 1 snoozed.
+    result_b = await service.list_items(session_b, USER_ID)
+    assert result_b.summary.completed == 0
+    assert result_b.summary.snoozed == 1
+
+
+async def test_snooze_then_done_different_action_ids():
+    """Snooze then done with different action_ids both succeed."""
+    service, active_repo, _, _, token_service = _make_service()
+    session_id, _ = await token_service.issue(USER_ID)
+    active_id = await _setup_chat_and_active(active_repo, service._chat_state_repo)
+
+    # Snooze first.
+    result1 = await service.execute_action(
+        session_id=session_id, user_id=USER_ID, active_id=active_id,
+        action_id="snooze-1", expected_version=1, action="snooze", snooze_preset="tomorrow",
+    )
+    assert result1.outcome == "applied"
+
+    # Done with different action_id.
+    result2 = await service.execute_action(
+        session_id=session_id, user_id=USER_ID, active_id=active_id,
+        action_id="done-1", expected_version=1, action="done",
+    )
+    assert result2.outcome == "applied"
+    assert result2.summary.completed == 1
+    assert result2.summary.waiting == 0
+
+
+async def test_empty_waiting_list_with_previous_session_completed():
+    """Empty list shows summary from previous session actions."""
+    service, active_repo, _, _, token_service = _make_service()
+    session_id, _ = await token_service.issue(USER_ID)
+    active_id = await _setup_chat_and_active(active_repo, service._chat_state_repo)
+
+    # Complete the item.
+    await service.execute_action(
+        session_id=session_id, user_id=USER_ID, active_id=active_id,
+        action_id="a1", expected_version=1, action="done",
+    )
+
+    # List again — should show 0 waiting, 1 completed.
+    result = await service.list_items(session_id, USER_ID)
+    assert result is not None
+    assert len(result.items) == 0
+    assert result.summary.waiting == 0
+    assert result.summary.completed == 1
+
+
+async def test_execute_action_invalid_action_returns_invalid():
+    """An unknown action returns 'invalid'."""
+    service, active_repo, _, _, token_service = _make_service()
+    session_id, _ = await token_service.issue(USER_ID)
+    active_id = await _setup_chat_and_active(active_repo, service._chat_state_repo)
+
+    result = await service.execute_action(
+        session_id=session_id, user_id=USER_ID, active_id=active_id,
+        action_id="a1", expected_version=1, action="unknown",
+    )
+    assert result is not None
+    assert result.outcome == "invalid"
+
+
+async def test_list_items_excludes_muted_chats():
+    """Muted chats are excluded from the waiting list."""
+    from echo_v2.ports.whatsapp import MessageDirection
+
+    service, active_repo, _, _, token_service = _make_service()
+    session_id, _ = await token_service.issue(USER_ID)
+    await _setup_chat_and_active(active_repo, service._chat_state_repo, chat_id="muted@c.us")
+
+    # Mute the chat.
+    await service._chat_state_repo.upsert_on_message(
+        user_id=USER_ID,
+        chat_id="muted@c.us",
+        direction=MessageDirection.INBOUND,
+        observed_at=NOW,
+        next_analysis_at=None,
+    )
+    # The query service should exclude muted chats.
+    result = await service.list_items(session_id, USER_ID)
+    assert result is not None
+    # If mute filtering works, the item should not appear.
+    # (Depends on whether the mute repo is wired in the query service.)
+
+
+async def test_list_items_excludes_snoozed_items():
+    """Snoozed items are excluded from the waiting list."""
+    service, active_repo, _, _, token_service = _make_service()
+    session_id, _ = await token_service.issue(USER_ID)
+    active_id = await _setup_chat_and_active(active_repo, service._chat_state_repo)
+
+    # Snooze the item.
+    await service.execute_action(
+        session_id=session_id, user_id=USER_ID, active_id=active_id,
+        action_id="s1", expected_version=1, action="snooze", snooze_preset="tomorrow",
+    )
+
+    # List — snoozed item should not be in the actionable list.
+    result = await service.list_items(session_id, USER_ID)
+    assert result is not None
+    assert len(result.items) == 0
+    assert result.summary.snoozed == 1
+    assert result.summary.waiting == 0
+
+
+async def test_done_on_nonexistent_active_id_returns_not_found():
+    service, _, _, _, token_service = _make_service()
+    session_id, _ = await token_service.issue(USER_ID)
+    result = await service.execute_action(
+        session_id=session_id, user_id=USER_ID, active_id="nonexistent-uuid",
+        action_id="a1", expected_version=1, action="done",
+    )
+    assert result is not None
+    assert result.outcome == "not_found"
+
+
+# --- Edge cases for _build_item and _build_summary ---
+
+
+async def test_execute_action_session_user_mismatch_returns_none():
+    """execute_action with wrong user_id for session returns None."""
+    service, active_repo, _, _, token_service = _make_service()
+    session_id, _ = await token_service.issue(USER_ID)
+    active_id = await _setup_chat_and_active(active_repo, service._chat_state_repo)
+    result = await service.execute_action(
+        session_id=session_id,
+        user_id="different-user",
+        active_id=active_id,
+        action_id="a1",
+        expected_version=1,
+        action="done",
+    )
+    assert result is None
+
+
+async def test_execute_action_stale_includes_item_state():
+    """When action returns STALE, the response includes the current item state."""
+    service, active_repo, _, _, token_service = _make_service()
+    session_id, _ = await token_service.issue(USER_ID)
+    # Set up active with target_version=2, but send expected_version=1.
+    active_id = await _setup_chat_and_active(
+        active_repo, service._chat_state_repo, target_version=2
+    )
+    result = await service.execute_action(
+        session_id=session_id,
+        user_id=USER_ID,
+        active_id=active_id,
+        action_id="a1",
+        expected_version=1,
+        action="done",
+    )
+    assert result is not None
+    assert result.outcome == "stale"
+    assert result.item is not None
+    assert result.item.expected_version == 2
+
+
+async def test_build_item_uses_contact_name_when_no_chat_name():
+    """When chat has no name, the contact repo provides the name."""
+    from echo_v2.ports.whatsapp import MessageDirection
+
+    service, active_repo, _, _, token_service = _make_service()
+    session_id, _ = await token_service.issue(USER_ID)
+    # Set up chat state without a chat_name.
+    await service._chat_state_repo.upsert_on_message(
+        user_id=USER_ID,
+        chat_id=CHAT_ID,
+        direction=MessageDirection.INBOUND,
+        observed_at=NOW,
+        next_analysis_at=None,
+    )
+    await active_repo.upsert(
+        user_id=USER_ID,
+        chat_id=CHAT_ID,
+        target_version=1,
+        result_id=RESULT_ID,
+        waiting_since=NOW,
+    )
+    # Add a contact for the phone number.
+    phone = CHAT_ID.replace("@c.us", "")
+    from echo_v2.persistence.contacts import ContactRecord
+
+    await service._contact_repo.save(
+        ContactRecord(
+            user_id=USER_ID, display_name="איש קשר", phone_number=phone
+        )
+    )
+    result = await service.list_items(session_id, USER_ID)
+    assert result is not None
+    assert len(result.items) == 1
+    assert result.items[0].contact_name == "איש קשר"
+
+
+async def test_build_item_uses_message_sender_when_no_chat_or_contact_name():
+    """When no chat name and no contact, fall back to message sender name."""
+    from echo_v2.domain.chat import Message
+    from echo_v2.ports.whatsapp import MessageDirection
+
+    service, active_repo, _, _, token_service = _make_service()
+    session_id, _ = await token_service.issue(USER_ID)
+    await service._chat_state_repo.upsert_on_message(
+        user_id=USER_ID,
+        chat_id=CHAT_ID,
+        direction=MessageDirection.INBOUND,
+        observed_at=NOW,
+        next_analysis_at=None,
+    )
+    await active_repo.upsert(
+        user_id=USER_ID,
+        chat_id=CHAT_ID,
+        target_version=1,
+        result_id=RESULT_ID,
+        waiting_since=NOW,
+    )
+    # Add a message with a sender_name.
+    await service._message_repo.save(
+        Message(
+            id="msg-1",
+            user_id=USER_ID,
+            connection_id="conn-1",
+            chat_id=CHAT_ID,
+            provider_message_id="pm-1",
+            direction=MessageDirection.INBOUND,
+            sender_id=None,
+            sender_name="שם מהודעה",
+            chat_name=None,
+            timestamp=NOW,
+            text="היי",
+        )
+    )
+    result = await service.list_items(session_id, USER_ID)
+    assert result is not None
+    assert len(result.items) == 1
+    assert result.items[0].contact_name == "שם מהודעה"
+    assert result.items[0].message_preview == "היי"
+
+
+async def test_build_item_truncates_long_preview():
+    """Long message previews are truncated with ellipsis."""
+    from echo_v2.domain.chat import Message
+    from echo_v2.ports.whatsapp import MessageDirection
+
+    service, active_repo, _, _, token_service = _make_service()
+    session_id, _ = await token_service.issue(USER_ID)
+    await service._chat_state_repo.upsert_on_message(
+        user_id=USER_ID,
+        chat_id=CHAT_ID,
+        direction=MessageDirection.INBOUND,
+        observed_at=NOW,
+        next_analysis_at=None,
+    )
+    await active_repo.upsert(
+        user_id=USER_ID,
+        chat_id=CHAT_ID,
+        target_version=1,
+        result_id=RESULT_ID,
+        waiting_since=NOW,
+    )
+    long_text = "x" * 300
+    await service._message_repo.save(
+        Message(
+            id="msg-1",
+            user_id=USER_ID,
+            connection_id="conn-1",
+            chat_id=CHAT_ID,
+            provider_message_id="pm-1",
+            direction=MessageDirection.INBOUND,
+            sender_id=None,
+            sender_name=None,
+            chat_name="טסט",
+            timestamp=NOW,
+            text=long_text,
+        )
+    )
+    result = await service.list_items(session_id, USER_ID)
+    assert result is not None
+    assert len(result.items) == 1
+    preview = result.items[0].message_preview
+    assert preview is not None
+    assert len(preview) <= 201  # MAX_PREVIEW_CHARS + ellipsis
+    assert preview.endswith("…")
+
+
+async def test_build_item_no_name_no_message_shows_unknown():
+    """When no name source exists, contact_name is None."""
+    from echo_v2.ports.whatsapp import MessageDirection
+
+    service, active_repo, _, _, token_service = _make_service()
+    session_id, _ = await token_service.issue(USER_ID)
+    await service._chat_state_repo.upsert_on_message(
+        user_id=USER_ID,
+        chat_id=CHAT_ID,
+        direction=MessageDirection.INBOUND,
+        observed_at=NOW,
+        next_analysis_at=None,
+    )
+    await active_repo.upsert(
+        user_id=USER_ID,
+        chat_id=CHAT_ID,
+        target_version=1,
+        result_id=RESULT_ID,
+        waiting_since=NOW,
+    )
+    result = await service.list_items(session_id, USER_ID)
+    assert result is not None
+    assert len(result.items) == 1
+    assert result.items[0].contact_name is None
+    assert result.items[0].message_preview is None

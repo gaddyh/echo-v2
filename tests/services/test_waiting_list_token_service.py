@@ -117,3 +117,126 @@ async def test_cleanup_expired_returns_count():
     now = datetime.now(timezone.utc) + timedelta(hours=1)
     deleted = await service.cleanup_expired(now=now, batch_size=100)
     assert deleted == 2
+
+
+# --- Edge cases ---
+
+
+async def test_resolve_after_revoke_returns_none():
+    """A revoked token cannot be resolved."""
+    service = _make_service()
+    _session_id, raw_token = await service.issue(USER_ID)
+    await service.revoke(_session_id)
+    resolved = await service.resolve(raw_token)
+    assert resolved is None
+
+
+async def test_resolve_session_after_revoke_returns_none():
+    """A revoked session cannot be resolved via cookie."""
+    service = _make_service()
+    session_id, _ = await service.issue(USER_ID)
+    await service.revoke(session_id)
+    resolved = await service.resolve_session(session_id)
+    assert resolved is None
+
+
+async def test_resolve_empty_token_returns_none():
+    """An empty string token returns None."""
+    service = _make_service()
+    resolved = await service.resolve("")
+    assert resolved is None
+
+
+async def test_resolve_wrong_token_format_returns_none():
+    """A token with wrong format returns None."""
+    service = _make_service()
+    resolved = await service.resolve("not-a-valid-base64url-token!")
+    assert resolved is None
+
+
+async def test_issue_multiple_tokens_for_same_user():
+    """Multiple tokens for the same user are all valid."""
+    service = _make_service()
+    sid1, token1 = await service.issue(USER_ID)
+    sid2, token2 = await service.issue(USER_ID)
+    assert sid1 != sid2
+    assert token1 != token2
+    # Both resolve.
+    r1 = await service.resolve(token1)
+    r2 = await service.resolve(token2)
+    assert r1 is not None and r2 is not None
+    assert r1.session_id == sid1
+    assert r2.session_id == sid2
+
+
+async def test_resolve_token_for_different_users():
+    """Tokens for different users resolve to their respective users."""
+    service = _make_service()
+    _, token_a = await service.issue("user-a")
+    _, token_b = await service.issue("user-b")
+    ra = await service.resolve(token_a)
+    rb = await service.resolve(token_b)
+    assert ra is not None and rb is not None
+    assert ra.user_id == "user-a"
+    assert rb.user_id == "user-b"
+
+
+async def test_touch_nonexistent_session_is_noop():
+    """Touching a non-existent session does not raise."""
+    service = _make_service()
+    await service.touch("nonexistent-session-id")
+
+
+async def test_revoke_nonexistent_session_is_noop():
+    """Revoking a non-existent session does not raise."""
+    service = _make_service()
+    await service.revoke("nonexistent-session-id")
+
+
+async def test_resolve_session_with_none_id():
+    """resolve_session with empty string returns None."""
+    service = _make_service()
+    resolved = await service.resolve_session("")
+    assert resolved is None
+
+
+async def test_cleanup_expired_with_no_sessions():
+    """Cleanup with no sessions returns 0."""
+    service = _make_service()
+    now = datetime.now(timezone.utc)
+    deleted = await service.cleanup_expired(now=now, batch_size=100)
+    assert deleted == 0
+
+
+async def test_cleanup_expired_preserves_active_sessions():
+    """Cleanup only deletes expired sessions, not active ones."""
+    service = _make_service(ttl_hours=48)
+    await service.issue(USER_ID)
+    now = datetime.now(timezone.utc)
+    deleted = await service.cleanup_expired(now=now, batch_size=100)
+    assert deleted == 0
+
+
+async def test_cleanup_expired_with_batch_size():
+    """Cleanup respects batch_size."""
+    service = _make_service(ttl_hours=0)
+    for _ in range(5):
+        await service.issue(USER_ID)
+    now = datetime.now(timezone.utc) + timedelta(hours=1)
+    deleted = await service.cleanup_expired(now=now, batch_size=3)
+    assert deleted == 3
+    # Second call gets the rest.
+    deleted2 = await service.cleanup_expired(now=now, batch_size=3)
+    assert deleted2 == 2
+
+
+async def test_mark_opened_is_idempotent():
+    """Calling resolve twice marks opened only once (idempotent)."""
+    service = _make_service()
+    session_id, raw_token = await service.issue(USER_ID)
+    await service.resolve(raw_token)
+    first_opened = service._repo._sessions[session_id]["opened_at"]  # type: ignore[index]
+    # Resolve again (token still valid).
+    await service.resolve(raw_token)
+    second_opened = service._repo._sessions[session_id]["opened_at"]  # type: ignore[index]
+    assert first_opened == second_opened
