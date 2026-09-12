@@ -41,6 +41,9 @@ def _make_service(
     active_repo: InMemoryWaitingForMeActiveRepository | None = None,
     action_repo: InMemoryWaitingForMeActionRepository | None = None,
     feedback_repo: InMemoryWaitingForMeFeedbackRepository | None = None,
+    scheduling_service=None,
+    user_phone_lookup=None,
+    chat_name_lookup=None,
 ) -> tuple[
     WaitingForMeActionService,
     InMemoryWaitingForMeActiveRepository,
@@ -56,6 +59,9 @@ def _make_service(
         mute_repo=InMemoryChatMuteRepository(),
         feedback_repo=feedback_repo,
         result_repo=InMemoryWaitingForMeResultRepository(),
+        scheduling_service=scheduling_service,
+        user_phone_lookup=user_phone_lookup,
+        chat_name_lookup=chat_name_lookup,
     )
     return service, active_repo, action_repo, feedback_repo
 
@@ -346,7 +352,8 @@ async def test_snooze_invalid_preset_returns_invalid():
     assert outcome == HandlingOutcome.INVALID
 
 
-async def test_snooze_default_uses_next_digest_hour():
+async def test_snooze_default_uses_one_hour():
+    """Default snooze (no preset, no snooze_until) is 1 hour from now."""
     service, active_repo, _, _ = _make_service()
     active_id = await _setup_active(active_repo)
     outcome = await service.snooze(
@@ -360,7 +367,64 @@ async def test_snooze_default_uses_next_digest_hour():
     assert outcome == HandlingOutcome.APPLIED
     active = await active_repo.get(user_id=USER_ID, chat_id=CHAT_ID)
     assert active is not None
-    assert active.snoozed_until is not None
+    assert active.snoozed_until == NOW + timedelta(hours=1)
+
+
+async def test_snooze_preset_10m():
+    """Snooze preset '10m' is 10 minutes from now."""
+    service, active_repo, _, _ = _make_service()
+    active_id = await _setup_active(active_repo)
+    outcome = await service.snooze(
+        user_id=USER_ID,
+        active_id=active_id,
+        target_version=1,
+        provider_message_id="web:action-1",
+        tz_name="Asia/Jerusalem",
+        snooze_preset="10m",
+        now_utc=NOW,
+    )
+    assert outcome == HandlingOutcome.APPLIED
+    active = await active_repo.get(user_id=USER_ID, chat_id=CHAT_ID)
+    assert active is not None
+    assert active.snoozed_until == NOW + timedelta(minutes=10)
+
+
+async def test_snooze_preset_1h():
+    """Snooze preset '1h' is 1 hour from now."""
+    service, active_repo, _, _ = _make_service()
+    active_id = await _setup_active(active_repo)
+    outcome = await service.snooze(
+        user_id=USER_ID,
+        active_id=active_id,
+        target_version=1,
+        provider_message_id="web:action-1",
+        tz_name="Asia/Jerusalem",
+        snooze_preset="1h",
+        now_utc=NOW,
+    )
+    assert outcome == HandlingOutcome.APPLIED
+    active = await active_repo.get(user_id=USER_ID, chat_id=CHAT_ID)
+    assert active is not None
+    assert active.snoozed_until == NOW + timedelta(hours=1)
+
+
+async def test_snooze_preset_3h():
+    """Snooze preset '3h' is 3 hours from now."""
+    service, active_repo, _, _ = _make_service()
+    active_id = await _setup_active(active_repo)
+    outcome = await service.snooze(
+        user_id=USER_ID,
+        active_id=active_id,
+        target_version=1,
+        provider_message_id="web:action-1",
+        tz_name="Asia/Jerusalem",
+        snooze_preset="3h",
+        now_utc=NOW,
+    )
+    assert outcome == HandlingOutcome.APPLIED
+    active = await active_repo.get(user_id=USER_ID, chat_id=CHAT_ID)
+    assert active is not None
+    assert active.snoozed_until == NOW + timedelta(hours=3)
 
 
 async def test_snooze_dst_boundary():
@@ -689,3 +753,193 @@ async def test_snooze_on_already_snoozed_item():
     active = await active_repo.get(user_id=USER_ID, chat_id=CHAT_ID)
     assert active is not None
     assert active.snoozed_until is not None
+
+
+# --- snooze reminder scheduling -------------------------------------------
+
+
+class FakeSchedulingService:
+    """Records create() calls; used to verify snooze schedules a reminder."""
+
+    def __init__(self) -> None:
+        self.created: list[dict] = []
+
+    async def create(
+        self,
+        *,
+        user_id: str,
+        type,
+        execute_at_utc: datetime,
+        timezone_name: str,
+        payload: dict,
+    ):
+        self.created.append(
+            {
+                "user_id": user_id,
+                "type": type,
+                "execute_at_utc": execute_at_utc,
+                "timezone_name": timezone_name,
+                "payload": payload,
+            }
+        )
+        from echo_v2.domain.scheduling import ScheduledAction, ScheduledActionStatus
+        return ScheduledAction(
+            id="sched-1",
+            user_id=user_id,
+            type=type,
+            execute_at_utc=execute_at_utc,
+            timezone=timezone_name,
+            status=ScheduledActionStatus.PENDING,
+            payload=payload,
+        )
+
+
+async def _phone_lookup(_user_id: str) -> str | None:
+    return "972500000001"
+
+
+async def _chat_name_lookup(_user_id: str, _chat_id: str) -> str | None:
+    return "דנה לוי"
+
+
+async def test_snooze_schedules_reminder():
+    """Snoozing with a scheduling_service creates a SEND_BOT_MESSAGE."""
+    sched = FakeSchedulingService()
+    service, active_repo, _, _ = _make_service(
+        scheduling_service=sched,
+        user_phone_lookup=_phone_lookup,
+        chat_name_lookup=_chat_name_lookup,
+    )
+    active_id = await _setup_active(active_repo)
+    outcome = await service.snooze(
+        user_id=USER_ID,
+        active_id=active_id,
+        target_version=1,
+        provider_message_id="web:action-1",
+        snooze_preset="1h",
+        now_utc=NOW,
+    )
+    assert outcome == HandlingOutcome.APPLIED
+    assert len(sched.created) == 1
+    created = sched.created[0]
+    from echo_v2.domain.scheduling import ScheduledActionType
+    assert created["type"] is ScheduledActionType.SEND_BOT_MESSAGE
+    assert created["execute_at_utc"] == NOW + timedelta(hours=1)
+    assert created["payload"]["chat_id"] == "972500000001"
+    assert "תזכורת" in created["payload"]["message"]
+    assert "דנה לוי" in created["payload"]["message"]
+    assert len(created["payload"]["buttons"]) == 3
+    titles = [b["title"] for b in created["payload"]["buttons"]]
+    assert "טופל" in titles
+    assert "נודניק עוד שעה" in titles
+    assert "לא להיום" in titles
+
+
+async def test_snooze_without_scheduling_service_does_not_schedule():
+    """Without a scheduling_service, snooze still works but no reminder."""
+    service, active_repo, _, _ = _make_service()
+    active_id = await _setup_active(active_repo)
+    outcome = await service.snooze(
+        user_id=USER_ID,
+        active_id=active_id,
+        target_version=1,
+        provider_message_id="web:action-1",
+        snooze_preset="1h",
+        now_utc=NOW,
+    )
+    assert outcome == HandlingOutcome.APPLIED
+
+
+async def test_snooze_scheduling_failure_does_not_fail_snooze():
+    """If scheduling fails, the snooze action still succeeds."""
+    class FailingSchedulingService(FakeSchedulingService):
+        async def create(self, **kwargs):
+            raise RuntimeError("scheduler down")
+    sched = FailingSchedulingService()
+    service, active_repo, _, _ = _make_service(
+        scheduling_service=sched,
+        user_phone_lookup=_phone_lookup,
+        chat_name_lookup=_chat_name_lookup,
+    )
+    active_id = await _setup_active(active_repo)
+    outcome = await service.snooze(
+        user_id=USER_ID,
+        active_id=active_id,
+        target_version=1,
+        provider_message_id="web:action-1",
+        snooze_preset="1h",
+        now_utc=NOW,
+    )
+    assert outcome == HandlingOutcome.APPLIED
+    active = await active_repo.get(user_id=USER_ID, chat_id=CHAT_ID)
+    assert active is not None
+    assert active.snoozed_until == NOW + timedelta(hours=1)
+
+
+async def test_snooze_scheduling_no_phone_skips_reminder():
+    """If user_phone_lookup returns None, no reminder is scheduled."""
+    async def no_phone(_user_id: str) -> str | None:
+        return None
+    sched = FakeSchedulingService()
+    service, active_repo, _, _ = _make_service(
+        scheduling_service=sched,
+        user_phone_lookup=no_phone,
+        chat_name_lookup=_chat_name_lookup,
+    )
+    active_id = await _setup_active(active_repo)
+    outcome = await service.snooze(
+        user_id=USER_ID,
+        active_id=active_id,
+        target_version=1,
+        provider_message_id="web:action-1",
+        snooze_preset="1h",
+        now_utc=NOW,
+    )
+    assert outcome == HandlingOutcome.APPLIED
+    assert len(sched.created) == 0
+
+
+async def test_snooze_scheduling_no_name_lookup_uses_fallback():
+    """If chat_name_lookup is None, the reminder uses 'לקוח' fallback."""
+    sched = FakeSchedulingService()
+    service, active_repo, _, _ = _make_service(
+        scheduling_service=sched,
+        user_phone_lookup=_phone_lookup,
+        chat_name_lookup=None,
+    )
+    active_id = await _setup_active(active_repo)
+    outcome = await service.snooze(
+        user_id=USER_ID,
+        active_id=active_id,
+        target_version=1,
+        provider_message_id="web:action-1",
+        snooze_preset="1h",
+        now_utc=NOW,
+    )
+    assert outcome == HandlingOutcome.APPLIED
+    assert len(sched.created) == 1
+    assert "לקוח" in sched.created[0]["payload"]["message"]
+
+
+async def test_snooze_scheduling_no_name_uses_fallback():
+    """If chat_name_lookup returns None, the reminder uses 'לקוח' fallback."""
+    async def no_name(_user_id: str, _chat_id: str) -> str | None:
+        return None
+    sched = FakeSchedulingService()
+    service, active_repo, _, _ = _make_service(
+        scheduling_service=sched,
+        user_phone_lookup=_phone_lookup,
+        chat_name_lookup=no_name,
+    )
+    active_id = await _setup_active(active_repo)
+    outcome = await service.snooze(
+        user_id=USER_ID,
+        active_id=active_id,
+        target_version=1,
+        provider_message_id="web:action-1",
+        snooze_preset="1h",
+        now_utc=NOW,
+    )
+    assert outcome == HandlingOutcome.APPLIED
+    assert len(sched.created) == 1
+    assert "לקוח" in sched.created[0]["payload"]["message"]

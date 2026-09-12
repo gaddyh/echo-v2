@@ -64,6 +64,8 @@ class ScheduledAction:
 
     ``payload`` is a provider-neutral dict whose shape depends on ``type``:
     * ``SEND_WHATSAPP_MESSAGE`` → ``{"chat_id": "...", "message": "..."}``
+    * ``SEND_BOT_MESSAGE`` → ``{"chat_id": "...", "message": "...",
+      "buttons": [{"id": "...", "title": "..."}]}`` (buttons optional)
     * ``SEND_REMINDER`` → ``{"message": "..."}`` (delivered via Echo Bot)
 
     ``execute_at_utc`` is always stored in UTC; ``timezone`` retains the

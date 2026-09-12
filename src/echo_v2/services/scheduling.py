@@ -177,7 +177,14 @@ class SchedulingService:
         return provider_message_id
 
     async def _execute_bot_send(self, action: ScheduledAction) -> str:
-        """Execute a bot-channel reminder send (no idempotency needed)."""
+        """Execute a bot-channel reminder send (no idempotency needed).
+
+        Payload:
+        * ``chat_id`` (required) — recipient phone number.
+        * ``message`` (required for text) — body text.
+        * ``buttons`` (optional) — list of ``{id, title}`` dicts. When
+          present, sends an interactive button message instead of text.
+        """
         if self._bot_channel is None:
             error = "no bot channel configured for SEND_BOT_MESSAGE"
             await self._action_repo.mark_failed(action.id, error)
@@ -185,8 +192,34 @@ class SchedulingService:
 
         chat_id = action.payload.get("chat_id", "")
         message = action.payload.get("message", "")
-        if not chat_id or not message:
-            error = f"action {action.id} payload missing chat_id or message"
+        buttons = action.payload.get("buttons")
+
+        if not chat_id:
+            error = f"action {action.id} payload missing chat_id"
+            await self._action_repo.mark_failed(action.id, error)
+            raise PermanentError(error)
+
+        if buttons:
+            if not message:
+                error = f"action {action.id} payload missing message for buttons"
+                await self._action_repo.mark_failed(action.id, error)
+                raise PermanentError(error)
+            try:
+                msg_id = await self._bot_channel.send_buttons(
+                    chat_id,
+                    body_text=message,
+                    buttons=buttons,
+                )
+            except Exception as exc:
+                await self._action_repo.mark_failed(action.id, str(exc))
+                raise
+            await self._action_repo.mark_succeeded(
+                action.id, {"sent": True, "provider_message_id": msg_id}
+            )
+            return msg_id or "bot_sent"
+
+        if not message:
+            error = f"action {action.id} payload missing message"
             await self._action_repo.mark_failed(action.id, error)
             raise PermanentError(error)
 

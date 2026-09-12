@@ -225,12 +225,17 @@ class FeedbackHandler:
             )
             await self._send_action_response(event.user_phone, outcome, "handled")
 
-        elif action_type == "snooze":
+        elif action_type == "snooze" or action_type.startswith("snooze:"):
+            # Parse optional preset: "snooze:1h", "snooze:tomorrow", etc.
+            preset = None
+            if ":" in action_type:
+                preset = action_type.split(":", 1)[1]
             outcome = await self._action_service.snooze(
                 user_id=user_id,
                 active_id=active_id,
                 target_version=target_version,
                 provider_message_id=event.event_id,
+                snooze_preset=preset,
             )
             await self._send_action_response(event.user_phone, outcome, "snooze")
 

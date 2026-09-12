@@ -655,6 +655,41 @@ class InMemoryWaitingForMeActiveRepository:
         )
         return True
 
+    async def list_expired_snoozes(
+        self,
+        *,
+        now: datetime,
+        limit: int = 50,
+    ) -> list[WaitingForMeActive]:
+        return [
+            row
+            for row in self._rows.values()
+            if row.snoozed_until is not None and row.snoozed_until <= now
+        ][:limit]
+
+    async def clear_snooze(
+        self,
+        *,
+        user_id: str,
+        chat_id: str,
+    ) -> bool:
+        key = (user_id, chat_id)
+        existing = self._rows.get(key)
+        if existing is None:
+            return False
+        self._rows[key] = WaitingForMeActive(
+            id=existing.id,
+            user_id=existing.user_id,
+            chat_id=existing.chat_id,
+            target_version=existing.target_version,
+            result_id=existing.result_id,
+            waiting_since=existing.waiting_since,
+            notified_at=existing.notified_at,
+            acknowledged_at=existing.acknowledged_at,
+            snoozed_until=None,
+        )
+        return True
+
     async def apply_if_version(
         self,
         *,

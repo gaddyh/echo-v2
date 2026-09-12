@@ -654,6 +654,49 @@ class PostgresWaitingForMeActiveRepository:
             result = await session.execute(stmt)
             return result.rowcount > 0
 
+    async def list_expired_snoozes(
+        self,
+        *,
+        now: datetime,
+        limit: int = 50,
+    ) -> list[WaitingForMeActive]:
+        from sqlalchemy import select
+
+        async with self._session() as session:
+            stmt = (
+                select(WaitingForMeActiveRow)
+                .where(
+                    WaitingForMeActiveRow.snoozed_until.isnot(None),
+                    WaitingForMeActiveRow.snoozed_until <= now,
+                )
+                .limit(limit)
+            )
+            rows = (await session.execute(stmt)).scalars().all()
+            return [self._row_to_domain(r) for r in rows]
+
+    async def clear_snooze(
+        self,
+        *,
+        user_id: str,
+        chat_id: str,
+    ) -> bool:
+        from sqlalchemy import update as sa_update
+
+        async with self._session() as session:
+            stmt = (
+                sa_update(WaitingForMeActiveRow)
+                .where(
+                    WaitingForMeActiveRow.user_id == user_id,
+                    WaitingForMeActiveRow.chat_id == chat_id,
+                )
+                .values(
+                    snoozed_until=None,
+                    updated_at=datetime.now(timezone.utc),
+                )
+            )
+            result = await session.execute(stmt)
+            return result.rowcount > 0
+
     async def apply_if_version(
         self,
         *,

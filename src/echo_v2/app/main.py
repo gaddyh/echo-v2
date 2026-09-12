@@ -281,12 +281,31 @@ def create_app() -> FastAPI:
         WaitingForMeFeedbackService,
     )
 
+    # --- snooze reminder scheduling (via existing scheduler infra) ---------
+    async def user_phone_lookup(user_id: str) -> str | None:
+        from sqlalchemy import select
+
+        from echo_v2.persistence.orm import UserRow
+
+        async with repos.session_factory() as session:
+            stmt = select(UserRow.phone_number).where(UserRow.id == user_id)
+            result = await session.execute(stmt)
+            row = result.first()
+            return row[0] if row else None
+
+    async def chat_name_lookup(user_id: str, chat_id: str) -> str | None:
+        chat = await repos.chat_state.get(user_id, chat_id)
+        return chat.chat_name if chat else None
+
     action_service = WaitingForMeActionService(
         active_repo=repos.wfm_active,
         action_repo=repos.wfm_actions,
         mute_repo=repos.chat_mutes,
         feedback_repo=repos.wfm_feedback,
         result_repo=repos.wfm_results,
+        scheduling_service=scheduling_service,
+        user_phone_lookup=user_phone_lookup,
+        chat_name_lookup=chat_name_lookup,
     )
     feedback_service = WaitingForMeFeedbackService(
         feedback_repo=repos.wfm_feedback,
@@ -329,10 +348,12 @@ def create_app() -> FastAPI:
     scheduler_task: asyncio.Task | None = None
     analysis_worker_task: asyncio.Task | None = None
     digest_worker_task: asyncio.Task | None = None
+    snooze_worker_task: asyncio.Task | None = None
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         nonlocal scheduler_task, analysis_worker_task, digest_worker_task
+        nonlocal snooze_worker_task
         # Startup: recover stale actions + start scheduler loop.
         try:
             recovered = await scheduler.recover()

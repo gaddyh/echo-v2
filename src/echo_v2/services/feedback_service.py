@@ -84,11 +84,18 @@ def _next_digest_at(
     return target.astimezone(timezone.utc)
 
 
-# Snooze preset → local hour mapping.
+# Snooze preset → local hour mapping (absolute-time presets).
 _SNOOZE_PRESET_HOURS: dict[str, int] = {
     "morning": 8,
     "afternoon": 14,
     "evening": 18,
+}
+
+# Relative-time presets (offset from now).
+_SNOOZE_PRESET_RELATIVE: dict[str, timedelta] = {
+    "10m": timedelta(minutes=10),
+    "1h": timedelta(hours=1),
+    "3h": timedelta(hours=3),
 }
 
 
@@ -101,6 +108,9 @@ def _snooze_preset_to_utc(
     """Map a snooze preset to a UTC datetime.
 
     Presets:
+    * ``10m`` → 10 minutes from now
+    * ``1h`` → 1 hour from now
+    * ``3h`` → 3 hours from now
     * ``morning`` → next 08:00 local
     * ``afternoon`` → next 14:00 local
     * ``evening`` → next 18:00 local
@@ -109,6 +119,11 @@ def _snooze_preset_to_utc(
     "Next" means: if the target hour hasn't passed today, use today;
     otherwise use tomorrow. ``tomorrow`` always uses the next day.
     """
+    # Relative presets — timezone-independent.
+    relative = _SNOOZE_PRESET_RELATIVE.get(preset)
+    if relative is not None:
+        return now_utc + relative
+
     tz = ZoneInfo(tz_name)
     local_now = now_utc.astimezone(tz)
 
@@ -154,12 +169,18 @@ class WaitingForMeActionService:
         mute_repo: ChatMuteRepository,
         feedback_repo: WaitingForMeFeedbackRepository | None = None,
         result_repo: WaitingForMeResultRepository | None = None,
+        scheduling_service=None,
+        user_phone_lookup=None,
+        chat_name_lookup=None,
     ) -> None:
         self._active_repo = active_repo
         self._action_repo = action_repo
         self._mute_repo = mute_repo
         self._feedback_repo = feedback_repo
         self._result_repo = result_repo
+        self._scheduling_service = scheduling_service
+        self._user_phone_lookup = user_phone_lookup
+        self._chat_name_lookup = chat_name_lookup
 
     async def handled(
         self,
@@ -273,7 +294,8 @@ class WaitingForMeActionService:
                 )
                 return HandlingOutcome.INVALID
         else:
-            snoozed_until = _next_digest_at(now_utc=now, tz_name=tz_name)
+            # Default: 1 hour from now.
+            snoozed_until = now + timedelta(hours=1)
 
         action_payload: dict = {"snoozed_until": snoozed_until.isoformat()}
         if snooze_preset is not None:
@@ -314,7 +336,84 @@ class WaitingForMeActionService:
             "action: snooze user=%s active_id=%s version=%d until=%s",
             user_id, active_id, target_version, snoozed_until,
         )
+
+        # Schedule a WhatsApp reminder via the existing scheduler infra.
+        active = await self._active_repo.get_by_id(active_id)
+        if active is not None:
+            await self._schedule_snooze_reminder(
+                user_id=user_id,
+                active_id=active_id,
+                chat_id=active.chat_id,
+                snoozed_until=snoozed_until,
+            )
+
         return HandlingOutcome.APPLIED
+
+    async def _schedule_snooze_reminder(
+        self,
+        *,
+        user_id: str,
+        active_id: str,
+        chat_id: str,
+        snoozed_until: datetime,
+    ) -> None:
+        """Schedule a SEND_BOT_MESSAGE for the snooze expiry.
+
+        Uses the existing scheduler infrastructure — no separate worker
+        needed. The reminder is a WhatsApp message with inline buttons
+        (טופל / נודניק עוד שעה / לא להיום).
+
+        Failures to schedule are logged but do not fail the snooze action.
+        """
+        if self._scheduling_service is None or self._user_phone_lookup is None:
+            return
+
+        try:
+            phone = await self._user_phone_lookup(user_id)
+            if phone is None:
+                _logger.warning(
+                    "snooze: no phone for user %s, skipping reminder",
+                    user_id,
+                )
+                return
+
+            # Resolve display name.
+            name = None
+            if self._chat_name_lookup is not None:
+                name = await self._chat_name_lookup(user_id, chat_id)
+            display_name = name or "לקוח"
+
+            body = f"🔔 תזכורת: {display_name} עדיין ממתין למענה."
+            buttons = [
+                {"id": f"action:{active_id}:handled", "title": "טופל"},
+                {"id": f"action:{active_id}:snooze:1h", "title": "נודניק עוד שעה"},
+                {"id": f"action:{active_id}:snooze:tomorrow", "title": "לא להיום"},
+            ]
+
+            from echo_v2.domain.scheduling import ScheduledActionType
+
+            await self._scheduling_service.create(
+                user_id=user_id,
+                type=ScheduledActionType.SEND_BOT_MESSAGE,
+                execute_at_utc=snoozed_until,
+                timezone_name="UTC",
+                payload={
+                    "chat_id": phone,
+                    "message": body,
+                    "buttons": buttons,
+                },
+            )
+            _logger.info(
+                "snooze: scheduled reminder for user %s at %s",
+                user_id,
+                snoozed_until.isoformat(),
+            )
+        except Exception:
+            _logger.exception(
+                "snooze: failed to schedule reminder for user %s, "
+                "snooze still applied",
+                user_id,
+            )
 
     async def dismiss_not_waiting(
         self,

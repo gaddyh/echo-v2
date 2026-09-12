@@ -427,3 +427,106 @@ async def test_bot_send_failure_marks_failed():
     # Action should be marked failed.
     actions = await service._action_repo.list_pending("user-1")
     assert len(actions) == 0  # not pending anymore
+
+
+# --- SEND_BOT_MESSAGE with buttons (snooze reminders) ---------------------
+
+
+class FakeBotWithButtons(FakeBot):
+    """FakeBot that also records send_buttons calls."""
+
+    def __init__(self, *, fail_with: Exception | None = None) -> None:
+        super().__init__(fail_with=fail_with)
+        self.button_sends: list[tuple[str, str, list[dict]]] = []
+
+    async def send_buttons(
+        self,
+        user_phone: str,
+        *,
+        body_text: str,
+        buttons: list[dict],
+    ) -> str:
+        self.button_sends.append((user_phone, body_text, buttons))
+        if self.fail_with is not None:
+            raise self.fail_with
+        return "wamid.BUTTONS"
+
+
+async def test_bot_send_with_buttons_succeeds():
+    """SEND_BOT_MESSAGE with buttons payload sends via send_buttons."""
+    service, bot = _make_bot_service(bot=FakeBotWithButtons())
+    action = _make_bot_action(
+        payload={
+            "chat_id": "972500000001",
+            "message": "🔔 תזכורת: דנה עדיין ממתין.",
+            "buttons": [
+                {"id": "action:abc:handled", "title": "טופל"},
+                {"id": "action:abc:snooze:1h", "title": "נודניק עוד שעה"},
+            ],
+        },
+    )
+    await service._action_repo.save(action)
+    result = await service.execute(action)
+
+    assert result == "wamid.BUTTONS"
+    assert len(bot.button_sends) == 1
+    phone, body, buttons = bot.button_sends[0]
+    assert phone == "972500000001"
+    assert "תזכורת" in body
+    assert len(buttons) == 2
+
+    fetched = await service._action_repo.get("bot-act-1")
+    assert fetched.status is ScheduledActionStatus.SUCCEEDED
+    assert fetched.result == {"sent": True, "provider_message_id": "wamid.BUTTONS"}
+
+
+async def test_bot_send_with_buttons_failure_marks_failed():
+    """If send_buttons fails, the action is marked failed."""
+    bot = FakeBotWithButtons(fail_with=RuntimeError("buttons down"))
+    service, _ = _make_bot_service(bot=bot)
+    action = _make_bot_action(
+        payload={
+            "chat_id": "972500000001",
+            "message": "reminder",
+            "buttons": [{"id": "b1", "title": "OK"}],
+        },
+    )
+    await service._action_repo.save(action)
+
+    with pytest.raises(RuntimeError, match="buttons down"):
+        await service.execute(action)
+
+    fetched = await service._action_repo.get("bot-act-1")
+    assert fetched.status is ScheduledActionStatus.FAILED
+
+
+async def test_bot_send_missing_chat_id_fails():
+    """SEND_BOT_MESSAGE without chat_id fails."""
+    service, _ = _make_bot_service()
+    action = _make_bot_action(payload={"message": "hi"})
+    await service._action_repo.save(action)
+
+    with pytest.raises(PermanentError, match="missing chat_id"):
+        await service.execute(action)
+
+
+async def test_bot_send_buttons_missing_message_fails():
+    """SEND_BOT_MESSAGE with buttons but no message fails."""
+    service, _ = _make_bot_service(bot=FakeBotWithButtons())
+    action = _make_bot_action(
+        payload={"chat_id": "972500000001", "buttons": [{"id": "b1", "title": "OK"}]}
+    )
+    await service._action_repo.save(action)
+
+    with pytest.raises(PermanentError, match="missing message for buttons"):
+        await service.execute(action)
+
+
+async def test_bot_send_missing_message_fails():
+    """SEND_BOT_MESSAGE without message (and no buttons) fails."""
+    service, _ = _make_bot_service()
+    action = _make_bot_action(payload={"chat_id": "972500000001"})
+    await service._action_repo.save(action)
+
+    with pytest.raises(PermanentError, match="missing message"):
+        await service.execute(action)
