@@ -70,6 +70,15 @@ class _SendInput:
     message: str
 
 
+@dataclass(frozen=True)
+class _BotSendInput:
+    """Input to a bot-channel send passed through ``runtime.execute``."""
+
+    chat_id: str
+    message: str
+    buttons: list[dict] | None = None
+
+
 class SchedulingService:
     """Create and execute scheduled WhatsApp messages."""
 
@@ -197,7 +206,13 @@ class SchedulingService:
         process_outputs=safe_bot_send_output,
     )
     async def _execute_bot_send(self, action: ScheduledAction) -> str:
-        """Execute a bot-channel reminder send (no idempotency needed).
+        """Execute a bot-channel reminder send through the runtime executor.
+
+        Routes through :func:`echo_v2.runtime.executor.execute` with
+        ``EXTERNAL_WRITE`` policy and idempotency — same guardrails as
+        Green sends. A duplicate bot message is annoying, but the
+        executor also provides retry, error classification, and event
+        emission that we want for all external writes.
 
         Payload:
         * ``chat_id`` (required) — recipient phone number.
@@ -208,7 +223,7 @@ class SchedulingService:
           ``send_validator`` is called to check whether the reminder is
           still relevant. If it returns ``False``, the send is skipped.
         """
-        # Self-validation for waiting-for-me reminders.
+        # Self-validation for waiting-for-me reminders (before executor).
         if (
             self._send_validator is not None
             and action.payload.get("kind") == "waiting_for_me_reminder"
@@ -239,38 +254,47 @@ class SchedulingService:
             await self._action_repo.mark_failed(action.id, error)
             raise PermanentError(error)
 
-        if buttons:
-            if not message:
-                error = f"action {action.id} payload missing message for buttons"
-                await self._action_repo.mark_failed(action.id, error)
-                raise PermanentError(error)
-            try:
-                msg_id = await self._bot_channel.send_buttons(
-                    chat_id,
-                    body_text=message,
-                    buttons=buttons,
-                )
-            except Exception as exc:
-                await self._action_repo.mark_failed(action.id, str(exc))
-                raise
-            await self._action_repo.mark_succeeded(
-                action.id, {"sent": True, "provider_message_id": msg_id}
-            )
-            return msg_id or "bot_sent"
+        if buttons and not message:
+            error = f"action {action.id} payload missing message for buttons"
+            await self._action_repo.mark_failed(action.id, error)
+            raise PermanentError(error)
 
-        if not message:
+        if not buttons and not message:
             error = f"action {action.id} payload missing message"
             await self._action_repo.mark_failed(action.id, error)
             raise PermanentError(error)
 
+        send_input = _BotSendInput(
+            chat_id=chat_id,
+            message=message,
+            buttons=buttons,
+        )
+        idempotency_key = f"bot:send:{action.user_id}:{action.id}"
+        context = RunContext(operation_name="scheduled_bot_send")
+
         try:
-            await self._bot_channel.send_text(chat_id, message)
-        except Exception as exc:
+            result = await execute(
+                operation=self._bot_send_operation,
+                input_=send_input,
+                context=context,
+                policy=EXTERNAL_WRITE,
+                event_sink=self._event_sink,
+                idempotency_key=idempotency_key,
+                idempotency_store=self._idempotency_store,
+            )
+        except IndeterminateError as exc:
+            await self._action_repo.mark_indeterminate(action.id, str(exc))
+            raise
+        except PermanentError as exc:
             await self._action_repo.mark_failed(action.id, str(exc))
             raise
 
-        await self._action_repo.mark_succeeded(action.id, {"sent": True})
-        return "bot_sent"
+        provider_message_id = result.value
+        await self._action_repo.mark_succeeded(
+            action.id,
+            {"sent": True, "provider_message_id": provider_message_id},
+        )
+        return provider_message_id or "bot_sent"
 
     async def _send_operation(self, inp: _SendInput) -> str:
         """The actual send, called by ``runtime.execute``."""
@@ -279,3 +303,15 @@ class SchedulingService:
             inp.chat_id,
             inp.message,
         )
+
+    async def _bot_send_operation(self, inp: _BotSendInput) -> str:
+        """The actual bot send, called by ``runtime.execute``."""
+        if inp.buttons:
+            msg_id = await self._bot_channel.send_buttons(
+                inp.chat_id,
+                body_text=inp.message,
+                buttons=inp.buttons,
+            )
+            return msg_id or "bot_sent"
+        await self._bot_channel.send_text(inp.chat_id, inp.message)
+        return "bot_sent"

@@ -415,18 +415,21 @@ async def test_bot_send_no_bot_channel_fails():
 
 
 async def test_bot_send_failure_marks_failed():
-    """If the bot send fails, the action is marked failed."""
+    """If the bot send fails, the action is marked indeterminate."""
     bot = FakeBot(fail_with=RuntimeError("bot down"))
     service, _ = _make_bot_service(bot=bot)
     action = _make_bot_action()
     await service._action_repo.save(action)
 
-    with pytest.raises(RuntimeError, match="bot down"):
+    with pytest.raises(IndeterminateError):
         await service.execute(action)
 
-    # Action should be marked failed.
+    # Action should be marked indeterminate (irreversible write — unknown outcome).
     actions = await service._action_repo.list_pending("user-1")
     assert len(actions) == 0  # not pending anymore
+
+    fetched = await service._action_repo.get("bot-act-1")
+    assert fetched.status is ScheduledActionStatus.INDETERMINATE
 
 
 # --- SEND_BOT_MESSAGE with buttons (snooze reminders) ---------------------
@@ -493,11 +496,11 @@ async def test_bot_send_with_buttons_failure_marks_failed():
     )
     await service._action_repo.save(action)
 
-    with pytest.raises(RuntimeError, match="buttons down"):
+    with pytest.raises(IndeterminateError):
         await service.execute(action)
 
     fetched = await service._action_repo.get("bot-act-1")
-    assert fetched.status is ScheduledActionStatus.FAILED
+    assert fetched.status is ScheduledActionStatus.INDETERMINATE
 
 
 async def test_bot_send_missing_chat_id_fails():
