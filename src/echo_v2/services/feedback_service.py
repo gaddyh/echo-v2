@@ -38,10 +38,16 @@ import logging
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
+from langsmith import traceable
+
 from echo_v2.domain.feedback import (
     FeedbackVerdict,
     HandlingOutcome,
     WaitingForMeActionType,
+)
+from echo_v2.observability.sanitizers import (
+    safe_action_inputs,
+    safe_action_output,
 )
 from echo_v2.persistence.chat_repositories import (
     WaitingForMeActiveRepository,
@@ -213,6 +219,11 @@ class WaitingForMeActionService:
         self._user_phone_lookup = user_phone_lookup
         self._chat_name_lookup = chat_name_lookup
 
+    @traceable(
+        name="wfm.action.handled",
+        process_inputs=safe_action_inputs,
+        process_outputs=safe_action_output,
+    )
     async def handled(
         self,
         *,
@@ -272,6 +283,11 @@ class WaitingForMeActionService:
         )
         return HandlingOutcome.APPLIED
 
+    @traceable(
+        name="wfm.action.snooze",
+        process_inputs=safe_action_inputs,
+        process_outputs=safe_action_output,
+    )
     async def snooze(
         self,
         *,
@@ -452,6 +468,11 @@ class WaitingForMeActionService:
                 user_id,
             )
 
+    @traceable(
+        name="wfm.action.dismiss_not_waiting",
+        process_inputs=safe_action_inputs,
+        process_outputs=safe_action_output,
+    )
     async def dismiss_not_waiting(
         self,
         *,
@@ -509,6 +530,11 @@ class WaitingForMeActionService:
         )
         return HandlingOutcome.APPLIED
 
+    @traceable(
+        name="wfm.action.dismiss_not_interested",
+        process_inputs=safe_action_inputs,
+        process_outputs=safe_action_output,
+    )
     async def dismiss_not_interested(
         self,
         *,
@@ -556,6 +582,11 @@ class WaitingForMeActionService:
         )
         return HandlingOutcome.APPLIED
 
+    @traceable(
+        name="wfm.action.done",
+        process_inputs=safe_action_inputs,
+        process_outputs=safe_action_output,
+    )
     async def done(
         self,
         *,
@@ -616,6 +647,11 @@ class WaitingForMeActionService:
         )
         return HandlingOutcome.STALE
 
+    @traceable(
+        name="wfm.action.dismiss_with_reason",
+        process_inputs=safe_action_inputs,
+        process_outputs=safe_action_output,
+    )
     async def dismiss_with_reason(
         self,
         *,

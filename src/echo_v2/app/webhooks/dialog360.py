@@ -23,9 +23,14 @@ import hmac
 import logging
 
 from fastapi import APIRouter, Header, HTTPException, Request
+from langsmith import traceable
 
 from echo_v2.app.webhooks.dedup import InMemoryWebhookDedupStore, WebhookDedupStore
 from echo_v2.integrations.dialog360.events import Dialog360EventAdapter
+from echo_v2.observability.sanitizers import (
+    safe_webhook_inputs,
+    safe_webhook_output,
+)
 from echo_v2.ports.bot import BotEventAdapter, BotEventType
 from echo_v2.services.scheduling_flow import SchedulingFlowService
 
@@ -136,6 +141,11 @@ def build_router(
         return {"status": "received"}
 
     @router.post("/webhooks/bot/dialog360")
+    @traceable(
+        name="wfm.webhook.dialog360",
+        process_inputs=safe_webhook_inputs,
+        process_outputs=safe_webhook_output,
+    )
     async def dialog360_webhook(
         request: Request,
         authorization: str | None = Header(default=None),
@@ -143,6 +153,11 @@ def build_router(
         return await _handle_webhook(request, authorization)
 
     @router.post("/webhook/360dialog")
+    @traceable(
+        name="wfm.webhook.dialog360",
+        process_inputs=safe_webhook_inputs,
+        process_outputs=safe_webhook_output,
+    )
     async def dialog360_webhook_alt(
         request: Request,
         authorization: str | None = Header(default=None),

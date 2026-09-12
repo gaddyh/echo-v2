@@ -44,7 +44,7 @@ from echo_v2.integrations.dialog360.settings import Dialog360Settings
 from echo_v2.integrations.green.client import GreenClient
 from echo_v2.integrations.green.messaging import GreenMessaging
 from echo_v2.integrations.green.settings import load_settings as load_green_settings
-from echo_v2.observability import InMemoryEventSink
+from echo_v2.observability import LoggingEventSink
 from echo_v2.persistence.compose import build_postgres_repos
 from echo_v2.persistence.conversation_state import InMemoryConversationStateRepository
 from echo_v2.persistence.settings import load_db_settings
@@ -185,7 +185,7 @@ def create_app() -> FastAPI:
         connection_repo=repos.connections,
         messaging=green_messaging,
         idempotency_store=idempotency_store,
-        event_sink=InMemoryEventSink(),
+        event_sink=LoggingEventSink(),
         bot_channel=d360_client,
         send_validator=snooze_validator,
     )

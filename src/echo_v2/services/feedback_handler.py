@@ -32,7 +32,13 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
+from langsmith import traceable
+
 from echo_v2.domain.feedback import HandlingOutcome
+from echo_v2.observability.sanitizers import (
+    safe_feedback_handle_inputs,
+    safe_feedback_handle_output,
+)
 from echo_v2.persistence.chat_repositories import (
     ChatStateRepository,
     MessageRepository,
@@ -127,6 +133,11 @@ class FeedbackHandler:
         self._token_service = token_service
         self._base_url = base_url
 
+    @traceable(
+        name="wfm.feedback.handle",
+        process_inputs=safe_feedback_handle_inputs,
+        process_outputs=safe_feedback_handle_output,
+    )
     async def handle(self, event: BotEvent) -> bool:
         """Check if this is a feedback-related event and handle it.
 

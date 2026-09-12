@@ -46,9 +46,14 @@ import logging
 from typing import Protocol, runtime_checkable
 
 from fastapi import APIRouter, Header, HTTPException, Request
+from langsmith import traceable
 
 from echo_v2.app.webhooks.dedup import InMemoryWebhookDedupStore, WebhookDedupStore
 from echo_v2.integrations.green.events import GreenEventAdapter
+from echo_v2.observability.sanitizers import (
+    safe_webhook_inputs,
+    safe_webhook_output,
+)
 from echo_v2.persistence.whatsapp_connections import (
     InMemoryWhatsAppConnectionRepository,
     WhatsAppConnectionRepository,
@@ -225,6 +230,11 @@ def build_router(
     store = dedup_store or InMemoryWebhookDedupStore()
 
     @router.post("/webhooks/whatsapp/green")
+    @traceable(
+        name="wfm.webhook.green",
+        process_inputs=safe_webhook_inputs,
+        process_outputs=safe_webhook_output,
+    )
     async def green_webhook(
         request: Request,
         authorization: str | None = Header(default=None),

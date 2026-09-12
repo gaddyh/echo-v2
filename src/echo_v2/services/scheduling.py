@@ -30,10 +30,18 @@ from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
+from langsmith import traceable
+
 from echo_v2.domain.scheduling import (
     ScheduledAction,
     ScheduledActionStatus,
     ScheduledActionType,
+)
+from echo_v2.observability.sanitizers import (
+    safe_bot_send_inputs,
+    safe_bot_send_output,
+    safe_scheduling_execute_inputs,
+    safe_scheduling_execute_output,
 )
 from echo_v2.persistence.scheduled_actions import ScheduledActionRepository
 from echo_v2.persistence.whatsapp_connections import (
@@ -112,6 +120,11 @@ class SchedulingService:
         """Cancel a PENDING action."""
         return await self._action_repo.cancel(action_id, user_id)
 
+    @traceable(
+        name="wfm.scheduling.execute",
+        process_inputs=safe_scheduling_execute_inputs,
+        process_outputs=safe_scheduling_execute_output,
+    )
     async def execute(self, action: ScheduledAction) -> str:
         """Execute a scheduled action.
 
@@ -178,6 +191,11 @@ class SchedulingService:
         )
         return provider_message_id
 
+    @traceable(
+        name="wfm.scheduling.bot_send",
+        process_inputs=safe_bot_send_inputs,
+        process_outputs=safe_bot_send_output,
+    )
     async def _execute_bot_send(self, action: ScheduledAction) -> str:
         """Execute a bot-channel reminder send (no idempotency needed).
 
