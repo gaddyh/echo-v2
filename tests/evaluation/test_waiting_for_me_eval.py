@@ -85,8 +85,11 @@ def _build_conversation(case: EvalCase) -> ConversationInput:
 
 @pytest.fixture
 def analyzer() -> LLMWaitingForMeAnalyzer:
+    from openai import AsyncOpenAI
+
+    client = AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
     return LLMWaitingForMeAnalyzer(
-        api_key=os.environ.get("OPENAI_API_KEY", ""),
+        client=client,
         model=os.environ.get("LLM_MODEL_NAME", "gpt-4.1"),
     )
 

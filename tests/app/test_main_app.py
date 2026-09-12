@@ -75,6 +75,8 @@ def _set_required_env(monkeypatch, database_url: str) -> None:
     # Disable background workers so the lifespan is quiet.
     monkeypatch.setenv("CHAT_ANALYSIS_ENABLED", "false")
     monkeypatch.setenv("DIGEST_ENABLED", "false")
+    # Disable LangSmith tracing in tests — no OBSERVABILITY_HASH_KEY.
+    monkeypatch.setenv("LANGSMITH_TRACING", "false")
 
 
 def test_create_app_returns_fastapi_instance(monkeypatch, postgres_url):

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -53,7 +53,6 @@ def _mock_client(response: MagicMock | None = None, side_effect=None) -> MagicMo
         mock_client.chat.completions.create = AsyncMock(side_effect=side_effect)
     else:
         mock_client.chat.completions.create = AsyncMock(return_value=response)
-    mock_client.close = AsyncMock()
     return mock_client
 
 
@@ -71,9 +70,8 @@ async def test_analyze_waiting_for_me():
     )
     client = _mock_client(response)
 
-    with patch("openai.AsyncOpenAI", return_value=client):
-        analyzer = LLMWaitingForMeAnalyzer(api_key="test-key")
-        result = await analyzer.analyze(conv)
+    analyzer = LLMWaitingForMeAnalyzer(client=client)
+    result = await analyzer.analyze(conv)
 
     assert result.decision == WaitingForMeDecision.WAITING_FOR_ME
     assert result.confidence == 0.95
@@ -92,9 +90,8 @@ async def test_analyze_not_waiting_for_me():
     )
     client = _mock_client(response)
 
-    with patch("openai.AsyncOpenAI", return_value=client):
-        analyzer = LLMWaitingForMeAnalyzer(api_key="test-key")
-        result = await analyzer.analyze(conv)
+    analyzer = LLMWaitingForMeAnalyzer(client=client)
+    result = await analyzer.analyze(conv)
 
     assert result.decision == WaitingForMeDecision.NOT_WAITING_FOR_ME
 
@@ -110,9 +107,8 @@ async def test_analyze_uncertain():
     )
     client = _mock_client(response)
 
-    with patch("openai.AsyncOpenAI", return_value=client):
-        analyzer = LLMWaitingForMeAnalyzer(api_key="test-key")
-        result = await analyzer.analyze(conv)
+    analyzer = LLMWaitingForMeAnalyzer(client=client)
+    result = await analyzer.analyze(conv)
 
     assert result.decision == WaitingForMeDecision.UNCERTAIN
 
@@ -127,35 +123,40 @@ async def test_analyze_empty_conversation_returns_uncertain():
         target_version=1,
         messages=[],
     )
-    analyzer = LLMWaitingForMeAnalyzer(api_key="test-key")
+    client = _mock_client()
+    analyzer = LLMWaitingForMeAnalyzer(client=client)
     result = await analyzer.analyze(conv)
     assert result.decision == WaitingForMeDecision.UNCERTAIN
     assert result.confidence == 1.0
     assert "No messages" in (result.reason or "")
-
-
-async def test_analyze_no_api_key_raises(monkeypatch):
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    conv = _make_conversation()
-    analyzer = LLMWaitingForMeAnalyzer(api_key="")
-    with pytest.raises(AnalysisError, match="OPENAI_API_KEY not configured"):
-        await analyzer.analyze(conv)
+    # Client should not be called for empty conversations
+    client.chat.completions.create.assert_not_called()
 
 
 async def test_analyze_api_error_raises():
     conv = _make_conversation()
     client = _mock_client(side_effect=RuntimeError("network error"))
 
-    with patch("openai.AsyncOpenAI", return_value=client):
-        analyzer = LLMWaitingForMeAnalyzer(api_key="test-key")
-        with pytest.raises(AnalysisError, match="LLM request failed"):
-            await analyzer.analyze(conv)
+    analyzer = LLMWaitingForMeAnalyzer(client=client)
+    with pytest.raises(AnalysisError, match="LLM request failed"):
+        await analyzer.analyze(conv)
 
 
-async def test_analyze_uses_env_api_key(monkeypatch):
-    monkeypatch.setenv("OPENAI_API_KEY", "env-key")
-    analyzer = LLMWaitingForMeAnalyzer()
-    assert analyzer._api_key == "env-key"
+async def test_analyze_passes_model_and_messages_to_client():
+    """The analyzer passes the configured model and prompt to the client."""
+    conv = _make_conversation()
+    response = _mock_openai_response(
+        json.dumps({"decision": "waiting_for_me", "confidence": 0.9, "reason": "test"})
+    )
+    client = _mock_client(response)
+
+    analyzer = LLMWaitingForMeAnalyzer(client=client, model="gpt-4o")
+    await analyzer.analyze(conv)
+
+    call_kwargs = client.chat.completions.create.call_args
+    assert call_kwargs.kwargs["model"] == "gpt-4o"
+    assert call_kwargs.kwargs["temperature"] == 0
+    assert len(call_kwargs.kwargs["messages"]) == 2  # system + user
 
 
 # --- _parse_llm_output ------------------------------------------------------
@@ -319,7 +320,6 @@ async def test_analyze_summary_in_result():
         })
     )
     client = _mock_client(response)
-    with patch("openai.AsyncOpenAI", return_value=client):
-        analyzer = LLMWaitingForMeAnalyzer(api_key="test-key")
-        result = await analyzer.analyze(conv)
+    analyzer = LLMWaitingForMeAnalyzer(client=client)
+    result = await analyzer.analyze(conv)
     assert result.summary == "מחכה לאישור פגישה."

@@ -11,14 +11,18 @@ Returns a :class:`WaitingForMeResult` with one of three decisions:
 
 The prompt is designed to be narrow — it does not ask the LLM to decide
 importance, urgency, timing, or what to notify. Only: where is the ball?
+
+The OpenAI client is injected (not created per-call) so it can be wrapped
+with ``langsmith.wrappers.wrap_openai`` for automatic LLM tracing.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import os
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Protocol
+
+from langsmith import traceable
 
 from echo_v2.domain.waiting_for_me import WaitingForMeDecision, WaitingForMeResult
 
@@ -27,11 +31,15 @@ if TYPE_CHECKING:
 
 __all__ = [
     "AnalysisError",
+    "ChatCompletionClient",
     "LLMWaitingForMeAnalyzer",
     "WaitingForMeAnalyzer",
 ]
 
 _logger = logging.getLogger("echo_v2.services.waiting_for_me_analyzer")
+
+# Bump when the prompt or output contract changes. Used in trace metadata.
+WFM_PROMPT_VERSION = "wfm-v1"
 
 
 # Direction labels as the LLM sees them.
@@ -98,6 +106,15 @@ class AnalysisError(Exception):
     """Raised when the LLM analysis fails (API error or invalid output)."""
 
 
+class ChatCompletionClient(Protocol):
+    """Narrow protocol for an OpenAI-compatible chat completion client.
+
+    Both ``AsyncOpenAI`` and ``wrap_openai(AsyncOpenAI(...))`` satisfy this.
+    """
+
+    chat: Any
+
+
 class WaitingForMeAnalyzer:
     """Protocol for WaitingForMe analyzers."""
 
@@ -105,26 +122,65 @@ class WaitingForMeAnalyzer:
         ...
 
 
+def safe_analysis_inputs(inputs: dict) -> dict:
+    """Sanitize analyzer inputs for LangSmith trace metadata.
+
+    Removes ``self`` and the full conversation. Keeps only safe correlation
+    fields: hashed IDs, version, message count, prompt version.
+    """
+    from echo_v2.observability.privacy import correlation_id
+
+    conversation = inputs.get("conversation")
+    if conversation is None:
+        return {"prompt_version": WFM_PROMPT_VERSION}
+    return {
+        "user_id_hash": correlation_id(conversation.user_id),
+        "chat_id_hash": correlation_id(conversation.chat_id),
+        "target_version": conversation.target_version,
+        "message_count": len(conversation.messages),
+        "prompt_version": WFM_PROMPT_VERSION,
+    }
+
+
+def safe_analysis_output(output: WaitingForMeResult) -> dict:
+    """Sanitize analyzer output for LangSmith trace metadata.
+
+    The analyzer does not yet know ``result_id`` — that ID only exists
+    after persistence. Only safe result fields are included.
+    """
+    return {
+        "decision": output.decision.value,
+        "confidence": output.confidence,
+        "target_version": output.target_version,
+    }
+
+
 class LLMWaitingForMeAnalyzer:
     """LLM-based WaitingForMe analyzer using the OpenAI API.
 
+    The OpenAI client is injected so it can be wrapped with
+    ``langsmith.wrappers.wrap_openai`` for automatic LLM tracing.
+
     Args:
-        api_key: OpenAI API key. Falls back to ``OPENAI_API_KEY`` env var.
+        client: An OpenAI-compatible async client (e.g.
+            ``wrap_openai(AsyncOpenAI(...))``).
         model: Model name. Default ``gpt-4.1``.
     """
 
     def __init__(
         self,
-        api_key: str | None = None,
+        client: ChatCompletionClient,
         model: str = "gpt-4.1",
     ) -> None:
-        self._api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
+        self._client = client
         self._model = model
 
+    @traceable(
+        name="wfm.llm_analyze",
+        process_inputs=safe_analysis_inputs,
+        process_outputs=safe_analysis_output,
+    )
     async def analyze(self, conversation: ConversationInput) -> WaitingForMeResult:
-        if not self._api_key:
-            raise AnalysisError("OPENAI_API_KEY not configured for WaitingForMe analyzer")
-
         if not conversation.messages:
             return WaitingForMeResult(
                 decision=WaitingForMeDecision.UNCERTAIN,
@@ -135,11 +191,8 @@ class LLMWaitingForMeAnalyzer:
 
         user_msg = _build_user_message(conversation)
 
-        from openai import AsyncOpenAI
-
-        client = AsyncOpenAI(api_key=self._api_key)
         try:
-            response = await client.chat.completions.create(
+            response = await self._client.chat.completions.create(
                 model=self._model,
                 messages=[
                     {"role": "system", "content": _SYSTEM_PROMPT},
@@ -151,8 +204,6 @@ class LLMWaitingForMeAnalyzer:
         except Exception as exc:
             _logger.warning("WaitingForMe analyzer API error: %s", exc)
             raise AnalysisError(f"LLM request failed: {exc}") from exc
-        finally:
-            await client.close()
 
         raw_output = response.choices[0].message.content or ""
         return _parse_llm_output(raw_output, conversation.target_version)

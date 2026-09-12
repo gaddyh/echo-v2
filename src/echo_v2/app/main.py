@@ -66,6 +66,39 @@ _logger = logging.getLogger("echo_v2.app")
 logging.basicConfig(level=logging.INFO)
 
 
+def _build_openai_client():
+    """Build a single shared OpenAI client, optionally LangSmith-wrapped.
+
+    When ``LANGSMITH_TRACING=true``, the client is wrapped with
+    ``langsmith.wrappers.wrap_openai`` so every chat completion becomes
+    a child span under the current trace.
+
+    Returns ``(client, raw_client)`` where ``raw_client`` is the
+    underlying ``AsyncOpenAI`` that must be closed on shutdown. When
+    tracing is disabled, ``client is raw_client``.
+
+    When ``OPENAI_API_KEY`` is empty, a dummy key is used so the client
+    constructs without error — actual API calls will fail, but the app
+    can still boot (e.g. for tests or when LLM features are disabled).
+    """
+    from openai import AsyncOpenAI
+
+    api_key = os.environ.get("OPENAI_API_KEY", "") or "dummy-key-for-boot"
+    raw_client = AsyncOpenAI(api_key=api_key)
+
+    tracing_enabled = os.environ.get("LANGSMITH_TRACING", "false").lower() in (
+        "1", "true", "yes",
+    )
+    if tracing_enabled:
+        from langsmith.wrappers import wrap_openai
+
+        traced_client = wrap_openai(raw_client)
+        _logger.info("OpenAI client wrapped with LangSmith tracing")
+        return traced_client, raw_client
+
+    return raw_client, raw_client
+
+
 class _SessionUserResolver:
     """Adapts :class:`PostgresUserResolver` to the :class:`UserResolver` protocol.
 
@@ -90,6 +123,12 @@ def create_app() -> FastAPI:
     # --- persistence -------------------------------------------------------
     db_settings = load_db_settings()
     repos = build_postgres_repos(db_settings)
+
+    # --- OpenAI client (shared, optionally LangSmith-wrapped) -------------
+    from echo_v2.observability.privacy import ensure_hash_key_or_fail
+
+    ensure_hash_key_or_fail()
+    openai_client, raw_openai_client = _build_openai_client()
 
     # --- Green (user's WhatsApp — sends scheduled messages) ---------------
     green_settings = load_green_settings()
@@ -153,7 +192,7 @@ def create_app() -> FastAPI:
 
     # --- time parser (regex first, LLM fallback) --------------------------
     llm_parser = LLMTimeParser(
-        api_key=os.environ.get("OPENAI_API_KEY", ""),
+        client=openai_client,
         model=os.environ.get("LLM_MODEL_NAME", "gpt-4.1"),
     )
     time_parser = CombinedTimeParser(llm_parser=llm_parser)
@@ -209,7 +248,7 @@ def create_app() -> FastAPI:
     from echo_v2.services.waiting_for_me_analyzer import LLMWaitingForMeAnalyzer
 
     analyzer = LLMWaitingForMeAnalyzer(
-        api_key=os.environ.get("OPENAI_API_KEY", ""),
+        client=openai_client,
         model=os.environ.get("LLM_MODEL_NAME", "gpt-4.1"),
     )
     analysis_processor = ChatAnalysisProcessor(
@@ -410,6 +449,12 @@ def create_app() -> FastAPI:
             except asyncio.CancelledError:
                 pass
             _logger.info("scheduler loop stopped")
+
+        # Close the shared OpenAI client.
+        try:
+            await raw_openai_client.close()
+        except Exception:
+            _logger.exception("error closing OpenAI client")
 
     app = FastAPI(title="Echo v2", version="0.1.0", lifespan=lifespan)
 

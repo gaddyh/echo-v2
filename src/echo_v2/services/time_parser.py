@@ -17,9 +17,8 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from datetime import datetime, timezone
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from echo_v2.services.time_parser_regex import TimeParseError, parse_time_expression
 
@@ -53,6 +52,14 @@ class LLMTimeParser:
     and the expression. It must return a JSON object with a single
     ``utc_datetime`` field in ISO 8601 format. The parser validates the
     output and raises :class:`TimeParseError` on any problem.
+
+    The OpenAI client is injected (not created per-call) so it can be
+    wrapped with ``langsmith.wrappers.wrap_openai`` for automatic tracing.
+
+    Args:
+        client: An OpenAI-compatible async client (e.g.
+            ``wrap_openai(AsyncOpenAI(...))``).
+        model: Model name. Default ``gpt-4.1``.
     """
 
     SYSTEM_PROMPT = (
@@ -70,10 +77,10 @@ class LLMTimeParser:
 
     def __init__(
         self,
-        api_key: str | None = None,
+        client: Any,
         model: str = "gpt-4.1",
     ) -> None:
-        self._api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
+        self._client = client
         self._model = model
 
     async def parse(
@@ -83,9 +90,6 @@ class LLMTimeParser:
         user_timezone: str,
         now_utc: datetime | None = None,
     ) -> datetime:
-        if not self._api_key:
-            raise TimeParseError("OPENAI_API_KEY not configured for LLM time parser")
-
         now = now_utc or datetime.now(timezone.utc)
         user_msg = (
             f'Expression: "{text}"\n'
@@ -93,11 +97,8 @@ class LLMTimeParser:
             f"Now (UTC): {now.isoformat()}"
         )
 
-        from openai import AsyncOpenAI
-
-        client = AsyncOpenAI(api_key=self._api_key)
         try:
-            response = await client.chat.completions.create(
+            response = await self._client.chat.completions.create(
                 model=self._model,
                 messages=[
                     {"role": "system", "content": self.SYSTEM_PROMPT},
@@ -109,8 +110,6 @@ class LLMTimeParser:
         except Exception as exc:
             _logger.warning("LLM time parser API error: %s", exc)
             raise TimeParseError(f"LLM time parser request failed: {exc}") from exc
-        finally:
-            await client.close()
 
         raw_output = response.choices[0].message.content or ""
         return _parse_llm_output(raw_output, now)

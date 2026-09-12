@@ -38,6 +38,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Literal, Protocol, runtime_checkable
 
+from langsmith import traceable
+
 from echo_v2.domain.chat import ChatState
 from echo_v2.domain.waiting_for_me import (
     PreparedAnalysis,
@@ -60,6 +62,29 @@ __all__ = [
 ]
 
 _logger = logging.getLogger("echo_v2.services.chat_analysis_worker")
+
+
+def safe_process_chat_inputs(inputs: dict) -> dict:
+    """Sanitize _process_chat inputs for LangSmith trace metadata.
+
+    Removes ``self`` and the full ``ChatState``. Keeps only safe
+    correlation fields: hashed IDs, version.
+    """
+    from echo_v2.observability.privacy import correlation_id
+
+    chat = inputs.get("chat")
+    if chat is None:
+        return {}
+    return {
+        "user_id_hash": correlation_id(chat.user_id),
+        "chat_id_hash": correlation_id(chat.chat_id),
+        "target_version": chat.activity_version,
+    }
+
+
+def safe_process_chat_output(output: str) -> dict:
+    """Sanitize _process_chat output for LangSmith trace metadata."""
+    return {"status": output}
 
 
 @dataclass(frozen=True)
@@ -291,6 +316,11 @@ class ChatAnalysisWorker:
                 _logger.info("chat analysis worker loop cancelled during sleep")
                 raise
 
+    @traceable(
+        name="wfm.analysis",
+        process_inputs=safe_process_chat_inputs,
+        process_outputs=safe_process_chat_output,
+    )
     async def _process_chat(
         self,
         chat: ChatState,

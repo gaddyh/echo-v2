@@ -36,6 +36,7 @@ prod = [
     "cryptography>=42.0.8",
     "phonenumbers>=8.13.55",
     "openai>=1.50",
+    "langsmith==0.12.4",
 ]
 dev = [
     "pytest>=7.0",
@@ -53,6 +54,7 @@ dev = [
     "phonenumbers>=8.13.55",
     "testcontainers[postgres]>=4.10.0",
     "openai>=1.50",
+    "langsmith==0.12.4",
 ]
 
 [tool.pytest.ini_options]

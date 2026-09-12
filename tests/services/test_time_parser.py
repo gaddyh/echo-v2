@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import json
-import os
 from datetime import datetime, timedelta, timezone
-from unittest.mock import patch
 
 import pytest
 
@@ -167,32 +165,6 @@ async def test_combined_parser_regex_fail_no_llm_raises():
 # --- LLMTimeParser ----------------------------------------------------------
 
 
-async def test_llm_parser_no_api_key_raises(monkeypatch):
-    """LLMTimeParser without an API key raises TimeParseError."""
-    from echo_v2.services.time_parser import LLMTimeParser
-
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    parser = LLMTimeParser(api_key="")
-    with pytest.raises(TimeParseError, match="OPENAI_API_KEY not configured"):
-        await parser.parse("מחר", user_timezone=TZ, now_utc=NOW)
-
-
-def test_llm_parser_uses_env_api_key():
-    """LLMTimeParser reads OPENAI_API_KEY from env if not passed."""
-    from echo_v2.services.time_parser import LLMTimeParser
-
-    old = os.environ.get("OPENAI_API_KEY")
-    os.environ["OPENAI_API_KEY"] = "test-key"
-    try:
-        parser = LLMTimeParser()
-        assert parser._api_key == "test-key"
-    finally:
-        if old is None:
-            os.environ.pop("OPENAI_API_KEY", None)
-        else:
-            os.environ["OPENAI_API_KEY"] = old
-
-
 async def test_llm_parser_parse_success():
     """LLMTimeParser.parse returns a future datetime from the LLM response."""
     from unittest.mock import AsyncMock, MagicMock
@@ -208,11 +180,9 @@ async def test_llm_parser_parse_success():
     mock_client.chat = MagicMock()
     mock_client.chat.completions = MagicMock()
     mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
-    mock_client.close = AsyncMock()
 
-    with patch("openai.AsyncOpenAI", return_value=mock_client):
-        parser = LLMTimeParser(api_key="test-key")
-        result = await parser.parse("sometime", user_timezone=TZ, now_utc=NOW)
+    parser = LLMTimeParser(client=mock_client)
+    result = await parser.parse("sometime", user_timezone=TZ, now_utc=NOW)
     assert result == NOW + timedelta(hours=2)
     assert result.tzinfo is not None
 
@@ -229,12 +199,10 @@ async def test_llm_parser_parse_api_error_raises():
     mock_client.chat.completions.create = AsyncMock(
         side_effect=RuntimeError("network error")
     )
-    mock_client.close = AsyncMock()
 
-    with patch("openai.AsyncOpenAI", return_value=mock_client):
-        parser = LLMTimeParser(api_key="test-key")
-        with pytest.raises(TimeParseError, match="LLM time parser request failed"):
-            await parser.parse("sometime", user_timezone=TZ, now_utc=NOW)
+    parser = LLMTimeParser(client=mock_client)
+    with pytest.raises(TimeParseError, match="LLM time parser request failed"):
+        await parser.parse("sometime", user_timezone=TZ, now_utc=NOW)
 
 
 # --- _parse_llm_output ------------------------------------------------------
@@ -325,12 +293,10 @@ async def test_combined_parser_falls_back_to_llm():
     mock_client.chat = MagicMock()
     mock_client.chat.completions = MagicMock()
     mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
-    mock_client.close = AsyncMock()
 
-    with patch("openai.AsyncOpenAI", return_value=mock_client):
-        llm = LLMTimeParser(api_key="test-key")
-        parser = CombinedTimeParser(llm_parser=llm)
-        result = await parser.parse("sometime next week", user_timezone=TZ, now_utc=NOW)
+    llm = LLMTimeParser(client=mock_client)
+    parser = CombinedTimeParser(llm_parser=llm)
+    result = await parser.parse("sometime next week", user_timezone=TZ, now_utc=NOW)
     assert result == NOW + timedelta(hours=2)
 
 
@@ -344,12 +310,10 @@ async def test_combined_parser_regex_success_no_llm_call():
     mock_client.chat = MagicMock()
     mock_client.chat.completions = MagicMock()
     mock_client.chat.completions.create = AsyncMock()
-    mock_client.close = AsyncMock()
 
-    with patch("openai.AsyncOpenAI", return_value=mock_client):
-        llm = LLMTimeParser(api_key="test-key")
-        parser = CombinedTimeParser(llm_parser=llm)
-        result = await parser.parse("מחר ב-8", user_timezone=TZ, now_utc=NOW)
+    llm = LLMTimeParser(client=mock_client)
+    parser = CombinedTimeParser(llm_parser=llm)
+    result = await parser.parse("מחר ב-8", user_timezone=TZ, now_utc=NOW)
     # Regex handled it — LLM was not called.
     mock_client.chat.completions.create.assert_not_called()
     assert result == datetime(2026, 9, 6, 5, 0, tzinfo=timezone.utc)
