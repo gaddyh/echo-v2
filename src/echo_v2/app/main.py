@@ -323,7 +323,7 @@ def create_app() -> FastAPI:
         mute_repo=repos.chat_mutes,
         user_resolver=flow_service._user_resolver,
         token_service=token_service,
-        base_url=os.environ.get("WAITING_LIST_BASE_URL", ""),
+        base_url=webhook_base_url,
     )
 
     # --- waiting-list mini web app (service + router) -----------------------
