@@ -136,7 +136,8 @@ def _make_handler(
     *,
     bot: FakeBot | None = None,
     user_id: str | None = USER_ID,
-    digest_sender=None,
+    token_service=None,
+    base_url: str = "https://echo.example.com",
 ) -> tuple[
     FeedbackHandler,
     WaitingForMeActionService,
@@ -177,7 +178,8 @@ def _make_handler(
         contact_repo=contact_repo,
         mute_repo=mute_repo,
         user_resolver=FakeUserResolver(user_id),
-        digest_sender=digest_sender,
+        token_service=token_service,
+        base_url=base_url,
     )
     return handler, action_service, feedback_service, active_repo, feedback_repo
 
@@ -1339,16 +1341,32 @@ async def test_unrelated_text_not_handled_by_list_done():
 # --- "סיכום חדש" on-demand digest -----------------------------------------
 
 
-async def test_digest_request_triggers_digest_sender():
-    """Sending 'סיכום חדש' calls the digest_sender and returns True."""
+class FakeTokenService:
+    """Records issued tokens; returns a predictable token."""
+
+    def __init__(self, *, fail: bool = False) -> None:
+        self.fail = fail
+        self.issued: list[str] = []
+
+    async def issue(self, user_id: str) -> tuple[str, str]:
+        if self.fail:
+            raise RuntimeError("token service down")
+        token = f"tok-{len(self.issued) + 1}"
+        self.issued.append(token)
+        return (f"session-{len(self.issued)}", token)
+
+
+async def test_digest_request_sends_link_with_count():
+    """Sending 'סיכום חדש' with active items sends a text with the link."""
     bot = FakeBot()
-    digest_calls: list[tuple[str, str]] = []
+    tokens = FakeTokenService()
+    handler, _action_service, _, active_repo, _ = _make_handler(
+        bot=bot, token_service=tokens, base_url="https://echo.example.com"
+    )
+    # Set up an active item so the count is 1.
+    await _setup_active(active_repo)
+    await _setup_chat_state(handler, CHAT_ID, version=1)
 
-    async def fake_digest_sender(user_id: str, phone: str) -> bool:
-        digest_calls.append((user_id, phone))
-        return True
-
-    handler, *_ = _make_handler(bot=bot, digest_sender=fake_digest_sender)
     event = _make_event(
         event_id="evt-digest-1",
         event_type=BotEventType.TEXT,
@@ -1356,20 +1374,18 @@ async def test_digest_request_triggers_digest_sender():
     )
     handled = await handler.handle(event)
     assert handled is True
-    assert len(digest_calls) == 1
-    assert digest_calls[0] == (USER_ID, USER_PHONE)
-    # No fallback text — the digest template was sent.
-    assert len(bot.texts) == 0
+    assert len(bot.texts) == 1
+    phone, text = bot.texts[0]
+    assert phone == USER_PHONE
+    assert "1 שיחות" in text
+    assert "https://echo.example.com/q/tok-1" in text
 
 
 async def test_digest_request_no_active_items_replies_empty():
-    """If digest_sender returns False (no items), reply with 'no waiting'."""
+    """If no active items, reply with 'no waiting'."""
     bot = FakeBot()
-
-    async def fake_digest_sender(user_id: str, phone: str) -> bool:
-        return False
-
-    handler, *_ = _make_handler(bot=bot, digest_sender=fake_digest_sender)
+    tokens = FakeTokenService()
+    handler, *_ = _make_handler(bot=bot, token_service=tokens)
     event = _make_event(
         event_id="evt-digest-2",
         event_type=BotEventType.TEXT,
@@ -1379,10 +1395,12 @@ async def test_digest_request_no_active_items_replies_empty():
     assert handled is True
     assert len(bot.texts) == 1
     assert "מחכות" in bot.texts[0][1]
+    # No token issued since no items.
+    assert len(tokens.issued) == 0
 
 
-async def test_digest_request_no_sender_falls_through():
-    """Without a digest_sender, 'סיכום חדש' falls through to the next handler."""
+async def test_digest_request_no_token_service_falls_through():
+    """Without a token_service, 'סיכום חדש' falls through to the next handler."""
     bot = FakeBot()
     handler, *_ = _make_handler(bot=bot)
     event = _make_event(
@@ -1395,18 +1413,90 @@ async def test_digest_request_no_sender_falls_through():
     assert len(bot.texts) == 0
 
 
-async def test_digest_request_unknown_user_returns_false():
-    """If the user is unknown, the digest request is not handled."""
+async def test_digest_request_token_failure_replies_error():
+    """If the token service fails, reply with an error message."""
     bot = FakeBot()
+    tokens = FakeTokenService(fail=True)
+    handler, _action_service, _, active_repo, _ = _make_handler(
+        bot=bot, token_service=tokens
+    )
+    # Set up an active item so we reach the token issuance.
+    await _setup_active(active_repo)
+    await _setup_chat_state(handler, CHAT_ID, version=1)
 
-    async def fake_digest_sender(user_id: str, phone: str) -> bool:
-        return True
-
-    handler, *_ = _make_handler(bot=bot, user_id=None, digest_sender=fake_digest_sender)
     event = _make_event(
         event_id="evt-digest-4",
         event_type=BotEventType.TEXT,
         text="סיכום חדש",
     )
     handled = await handler.handle(event)
+    assert handled is True
+    assert len(bot.texts) == 1
+    assert "שגיאה" in bot.texts[0][1]
+
+
+async def test_digest_request_unknown_user_returns_false():
+    """If the user is unknown, the digest request is not handled."""
+    bot = FakeBot()
+    tokens = FakeTokenService()
+    handler, *_ = _make_handler(bot=bot, user_id=None, token_service=tokens)
+    event = _make_event(
+        event_id="evt-digest-5",
+        event_type=BotEventType.TEXT,
+        text="סיכום חדש",
+    )
+    handled = await handler.handle(event)
     assert handled is False
+
+
+async def test_digest_request_skips_stale_acknowledged_snoozed_muted():
+    """Active items that are stale, acknowledged, snoozed, or muted are
+    excluded from the count — the digest reply says 'no waiting'."""
+    from datetime import timedelta
+
+    bot = FakeBot()
+    tokens = FakeTokenService()
+    handler, _action_service, _, active_repo, _ = _make_handler(
+        bot=bot, token_service=tokens
+    )
+
+    # Stale: chat activity_version != target_version.
+    await _setup_active(active_repo, chat_id="stale@c.us", target_version=99)
+    await _setup_chat_state(handler, "stale@c.us", version=1)
+
+    # Acknowledged: acknowledged_at is set.
+    await _setup_active(active_repo, chat_id="ack@c.us")
+    await _setup_chat_state(handler, "ack@c.us", version=1)
+    await active_repo.acknowledge(
+        user_id=USER_ID, chat_id="ack@c.us",
+        acknowledged_at=datetime.now(timezone.utc),
+    )
+
+    # Snoozed: snoozed_until in the future.
+    await _setup_active(active_repo, chat_id="snz@c.us")
+    await _setup_chat_state(handler, "snz@c.us", version=1)
+    future = datetime.now(timezone.utc) + timedelta(hours=1)
+    await active_repo.snooze(
+        user_id=USER_ID, chat_id="snz@c.us", snoozed_until=future,
+    )
+
+    # Muted: mute repo has a mute for this chat.
+    await _setup_active(active_repo, chat_id="mut@c.us")
+    await _setup_chat_state(handler, "mut@c.us", version=1)
+    await handler._mute_repo.mute_temporary(
+        user_id=USER_ID,
+        chat_id="mut@c.us",
+        muted_until=datetime.now(timezone.utc) + timedelta(hours=24),
+    )
+
+    event = _make_event(
+        event_id="evt-digest-skip",
+        event_type=BotEventType.TEXT,
+        text="סיכום חדש",
+    )
+    handled = await handler.handle(event)
+    assert handled is True
+    # All items skipped → count is 0 → "no waiting" reply.
+    assert len(bot.texts) == 1
+    assert "מחכות" in bot.texts[0][1]
+    assert len(tokens.issued) == 0

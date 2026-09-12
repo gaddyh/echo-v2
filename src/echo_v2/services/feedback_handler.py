@@ -111,7 +111,8 @@ class FeedbackHandler:
         contact_repo: ContactRepository,
         mute_repo: ChatMuteRepository,
         user_resolver,
-        digest_sender=None,
+        token_service=None,
+        base_url: str = "",
     ) -> None:
         self._bot = bot
         self._action_service = action_service
@@ -123,7 +124,8 @@ class FeedbackHandler:
         self._contact_repo = contact_repo
         self._mute_repo = mute_repo
         self._user_resolver = user_resolver
-        self._digest_sender = digest_sender
+        self._token_service = token_service
+        self._base_url = base_url
 
     async def handle(self, event: BotEvent) -> bool:
         """Check if this is a feedback-related event and handle it.
@@ -146,7 +148,7 @@ class FeedbackHandler:
             event.type is BotEventType.TEXT
             and event.text
             and "סיכום חדש" in event.text
-            and self._digest_sender is not None
+            and self._token_service is not None
         ):
             return await self._handle_digest_request(event)
 
@@ -227,18 +229,56 @@ class FeedbackHandler:
         return True
 
     async def _handle_digest_request(self, event: BotEvent) -> bool:
-        """Handle 'סיכום חדש' — send an on-demand digest."""
+        """Handle 'סיכום חדש' — send a regular text with the waiting-list link.
+
+        Since the user just messaged us, we're in the 24-hour window and
+        can send a free-text message (no template needed).
+        """
         user_info = await self._user_resolver.resolve(event.user_phone)
         if user_info is None:
             return False
 
         user_id = user_info[0]
-        sent = await self._digest_sender(user_id, event.user_phone)
-        if not sent:
+        now = datetime.now(timezone.utc)
+
+        # Count active, non-snoozed, non-muted items.
+        all_active = await self._active_repo.list_all_for_user(user_id=user_id)
+        count = 0
+        for active in all_active:
+            chat = await self._chat_state_repo.get(user_id, active.chat_id)
+            if chat is None or chat.activity_version != active.target_version:
+                continue
+            if active.acknowledged_at is not None:
+                continue
+            if active.snoozed_until is not None and active.snoozed_until > now:
+                continue
+            if await self._mute_repo.is_muted(
+                user_id=user_id, chat_id=active.chat_id, now=now
+            ):
+                continue
+            count += 1
+
+        if count == 0:
             await self._bot.send_text(
                 event.user_phone,
                 "אין כרגע שיחות שמחכות לטיפול. 👍",
             )
+            return True
+
+        # Issue a waiting-list token and build the link.
+        try:
+            _session_id, raw_token = await self._token_service.issue(user_id)
+        except Exception:
+            _logger.exception("failed to issue token for user %s", user_id)
+            await self._bot.send_text(
+                event.user_phone,
+                "אירעה שגיאה. נסה שוב.",
+            )
+            return True
+
+        link = f"{self._base_url}/q/{raw_token}"
+        text = f"יש לך {count} שיחות שמחכות לטיפול.\n{link}"
+        await self._bot.send_text(event.user_phone, text)
         return True
 
     async def _handle_action(self, event: BotEvent) -> bool:
