@@ -251,7 +251,7 @@ function renderItems(data) {
     return;
   }
   const oldestHours = data.items[0].waiting_hours;
-  const backUrl = "https://wa.me/" + BOT_PHONE;
+  const backUrl = "https://wa.me/" + BOT_PHONE + "?text=" + encodeURIComponent("תודה");
   let html = '<div class="back-bar"><a href="' + backUrl + '">← חזרה ל־WhatsApp</a></div>';
   html += '<div class="header"><h1>' + data.items.length + ' ממתינים לטיפול</h1>';
   if (oldestHours > 0) {
@@ -393,7 +393,7 @@ function checkEmpty(summary) {
 
 function renderSummary(summary) {
   const app = document.getElementById("app");
-  const backUrl = "https://wa.me/" + BOT_PHONE + "?text=" + encodeURIComponent("סיימתי לטפל ברשימה");
+  const backUrl = "https://wa.me/" + BOT_PHONE + "?text=" + encodeURIComponent("תודה");
   app.innerHTML = '<div class="summary">'
     + '<div class="icon">✅</div>'
     + '<h2>סיימת לעבור על הרשימה</h2>'
