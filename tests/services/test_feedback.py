@@ -1269,3 +1269,66 @@ async def test_feedback_repo_record_no_message_id_no_result_id():
     )
     assert result is not None
     assert result.verdict == FeedbackVerdict.CORRECT
+
+
+# --- "סיימתי לעבור על רשימת ההמתנה" text -----------------------------------
+
+
+async def test_list_done_text_replies_nicely():
+    """When the user sends the prefilled 'finished reviewing' text, the
+    bot replies with a thank-you message and does not enter the flow."""
+    bot = FakeBot()
+    handler, *_ = _make_handler(bot=bot)
+    event = _make_event(
+        event_id="evt-done-1",
+        event_type=BotEventType.TEXT,
+        text="סיימתי לעבור על רשימת ההמתנה ✅, תודה",
+    )
+    handled = await handler.handle(event)
+    assert handled is True
+    assert len(bot.texts) == 1
+    phone, text = bot.texts[0]
+    assert phone == USER_PHONE
+    assert "תודה" in text
+
+
+async def test_list_done_text_partial_match_still_handled():
+    """The match is on the prefix, so variations with/without emoji work."""
+    bot = FakeBot()
+    handler, *_ = _make_handler(bot=bot)
+    event = _make_event(
+        event_id="evt-done-2",
+        event_type=BotEventType.TEXT,
+        text="סיימתי לעבור על רשימת ההמתנה",
+    )
+    handled = await handler.handle(event)
+    assert handled is True
+    assert len(bot.texts) == 1
+
+
+async def test_list_done_text_unknown_user_still_replies():
+    """Even if the user is unknown, the bot replies (no resolver needed)."""
+    bot = FakeBot()
+    handler, *_ = _make_handler(bot=bot, user_id=None)
+    event = _make_event(
+        event_id="evt-done-3",
+        event_type=BotEventType.TEXT,
+        text="סיימתי לעבור על רשימת ההמתנה ✅, תודה",
+    )
+    handled = await handler.handle(event)
+    assert handled is True
+    assert len(bot.texts) == 1
+
+
+async def test_unrelated_text_not_handled_by_list_done():
+    """Unrelated text should not trigger the list-done reply."""
+    bot = FakeBot()
+    handler, *_ = _make_handler(bot=bot)
+    event = _make_event(
+        event_id="evt-other-1",
+        event_type=BotEventType.TEXT,
+        text="שלח תזכורת לדנה",
+    )
+    handled = await handler.handle(event)
+    assert handled is False
+    assert len(bot.texts) == 0

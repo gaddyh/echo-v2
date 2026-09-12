@@ -56,6 +56,12 @@ _logger = logging.getLogger("echo_v2.services.feedback_handler")
 # Template button text (Hebrew).
 _VIEW_DETAILS_BUTTON = "צפה בשיחות"
 
+# Text the user sends after finishing the waiting-list review (prefilled
+# in the mini app's back-to-WhatsApp link). Recognized before the
+# scheduling flow so the bot replies nicely instead of "send a contact".
+_LIST_DONE_TEXT = "סיימתי לעבור על רשימת ההמתנה"
+_LIST_DONE_REPLY = "👍 תודה שטיפלת ברשימה! אם תצטרך, פשוט שלח סיכום חדש."
+
 # Card buttons (3).
 _BUTTON_HANDLED = "טופל"
 _BUTTON_SNOOZE = "להזכיר לי"
@@ -123,6 +129,16 @@ class FeedbackHandler:
         Returns ``True`` if handled, ``False`` if the event should be
         passed to the next handler.
         """
+        # 0. User finished the waiting-list review (prefilled text from
+        # the mini app's back-to-WhatsApp link). Reply nicely and stop.
+        if (
+            event.type is BotEventType.TEXT
+            and event.text
+            and _LIST_DONE_TEXT in event.text
+        ):
+            await self._bot.send_text(event.user_phone, _LIST_DONE_REPLY)
+            return True
+
         # 1. Template button tap: "צפה בשיחות" (with or without brackets)
         if (
             event.type is BotEventType.TEXT
