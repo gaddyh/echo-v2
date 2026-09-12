@@ -299,7 +299,7 @@ function attachCardListeners() {
     const version = parseInt(card.dataset.version);
     // Set text content safely (textContent, not innerHTML).
     // The item data is stored in the card's dataset for XSS safety.
-    card.querySelectorAll("button").forEach(btn => {
+    card.querySelectorAll("button, .snooze-other").forEach(btn => {
       btn.addEventListener("click", () => {
         const action = btn.dataset.action;
         handleAction(card, itemId, version, action);
