@@ -111,6 +111,7 @@ class FeedbackHandler:
         contact_repo: ContactRepository,
         mute_repo: ChatMuteRepository,
         user_resolver,
+        digest_sender=None,
     ) -> None:
         self._bot = bot
         self._action_service = action_service
@@ -122,6 +123,7 @@ class FeedbackHandler:
         self._contact_repo = contact_repo
         self._mute_repo = mute_repo
         self._user_resolver = user_resolver
+        self._digest_sender = digest_sender
 
     async def handle(self, event: BotEvent) -> bool:
         """Check if this is a feedback-related event and handle it.
@@ -138,6 +140,15 @@ class FeedbackHandler:
         ):
             await self._bot.send_text(event.user_phone, _LIST_DONE_REPLY)
             return True
+
+        # 0b. User requests a new digest ("סיכום חדש" / "סיכום חדש בבקשה").
+        if (
+            event.type is BotEventType.TEXT
+            and event.text
+            and "סיכום חדש" in event.text
+            and self._digest_sender is not None
+        ):
+            return await self._handle_digest_request(event)
 
         # 1. Template button tap: "צפה בשיחות" (with or without brackets)
         if (
@@ -213,6 +224,21 @@ class FeedbackHandler:
             )
 
         _logger.info("feedback: sent %d cards to %s", total, user_id)
+        return True
+
+    async def _handle_digest_request(self, event: BotEvent) -> bool:
+        """Handle 'סיכום חדש' — send an on-demand digest."""
+        user_info = await self._user_resolver.resolve(event.user_phone)
+        if user_info is None:
+            return False
+
+        user_id = user_info[0]
+        sent = await self._digest_sender(user_id, event.user_phone)
+        if not sent:
+            await self._bot.send_text(
+                event.user_phone,
+                "אין כרגע שיחות שמחכות לטיפול. 👍",
+            )
         return True
 
     async def _handle_action(self, event: BotEvent) -> bool:

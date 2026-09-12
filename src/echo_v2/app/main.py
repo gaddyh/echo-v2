@@ -322,6 +322,7 @@ def create_app() -> FastAPI:
         contact_repo=contact_repo,
         mute_repo=repos.chat_mutes,
         user_resolver=flow_service._user_resolver,
+        digest_sender=digest_worker.send_digest_for_user,
     )
 
     # --- waiting-list mini web app (service + router) -----------------------

@@ -253,6 +253,72 @@ class DigestWorker:
         )
         return True
 
+    async def send_digest_for_user(
+        self,
+        user_id: str,
+        phone: str,
+        tz_name: str | None,
+        first_name: str | None,
+        *,
+        now_utc: datetime | None = None,
+    ) -> bool:
+        """Send an on-demand digest to a user immediately.
+
+        Skips the digest window check and the daily claim — just queries
+        active items, builds the digest, and sends the template.
+
+        Returns ``True`` if sent, ``False`` if no active items or send failed.
+        """
+        # Query active waiting chats with version match.
+        if self._query_service is not None:
+            active_states = await self._query_service.current_actionable(user_id)
+        else:
+            active_states = await self._get_current_active(user_id)
+
+        if not active_states:
+            return False
+
+        # Build digest items.
+        items = await self._build_items(user_id, active_states)
+
+        # Format template parameters.
+        name = first_name or "חבר"
+        params = self._formatter.format(items, first_name=name)
+
+        # Issue a waiting-list web session token (if token service is wired).
+        url_suffix: str | None = None
+        if self._token_service is not None:
+            try:
+                _session_id, raw_token = await self._token_service.issue(user_id)
+                url_suffix = raw_token
+            except Exception:
+                _logger.exception(
+                    "failed to issue waiting-list token for user %s, "
+                    "sending digest without URL button", user_id
+                )
+
+        # Send via bot template.
+        try:
+            await self._bot.send_template(
+                phone,
+                self._template_name,
+                "he",
+                [params.first_name, params.count],
+                url_suffix=url_suffix,
+            )
+        except Exception:
+            _logger.exception(
+                "on-demand digest send failed for user %s", user_id
+            )
+            return False
+
+        _logger.info(
+            "on-demand digest sent to user %s: %d items",
+            user_id,
+            len(active_states),
+        )
+        return True
+
     async def _get_current_active(self, user_id: str) -> list[WaitingForMeActive]:
         """Get active states where target_version matches chats.activity_version.
 

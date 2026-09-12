@@ -136,6 +136,7 @@ def _make_handler(
     *,
     bot: FakeBot | None = None,
     user_id: str | None = USER_ID,
+    digest_sender=None,
 ) -> tuple[
     FeedbackHandler,
     WaitingForMeActionService,
@@ -176,6 +177,7 @@ def _make_handler(
         contact_repo=contact_repo,
         mute_repo=mute_repo,
         user_resolver=FakeUserResolver(user_id),
+        digest_sender=digest_sender,
     )
     return handler, action_service, feedback_service, active_repo, feedback_repo
 
@@ -1332,3 +1334,79 @@ async def test_unrelated_text_not_handled_by_list_done():
     handled = await handler.handle(event)
     assert handled is False
     assert len(bot.texts) == 0
+
+
+# --- "סיכום חדש" on-demand digest -----------------------------------------
+
+
+async def test_digest_request_triggers_digest_sender():
+    """Sending 'סיכום חדש' calls the digest_sender and returns True."""
+    bot = FakeBot()
+    digest_calls: list[tuple[str, str]] = []
+
+    async def fake_digest_sender(user_id: str, phone: str) -> bool:
+        digest_calls.append((user_id, phone))
+        return True
+
+    handler, *_ = _make_handler(bot=bot, digest_sender=fake_digest_sender)
+    event = _make_event(
+        event_id="evt-digest-1",
+        event_type=BotEventType.TEXT,
+        text="סיכום חדש",
+    )
+    handled = await handler.handle(event)
+    assert handled is True
+    assert len(digest_calls) == 1
+    assert digest_calls[0] == (USER_ID, USER_PHONE)
+    # No fallback text — the digest template was sent.
+    assert len(bot.texts) == 0
+
+
+async def test_digest_request_no_active_items_replies_empty():
+    """If digest_sender returns False (no items), reply with 'no waiting'."""
+    bot = FakeBot()
+
+    async def fake_digest_sender(user_id: str, phone: str) -> bool:
+        return False
+
+    handler, *_ = _make_handler(bot=bot, digest_sender=fake_digest_sender)
+    event = _make_event(
+        event_id="evt-digest-2",
+        event_type=BotEventType.TEXT,
+        text="סיכום חדש בבקשה",
+    )
+    handled = await handler.handle(event)
+    assert handled is True
+    assert len(bot.texts) == 1
+    assert "מחכות" in bot.texts[0][1]
+
+
+async def test_digest_request_no_sender_falls_through():
+    """Without a digest_sender, 'סיכום חדש' falls through to the next handler."""
+    bot = FakeBot()
+    handler, *_ = _make_handler(bot=bot)
+    event = _make_event(
+        event_id="evt-digest-3",
+        event_type=BotEventType.TEXT,
+        text="סיכום חדש",
+    )
+    handled = await handler.handle(event)
+    assert handled is False
+    assert len(bot.texts) == 0
+
+
+async def test_digest_request_unknown_user_returns_false():
+    """If the user is unknown, the digest request is not handled."""
+    bot = FakeBot()
+
+    async def fake_digest_sender(user_id: str, phone: str) -> bool:
+        return True
+
+    handler, *_ = _make_handler(bot=bot, user_id=None, digest_sender=fake_digest_sender)
+    event = _make_event(
+        event_id="evt-digest-4",
+        event_type=BotEventType.TEXT,
+        text="סיכום חדש",
+    )
+    handled = await handler.handle(event)
+    assert handled is False
