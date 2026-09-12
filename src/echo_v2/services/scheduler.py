@@ -29,7 +29,12 @@ from datetime import datetime, timezone
 
 from echo_v2.domain.scheduling import ScheduledAction
 from echo_v2.persistence.scheduled_actions import ScheduledActionRepository
-from echo_v2.runtime.errors import IndeterminateError, PermanentError
+from echo_v2.runtime.errors import (
+    ApplicationError,
+    IndeterminateError,
+    PermanentError,
+    RetryableError,
+)
 from echo_v2.services.scheduling import SchedulingService
 
 __all__ = ["Scheduler"]
@@ -115,7 +120,13 @@ class Scheduler:
                     raise
 
     async def _execute_action(self, action: ScheduledAction) -> None:
-        """Execute a claimed action, handling all terminal outcomes."""
+        """Execute a claimed action, handling all terminal outcomes.
+
+        The service (SchedulingService.execute) already marks the action
+        for IndeterminateError and PermanentError. For any other exception,
+        the action is still IN_PROGRESS — we mark it here to prevent it
+        from being stuck forever (only recover_stale would reset it).
+        """
         try:
             msg_id = await self._service.execute(action)
             _logger.info(
@@ -132,4 +143,25 @@ class Scheduler:
             # The service already marked the action FAILED.
             _logger.warning(
                 "scheduler action %s failed: %s", action.id, exc
+            )
+        except RetryableError as exc:
+            # Transient error — the service did not mark the action.
+            # Mark as failed so it doesn't stay IN_PROGRESS forever.
+            await self._action_repo.mark_failed(action.id, str(exc))
+            _logger.warning(
+                "scheduler action %s retryable error: %s", action.id, exc
+            )
+        except ApplicationError as exc:
+            # Expected application error — mark as failed.
+            await self._action_repo.mark_failed(action.id, str(exc))
+            _logger.warning(
+                "scheduler action %s application error: %s", action.id, exc
+            )
+        except Exception as exc:
+            # Unexpected error during an external write — we don't know
+            # if the side effect happened. Mark as indeterminate to
+            # prevent a blind retry.
+            await self._action_repo.mark_indeterminate(action.id, str(exc))
+            _logger.exception(
+                "scheduler action %s unexpected error: %s", action.id, exc
             )

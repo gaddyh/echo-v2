@@ -104,7 +104,7 @@ async def test_claim_due_skips_non_pending():
 
 async def test_mark_succeeded_sets_status_and_result():
     repo = InMemoryScheduledActionRepository()
-    await repo.save(_make_action())
+    await repo.save(_make_action(status=ScheduledActionStatus.IN_PROGRESS))
     await repo.mark_succeeded("act-1", {"provider_message_id": "MSG_1"})
     action = await repo.get("act-1")
     assert action.status is ScheduledActionStatus.SUCCEEDED
@@ -114,7 +114,7 @@ async def test_mark_succeeded_sets_status_and_result():
 
 async def test_mark_failed_sets_status_and_error():
     repo = InMemoryScheduledActionRepository()
-    await repo.save(_make_action())
+    await repo.save(_make_action(status=ScheduledActionStatus.IN_PROGRESS))
     await repo.mark_failed("act-1", "boom")
     action = await repo.get("act-1")
     assert action.status is ScheduledActionStatus.FAILED
@@ -123,11 +123,20 @@ async def test_mark_failed_sets_status_and_error():
 
 async def test_mark_indeterminate_sets_status_and_error():
     repo = InMemoryScheduledActionRepository()
-    await repo.save(_make_action())
+    await repo.save(_make_action(status=ScheduledActionStatus.IN_PROGRESS))
     await repo.mark_indeterminate("act-1", "timeout")
     action = await repo.get("act-1")
     assert action.status is ScheduledActionStatus.INDETERMINATE
     assert action.error == "timeout"
+
+
+async def test_mark_terminal_ignores_non_in_progress():
+    """Late terminal writes to PENDING (recovered) actions are no-ops."""
+    repo = InMemoryScheduledActionRepository()
+    await repo.save(_make_action(status=ScheduledActionStatus.PENDING))
+    await repo.mark_succeeded("act-1", {"provider_message_id": "MSG_1"})
+    action = await repo.get("act-1")
+    assert action.status is ScheduledActionStatus.PENDING  # unchanged
 
 
 async def test_cancel_pending_action():

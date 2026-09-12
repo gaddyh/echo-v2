@@ -177,6 +177,65 @@ async def test_run_once_handles_permanent_failure_and_continues():
     assert action.status is ScheduledActionStatus.FAILED
 
 
+async def test_run_once_handles_retryable_error_marks_failed():
+    """RetryableError from service marks the action FAILED (not stuck IN_PROGRESS)."""
+    from echo_v2.integrations.green.client import GreenApiTransientError
+
+    messaging = FakeMessaging(fail_with=GreenApiTransientError("transient"))
+    scheduler, action_repo, _ = _make_scheduler(messaging=messaging)
+    await action_repo.save(_due_action())
+
+    processed = await scheduler.run_once()
+    assert processed is True
+    action = await action_repo.get("act-1")
+    assert action.status is ScheduledActionStatus.FAILED
+    assert "transient" in (action.error or "")
+
+
+async def test_run_once_handles_application_error_marks_failed():
+    """ApplicationError from service marks the action FAILED."""
+
+    class _FakeAppError(Exception):
+        pass
+
+    # Patch the service.execute to raise ApplicationError.
+    scheduler, action_repo, _ = _make_scheduler()
+    await action_repo.save(_due_action())
+
+    from echo_v2.runtime.errors import ApplicationError
+
+    original = scheduler._service.execute
+
+    async def raise_app_error(action):
+        raise ApplicationError("app boom")
+
+    scheduler._service.execute = raise_app_error  # type: ignore[method-assign]
+
+    processed = await scheduler.run_once()
+    assert processed is True
+    action = await action_repo.get("act-1")
+    assert action.status is ScheduledActionStatus.FAILED
+    assert "app boom" in (action.error or "")
+
+
+async def test_run_once_handles_unexpected_error_marks_indeterminate():
+    """Unexpected Exception from service marks the action INDETERMINATE."""
+
+    scheduler, action_repo, _ = _make_scheduler()
+    await action_repo.save(_due_action())
+
+    async def raise_unexpected(action):
+        raise RuntimeError("unexpected boom")
+
+    scheduler._service.execute = raise_unexpected  # type: ignore[method-assign]
+
+    processed = await scheduler.run_once()
+    assert processed is True
+    action = await action_repo.get("act-1")
+    assert action.status is ScheduledActionStatus.INDETERMINATE
+    assert "unexpected boom" in (action.error or "")
+
+
 async def test_run_once_processes_multiple_actions_sequentially():
     scheduler, action_repo, messaging = _make_scheduler()
     await action_repo.save(_due_action(id="a1", minutes_from_now=-2))

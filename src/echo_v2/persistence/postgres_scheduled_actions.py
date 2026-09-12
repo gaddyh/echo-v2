@@ -223,11 +223,17 @@ class PostgresScheduledActionRepository(ScheduledActionRepository):
         result: dict[str, Any] | None = None,
         error: str | None = None,
     ) -> None:
+        """Mark an action with a terminal status, only if currently IN_PROGRESS.
+
+        Guards against late terminal writes: if the action was recovered
+        to PENDING by another worker (lease expired), this is a no-op.
+        """
         now = datetime.now(timezone.utc)
         async with self._session() as session:
             stmt = (
                 update(ScheduledActionRow)
                 .where(ScheduledActionRow.id == action_id)
+                .where(ScheduledActionRow.status == ScheduledActionStatus.IN_PROGRESS.value)
                 .values(
                     status=status.value,
                     result=result,

@@ -49,7 +49,6 @@ from echo_v2.persistence.compose import build_postgres_repos
 from echo_v2.persistence.conversation_state import InMemoryConversationStateRepository
 from echo_v2.persistence.settings import load_db_settings
 from echo_v2.persistence.user_resolver import PostgresUserResolver
-from echo_v2.runtime.idempotency import InMemoryIdempotencyStore
 from echo_v2.services.chat_analysis_worker import (
     ChatAnalysisProcessor,
     ChatAnalysisWorker,
@@ -166,11 +165,9 @@ def create_app() -> FastAPI:
     )
 
     # --- scheduling service (executes due actions) ------------------------
-    # In-memory idempotency for now — a Postgres implementation exists but
-    # we use in-memory to keep the bootstrap simple. The scheduler's
-    # idempotency is primarily enforced by the ScheduledAction status
-    # machine (claim → in_progress → succeeded) plus this store.
-    idempotency_store = InMemoryIdempotencyStore()
+    # Persistent idempotency store — survives restarts, prevents double-sends.
+    # The Postgres implementation is built in compose.py as repos.idempotency.
+    idempotency_store = repos.idempotency
     # --- snooze reminder validator --------------------------------------
     # Before sending a snooze reminder, check that the active item still
     # matches the state when the reminder was scheduled. This prevents

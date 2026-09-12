@@ -207,6 +207,10 @@ class InMemoryScheduledActionRepository(ScheduledActionRepository):
         action = self._actions.get(action_id)
         if action is None:
             return
+        # Guard: only transition from IN_PROGRESS to a terminal status.
+        # A late terminal write after recover_stale reset to PENDING is a no-op.
+        if action.status is not ScheduledActionStatus.IN_PROGRESS:
+            return
         self._actions[action_id] = replace(
             action,
             status=status,

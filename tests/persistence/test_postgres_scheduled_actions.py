@@ -117,7 +117,9 @@ async def test_claim_due_skips_non_pending(scheduled_actions_repo, session_facto
 
 async def test_mark_succeeded(scheduled_actions_repo, session_factory):
     user_id = await insert_user(session_factory)
-    await scheduled_actions_repo.save(_make_action(user_id))
+    await scheduled_actions_repo.save(
+        _make_action(user_id, status=ScheduledActionStatus.IN_PROGRESS)
+    )
     await scheduled_actions_repo.mark_succeeded(_ACT1, {"provider_message_id": "MSG_1"})
     action = await scheduled_actions_repo.get(_ACT1)
     assert action.status is ScheduledActionStatus.SUCCEEDED
@@ -127,7 +129,9 @@ async def test_mark_succeeded(scheduled_actions_repo, session_factory):
 
 async def test_mark_failed(scheduled_actions_repo, session_factory):
     user_id = await insert_user(session_factory)
-    await scheduled_actions_repo.save(_make_action(user_id))
+    await scheduled_actions_repo.save(
+        _make_action(user_id, status=ScheduledActionStatus.IN_PROGRESS)
+    )
     await scheduled_actions_repo.mark_failed(_ACT1, "boom")
     action = await scheduled_actions_repo.get(_ACT1)
     assert action.status is ScheduledActionStatus.FAILED
@@ -136,11 +140,22 @@ async def test_mark_failed(scheduled_actions_repo, session_factory):
 
 async def test_mark_indeterminate(scheduled_actions_repo, session_factory):
     user_id = await insert_user(session_factory)
-    await scheduled_actions_repo.save(_make_action(user_id))
+    await scheduled_actions_repo.save(
+        _make_action(user_id, status=ScheduledActionStatus.IN_PROGRESS)
+    )
     await scheduled_actions_repo.mark_indeterminate(_ACT1, "timeout")
     action = await scheduled_actions_repo.get(_ACT1)
     assert action.status is ScheduledActionStatus.INDETERMINATE
     assert action.error == "timeout"
+
+
+async def test_mark_terminal_ignores_non_in_progress(scheduled_actions_repo, session_factory):
+    """Late terminal writes to PENDING (recovered) actions are no-ops."""
+    user_id = await insert_user(session_factory)
+    await scheduled_actions_repo.save(_make_action(user_id))  # PENDING
+    await scheduled_actions_repo.mark_succeeded(_ACT1, {"provider_message_id": "MSG_1"})
+    action = await scheduled_actions_repo.get(_ACT1)
+    assert action.status is ScheduledActionStatus.PENDING  # unchanged
 
 
 async def test_cancel_pending(scheduled_actions_repo, session_factory):

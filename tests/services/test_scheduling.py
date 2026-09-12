@@ -105,7 +105,7 @@ def _make_pending_action(
         type=ScheduledActionType.SEND_WHATSAPP_MESSAGE,
         execute_at_utc=datetime(2026, 9, 5, 8, tzinfo=timezone.utc),
         timezone="Asia/Jerusalem",
-        status=ScheduledActionStatus.PENDING,
+        status=ScheduledActionStatus.IN_PROGRESS,
         payload=payload or {"chat_id": "972@c.us", "message": "hello"},
     )
 
@@ -313,7 +313,7 @@ async def test_execute_unsupported_type_raises_value_error():
         type=ScheduledActionType.SEND_REMINDER,
         execute_at_utc=datetime(2026, 9, 5, 8, tzinfo=timezone.utc),
         timezone="Asia/Jerusalem",
-        status=ScheduledActionStatus.PENDING,
+        status=ScheduledActionStatus.IN_PROGRESS,
         payload={"message": "reminder"},
     )
     await service._action_repo.save(action)
@@ -382,7 +382,7 @@ def _make_bot_action(
         type=ScheduledActionType.SEND_BOT_MESSAGE,
         execute_at_utc=datetime(2026, 9, 5, 8, tzinfo=timezone.utc),
         timezone="Asia/Jerusalem",
-        status=ScheduledActionStatus.PENDING,
+        status=ScheduledActionStatus.IN_PROGRESS,
         payload=payload or {"chat_id": "972500000001", "message": "reminder!"},
     )
 
