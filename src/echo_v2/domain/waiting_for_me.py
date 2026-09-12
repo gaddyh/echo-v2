@@ -81,6 +81,10 @@ class WaitingForMeResult:
         decision: The :class:`WaitingForMeDecision` verdict.
         confidence: Optional 0.0–1.0 confidence score from the LLM.
         reason: Optional short explanation of why this decision was reached.
+            Internal/technical — not shown to the user.
+        summary: Optional one-sentence user-facing summary in Hebrew.
+            Describes the situation and what is being waited for, without
+            the contact name (shown separately). Max ~160 chars.
         target_version: The ``activity_version`` that was analyzed. Used
             by the worker's version check to discard stale results.
         conversation_snapshot: JSON snapshot of the conversation as it
@@ -91,6 +95,7 @@ class WaitingForMeResult:
     decision: WaitingForMeDecision
     confidence: float | None = None
     reason: str | None = None
+    summary: str | None = None
     target_version: int = 0
     conversation_snapshot: dict | None = None
 

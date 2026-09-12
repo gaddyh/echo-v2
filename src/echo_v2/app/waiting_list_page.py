@@ -79,6 +79,22 @@ body {
   border-radius: 8px;
   border-right: 3px solid var(--primary);
 }
+.card .summary {
+  font-size: 0.95rem;
+  color: var(--text);
+  margin-top: 8px;
+  line-height: 1.4;
+}
+.card .quote {
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+  margin-top: 6px;
+  padding: 6px 10px;
+  background: var(--bg);
+  border-radius: 6px;
+  border-right: 2px solid var(--border);
+  font-style: italic;
+}
 .actions { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
 .btn-done {
   width: 100%;
@@ -272,12 +288,12 @@ function renderItems(data) {
 
 function renderCard(item) {
   const name = item.contact_name || "לא ידוע";
-  const preview = item.message_preview ? item.message_preview : "שלח/ה הודעה";
   const hours = formatHours(item.waiting_hours);
   return '<div class="card" data-active-id="' + item.active_id + '" data-version="' + item.expected_version + '">'
     + '<div class="name"></div>'
     + '<div class="meta">ממתין ' + hours + '</div>'
-    + '<div class="preview"></div>'
+    + '<div class="summary"></div>'
+    + '<div class="quote"></div>'
     + '<div class="actions">'
     + '<button class="btn-done" data-action="done">בוצע</button>'
     + '<div class="btn-row">'
@@ -290,7 +306,16 @@ function renderCard(item) {
 
 function setCardText(card, item) {
   card.querySelector(".name").textContent = item.contact_name || "לא ידוע";
-  card.querySelector(".preview").textContent = item.message_preview || "שלח/ה הודעה";
+  const summaryEl = card.querySelector(".summary");
+  const quoteEl = card.querySelector(".quote");
+  const summary = item.situation_summary || item.message_preview || "שלח/ה הודעה";
+  summaryEl.textContent = summary;
+  if (item.situation_summary && item.message_preview) {
+    quoteEl.textContent = "“" + item.message_preview + "”";
+    quoteEl.style.display = "";
+  } else {
+    quoteEl.style.display = "none";
+  }
 }
 
 function attachCardListeners() {

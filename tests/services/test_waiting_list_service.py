@@ -72,6 +72,7 @@ def _make_service() -> tuple[
         chat_state_repo=chat_state_repo,
         message_repo=message_repo,
         contact_repo=contact_repo,
+        result_repo=result_repo,
     )
     return service, active_repo, action_repo, feedback_repo, token_service
 
@@ -700,3 +701,115 @@ async def test_build_item_no_name_no_message_shows_unknown():
     assert len(result.items) == 1
     assert result.items[0].contact_name is None
     assert result.items[0].message_preview is None
+
+
+# --- situation_summary from result repo ------------------------------------
+
+
+async def test_list_items_includes_situation_summary():
+    """When the result has a summary, it appears in the item."""
+    from echo_v2.domain.waiting_for_me import (
+        WaitingForMeDecision,
+        WaitingForMeResult,
+    )
+
+    service, active_repo, _, _, token_service = _make_service()
+    session_id, _ = await token_service.issue(USER_ID)
+
+    # Save a result with a summary.
+    result_repo = service._result_repo
+    result_id = await result_repo.save(
+        user_id=USER_ID,
+        chat_id=CHAT_ID,
+        result=WaitingForMeResult(
+            decision=WaitingForMeDecision.WAITING_FOR_ME,
+            confidence=0.9,
+            reason="Direct question.",
+            summary="רוצה לתאם פגישה למחר ומחכה שתאשר אם אתה פנוי.",
+            target_version=1,
+        ),
+    )
+    await _setup_chat_and_active(
+        active_repo, service._chat_state_repo, target_version=1
+    )
+    # Update the active's result_id to point to our result.
+    await active_repo.upsert(
+        user_id=USER_ID,
+        chat_id=CHAT_ID,
+        target_version=1,
+        result_id=result_id,
+        waiting_since=NOW,
+    )
+
+    result = await service.list_items(session_id, USER_ID)
+    assert result is not None
+    assert len(result.items) == 1
+    item = result.items[0]
+    assert item.situation_summary == "רוצה לתאם פגישה למחר ומחכה שתאשר אם אתה פנוי."
+
+
+async def test_list_items_summary_none_falls_back_to_message_preview():
+    """When the result has no summary, situation_summary is None (UI falls back)."""
+    from echo_v2.domain.waiting_for_me import (
+        WaitingForMeDecision,
+        WaitingForMeResult,
+    )
+
+    service, active_repo, _, _, token_service = _make_service()
+    session_id, _ = await token_service.issue(USER_ID)
+
+    result_id = await service._result_repo.save(
+        user_id=USER_ID,
+        chat_id=CHAT_ID,
+        result=WaitingForMeResult(
+            decision=WaitingForMeDecision.WAITING_FOR_ME,
+            confidence=0.9,
+            reason="Direct question.",
+            summary=None,
+            target_version=1,
+        ),
+    )
+    await _setup_chat_and_active(
+        active_repo, service._chat_state_repo, target_version=1
+    )
+    await active_repo.upsert(
+        user_id=USER_ID,
+        chat_id=CHAT_ID,
+        target_version=1,
+        result_id=result_id,
+        waiting_since=NOW,
+    )
+
+    result = await service.list_items(session_id, USER_ID)
+    assert result is not None
+    assert len(result.items) == 1
+    assert result.items[0].situation_summary is None
+
+
+async def test_list_items_no_result_repo_summary_is_none():
+    """Without a result_repo, situation_summary is always None."""
+    service, active_repo, _, _, token_service = _make_service()
+    # Remove result_repo.
+    service._result_repo = None
+    session_id, _ = await token_service.issue(USER_ID)
+    await _setup_chat_and_active(active_repo, service._chat_state_repo)
+
+    result = await service.list_items(session_id, USER_ID)
+    assert result is not None
+    assert len(result.items) == 1
+    assert result.items[0].situation_summary is None
+
+
+async def test_list_items_result_not_found_summary_is_none():
+    """If the result_id points to a missing result, summary is None."""
+    service, active_repo, _, _, token_service = _make_service()
+    session_id, _ = await token_service.issue(USER_ID)
+    await _setup_chat_and_active(
+        active_repo, service._chat_state_repo, target_version=1
+    )
+    # The default RESULT_ID doesn't exist in the result repo.
+
+    result = await service.list_items(session_id, USER_ID)
+    assert result is not None
+    assert len(result.items) == 1
+    assert result.items[0].situation_summary is None

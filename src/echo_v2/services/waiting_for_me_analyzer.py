@@ -81,7 +81,16 @@ request from "them" that "me" hasn't addressed.
 
 Output format (JSON only):
 {"decision": "<waiting_for_me|not_waiting_for_me|uncertain>", \
-"confidence": <0.0-1.0>, "reason": "<one short sentence>"}
+"confidence": <0.0-1.0>, "reason": "<one short sentence>", \
+"summary": "<one sentence in Hebrew, max 160 chars>"}
+
+The "summary" field:
+- One sentence in Hebrew describing the situation and what is being \
+waited for, from the user's perspective.
+- Do NOT include the contact's name (it is shown separately).
+- Do NOT invent details not present in the conversation.
+- Max 160 characters.
+- Only for "waiting_for_me" decisions; use null or empty string otherwise.
 """
 
 
@@ -196,9 +205,18 @@ def _parse_llm_output(raw: str, target_version: int) -> WaitingForMeResult:
     if reason is not None:
         reason = str(reason)
 
+    summary = data.get("summary")
+    if summary is not None:
+        summary = str(summary).strip()
+        if not summary:
+            summary = None
+        elif len(summary) > 160:
+            summary = summary[:157] + "…"
+
     return WaitingForMeResult(
         decision=decision,
         confidence=confidence,
         reason=reason,
+        summary=summary,
         target_version=target_version,
     )

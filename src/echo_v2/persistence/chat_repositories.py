@@ -308,6 +308,10 @@ class WaitingForMeResultRepository(Protocol):
         """Insert a result row. One row per analysis run. Returns the row ID."""
         ...
 
+    async def get_by_id(self, result_id: str) -> WaitingForMeResult | None:
+        """Fetch a single result by row ID. Returns ``None`` if not found."""
+        ...
+
     async def list_recent(
         self,
         *,
@@ -337,6 +341,12 @@ class InMemoryWaitingForMeResultRepository:
         row_id = str(uuid.uuid4())
         self._results.append((user_id, chat_id, row_id, result))
         return row_id
+
+    async def get_by_id(self, result_id: str) -> WaitingForMeResult | None:
+        for _uid, _cid, rid, result in self._results:
+            if rid == result_id:
+                return result
+        return None
 
     async def list_recent(
         self,

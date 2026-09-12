@@ -339,6 +339,7 @@ def create_app() -> FastAPI:
         chat_state_repo=repos.chat_state,
         message_repo=repos.messages,
         contact_repo=contact_repo,
+        result_repo=repos.wfm_results,
     )
     waiting_list_router = build_waiting_list_router(
         token_service=token_service,

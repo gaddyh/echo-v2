@@ -21,6 +21,7 @@ from echo_v2.domain.waiting_for_me import WaitingForMeActive
 from echo_v2.persistence.chat_repositories import (
     ChatStateRepository,
     MessageRepository,
+    WaitingForMeResultRepository,
 )
 from echo_v2.persistence.contacts import ContactRepository
 from echo_v2.persistence.feedback_repositories import WaitingForMeActionRepository
@@ -50,6 +51,9 @@ class WaitingListItem:
         active_id: The surrogate UUID of the active row. Used as the
             item identifier in action requests.
         contact_name: Resolved contact name, or ``None`` if unknown.
+        situation_summary: One-sentence Hebrew summary from the LLM
+            analysis, describing the situation and what is waited for.
+            ``None`` if the analysis predates summaries.
         message_preview: Truncated last inbound message text (max 120
             chars), or ``None`` if media-only or no text.
         waiting_since: When the waiting state originally started.
@@ -60,6 +64,7 @@ class WaitingListItem:
 
     active_id: str
     contact_name: str | None
+    situation_summary: str | None
     message_preview: str | None
     waiting_since: datetime
     waiting_hours: float
@@ -138,6 +143,7 @@ class WaitingListService:
         chat_state_repo: ChatStateRepository,
         message_repo: MessageRepository,
         contact_repo: ContactRepository,
+        result_repo: WaitingForMeResultRepository | None = None,
         tz_name: str = "Asia/Jerusalem",
     ) -> None:
         self._token_service = token_service
@@ -147,6 +153,7 @@ class WaitingListService:
         self._chat_state_repo = chat_state_repo
         self._message_repo = message_repo
         self._contact_repo = contact_repo
+        self._result_repo = result_repo
         self._tz_name = tz_name
 
     async def list_items(
@@ -262,7 +269,7 @@ class WaitingListService:
         active: WaitingForMeActive,
         now: datetime,
     ) -> WaitingListItem:
-        """Build a WaitingListItem with name resolution + preview."""
+        """Build a WaitingListItem with name resolution + preview + summary."""
         phone = _phone_from_chat_id(active.chat_id)
 
         # Name resolution: chat_name → contact → message names.
@@ -289,11 +296,19 @@ class WaitingListService:
             if len(last_text) > MAX_PREVIEW_CHARS:
                 preview = preview + "…"
 
+        # Fetch the analysis result to get the situation summary.
+        situation_summary = None
+        if self._result_repo is not None and active.result_id:
+            result = await self._result_repo.get_by_id(active.result_id)
+            if result is not None:
+                situation_summary = result.summary
+
         waiting_hours = (now - active.waiting_since).total_seconds() / 3600.0
 
         return WaitingListItem(
             active_id=active.id,
             contact_name=chat_name,
+            situation_summary=situation_summary,
             message_preview=preview,
             waiting_since=active.waiting_since,
             waiting_hours=round(waiting_hours, 1),

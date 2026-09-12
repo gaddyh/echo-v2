@@ -251,3 +251,75 @@ def test_build_user_message_includes_timestamps():
     conv = _make_conversation([("inbound", "hello")])
     msg = _build_user_message(conv)
     assert "2026-09-05 10:00" in msg
+
+
+# --- summary parsing --------------------------------------------------------
+
+
+def test_parse_summary_present():
+    raw = json.dumps({
+        "decision": "waiting_for_me",
+        "confidence": 0.9,
+        "reason": "Direct question.",
+        "summary": "רוצה לתאם פגישה למחר ומחכה שתאשר אם אתה פנוי.",
+    })
+    result = _parse_llm_output(raw, target_version=1)
+    assert result.summary == "רוצה לתאם פגישה למחר ומחכה שתאשר אם אתה פנוי."
+
+
+def test_parse_summary_missing_is_none():
+    raw = json.dumps({"decision": "waiting_for_me", "confidence": 0.9})
+    result = _parse_llm_output(raw, target_version=1)
+    assert result.summary is None
+
+
+def test_parse_summary_empty_string_becomes_none():
+    raw = json.dumps({"decision": "waiting_for_me", "summary": ""})
+    result = _parse_llm_output(raw, target_version=1)
+    assert result.summary is None
+
+
+def test_parse_summary_whitespace_only_becomes_none():
+    raw = json.dumps({"decision": "waiting_for_me", "summary": "   "})
+    result = _parse_llm_output(raw, target_version=1)
+    assert result.summary is None
+
+
+def test_parse_summary_truncated_at_160():
+    long_summary = "א" * 200
+    raw = json.dumps({
+        "decision": "waiting_for_me",
+        "summary": long_summary,
+    })
+    result = _parse_llm_output(raw, target_version=1)
+    assert result.summary is not None
+    # Truncated to 157 chars + "…" = 158 total.
+    assert len(result.summary) == 158
+    assert result.summary.endswith("…")
+
+
+def test_parse_summary_exactly_160_not_truncated():
+    summary = "א" * 160
+    raw = json.dumps({
+        "decision": "waiting_for_me",
+        "summary": summary,
+    })
+    result = _parse_llm_output(raw, target_version=1)
+    assert result.summary == summary
+
+
+async def test_analyze_summary_in_result():
+    conv = _make_conversation()
+    response = _mock_openai_response(
+        json.dumps({
+            "decision": "waiting_for_me",
+            "confidence": 0.95,
+            "reason": "Direct question.",
+            "summary": "מחכה לאישור פגישה.",
+        })
+    )
+    client = _mock_client(response)
+    with patch("openai.AsyncOpenAI", return_value=client):
+        analyzer = LLMWaitingForMeAnalyzer(api_key="test-key")
+        result = await analyzer.analyze(conv)
+    assert result.summary == "מחכה לאישור פגישה."

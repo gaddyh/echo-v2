@@ -420,12 +420,24 @@ class PostgresWaitingForMeResultRepository:
                     decision=result.decision.value,
                     confidence=result.confidence,
                     reason=result.reason,
+                    summary=result.summary,
                     conversation_snapshot=result.conversation_snapshot,
                 )
                 .returning(WaitingForMeResultRow.id)
             )
             row_id = (await session.execute(stmt)).scalar_one()
             return str(row_id)
+
+    async def get_by_id(self, result_id: str) -> WaitingForMeResult | None:
+        """Fetch a single result by its row ID. Returns ``None`` if not found."""
+        async with self._session() as session:
+            stmt = select(WaitingForMeResultRow).where(
+                WaitingForMeResultRow.id == result_id
+            )
+            row = (await session.execute(stmt)).scalars().first()
+            if row is None:
+                return None
+            return self._row_to_domain(row)
 
     async def list_recent(
         self,
@@ -453,6 +465,7 @@ class PostgresWaitingForMeResultRepository:
             decision=WaitingForMeDecision(row.decision),
             confidence=row.confidence,
             reason=row.reason,
+            summary=row.summary,
             target_version=row.target_version,
             conversation_snapshot=row.conversation_snapshot,
         )

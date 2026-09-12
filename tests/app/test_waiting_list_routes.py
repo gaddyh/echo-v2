@@ -86,6 +86,7 @@ def _make_app() -> tuple[
         chat_state_repo=chat_state_repo,
         message_repo=message_repo,
         contact_repo=contact_repo,
+        result_repo=result_repo,
     )
     router = build_waiting_list_router(
         token_service=token_service,
@@ -176,6 +177,57 @@ async def test_api_waiting_with_cookie_returns_items():
     assert "summary" in data
     assert len(data["items"]) == 1
     assert data["summary"]["waiting"] == 1
+
+
+async def test_api_waiting_includes_situation_summary():
+    """The API response includes situation_summary when the result has one."""
+    from echo_v2.domain.waiting_for_me import (
+        WaitingForMeDecision,
+        WaitingForMeResult,
+    )
+
+    app, token_service, service, active_repo = _make_app()
+    _, raw_token = await token_service.issue(USER_ID)
+
+    # Save a result with a summary.
+    result_id = await service._result_repo.save(
+        user_id=USER_ID,
+        chat_id=CHAT_ID,
+        result=WaitingForMeResult(
+            decision=WaitingForMeDecision.WAITING_FOR_ME,
+            confidence=0.9,
+            reason="Direct question.",
+            summary="רוצה לתאם פגישה ומחכה לאישור.",
+            target_version=1,
+        ),
+    )
+    # Set up active pointing to this result.
+    from echo_v2.ports.whatsapp import MessageDirection
+
+    await service._chat_state_repo.upsert_on_message(
+        user_id=USER_ID,
+        chat_id=CHAT_ID,
+        direction=MessageDirection.INBOUND,
+        observed_at=NOW,
+        next_analysis_at=None,
+    )
+    await active_repo.upsert(
+        user_id=USER_ID,
+        chat_id=CHAT_ID,
+        target_version=1,
+        result_id=result_id,
+        waiting_since=NOW,
+    )
+
+    async with _client(app) as client:
+        await client.get(f"/q/{raw_token}")
+        resp = await client.get("/api/waiting")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["items"]) == 1
+    item = data["items"][0]
+    assert item["situation_summary"] == "רוצה לתאם פגישה ומחכה לאישור."
+    assert "message_preview" in item
 
 
 async def test_api_action_done():

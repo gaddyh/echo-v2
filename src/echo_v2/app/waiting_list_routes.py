@@ -171,6 +171,7 @@ def build_waiting_list_router(
                     {
                         "active_id": item.active_id,
                         "contact_name": item.contact_name,
+                        "situation_summary": item.situation_summary,
                         "message_preview": item.message_preview,
                         "waiting_since": item.waiting_since.isoformat(),
                         "waiting_hours": item.waiting_hours,
