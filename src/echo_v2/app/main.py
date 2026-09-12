@@ -309,7 +309,7 @@ def create_app() -> FastAPI:
     from echo_v2.app.waiting_list_routes import build_waiting_list_router
     from echo_v2.services.waiting_list_service import WaitingListService
 
-    bot_phone = os.environ.get("ECHO_BOT_PHONE", "")
+    bot_phone = os.environ.get("ECHO_BOT_PHONE", "972559937256")
     waiting_list_service = WaitingListService(
         token_service=token_service,
         query_service=query_service,
