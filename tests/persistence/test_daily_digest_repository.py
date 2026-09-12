@@ -5,12 +5,12 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 
 import pytest
+
+from echo_v2.domain.digest import DailyDigestStatus
 from echo_v2.persistence.digest_repositories import (
     DailyDigestRepository,
     InMemoryDailyDigestRepository,
 )
-
-from echo_v2.domain.digest import DailyDigestStatus
 
 pytestmark = pytest.mark.asyncio
 
