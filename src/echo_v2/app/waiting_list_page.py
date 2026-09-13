@@ -125,7 +125,12 @@ body {
 .btn-secondary:hover { background: var(--bg); }
 .btn-secondary:disabled { opacity: 0.5; cursor: not-allowed; }
 .btn-secondary.danger { color: var(--danger); }
-.btn-secondary.muted { color: var(--text-secondary); }
+.btn-secondary.muted {
+  color: var(--text);
+  background: #f1f3f5;
+  border-color: #e0e4e8;
+}
+.btn-secondary.muted:hover { background: #e4e7eb; }
 .btn-secondary.send {
   border-color: #3b82f6;
   color: #3b82f6;
