@@ -371,7 +371,7 @@ function renderCard(item) {
     + '<div class="actions">'
     + '<button class="btn-done" data-action="done">בוצע</button>'
     + '<div class="btn-row">'
-    + '<button class="btn-secondary send" data-action="send">שלח הודעה</button>'
+    + '<button class="btn-secondary send" data-action="send">תזמן הודעה</button>'
     + '<button class="btn-secondary" data-action="snooze">נודניק לשעה</button>'
     + '</div>'
     + '<div class="btn-row">'
