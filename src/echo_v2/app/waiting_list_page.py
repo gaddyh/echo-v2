@@ -126,6 +126,12 @@ body {
 .btn-secondary:disabled { opacity: 0.5; cursor: not-allowed; }
 .btn-secondary.danger { color: var(--danger); }
 .btn-secondary.muted { color: var(--text-secondary); }
+.btn-secondary.send {
+  border-color: #3b82f6;
+  color: #3b82f6;
+  background: #eff6ff;
+}
+.btn-secondary.send:hover { background: #3b82f6; color: white; }
 .snooze-other {
   display: block;
   text-align: center;
@@ -365,12 +371,12 @@ function renderCard(item) {
     + '<div class="actions">'
     + '<button class="btn-done" data-action="done">בוצע</button>'
     + '<div class="btn-row">'
-    + '<button class="btn-secondary" data-action="send">שלח הודעה</button>'
+    + '<button class="btn-secondary send" data-action="send">שלח הודעה</button>'
     + '<button class="btn-secondary" data-action="snooze">נודניק לשעה</button>'
     + '</div>'
     + '<div class="btn-row">'
     + '<button class="btn-secondary" data-action="tomorrow">מחר</button>'
-    + '<button class="btn-secondary muted" data-action="not_needed">לא צריך</button>'
+    + '<button class="btn-secondary muted" data-action="not_needed">לא לטיפול</button>'
     + '</div>'
     + '<div class="link-row">'
     + '<a class="snooze-other" data-action="snooze_other">זמן אחר</a>'
