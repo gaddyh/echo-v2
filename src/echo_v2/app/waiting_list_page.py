@@ -57,6 +57,43 @@ body {
   font-size: 0.85rem;
   border: 1px solid var(--border);
 }
+.progress-bar {
+  text-align: center;
+  padding: 8px 0 4px;
+}
+.progress-bar .count { font-size: 0.9rem; color: var(--text-secondary); }
+.progress-bar .bar {
+  max-width: 300px;
+  height: 4px;
+  background: var(--border);
+  border-radius: 2px;
+  margin: 6px auto 0;
+  overflow: hidden;
+}
+.progress-bar .bar .fill {
+  height: 100%;
+  background: var(--primary);
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+.card-stack { position: relative; }
+.card-peek {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  right: 8px;
+  bottom: -8px;
+  background: var(--card);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+  z-index: 0;
+  opacity: 0.4;
+}
+.card-current {
+  position: relative;
+  z-index: 1;
+}
+.card-current.removing { opacity: 0; transform: translateY(-20px); transition: opacity 0.25s, transform 0.25s; }
 .card {
   background: var(--card);
   border-radius: 12px;
@@ -166,6 +203,8 @@ body {
 .summary .icon { font-size: 3rem; }
 .summary h2 { font-size: 1.2rem; margin-top: 12px; }
 .summary .stats { font-size: 0.95rem; color: var(--text-secondary); margin-top: 8px; }
+.summary .stats-line { font-size: 0.95rem; color: var(--text); margin-top: 10px; line-height: 1.8; }
+.summary .stats-line .sep { color: var(--border); margin: 0 6px; }
 .summary .back-btn {
   display: inline-block;
   margin-top: 24px;
@@ -320,7 +359,10 @@ body {
 
 <script>
 const BOT_PHONE = "{{BOT_PHONE}}";
-let pendingAction = null; // {activeId, action, cardEl}
+let pendingAction = null; // {activeId, action, cardEl, expectedVersion, requestId}
+let queue = [];        // local copy of items
+let totalStarted = 0;  // queue length at load (for progress)
+let stats = {done: 0, snoozed: 0, scheduled: 0, not_needed: 0};
 
 async function fetchAPI(path, options) {
   const resp = await fetch("/api/waiting" + path, options);
@@ -334,37 +376,43 @@ async function fetchAPI(path, options) {
 async function loadItems() {
   const data = await fetchAPI("", {});
   if (!data) return;
-  renderItems(data);
+  queue = data.items;
+  totalStarted = queue.length;
+  stats = {done: 0, snoozed: 0, scheduled: 0, not_needed: 0};
+  renderCurrent();
 }
 
-function renderItems(data) {
+function renderCurrent() {
   const app = document.getElementById("app");
-  if (data.items.length === 0) {
-    renderSummary(data.summary);
+  if (queue.length === 0) {
+    renderComplete();
     return;
   }
-  const oldestHours = data.items[0].waiting_hours;
+  const item = queue[0];
+  const next = queue[1];
+  const processed = totalStarted - queue.length;
   const backUrl = "https://wa.me/" + BOT_PHONE + "?text=" + encodeURIComponent("סיימתי לעבור על רשימת ההמתנה ✅, תודה");
   let html = '<div class="back-bar"><a href="' + backUrl + '">← חזרה ל־WhatsApp</a></div>';
-  html += '<div class="header"><h1>' + data.items.length + ' ממתינים לטיפול</h1>';
-  if (oldestHours > 0) {
-    html += '<div class="oldest">הוותיק ביותר מחכה ' + formatHours(oldestHours) + '</div>';
+  // Progress bar
+  html += '<div class="progress-bar">'
+    + '<div class="count">' + (processed + 1) + ' מתוך ' + totalStarted + '</div>'
+    + '<div class="bar"><div class="fill" style="width:' + (processed / totalStarted * 100) + '%"></div></div>'
+    + '</div>';
+  // Card stack with peek
+  html += '<div class="card-stack">';
+  if (next) {
+    html += '<div class="card-peek"></div>';
   }
+  html += renderCard(item);
   html += '</div>';
-  for (const item of data.items) {
-    html += renderCard(item);
-  }
   app.innerHTML = html;
-  // Set text content safely (textContent, not innerHTML) for XSS safety.
-  const cards = document.querySelectorAll(".card");
-  data.items.forEach((item, i) => {
-    if (cards[i]) setCardText(cards[i], item);
-  });
-  attachCardListeners();
+  const card = app.querySelector(".card");
+  card.classList.add("card-current");
+  setCardText(card, item);
+  attachCardListeners(card);
 }
 
 function renderCard(item) {
-  const name = item.contact_name || "לא ידוע";
   const hours = formatHours(item.waiting_hours);
   return '<div class="card" data-active-id="' + item.active_id + '" data-version="' + item.expected_version + '">'
     + '<div class="name"></div>'
@@ -402,39 +450,39 @@ function setCardText(card, item) {
   }
 }
 
-function attachCardListeners() {
-  document.querySelectorAll(".card").forEach(card => {
-    const itemId = card.dataset.activeId;
-    const version = parseInt(card.dataset.version);
-    // Set text content safely (textContent, not innerHTML).
-    // The item data is stored in the card's dataset for XSS safety.
-    card.querySelectorAll("button, .snooze-other").forEach(btn => {
-      btn.addEventListener("click", () => {
-        const action = btn.dataset.action;
-        handleAction(card, itemId, version, action);
-      });
+function attachCardListeners(card) {
+  const itemId = card.dataset.activeId;
+  const version = parseInt(card.dataset.version);
+  card.querySelectorAll("button, .snooze-other").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const action = btn.dataset.action;
+      handleAction(card, itemId, version, action);
     });
   });
 }
 
+function actionStatType(action) {
+  if (action === "done") return "done";
+  if (action === "snooze" || action === "tomorrow" || action === "snooze_other") return "snoozed";
+  if (action === "not_needed") return "not_needed";
+  if (action === "false_positive") return "done"; // resolves like done
+  return null;
+}
+
 async function handleAction(card, activeId, expectedVersion, action) {
   if (action === "snooze") {
-    // "נודניק לשעה" — immediate snooze for 1 hour.
     await sendAction(card, activeId, expectedVersion, "snooze", {snooze_preset: "1h"});
     return;
   }
   if (action === "tomorrow") {
-    // "מחר" — snooze until tomorrow morning, no popup.
     await sendAction(card, activeId, expectedVersion, "snooze", {snooze_preset: "tomorrow"});
     return;
   }
   if (action === "not_needed") {
-    // "לא צריך" — dismiss without negative feedback to the model.
     await sendAction(card, activeId, expectedVersion, "dismiss", {dismiss_reason: "already_handled"});
     return;
   }
   if (action === "false_positive") {
-    // "זיהוי שגוי" — dismiss + FALSE_POSITIVE feedback.
     await sendAction(card, activeId, expectedVersion, "dismiss", {dismiss_reason: "detected_incorrectly"});
     return;
   }
@@ -451,7 +499,6 @@ async function handleAction(card, activeId, expectedVersion, action) {
       expectedVersion,
       requestId: crypto.randomUUID(),
     };
-    // Clear previous inputs.
     document.getElementById("send-message").value = "";
     document.getElementById("send-at").value = "";
     document.getElementById("send-submit").disabled = false;
@@ -475,15 +522,8 @@ async function sendAction(card, activeId, expectedVersion, action, extra) {
       body: JSON.stringify(body),
     });
     if (!resp) return;
-    if (resp.outcome === "applied") {
-      card.classList.add("removing");
-      setTimeout(() => {
-        card.remove();
-        checkEmpty(resp.summary);
-      }, 300);
-    } else if (resp.outcome === "duplicate") {
-      card.classList.add("removing");
-      setTimeout(() => { card.remove(); checkEmpty(resp.summary); }, 300);
+    if (resp.outcome === "applied" || resp.outcome === "duplicate" || resp.outcome === "not_found") {
+      advanceQueue(actionStatType(action));
     } else if (resp.outcome === "stale") {
       if (resp.item) {
         card.dataset.version = resp.item.expected_version;
@@ -491,9 +531,6 @@ async function sendAction(card, activeId, expectedVersion, action, extra) {
       }
       buttons.forEach(b => b.disabled = false);
       showRetry(card, "השיחה השתנתה. נסה שוב.");
-    } else if (resp.outcome === "not_found") {
-      card.classList.add("removing");
-      setTimeout(() => { card.remove(); checkEmpty(resp.summary); }, 300);
     } else if (resp.outcome === "invalid_snooze") {
       buttons.forEach(b => b.disabled = false);
       showRetry(card, "זמן הנודניק לא תקין.");
@@ -507,6 +544,16 @@ async function sendAction(card, activeId, expectedVersion, action, extra) {
   }
 }
 
+function advanceQueue(statType) {
+  if (statType) stats[statType]++;
+  const card = document.querySelector(".card-current");
+  if (card) card.classList.add("removing");
+  setTimeout(() => {
+    queue.shift();
+    renderCurrent();
+  }, 250);
+}
+
 function showRetry(card, msg) {
   let retry = card.querySelector(".retry");
   if (!retry) {
@@ -518,20 +565,19 @@ function showRetry(card, msg) {
   retry.onclick = () => { retry.remove(); };
 }
 
-function checkEmpty(summary) {
-  const cards = document.querySelectorAll(".card");
-  if (cards.length === 0) {
-    renderSummary(summary);
-  }
-}
-
-function renderSummary(summary) {
+function renderComplete() {
   const app = document.getElementById("app");
   const backUrl = "https://wa.me/" + BOT_PHONE + "?text=" + encodeURIComponent("סיימתי לעבור על רשימת ההמתנה ✅, תודה");
+  const parts = [];
+  if (stats.done) parts.push(stats.done + " בוצעו");
+  if (stats.snoozed) parts.push(stats.snoozed + " נדחו");
+  if (stats.scheduled) parts.push(stats.scheduled + " הודעות תוזמנו");
+  if (stats.not_needed) parts.push(stats.not_needed + " לא לטיפול");
+  const statsLine = parts.length ? parts.join(" · ") : "אין פעולות";
   app.innerHTML = '<div class="summary">'
     + '<div class="icon">✅</div>'
     + '<h2>סיימת לעבור על הרשימה</h2>'
-    + '<div class="stats">' + summary.completed + ' טופלו · ' + summary.snoozed + ' נדחו</div>'
+    + '<div class="stats-line">' + statsLine + '</div>'
     + '<a class="back-btn" href="' + backUrl + '">חזרה ל־WhatsApp</a>'
     + '</div>';
 }
@@ -541,18 +587,6 @@ function formatHours(h) {
   if (h < 24) return Math.round(h) + " שעות";
   return Math.round(h / 24) + " ימים";
 }
-
-// Snooze overlay handlers
-document.querySelectorAll("#snooze-overlay .overlay-option[data-preset]").forEach(btn => {
-  btn.addEventListener("click", () => {
-    const preset = btn.dataset.preset;
-    closeSnooze();
-    if (pendingAction) {
-      sendAction(pendingAction.card, pendingAction.activeId, pendingAction.expectedVersion, "snooze", {snooze_preset: preset});
-      pendingAction = null;
-    }
-  });
-});
 
 // Snooze overlay handlers
 document.querySelectorAll("#snooze-overlay .overlay-option[data-preset]").forEach(btn => {
@@ -632,9 +666,8 @@ async function submitSendWith(extra) {
       return;
     }
     if (resp.outcome === "scheduled" || resp.outcome === "duplicate") {
-      const localTime = formatScheduledTime(resp.scheduled_for);
-      showToast(pendingAction.card, "ההודעה תישלח " + localTime + " ✓");
       closeSend();
+      advanceQueue("scheduled");
     } else if (resp.outcome === "not_found") {
       showSendError("הפריט לא נמצא או שייך למשתמש אחר.");
       submitBtn.disabled = false;
@@ -660,19 +693,6 @@ function showSendError(msg) {
   }
   retry.textContent = msg;
   retry.onclick = () => { retry.remove(); };
-}
-
-function showToast(card, msg) {
-  let toast = card.querySelector(".toast");
-  if (!toast) {
-    toast = document.createElement("div");
-    toast.className = "toast";
-    card.querySelector(".actions").appendChild(toast);
-  }
-  toast.textContent = msg;
-  toast.onclick = () => { toast.remove(); };
-  // Auto-dismiss after 6 seconds.
-  setTimeout(() => { if (toast.parentNode) toast.remove(); }, 6000);
 }
 
 function formatScheduledTime(iso) {
