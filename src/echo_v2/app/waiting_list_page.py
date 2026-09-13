@@ -125,6 +125,7 @@ body {
 .btn-secondary:hover { background: var(--bg); }
 .btn-secondary:disabled { opacity: 0.5; cursor: not-allowed; }
 .btn-secondary.danger { color: var(--danger); }
+.btn-secondary.muted { color: var(--text-secondary); }
 .snooze-other {
   display: block;
   text-align: center;
@@ -135,6 +136,9 @@ body {
   cursor: pointer;
 }
 .snooze-other:hover { color: var(--primary); }
+.snooze-other.false-positive { color: var(--danger); }
+.snooze-other.false-positive:hover { color: #d33a47; }
+.link-row { display: flex; gap: 16px; justify-content: center; margin-top: 6px; }
 .card .retry {
   margin-top: 8px;
   padding: 8px;
@@ -286,14 +290,6 @@ body {
   <button class="overlay-close" onclick="closeSnooze()">ביטול</button>
 </div>
 
-<!-- Not-today overlay (לא להיום) -->
-<div class="overlay" id="not-today-overlay">
-  <div class="overlay-title">למה לא להזכיר שוב היום?</div>
-  <button class="overlay-option" data-not-today="tomorrow">יכול לחכות למחר</button>
-  <button class="overlay-option" data-not-today="false_positive">זיהוי שגוי</button>
-  <button class="overlay-close" onclick="closeNotToday()">ביטול</button>
-</div>
-
 <!-- Send overlay (תזמון הודעה) -->
 <div class="overlay" id="send-overlay">
   <div class="overlay-title">תזמון הודעה</div>
@@ -369,11 +365,17 @@ function renderCard(item) {
     + '<div class="actions">'
     + '<button class="btn-done" data-action="done">בוצע</button>'
     + '<div class="btn-row">'
+    + '<button class="btn-secondary" data-action="send">שלח הודעה</button>'
     + '<button class="btn-secondary" data-action="snooze">נודניק לשעה</button>'
-    + '<button class="btn-secondary danger" data-action="not_today">לא להיום</button>'
     + '</div>'
+    + '<div class="btn-row">'
+    + '<button class="btn-secondary" data-action="tomorrow">מחר</button>'
+    + '<button class="btn-secondary muted" data-action="not_needed">לא צריך</button>'
+    + '</div>'
+    + '<div class="link-row">'
     + '<a class="snooze-other" data-action="snooze_other">זמן אחר</a>'
-    + '<a class="snooze-other" data-action="send">תזמון הודעה</a>'
+    + '<a class="snooze-other false-positive" data-action="false_positive">זיהוי שגוי</a>'
+    + '</div>'
     + '</div></div>';
 }
 
@@ -412,14 +414,24 @@ async function handleAction(card, activeId, expectedVersion, action) {
     await sendAction(card, activeId, expectedVersion, "snooze", {snooze_preset: "1h"});
     return;
   }
+  if (action === "tomorrow") {
+    // "מחר" — snooze until tomorrow morning, no popup.
+    await sendAction(card, activeId, expectedVersion, "snooze", {snooze_preset: "tomorrow"});
+    return;
+  }
+  if (action === "not_needed") {
+    // "לא צריך" — dismiss without negative feedback to the model.
+    await sendAction(card, activeId, expectedVersion, "dismiss", {dismiss_reason: "already_handled"});
+    return;
+  }
+  if (action === "false_positive") {
+    // "זיהוי שגוי" — dismiss + FALSE_POSITIVE feedback.
+    await sendAction(card, activeId, expectedVersion, "dismiss", {dismiss_reason: "detected_incorrectly"});
+    return;
+  }
   if (action === "snooze_other") {
     pendingAction = {activeId, action: "snooze", card, expectedVersion};
     document.getElementById("snooze-overlay").classList.add("active");
-    return;
-  }
-  if (action === "not_today") {
-    pendingAction = {activeId, action: "not_today", card, expectedVersion};
-    document.getElementById("not-today-overlay").classList.add("active");
     return;
   }
   if (action === "send") {
@@ -533,26 +545,19 @@ document.querySelectorAll("#snooze-overlay .overlay-option[data-preset]").forEac
   });
 });
 
-// Not-today overlay handlers
-document.querySelectorAll("#not-today-overlay .overlay-option[data-not-today]").forEach(btn => {
+// Snooze overlay handlers
+document.querySelectorAll("#snooze-overlay .overlay-option[data-preset]").forEach(btn => {
   btn.addEventListener("click", () => {
-    const choice = btn.dataset.notToday;
-    closeNotToday();
+    const preset = btn.dataset.preset;
+    closeSnooze();
     if (pendingAction) {
-      if (choice === "tomorrow") {
-        // Snooze until tomorrow's digest (08:00).
-        sendAction(pendingAction.card, pendingAction.activeId, pendingAction.expectedVersion, "snooze", {snooze_preset: "tomorrow"});
-      } else if (choice === "false_positive") {
-        // Resolve + FALSE_POSITIVE feedback.
-        sendAction(pendingAction.card, pendingAction.activeId, pendingAction.expectedVersion, "dismiss", {dismiss_reason: "detected_incorrectly"});
-      }
+      sendAction(pendingAction.card, pendingAction.activeId, pendingAction.expectedVersion, "snooze", {snooze_preset: preset});
       pendingAction = null;
     }
   });
 });
 
 function closeSnooze() { document.getElementById("snooze-overlay").classList.remove("active"); }
-function closeNotToday() { document.getElementById("not-today-overlay").classList.remove("active"); }
 function closeSend() {
   document.getElementById("send-overlay").classList.remove("active");
   pendingAction = null;
