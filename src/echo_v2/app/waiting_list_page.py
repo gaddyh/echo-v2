@@ -213,6 +213,42 @@ body {
   font-size: 1rem;
   margin-bottom: 8px;
 }
+.overlay textarea {
+  width: 100%;
+  min-height: 80px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 1rem;
+  font-family: inherit;
+  resize: vertical;
+  margin-bottom: 12px;
+  box-sizing: border-box;
+}
+.overlay .overlay-submit {
+  width: 100%;
+  padding: 12px;
+  border: none;
+  border-radius: 8px;
+  background: var(--primary);
+  color: white;
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  margin-top: 8px;
+}
+.overlay .overlay-submit:hover { background: var(--primary-hover); }
+.overlay .overlay-submit:disabled { opacity: 0.5; cursor: not-allowed; }
+.card .toast {
+  margin-top: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--primary);
+  border-radius: 8px;
+  background: #eafbf2;
+  color: #1a8f4d;
+  font-size: 0.9rem;
+  text-align: center;
+}
 .loading { text-align: center; padding: 40px; color: var(--text-secondary); }
 .error-page { text-align: center; padding: 40px 20px; }
 .error-page h2 { font-size: 1.2rem; margin-bottom: 12px; }
@@ -239,6 +275,19 @@ body {
   <button class="overlay-option" data-not-today="tomorrow">יכול לחכות למחר</button>
   <button class="overlay-option" data-not-today="false_positive">זיהוי שגוי</button>
   <button class="overlay-close" onclick="closeNotToday()">ביטול</button>
+</div>
+
+<!-- Send overlay (תזמון הודעה) -->
+<div class="overlay" id="send-overlay">
+  <div class="overlay-title">תזמון הודעה</div>
+  <textarea id="send-message" placeholder="מה לשלוח?" maxlength="1000"></textarea>
+  <button class="overlay-option" data-send-preset="10m">עוד 10 דקות</button>
+  <button class="overlay-option" data-send-preset="1h">עוד שעה</button>
+  <button class="overlay-option" data-send-preset="3h">עוד 3 שעות</button>
+  <button class="overlay-option" data-send-preset="tomorrow">מחר בבוקר</button>
+  <input type="datetime-local" id="send-at">
+  <button class="overlay-submit" id="send-submit" onclick="submitSend()">תזמן</button>
+  <button class="overlay-close" onclick="closeSend()">ביטול</button>
 </div>
 
 <script>
@@ -301,6 +350,7 @@ function renderCard(item) {
     + '<button class="btn-secondary danger" data-action="not_today">לא להיום</button>'
     + '</div>'
     + '<a class="snooze-other" data-action="snooze_other">זמן אחר</a>'
+    + '<a class="snooze-other" data-action="send">תזמון הודעה</a>'
     + '</div></div>';
 }
 
@@ -347,6 +397,21 @@ async function handleAction(card, activeId, expectedVersion, action) {
   if (action === "not_today") {
     pendingAction = {activeId, action: "not_today", card, expectedVersion};
     document.getElementById("not-today-overlay").classList.add("active");
+    return;
+  }
+  if (action === "send") {
+    pendingAction = {
+      activeId,
+      action: "send",
+      card,
+      expectedVersion,
+      requestId: crypto.randomUUID(),
+    };
+    // Clear previous inputs.
+    document.getElementById("send-message").value = "";
+    document.getElementById("send-at").value = "";
+    document.getElementById("send-submit").disabled = false;
+    document.getElementById("send-overlay").classList.add("active");
     return;
   }
   // done
@@ -465,6 +530,117 @@ document.querySelectorAll("#not-today-overlay .overlay-option[data-not-today]").
 
 function closeSnooze() { document.getElementById("snooze-overlay").classList.remove("active"); }
 function closeNotToday() { document.getElementById("not-today-overlay").classList.remove("active"); }
+function closeSend() {
+  document.getElementById("send-overlay").classList.remove("active");
+  pendingAction = null;
+}
+
+// Send overlay: preset buttons select a preset and submit.
+document.querySelectorAll("#send-overlay .overlay-option[data-send-preset]").forEach(btn => {
+  btn.addEventListener("click", () => {
+    const preset = btn.dataset.sendPreset;
+    if (pendingAction) {
+      submitSendWith({send_preset: preset});
+    }
+  });
+});
+
+async function submitSend() {
+  const msg = document.getElementById("send-message").value;
+  const at = document.getElementById("send-at").value;
+  if (!msg.trim()) {
+    showSendError("יש להזין הודעה.");
+    return;
+  }
+  if (!at) {
+    showSendError("יש לבחור זמן או להשתמש באחד הכפתורים.");
+    return;
+  }
+  // Convert datetime-local (naive) to offset-aware ISO via Date.
+  const sendAt = new Date(at).toISOString();
+  await submitSendWith({send_at: sendAt});
+}
+
+async function submitSendWith(extra) {
+  if (!pendingAction) return;
+  const msg = document.getElementById("send-message").value;
+  if (!msg.trim()) {
+    showSendError("יש להזין הודעה.");
+    return;
+  }
+  const submitBtn = document.getElementById("send-submit");
+  submitBtn.disabled = true;
+  const body = {
+    request_id: pendingAction.requestId,
+    message: msg,
+  };
+  Object.assign(body, extra);
+  try {
+    const resp = await fetchAPI("/items/" + pendingAction.activeId + "/send", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(body),
+    });
+    if (!resp) {
+      submitBtn.disabled = false;
+      return;
+    }
+    if (resp.outcome === "scheduled" || resp.outcome === "duplicate") {
+      const localTime = formatScheduledTime(resp.scheduled_for);
+      showToast(pendingAction.card, "ההודעה תישלח " + localTime + " ✓");
+      closeSend();
+    } else if (resp.outcome === "not_found") {
+      showSendError("הפריט לא נמצא או שייך למשתמש אחר.");
+      submitBtn.disabled = false;
+    } else if (resp.outcome === "invalid") {
+      showSendError("ההודעה או הזמן לא תקינים.");
+      submitBtn.disabled = false;
+    } else {
+      showSendError("שגיאה. נסה שוב.");
+      submitBtn.disabled = false;
+    }
+  } catch (e) {
+    showSendError("בעיית רשת. נסה שוב.");
+    submitBtn.disabled = false;
+  }
+}
+
+function showSendError(msg) {
+  let retry = document.querySelector("#send-overlay .retry");
+  if (!retry) {
+    retry = document.createElement("div");
+    retry.className = "retry";
+    document.getElementById("send-overlay").appendChild(retry);
+  }
+  retry.textContent = msg;
+  retry.onclick = () => { retry.remove(); };
+}
+
+function showToast(card, msg) {
+  let toast = card.querySelector(".toast");
+  if (!toast) {
+    toast = document.createElement("div");
+    toast.className = "toast";
+    card.querySelector(".actions").appendChild(toast);
+  }
+  toast.textContent = msg;
+  toast.onclick = () => { toast.remove(); };
+  // Auto-dismiss after 6 seconds.
+  setTimeout(() => { if (toast.parentNode) toast.remove(); }, 6000);
+}
+
+function formatScheduledTime(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  const today = new Date();
+  const isToday = d.toDateString() === today.toDateString();
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  if (isToday) return "היום ב־" + hh + ":" + mm;
+  const dd = String(d.getDate()).padStart(2, "0");
+  const mo = String(d.getMonth() + 1).padStart(2, "0");
+  return "ב־" + dd + "/" + mo + " " + hh + ":" + mm;
+}
 
 // Initial load
 loadItems();

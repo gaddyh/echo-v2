@@ -392,6 +392,8 @@ def create_app() -> FastAPI:
         message_repo=repos.messages,
         contact_repo=contact_repo,
         result_repo=repos.wfm_results,
+        scheduling_service=scheduling_service,
+        active_repo=repos.wfm_active,
     )
     waiting_list_router = build_waiting_list_router(
         token_service=token_service,

@@ -88,6 +88,42 @@ class PostgresScheduledActionRepository(ScheduledActionRepository):
             )
             await session.execute(stmt)
 
+    async def create_once(self, action: ScheduledAction) -> tuple[ScheduledAction, bool]:
+        """Insert if absent. Returns ``(action, created)``.
+
+        Uses ``ON CONFLICT (id) DO NOTHING`` so a retry never overwrites an
+        already-created action. If the row already exists, the existing
+        action is loaded and returned with ``created=False``.
+        """
+        async with self._session() as session:
+            stmt = (
+                pg_insert(ScheduledActionRow)
+                .values(
+                    id=action.id,
+                    user_id=action.user_id,
+                    type=action.type.value,
+                    execute_at_utc=action.execute_at_utc,
+                    timezone=action.timezone,
+                    status=action.status.value,
+                    payload=action.payload,
+                    created_at=action.created_at,
+                    updated_at=datetime.now(timezone.utc),
+                    executed_at=action.executed_at,
+                    result=action.result,
+                    error=action.error,
+                    claimed_at=action.claimed_at,
+                )
+                .on_conflict_do_nothing(index_elements=["id"])
+                .returning(ScheduledActionRow)
+            )
+            row = (await session.execute(stmt)).scalar_one_or_none()
+            if row is not None:
+                return self._row_to_domain(row), True
+            # Conflict — load the existing row.
+            existing = await self.get(action.id)
+            # existing is not None in practice (the conflict means it exists).
+            return existing if existing is not None else action, False
+
     async def get(self, action_id: str) -> ScheduledAction | None:
         async with self._session() as session:
             stmt = select(ScheduledActionRow).where(

@@ -293,3 +293,58 @@ async def test_run_loop_continues_after_error():
 
     # The loop survived the error and eventually processed the action.
     assert messaging.send_count == 1
+
+
+# --- web-originated scheduled actions --------------------------------------
+
+
+async def test_scheduler_executes_web_originated_action():
+    """A ScheduledAction created via create_once (web app) is executed by the
+    scheduler through the Green send path."""
+    scheduler, action_repo, messaging = _make_scheduler()
+    # Simulate a web-app scheduling: create via create_once with a deterministic
+    # id derived from user_id + request_id.
+    from uuid import NAMESPACE_URL, uuid5
+
+    action_id = str(uuid5(NAMESPACE_URL, "echo:send:user-1:req-web-1"))
+    action = ScheduledAction(
+        id=action_id,
+        user_id="user-1",
+        type=ScheduledActionType.SEND_WHATSAPP_MESSAGE,
+        execute_at_utc=datetime.now(timezone.utc) + timedelta(minutes=-1),
+        timezone="Asia/Jerusalem",
+        status=ScheduledActionStatus.PENDING,
+        payload={
+            "chat_id": "972508765432@c.us",
+            "message": "היי, אחזור אליך",
+            "source": "waiting_list_web",
+            "active_id": "some-active-id",
+        },
+    )
+    created_action, created = await action_repo.create_once(action)
+    assert created is True
+    assert created_action.id == action_id
+
+    processed = await scheduler.run_once()
+    assert processed is True
+    assert messaging.send_count == 1
+    fetched = await action_repo.get(action_id)
+    assert fetched.status is ScheduledActionStatus.SUCCEEDED
+    assert fetched.result == {"provider_message_id": "MSG_1"}
+
+
+async def test_create_once_does_not_duplicate_web_action():
+    """Retrying create_once with the same id returns the original action."""
+    _scheduler, action_repo, _ = _make_scheduler()
+    from dataclasses import replace
+    from uuid import NAMESPACE_URL, uuid5
+
+    action_id = str(uuid5(NAMESPACE_URL, "echo:send:user-1:req-web-2"))
+    action = _due_action(id=action_id)
+    _first, created_first = await action_repo.create_once(action)
+    assert created_first is True
+    # Retry with same id — should return existing, not overwrite.
+    modified = replace(action, status=ScheduledActionStatus.SUCCEEDED)
+    second, created_second = await action_repo.create_once(modified)
+    assert created_second is False
+    assert second.status is ScheduledActionStatus.PENDING  # unchanged

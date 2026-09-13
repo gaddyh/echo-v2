@@ -58,6 +58,7 @@ from echo_v2.persistence.feedback_repositories import (
     WaitingForMeActionRepository,
     WaitingForMeFeedbackRepository,
 )
+from echo_v2.services.time_presets import preset_to_utc as _preset_to_utc
 
 __all__ = ["WaitingForMeActionService", "WaitingForMeFeedbackService"]
 
@@ -85,65 +86,6 @@ def _next_digest_at(
     tz = ZoneInfo(tz_name)
     local_now = now_utc.astimezone(tz)
     target = local_now.replace(hour=digest_hour, minute=0, second=0, microsecond=0)
-    if target <= local_now:
-        target += timedelta(days=1)
-    return target.astimezone(timezone.utc)
-
-
-# Snooze preset → local hour mapping (absolute-time presets).
-_SNOOZE_PRESET_HOURS: dict[str, int] = {
-    "morning": 8,
-    "afternoon": 14,
-    "evening": 18,
-}
-
-# Relative-time presets (offset from now).
-_SNOOZE_PRESET_RELATIVE: dict[str, timedelta] = {
-    "10m": timedelta(minutes=10),
-    "1h": timedelta(hours=1),
-    "3h": timedelta(hours=3),
-}
-
-
-def _snooze_preset_to_utc(
-    preset: str,
-    *,
-    now_utc: datetime,
-    tz_name: str = DEFAULT_TZ,
-) -> datetime:
-    """Map a snooze preset to a UTC datetime.
-
-    Presets:
-    * ``10m`` → 10 minutes from now
-    * ``1h`` → 1 hour from now
-    * ``3h`` → 3 hours from now
-    * ``morning`` → next 08:00 local
-    * ``afternoon`` → next 14:00 local
-    * ``evening`` → next 18:00 local
-    * ``tomorrow`` → tomorrow 08:00 local
-
-    "Next" means: if the target hour hasn't passed today, use today;
-    otherwise use tomorrow. ``tomorrow`` always uses the next day.
-    """
-    # Relative presets — timezone-independent.
-    relative = _SNOOZE_PRESET_RELATIVE.get(preset)
-    if relative is not None:
-        return now_utc + relative
-
-    tz = ZoneInfo(tz_name)
-    local_now = now_utc.astimezone(tz)
-
-    if preset == "tomorrow":
-        target = (local_now + timedelta(days=1)).replace(
-            hour=_SNOOZE_PRESET_HOURS["morning"], minute=0, second=0, microsecond=0
-        )
-        return target.astimezone(timezone.utc)
-
-    hour = _SNOOZE_PRESET_HOURS.get(preset)
-    if hour is None:
-        raise ValueError(f"unknown snooze preset: {preset}")
-
-    target = local_now.replace(hour=hour, minute=0, second=0, microsecond=0)
     if target <= local_now:
         target += timedelta(days=1)
     return target.astimezone(timezone.utc)
@@ -331,7 +273,7 @@ class WaitingForMeActionService:
             snoozed_until = snooze_until
         elif snooze_preset is not None:
             try:
-                snoozed_until = _snooze_preset_to_utc(
+                snoozed_until = _preset_to_utc(
                     snooze_preset, now_utc=now, tz_name=tz_name
                 )
             except ValueError:

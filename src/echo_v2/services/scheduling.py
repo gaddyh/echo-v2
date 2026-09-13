@@ -28,7 +28,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from langsmith import traceable
 
@@ -120,6 +120,38 @@ class SchedulingService:
         )
         await self._action_repo.save(action)
         return action
+
+    async def create_once(
+        self,
+        *,
+        request_id: str,
+        user_id: str,
+        type: ScheduledActionType,
+        execute_at_utc: datetime,
+        timezone_name: str,
+        payload: dict[str, Any],
+    ) -> tuple[ScheduledAction, bool]:
+        """Idempotently create a PENDING scheduled action.
+
+        The action id is derived deterministically from ``user_id`` and
+        ``request_id`` via ``uuid5(NAMESPACE_URL, ...)``. The repository's
+        :meth:`create_once` performs an ``INSERT ... ON CONFLICT DO NOTHING``.
+        A retry with the same ``request_id`` returns the original action
+        with ``created=False`` and does NOT overwrite its status or payload.
+
+        Returns ``(action, created)``.
+        """
+        action_id = str(uuid5(NAMESPACE_URL, f"echo:send:{user_id}:{request_id}"))
+        action = ScheduledAction(
+            id=action_id,
+            user_id=user_id,
+            type=type,
+            execute_at_utc=execute_at_utc,
+            timezone=timezone_name,
+            status=ScheduledActionStatus.PENDING,
+            payload=payload,
+        )
+        return await self._action_repo.create_once(action)
 
     async def list_pending(self, user_id: str) -> list[ScheduledAction]:
         """List all PENDING actions for a user."""

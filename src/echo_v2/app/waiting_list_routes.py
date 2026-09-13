@@ -22,10 +22,12 @@ from __future__ import annotations
 import logging
 import time
 from datetime import datetime, timezone
+from typing import Literal
+from uuid import UUID
 
 from fastapi import APIRouter, Cookie, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from echo_v2.app.waiting_list_page import EXPIRED_LINK_PAGE, WAITING_LIST_PAGE
 from echo_v2.services.waiting_list_service import WaitingListService
@@ -54,6 +56,42 @@ class ActionRequest(BaseModel):
     snooze_preset: str | None = Field(None, description="Snooze preset: morning/afternoon/evening/tomorrow")
     snooze_until: str | None = Field(None, description="ISO 8601 datetime for custom snooze")
     dismiss_reason: str | None = Field(None, description="Dismiss reason: already_handled/no_response_required/detected_incorrectly")
+
+
+class SendRequest(BaseModel):
+    """Request body for POST /api/waiting/items/{active_id}/send.
+
+    Schedules a WhatsApp message to the contact of the waiting item.
+    The recipient (``chat_id``) is resolved server-side from the
+    ``active_id`` — never trusts a client-supplied phone number.
+
+    Idempotency: the browser generates ``request_id`` once when the user
+    first submits and reuses it for retries. The server derives a
+    deterministic action id from ``user_id + request_id`` so a retry
+    returns the original action instead of creating a duplicate.
+    """
+
+    request_id: UUID = Field(..., description="Client-generated UUID for idempotency")
+    message: str = Field(..., min_length=1, max_length=1000, description="Message body")
+    send_preset: Literal[
+        "10m", "1h", "3h", "morning", "afternoon", "evening", "tomorrow"
+    ] | None = Field(None, description="Time preset for scheduling")
+    send_at: datetime | None = Field(
+        None, description="ISO 8601 offset-aware datetime for custom scheduling"
+    )
+
+    @field_validator("message")
+    @classmethod
+    def _strip_nonempty(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("message must not be empty")
+        return v
+
+    @model_validator(mode="after")
+    def _exactly_one_timing(self) -> SendRequest:
+        if (self.send_preset is None) == (self.send_at is None):
+            raise ValueError("exactly one of send_preset or send_at must be set")
+        return self
 
 
 def build_waiting_list_router(
@@ -260,6 +298,52 @@ def build_waiting_list_router(
                     "snoozed": result.summary.snoozed,
                     "completed": result.summary.completed,
                 },
+            },
+            headers=_security_headers(),
+        )
+
+    # --- POST /api/waiting/items/{active_id}/send — schedule a message ---
+
+    @router.post("/api/waiting/items/{active_id}/send")
+    async def schedule_send(
+        active_id: str,
+        body: SendRequest,
+        wls: str | None = Cookie(default=None, alias=_SESSION_COOKIE),
+    ) -> JSONResponse:
+        if wls is None:
+            raise HTTPException(status_code=401, detail="no session")
+
+        resolved = await token_service.resolve_session(wls)
+        if resolved is None:
+            raise HTTPException(status_code=401, detail="session expired")
+
+        if not _check_rate_limit(resolved.session_id):
+            raise HTTPException(status_code=429, detail="rate limited")
+
+        result = await waiting_list_service.schedule_send(
+            session_id=resolved.session_id,
+            user_id=resolved.user_id,
+            active_id=active_id,
+            request_id=str(body.request_id),
+            message=body.message,
+            send_preset=body.send_preset,
+            send_at=body.send_at,
+        )
+        if result is None:
+            raise HTTPException(status_code=401, detail="session invalid")
+
+        status_code = 200
+        if result.outcome == "not_found":
+            status_code = 404
+        elif result.outcome == "invalid":
+            status_code = 422
+
+        return JSONResponse(
+            status_code=status_code,
+            content={
+                "outcome": result.outcome,
+                "scheduled_for": result.scheduled_for,
+                "action_id": result.action_id,
             },
             headers=_security_headers(),
         )

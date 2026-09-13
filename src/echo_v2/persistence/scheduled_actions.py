@@ -40,6 +40,16 @@ class ScheduledActionRepository:
     async def save(self, action: ScheduledAction) -> None:
         """Insert or update a scheduled action (upsert on ``id``)."""
 
+    async def create_once(self, action: ScheduledAction) -> tuple[ScheduledAction, bool]:
+        """Insert a scheduled action if its id is absent.
+
+        Returns ``(action, created)``. If an action with the same id already
+        exists, returns ``(existing, False)`` and does NOT overwrite it. This
+        is the safe variant of :meth:`save` for idempotent creation flows
+        (e.g. waiting-list message scheduling) where a retry must not
+        overwrite an already-created action's status or payload.
+        """
+
     async def get(self, action_id: str) -> ScheduledAction | None: ...
 
     async def list_pending(self, user_id: str) -> list[ScheduledAction]:
@@ -101,6 +111,13 @@ class InMemoryScheduledActionRepository(ScheduledActionRepository):
 
     async def save(self, action: ScheduledAction) -> None:
         self._actions[action.id] = action
+
+    async def create_once(self, action: ScheduledAction) -> tuple[ScheduledAction, bool]:
+        existing = self._actions.get(action.id)
+        if existing is not None:
+            return existing, False
+        self._actions[action.id] = action
+        return action, True
 
     async def get(self, action_id: str) -> ScheduledAction | None:
         return self._actions.get(action_id)

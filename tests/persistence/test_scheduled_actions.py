@@ -200,3 +200,38 @@ async def test_recover_stale_returns_zero_when_none_stale():
     )
     await repo.save(fresh)
     assert await repo.recover_stale(now, lease_seconds=300) == 0
+
+
+async def test_create_once_inserts_new_action():
+    repo = InMemoryScheduledActionRepository()
+    action = _make_action()
+    result, created = await repo.create_once(action)
+    assert created is True
+    assert result.id == "act-1"
+    fetched = await repo.get("act-1")
+    assert fetched is not None
+    assert fetched.status is ScheduledActionStatus.PENDING
+
+
+async def test_create_once_returns_existing_on_duplicate():
+    repo = InMemoryScheduledActionRepository()
+    action = _make_action()
+    first, created_first = await repo.create_once(action)
+    assert created_first is True
+    # Retry with same id — should return existing, not overwrite.
+    second, created_second = await repo.create_once(action)
+    assert created_second is False
+    assert second.id == "act-1"
+    assert second is first or second.id == first.id
+
+
+async def test_create_once_does_not_overwrite_status():
+    repo = InMemoryScheduledActionRepository()
+    action = _make_action()
+    await repo.create_once(action)
+    # Mutate the original action's status to SUCCEEDED and retry.
+    from dataclasses import replace
+    modified = replace(action, status=ScheduledActionStatus.SUCCEEDED)
+    existing, created = await repo.create_once(modified)
+    assert created is False
+    assert existing.status is ScheduledActionStatus.PENDING  # unchanged

@@ -813,3 +813,358 @@ async def test_list_items_result_not_found_summary_is_none():
     assert result is not None
     assert len(result.items) == 1
     assert result.items[0].situation_summary is None
+
+
+# --- schedule_send tests ---------------------------------------------------
+
+
+from echo_v2.observability import InMemoryEventSink
+from echo_v2.persistence.scheduled_actions import (
+    InMemoryScheduledActionRepository,
+)
+from echo_v2.persistence.whatsapp_connections import (
+    InMemoryWhatsAppConnectionRepository,
+    StoredConnection,
+)
+from echo_v2.ports.whatsapp import (
+    ConnectionRef,
+    ConnectionStatus,
+    ProviderCredentials,
+)
+from echo_v2.runtime.idempotency import InMemoryIdempotencyStore
+from echo_v2.services.scheduling import SchedulingService
+
+
+class _FakeMessaging:
+    def __init__(self, *, msg_id: str = "MSG_1") -> None:
+        self.msg_id = msg_id
+        self.send_count = 0
+
+    async def send_message(self, connection, chat_id, message) -> str:
+        self.send_count += 1
+        return self.msg_id
+
+
+def _make_service_with_scheduling(
+    *, user_id: str = USER_ID
+) -> tuple[
+    WaitingListService,
+    InMemoryWaitingForMeActiveRepository,
+    InMemoryScheduledActionRepository,
+    _FakeMessaging,
+    WaitingListTokenService,
+]:
+    active_repo = InMemoryWaitingForMeActiveRepository()
+    action_repo = InMemoryWaitingForMeActionRepository()
+    feedback_repo = InMemoryWaitingForMeFeedbackRepository()
+    chat_state_repo = InMemoryChatStateRepository()
+    message_repo = InMemoryMessageRepository()
+    contact_repo = InMemoryContactRepository()
+    mute_repo = InMemoryChatMuteRepository()
+    result_repo = InMemoryWaitingForMeResultRepository()
+    session_repo = InMemoryWaitingListSessionRepository()
+    scheduled_action_repo = InMemoryScheduledActionRepository()
+    conn_repo = InMemoryWhatsAppConnectionRepository()
+    conn_repo._by_ref[("green", "123")] = StoredConnection(
+        user_id=user_id,
+        ref=ConnectionRef("green", "123"),
+        credentials=ProviderCredentials(b"api-tok"),
+        webhook_token_hash=b"\x00" * 32,
+        status=ConnectionStatus.CONNECTED,
+    )
+    conn_repo._by_user[user_id] = ("green", "123")
+    messaging = _FakeMessaging()
+
+    token_service = WaitingListTokenService(session_repo)
+    query_service = WaitingListQueryService(
+        active_repo=active_repo,
+        chat_state_repo=chat_state_repo,
+        mute_repo=mute_repo,
+    )
+    action_service = WaitingForMeActionService(
+        active_repo=active_repo,
+        action_repo=action_repo,
+        mute_repo=mute_repo,
+        feedback_repo=feedback_repo,
+        result_repo=result_repo,
+    )
+    scheduling_service = SchedulingService(
+        action_repo=scheduled_action_repo,
+        connection_repo=conn_repo,
+        messaging=messaging,
+        idempotency_store=InMemoryIdempotencyStore(),
+        event_sink=InMemoryEventSink(),
+    )
+    service = WaitingListService(
+        token_service=token_service,
+        query_service=query_service,
+        action_service=action_service,
+        action_repo=action_repo,
+        chat_state_repo=chat_state_repo,
+        message_repo=message_repo,
+        contact_repo=contact_repo,
+        result_repo=result_repo,
+        scheduling_service=scheduling_service,
+        active_repo=active_repo,
+    )
+    return service, active_repo, scheduled_action_repo, messaging, token_service
+
+
+async def test_schedule_send_with_preset_creates_action():
+    service, active_repo, scheduled_repo, _, token_service = _make_service_with_scheduling()
+    session_id, _ = await token_service.issue(USER_ID)
+    active_id = await _setup_chat_and_active(active_repo, service._chat_state_repo)
+
+    result = await service.schedule_send(
+        session_id=session_id,
+        user_id=USER_ID,
+        active_id=active_id,
+        request_id="req-1",
+        message="היי, אחזור אליך",
+        send_preset="1h",
+    )
+    assert result is not None
+    assert result.outcome == "scheduled"
+    assert result.action_id is not None
+    assert result.scheduled_for is not None
+    actions = await scheduled_repo.list_pending(USER_ID)
+    assert len(actions) == 1
+    assert actions[0].payload["chat_id"] == CHAT_ID
+    assert actions[0].payload["message"] == "היי, אחזור אליך"
+    assert actions[0].payload["source"] == "waiting_list_web"
+    assert actions[0].payload["active_id"] == active_id
+
+
+async def test_schedule_send_with_custom_datetime_creates_action():
+    service, active_repo, scheduled_repo, _, token_service = _make_service_with_scheduling()
+    session_id, _ = await token_service.issue(USER_ID)
+    active_id = await _setup_chat_and_active(active_repo, service._chat_state_repo)
+
+    future = datetime(2099, 1, 1, 10, 0, tzinfo=timezone.utc)
+    result = await service.schedule_send(
+        session_id=session_id,
+        user_id=USER_ID,
+        active_id=active_id,
+        request_id="req-1",
+        message="הודעה עתידית",
+        send_at=future,
+    )
+    assert result is not None
+    assert result.outcome == "scheduled"
+    actions = await scheduled_repo.list_pending(USER_ID)
+    assert len(actions) == 1
+    assert actions[0].execute_at_utc == future
+
+
+async def test_schedule_send_same_request_id_returns_duplicate():
+    service, active_repo, scheduled_repo, _, token_service = _make_service_with_scheduling()
+    session_id, _ = await token_service.issue(USER_ID)
+    active_id = await _setup_chat_and_active(active_repo, service._chat_state_repo)
+
+    result1 = await service.schedule_send(
+        session_id=session_id,
+        user_id=USER_ID,
+        active_id=active_id,
+        request_id="req-1",
+        message="היי",
+        send_preset="1h",
+    )
+    assert result1.outcome == "scheduled"
+    result2 = await service.schedule_send(
+        session_id=session_id,
+        user_id=USER_ID,
+        active_id=active_id,
+        request_id="req-1",
+        message="היי",
+        send_preset="1h",
+    )
+    assert result2.outcome == "duplicate"
+    assert result2.action_id == result1.action_id
+    actions = await scheduled_repo.list_pending(USER_ID)
+    assert len(actions) == 1  # only one action created
+
+
+async def test_schedule_send_different_request_id_creates_second_action():
+    service, active_repo, scheduled_repo, _, token_service = _make_service_with_scheduling()
+    session_id, _ = await token_service.issue(USER_ID)
+    active_id = await _setup_chat_and_active(active_repo, service._chat_state_repo)
+
+    await service.schedule_send(
+        session_id=session_id, user_id=USER_ID, active_id=active_id,
+        request_id="req-1", message="היי", send_preset="1h",
+    )
+    await service.schedule_send(
+        session_id=session_id, user_id=USER_ID, active_id=active_id,
+        request_id="req-2", message="היי שוב", send_preset="1h",
+    )
+    actions = await scheduled_repo.list_pending(USER_ID)
+    assert len(actions) == 2
+
+
+async def test_schedule_send_invalid_active_id_returns_not_found():
+    service, _, scheduled_repo, _, token_service = _make_service_with_scheduling()
+    session_id, _ = await token_service.issue(USER_ID)
+
+    result = await service.schedule_send(
+        session_id=session_id,
+        user_id=USER_ID,
+        active_id="nonexistent-uuid",
+        request_id="req-1",
+        message="היי",
+        send_preset="1h",
+    )
+    assert result is not None
+    assert result.outcome == "not_found"
+    actions = await scheduled_repo.list_pending(USER_ID)
+    assert len(actions) == 0
+
+
+async def test_schedule_send_cross_user_active_id_returns_not_found():
+    """User A scheduling against user B's active item → not_found."""
+    service, active_repo, _scheduled_repo, _, token_service = _make_service_with_scheduling()
+    session_id, _ = await token_service.issue(USER_ID)
+    # Set up active for user B.
+    from echo_v2.ports.whatsapp import MessageDirection
+
+    await service._chat_state_repo.upsert_on_message(
+        user_id="user-2",
+        chat_id=CHAT_ID,
+        direction=MessageDirection.INBOUND,
+        observed_at=NOW,
+        next_analysis_at=None,
+    )
+    await active_repo.upsert(
+        user_id="user-2",
+        chat_id=CHAT_ID,
+        target_version=1,
+        result_id=RESULT_ID,
+        waiting_since=NOW,
+    )
+    active = await active_repo.get(user_id="user-2", chat_id=CHAT_ID)
+
+    result = await service.schedule_send(
+        session_id=session_id,
+        user_id=USER_ID,
+        active_id=active.id,
+        request_id="req-1",
+        message="היי",
+        send_preset="1h",
+    )
+    assert result.outcome == "not_found"
+
+
+async def test_schedule_send_empty_message_returns_invalid():
+    service, active_repo, _, _, token_service = _make_service_with_scheduling()
+    session_id, _ = await token_service.issue(USER_ID)
+    active_id = await _setup_chat_and_active(active_repo, service._chat_state_repo)
+
+    result = await service.schedule_send(
+        session_id=session_id,
+        user_id=USER_ID,
+        active_id=active_id,
+        request_id="req-1",
+        message="   ",
+        send_preset="1h",
+    )
+    assert result.outcome == "invalid"
+
+
+async def test_schedule_send_both_preset_and_send_at_returns_invalid():
+    service, active_repo, _, _, token_service = _make_service_with_scheduling()
+    session_id, _ = await token_service.issue(USER_ID)
+    active_id = await _setup_chat_and_active(active_repo, service._chat_state_repo)
+
+    future = datetime(2099, 1, 1, 10, 0, tzinfo=timezone.utc)
+    result = await service.schedule_send(
+        session_id=session_id,
+        user_id=USER_ID,
+        active_id=active_id,
+        request_id="req-1",
+        message="היי",
+        send_preset="1h",
+        send_at=future,
+    )
+    assert result.outcome == "invalid"
+
+
+async def test_schedule_send_neither_preset_nor_send_at_returns_invalid():
+    service, active_repo, _, _, token_service = _make_service_with_scheduling()
+    session_id, _ = await token_service.issue(USER_ID)
+    active_id = await _setup_chat_and_active(active_repo, service._chat_state_repo)
+
+    result = await service.schedule_send(
+        session_id=session_id,
+        user_id=USER_ID,
+        active_id=active_id,
+        request_id="req-1",
+        message="היי",
+    )
+    assert result.outcome == "invalid"
+
+
+async def test_schedule_send_past_send_at_returns_invalid():
+    service, active_repo, _, _, token_service = _make_service_with_scheduling()
+    session_id, _ = await token_service.issue(USER_ID)
+    active_id = await _setup_chat_and_active(active_repo, service._chat_state_repo)
+
+    past = datetime(2000, 1, 1, 10, 0, tzinfo=timezone.utc)
+    result = await service.schedule_send(
+        session_id=session_id,
+        user_id=USER_ID,
+        active_id=active_id,
+        request_id="req-1",
+        message="היי",
+        send_at=past,
+    )
+    assert result.outcome == "invalid"
+
+
+async def test_schedule_send_naive_send_at_returns_invalid():
+    service, active_repo, _, _, token_service = _make_service_with_scheduling()
+    session_id, _ = await token_service.issue(USER_ID)
+    active_id = await _setup_chat_and_active(active_repo, service._chat_state_repo)
+
+    naive = datetime(2099, 1, 1, 10, 0)  # noqa: DTZ001  no tzinfo — intentional
+    result = await service.schedule_send(
+        session_id=session_id,
+        user_id=USER_ID,
+        active_id=active_id,
+        request_id="req-1",
+        message="היי",
+        send_at=naive,
+    )
+    assert result.outcome == "invalid"
+
+
+async def test_schedule_send_invalid_session_returns_none():
+    service, _, _, _, _ = _make_service_with_scheduling()
+    result = await service.schedule_send(
+        session_id="invalid-session",
+        user_id=USER_ID,
+        active_id="any",
+        request_id="req-1",
+        message="היי",
+        send_preset="1h",
+    )
+    assert result is None
+
+
+async def test_schedule_send_payload_uses_internal_chat_id_not_client_phone():
+    """The saved payload must contain the internal chat_id from the active
+    row, never a client-supplied recipient."""
+    service, active_repo, scheduled_repo, _, token_service = _make_service_with_scheduling()
+    session_id, _ = await token_service.issue(USER_ID)
+    active_id = await _setup_chat_and_active(active_repo, service._chat_state_repo)
+
+    await service.schedule_send(
+        session_id=session_id,
+        user_id=USER_ID,
+        active_id=active_id,
+        request_id="req-1",
+        message="היי",
+        send_preset="1h",
+    )
+    actions = await scheduled_repo.list_pending(USER_ID)
+    assert len(actions) == 1
+    # chat_id must be the internal WhatsApp chat ID, not a phone number.
+    assert actions[0].payload["chat_id"] == CHAT_ID

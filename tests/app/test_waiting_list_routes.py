@@ -78,6 +78,43 @@ def _make_app() -> tuple[
         feedback_repo=feedback_repo,
         result_repo=result_repo,
     )
+    # Scheduling infra for the send endpoint.
+    from echo_v2.observability import InMemoryEventSink
+    from echo_v2.persistence.scheduled_actions import InMemoryScheduledActionRepository
+    from echo_v2.persistence.whatsapp_connections import (
+        InMemoryWhatsAppConnectionRepository,
+        StoredConnection,
+    )
+    from echo_v2.ports.whatsapp import (
+        ConnectionRef,
+        ConnectionStatus,
+        ProviderCredentials,
+    )
+    from echo_v2.runtime.idempotency import InMemoryIdempotencyStore
+    from echo_v2.services.scheduling import SchedulingService
+
+    scheduled_action_repo = InMemoryScheduledActionRepository()
+    conn_repo = InMemoryWhatsAppConnectionRepository()
+    conn_repo._by_ref[("green", "123")] = StoredConnection(
+        user_id=USER_ID,
+        ref=ConnectionRef("green", "123"),
+        credentials=ProviderCredentials(b"api-tok"),
+        webhook_token_hash=b"\x00" * 32,
+        status=ConnectionStatus.CONNECTED,
+    )
+    conn_repo._by_user[USER_ID] = ("green", "123")
+
+    class _FakeMessaging:
+        async def send_message(self, connection, chat_id, message) -> str:
+            return "MSG_1"
+
+    scheduling_service = SchedulingService(
+        action_repo=scheduled_action_repo,
+        connection_repo=conn_repo,
+        messaging=_FakeMessaging(),
+        idempotency_store=InMemoryIdempotencyStore(),
+        event_sink=InMemoryEventSink(),
+    )
     service = WaitingListService(
         token_service=token_service,
         query_service=query_service,
@@ -87,6 +124,8 @@ def _make_app() -> tuple[
         message_repo=message_repo,
         contact_repo=contact_repo,
         result_repo=result_repo,
+        scheduling_service=scheduling_service,
+        active_repo=active_repo,
     )
     router = build_waiting_list_router(
         token_service=token_service,
@@ -722,3 +761,185 @@ async def test_execute_action_session_invalid_returns_401():
             json={"action_id": "a1", "expected_version": 1, "action": "done"},
         )
     assert resp.status_code == 401
+
+
+# --- POST /api/waiting/items/{active_id}/send tests ---
+
+
+async def test_api_send_with_preset_succeeds():
+    app, token_service, service, active_repo = _make_app()
+    _, raw_token = await token_service.issue(USER_ID)
+    active_id = await _setup_active(active_repo, service._chat_state_repo)
+    async with _client(app) as client:
+        await client.get(f"/q/{raw_token}")
+        resp = await client.post(
+            f"/api/waiting/items/{active_id}/send",
+            json={
+                "request_id": "11111111-1111-1111-1111-111111111111",
+                "message": "היי, אחזור אליך",
+                "send_preset": "1h",
+            },
+        )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["outcome"] == "scheduled"
+    assert data["scheduled_for"] is not None
+    assert data["action_id"] is not None
+
+
+async def test_api_send_same_request_id_returns_duplicate():
+    app, token_service, service, active_repo = _make_app()
+    _, raw_token = await token_service.issue(USER_ID)
+    active_id = await _setup_active(active_repo, service._chat_state_repo)
+    async with _client(app) as client:
+        await client.get(f"/q/{raw_token}")
+        body = {
+            "request_id": "22222222-2222-2222-2222-222222222222",
+            "message": "היי",
+            "send_preset": "1h",
+        }
+        resp1 = await client.post(f"/api/waiting/items/{active_id}/send", json=body)
+        resp2 = await client.post(f"/api/waiting/items/{active_id}/send", json=body)
+    assert resp1.status_code == 200
+    assert resp1.json()["outcome"] == "scheduled"
+    assert resp2.status_code == 200
+    assert resp2.json()["outcome"] == "duplicate"
+    assert resp2.json()["action_id"] == resp1.json()["action_id"]
+
+
+async def test_api_send_invalid_active_id_returns_404():
+    app, token_service, _, _ = _make_app()
+    _, raw_token = await token_service.issue(USER_ID)
+    async with _client(app) as client:
+        await client.get(f"/q/{raw_token}")
+        resp = await client.post(
+            "/api/waiting/items/nonexistent/send",
+            json={
+                "request_id": "33333333-3333-3333-3333-333333333333",
+                "message": "היי",
+                "send_preset": "1h",
+            },
+        )
+    assert resp.status_code == 404
+    assert resp.json()["outcome"] == "not_found"
+
+
+async def test_api_send_without_cookie_returns_401():
+    app, _, _, _ = _make_app()
+    async with _client(app) as client:
+        resp = await client.post(
+            "/api/waiting/items/any/send",
+            json={
+                "request_id": "44444444-4444-4444-4444-444444444444",
+                "message": "היי",
+                "send_preset": "1h",
+            },
+        )
+    assert resp.status_code == 401
+
+
+async def test_api_send_empty_message_returns_422():
+    app, token_service, service, active_repo = _make_app()
+    _, raw_token = await token_service.issue(USER_ID)
+    active_id = await _setup_active(active_repo, service._chat_state_repo)
+    async with _client(app) as client:
+        await client.get(f"/q/{raw_token}")
+        resp = await client.post(
+            f"/api/waiting/items/{active_id}/send",
+            json={
+                "request_id": "55555555-5555-5555-5555-555555555555",
+                "message": "   ",
+                "send_preset": "1h",
+            },
+        )
+    assert resp.status_code == 422
+
+
+async def test_api_send_both_preset_and_send_at_returns_422():
+    app, token_service, service, active_repo = _make_app()
+    _, raw_token = await token_service.issue(USER_ID)
+    active_id = await _setup_active(active_repo, service._chat_state_repo)
+    async with _client(app) as client:
+        await client.get(f"/q/{raw_token}")
+        resp = await client.post(
+            f"/api/waiting/items/{active_id}/send",
+            json={
+                "request_id": "66666666-6666-6666-6666-666666666666",
+                "message": "היי",
+                "send_preset": "1h",
+                "send_at": "2099-01-01T10:00:00+00:00",
+            },
+        )
+    assert resp.status_code == 422
+
+
+async def test_api_send_neither_preset_nor_send_at_returns_422():
+    app, token_service, service, active_repo = _make_app()
+    _, raw_token = await token_service.issue(USER_ID)
+    active_id = await _setup_active(active_repo, service._chat_state_repo)
+    async with _client(app) as client:
+        await client.get(f"/q/{raw_token}")
+        resp = await client.post(
+            f"/api/waiting/items/{active_id}/send",
+            json={
+                "request_id": "77777777-7777-7777-7777-777777777777",
+                "message": "היי",
+            },
+        )
+    assert resp.status_code == 422
+
+
+async def test_api_send_naive_datetime_returns_422():
+    """A naive datetime (no offset) is rejected by Pydantic."""
+    app, token_service, service, active_repo = _make_app()
+    _, raw_token = await token_service.issue(USER_ID)
+    active_id = await _setup_active(active_repo, service._chat_state_repo)
+    async with _client(app) as client:
+        await client.get(f"/q/{raw_token}")
+        resp = await client.post(
+            f"/api/waiting/items/{active_id}/send",
+            json={
+                "request_id": "88888888-8888-8888-8888-888888888888",
+                "message": "היי",
+                "send_at": "2099-01-01T10:00:00",  # no offset
+            },
+        )
+    assert resp.status_code == 422
+
+
+async def test_api_send_with_custom_datetime_succeeds():
+    app, token_service, service, active_repo = _make_app()
+    _, raw_token = await token_service.issue(USER_ID)
+    active_id = await _setup_active(active_repo, service._chat_state_repo)
+    async with _client(app) as client:
+        await client.get(f"/q/{raw_token}")
+        resp = await client.post(
+            f"/api/waiting/items/{active_id}/send",
+            json={
+                "request_id": "99999999-9999-9999-9999-999999999999",
+                "message": "הודעה עתידית",
+                "send_at": "2099-01-01T10:00:00+00:00",
+            },
+        )
+    assert resp.status_code == 200
+    assert resp.json()["outcome"] == "scheduled"
+
+
+async def test_api_send_security_headers_preserved():
+    app, token_service, service, active_repo = _make_app()
+    _, raw_token = await token_service.issue(USER_ID)
+    active_id = await _setup_active(active_repo, service._chat_state_repo)
+    async with _client(app) as client:
+        await client.get(f"/q/{raw_token}")
+        resp = await client.post(
+            f"/api/waiting/items/{active_id}/send",
+            json={
+                "request_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                "message": "היי",
+                "send_preset": "1h",
+            },
+        )
+    assert resp.status_code == 200
+    assert resp.headers.get("cache-control") == "no-store"
+    assert resp.headers.get("referrer-policy") == "no-referrer"
+    assert resp.headers.get("x-content-type-options") == "nosniff"

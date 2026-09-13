@@ -15,22 +15,28 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Literal
 
 from echo_v2.domain.feedback import HandlingOutcome, WaitingForMeActionType
+from echo_v2.domain.scheduling import ScheduledActionType
 from echo_v2.domain.waiting_for_me import WaitingForMeActive
 from echo_v2.persistence.chat_repositories import (
     ChatStateRepository,
     MessageRepository,
+    WaitingForMeActiveRepository,
     WaitingForMeResultRepository,
 )
 from echo_v2.persistence.contacts import ContactRepository
 from echo_v2.persistence.feedback_repositories import WaitingForMeActionRepository
 from echo_v2.services.feedback_service import WaitingForMeActionService
+from echo_v2.services.scheduling import SchedulingService
+from echo_v2.services.time_presets import preset_to_utc
 from echo_v2.services.waiting_list_query import WaitingListQueryService
 from echo_v2.services.waiting_list_token_service import WaitingListTokenService
 
 __all__ = [
     "ActionResponse",
+    "SendResponse",
     "WaitingListItem",
     "WaitingListResponse",
     "WaitingListService",
@@ -114,6 +120,26 @@ class ActionResponse:
     summary: WaitingListSummary
 
 
+@dataclass(frozen=True)
+class SendResponse:
+    """Response for POST /api/waiting/items/{active_id}/send.
+
+    Attributes:
+        outcome: ``"scheduled"`` if a new action was created,
+            ``"duplicate"`` if the same request_id was retried,
+            ``"not_found"`` if the active item is missing or not owned by
+            the user, ``"invalid"`` if the message or timing is invalid.
+        scheduled_for: ISO 8601 UTC datetime when the message will be
+            sent. ``None`` for non-scheduled outcomes.
+        action_id: The id of the ScheduledAction. ``None`` for
+            non-scheduled outcomes.
+    """
+
+    outcome: Literal["scheduled", "duplicate", "not_found", "invalid"]
+    scheduled_for: str | None = None
+    action_id: str | None = None
+
+
 class WaitingListService:
     """List waiting items and execute actions for the mini web app.
 
@@ -130,7 +156,11 @@ class WaitingListService:
         message_repo: The :class:`MessageRepository` for last message
             text.
         contact_repo: The :class:`ContactRepository` for name resolution.
-        tz_name: Default timezone for snooze presets.
+        scheduling_service: Optional :class:`SchedulingService` for
+            scheduling WhatsApp messages from the web app.
+        active_repo: Optional :class:`WaitingForMeActiveRepository` for
+            resolving active items when scheduling messages.
+        tz_name: Default timezone for snooze/send presets.
     """
 
     def __init__(
@@ -144,6 +174,8 @@ class WaitingListService:
         message_repo: MessageRepository,
         contact_repo: ContactRepository,
         result_repo: WaitingForMeResultRepository | None = None,
+        scheduling_service: SchedulingService | None = None,
+        active_repo: WaitingForMeActiveRepository | None = None,
         tz_name: str = "Asia/Jerusalem",
     ) -> None:
         self._token_service = token_service
@@ -154,6 +186,8 @@ class WaitingListService:
         self._message_repo = message_repo
         self._contact_repo = contact_repo
         self._result_repo = result_repo
+        self._scheduling_service = scheduling_service
+        self._active_repo = active_repo
         self._tz_name = tz_name
 
     async def list_items(
@@ -261,6 +295,93 @@ class WaitingListService:
             action=action,
             item=item,
             summary=summary,
+        )
+
+    async def schedule_send(
+        self,
+        session_id: str,
+        user_id: str,
+        active_id: str,
+        request_id: str,
+        message: str,
+        send_preset: str | None = None,
+        send_at: datetime | None = None,
+    ) -> SendResponse | None:
+        """Schedule a WhatsApp message to the contact of a waiting item.
+
+        Resolves the recipient (``chat_id``) server-side from the active
+        item — never trusts a client-supplied phone number. Creates a
+        ``SEND_WHATSAPP_MESSAGE`` scheduled action via
+        :meth:`SchedulingService.create_once` so a retry with the same
+        ``request_id`` returns the original action instead of creating a
+        duplicate.
+
+        Returns ``None`` if the session is invalid/expired/revoked.
+        Returns a :class:`SendResponse` with ``outcome="not_found"`` if
+        the active item is missing or owned by another user, or
+        ``outcome="invalid"`` if the message/timing is invalid.
+        """
+        # Validate session.
+        resolved = await self._token_service.resolve_session(session_id)
+        if resolved is None or resolved.user_id != user_id:
+            return None
+
+        # Touch the session.
+        await self._token_service.touch(session_id)
+
+        if self._scheduling_service is None or self._active_repo is None:
+            return SendResponse(outcome="invalid")
+
+        # Resolve the active item server-side.
+        active = await self._active_repo.get_by_id(active_id)
+        if active is None or active.user_id != user_id:
+            return SendResponse(outcome="not_found")
+
+        # Validate message.
+        if not message or not message.strip():
+            return SendResponse(outcome="invalid")
+
+        # Resolve timing: exactly one of send_preset / send_at.
+        now = datetime.now(timezone.utc)
+        if send_preset is not None and send_at is not None:
+            return SendResponse(outcome="invalid")
+        if send_preset is None and send_at is None:
+            return SendResponse(outcome="invalid")
+
+        if send_preset is not None:
+            try:
+                execute_at_utc = preset_to_utc(
+                    send_preset, now_utc=now, tz_name=self._tz_name
+                )
+            except ValueError:
+                return SendResponse(outcome="invalid")
+        else:
+            assert send_at is not None
+            # send_at must be offset-aware (Pydantic enforces at the API
+            # boundary; service callers must also pass aware datetimes).
+            if send_at.tzinfo is None:
+                return SendResponse(outcome="invalid")
+            execute_at_utc = send_at.astimezone(timezone.utc)
+            if execute_at_utc <= now:
+                return SendResponse(outcome="invalid")
+
+        action, created = await self._scheduling_service.create_once(
+            request_id=request_id,
+            user_id=user_id,
+            type=ScheduledActionType.SEND_WHATSAPP_MESSAGE,
+            execute_at_utc=execute_at_utc,
+            timezone_name=self._tz_name,
+            payload={
+                "chat_id": active.chat_id,
+                "message": message,
+                "source": "waiting_list_web",
+                "active_id": active_id,
+            },
+        )
+        return SendResponse(
+            outcome="scheduled" if created else "duplicate",
+            scheduled_for=execute_at_utc.isoformat(),
+            action_id=action.id,
         )
 
     async def _build_item(
