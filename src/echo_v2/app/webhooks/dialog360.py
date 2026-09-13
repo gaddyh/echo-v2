@@ -194,12 +194,19 @@ def build_router(
 
 
 def _valid_bearer(authorization: str | None, expected_hash: bytes) -> bool:
-    """Constant-time validation of a bearer token against the hash."""
+    """Constant-time validation of a bearer token against the hash.
+
+    Accepts both ``Bearer <token>`` and a bare ``<token>`` — 360dialog sends
+    exactly the value you configure in the dashboard, so if you set the
+    header value to just the secret (without ``Bearer `` prefix), that's
+    what arrives.
+    """
     if not authorization:
         return False
     parts = authorization.split(" ", 1)
-    if len(parts) != 2 or parts[0].lower() != "bearer":
-        return False
-    candidate = parts[1].strip()
+    if len(parts) == 2 and parts[0].lower() == "bearer":
+        candidate = parts[1].strip()
+    else:
+        candidate = authorization.strip()
     candidate_hash = hashlib.sha256(candidate.encode("utf-8")).digest()
     return hmac.compare_digest(candidate_hash, expected_hash)

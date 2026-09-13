@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import pytest
 from datetime import timedelta
+
+import pytest
 
 from echo_v2.app.webhooks.inbox import PostgresWebhookInbox
 

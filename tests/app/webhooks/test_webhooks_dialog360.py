@@ -95,6 +95,19 @@ def test_wrong_secret_returns_401(client):
     assert resp.status_code == 401
 
 
+def test_bare_token_accepted(client):
+    """360dialog sends the header value as-is — no Bearer prefix."""
+    c, flow = client
+    resp = c.post(
+        "/webhooks/bot/dialog360",
+        json=_text_payload(msg_id="wamid.BARE1"),
+        headers={"Authorization": WEBHOOK_SECRET},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "received"
+    assert len(flow.handled) == 1
+
+
 def test_text_message_dispatched(client):
     c, flow = client
     resp = c.post("/webhooks/bot/dialog360", json=_text_payload(), headers=AUTH_HEADER)
