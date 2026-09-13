@@ -161,6 +161,7 @@ async def clean_db(engine) -> AsyncIterator[None]:
             "scheduled_actions, "
             "idempotency_operations, "
             "provider_webhook_events, "
+            "bot_webhook_events, "
             "contacts, "
             "whatsapp_connections, "
             "waiting_list_sessions, "
@@ -180,6 +181,13 @@ async def connections_repo(session_factory, clean_db) -> PostgresWhatsAppConnect
 @pytest_asyncio.fixture
 async def webhooks_repo(session_factory, clean_db) -> PostgresWebhookDedupStore:
     return PostgresWebhookDedupStore(session_factory)
+
+
+@pytest_asyncio.fixture
+async def bot_inbox(session_factory, clean_db):
+    from echo_v2.app.webhooks.inbox import PostgresWebhookInbox
+
+    return PostgresWebhookInbox(session_factory)
 
 
 @pytest_asyncio.fixture

@@ -162,6 +162,4 @@ class Scheduler:
             # if the side effect happened. Mark as indeterminate to
             # prevent a blind retry.
             await self._action_repo.mark_indeterminate(action.id, str(exc))
-            _logger.exception(
-                "scheduler action %s unexpected error: %s", action.id, exc
-            )
+            _logger.exception("scheduler action %s unexpected error", action.id)

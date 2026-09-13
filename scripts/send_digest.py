@@ -16,7 +16,6 @@ Reads DATABASE_URL, D360_API_KEY from .env.
 from __future__ import annotations
 
 import asyncio
-import os
 from datetime import datetime, timezone
 
 from dotenv import load_dotenv
@@ -125,8 +124,10 @@ async def main() -> None:
             print(f"  Card {i}/{total}: {display_name} → {msg_id}")
 
         print(f"\nSent {total} cards.")
-    except Exception as exc:
-        print(f"\nSend failed: {exc}")
+    except Exception:
+        import logging
+
+        logging.getLogger("send_digest").exception("Send failed")
     finally:
         await client.aclose()
 

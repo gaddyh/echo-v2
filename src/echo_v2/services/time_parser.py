@@ -148,7 +148,7 @@ class CombinedTimeParser:
                 "(regex failed, no LLM fallback configured)"
             )
 
-        _logger.info("regex parser failed for %r, falling back to LLM", text)
+        _logger.info("regex parser failed, falling back to LLM")
         return await self._llm.parse(
             text, user_timezone=user_timezone, now_utc=now_utc
         )

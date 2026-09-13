@@ -89,6 +89,13 @@ def _build_openai_client():
         "1", "true", "yes",
     )
     if tracing_enabled:
+        # Enforce privacy: never send raw LLM inputs/outputs to LangSmith.
+        # These may contain message text, phone numbers, or other PII.
+        # The @traceable sanitizers hash IDs, but the LLM call itself
+        # captures the full prompt/completion unless we hide them.
+        os.environ.setdefault("LANGSMITH_HIDE_INPUTS", "true")
+        os.environ.setdefault("LANGSMITH_HIDE_OUTPUTS", "true")
+
         from langsmith.wrappers import wrap_openai
 
         traced_client = wrap_openai(raw_client)
@@ -472,6 +479,7 @@ def create_app() -> FastAPI:
         flow_service=flow_service,
         webhook_secret=d360_settings.webhook_secret,
         adapter=Dialog360EventAdapter(),
+        inbox=repos.bot_inbox,
         digest_reply_service=digest_reply_service,
         onboarding_service=onboarding_service,
         feedback_handler=feedback_handler,

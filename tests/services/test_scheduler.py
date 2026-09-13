@@ -204,8 +204,6 @@ async def test_run_once_handles_application_error_marks_failed():
 
     from echo_v2.runtime.errors import ApplicationError
 
-    original = scheduler._service.execute
-
     async def raise_app_error(action):
         raise ApplicationError("app boom")
 

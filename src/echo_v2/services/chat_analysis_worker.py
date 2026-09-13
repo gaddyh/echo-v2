@@ -218,13 +218,12 @@ class ChatAnalysisProcessor:
         )
         result = await self._analyzer.analyze(conversation)
         _logger.info(
-            "analysis for chat %s/%s (version %d): %s (confidence=%s, reason=%s)",
+            "analysis for chat %s/%s (version %d): %s (confidence=%s)",
             user_id,
             chat_id,
             target_version,
             result.decision.value,
             result.confidence,
-            result.reason,
         )
 
         # Build a conversation snapshot for training/feedback.

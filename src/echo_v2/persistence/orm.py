@@ -45,6 +45,7 @@ from sqlalchemy.types import (
 
 __all__ = [
     "Base",
+    "BotWebhookEventRow",
     "ChatMuteRow",
     "ChatRow",
     "ContactRow",
@@ -185,7 +186,40 @@ class ProviderWebhookEventRow(Base):
     )
 
 
-# --- idempotency_operations ------------------------------------------------
+# --- bot_webhook_events -----------------------------------------------------
+
+
+class BotWebhookEventRow(Base):
+    """Persistent inbox for 360dialog (Echo Business Bot) webhook events.
+
+    Unlike ``provider_webhook_events`` (which tracks Green API per-user
+    connections), this table has no ``connection_id`` — the bot is a single
+    shared channel. The ``status`` column tracks the processing lifecycle so
+    a mid-processing crash doesn't turn a provider retry into a lost
+    duplicate: failed events can be re-claimed, and stale ``processing``
+    entries past the lease timeout are reclaimable.
+    """
+
+    __tablename__ = "bot_webhook_events"
+
+    event_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    status: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+        server_default="processing",
+    )
+    received_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class IdempotencyOperationRow(Base):

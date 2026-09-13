@@ -152,7 +152,7 @@ class OnboardingService:
         """
         normalized = self._normalize_phone(phone)
         if normalized is None:
-            _logger.warning("onboarding: invalid phone %s", phone)
+            _logger.warning("onboarding: invalid phone number format")
             return
 
         # Check if user already exists.
@@ -214,7 +214,7 @@ class OnboardingService:
         try:
             created = await self._provisioner.create_connection(config)
         except Exception:
-            _logger.exception("onboarding: failed to create Green instance for %s", phone)
+            _logger.exception("onboarding: failed to create Green instance")
             await self._user_repo.update_onboarding_status(user_id, "failed")
             await self._bot.send_text(
                 phone,
@@ -247,7 +247,7 @@ class OnboardingService:
             api_token,
         )
         if not ready:
-            _logger.error("onboarding: instance not ready for %s", phone)
+            _logger.error("onboarding: instance not ready")
             await self._user_repo.update_onboarding_status(user_id, "failed")
             await self._bot.send_text(
                 phone,
@@ -264,7 +264,7 @@ class OnboardingService:
                 phone_int,
             )
         except Exception:
-            _logger.exception("onboarding: failed to get OTP for %s", phone)
+            _logger.exception("onboarding: failed to get OTP")
             await self._user_repo.update_onboarding_status(user_id, "failed")
             await self._bot.send_text(
                 phone,
@@ -275,7 +275,7 @@ class OnboardingService:
         # Send OTP + instructions.
         message = _OTP_INSTRUCTIONS.format(code=code)
         await self._bot.send_text(phone, message)
-        _logger.info("onboarding: OTP sent to %s", phone)
+        _logger.info("onboarding: OTP sent")
 
         # Poll for authorization — Green API may not fire stateInstanceChanged
         # when the state changes to 'authorized' via OTP. Poll as a fallback.
@@ -476,7 +476,7 @@ class OnboardingService:
             "אני אתחיל לעקוב אחרי השיחות שלך עכשיו. "
             "כל בוקר תקבל סיכום של מה שמחכה לך.",
         )
-        _logger.info("onboarding: name set to %s for user %s", clean_name, user_id)
+        _logger.info("onboarding: name set for user %s", user_id)
         return True
 
     async def is_onboarding(self, phone: str) -> bool:
@@ -506,7 +506,7 @@ class OnboardingService:
                 phone_int,
             )
         except Exception:
-            _logger.exception("onboarding: failed to re-send OTP for %s", phone)
+            _logger.exception("onboarding: failed to re-send OTP")
             await self._bot.send_text(
                 phone,
                 "לא הצלחתי לקבל קוד חדש. ודא שהמכשיר אינו מחובר כבר.",

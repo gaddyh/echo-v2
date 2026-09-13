@@ -32,15 +32,20 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+import os
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import (
-    AsyncSession,
     async_sessionmaker,
     create_async_engine,
 )
 
 from echo_v2.persistence.credential_cipher import LocalKeyCredentialCipher
-from echo_v2.persistence.orm import UserRow, WhatsAppConnectionRow
+from echo_v2.persistence.orm import UserRow
+from echo_v2.persistence.postgres_whatsapp_connections import (
+    PostgresWhatsAppConnectionRepository,
+)
+from echo_v2.persistence.settings import load_db_settings
 from echo_v2.persistence.whatsapp_connections import (
     StoredConnection,
 )
@@ -49,11 +54,6 @@ from echo_v2.ports.whatsapp import (
     ConnectionStatus,
     ProviderCredentials,
 )
-from echo_v2.persistence.postgres_whatsapp_connections import (
-    PostgresWhatsAppConnectionRepository,
-)
-from echo_v2.persistence.settings import load_db_settings
-import os
 
 
 async def main() -> None:
@@ -119,15 +119,15 @@ async def main() -> None:
     await repo.save(conn)
     await engine.dispose()
 
-    print(f"\n✅ Green API connection saved:")
+    print("\n✅ Green API connection saved:")
     print(f"   user_id:              {user_id}")
     print(f"   id_instance:          {args.id_instance}")
     print(f"   api_token:            {'*' * len(args.api_token)} (encrypted)")
     print(f"   webhook_token:        {webhook_token}")
     print(f"   webhook_token_hash:   {webhook_token_hash.hex()}")
-    print(f"\n   Set this webhook token in your Green instance settings:")
+    print("\n   Set this webhook token in your Green instance settings:")
     print(f"   {webhook_token}")
-    print(f"\n   Green webhook URL: https://<your-app>.onrender.com/webhooks/whatsapp/green")
+    print("\n   Green webhook URL: https://<your-app>.onrender.com/webhooks/whatsapp/green")
 
 
 if __name__ == "__main__":

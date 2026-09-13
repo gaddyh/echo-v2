@@ -12,6 +12,7 @@ from dataclasses import dataclass
 
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from echo_v2.app.webhooks.inbox import PostgresWebhookInbox
 from echo_v2.persistence.credential_cipher import (
     CredentialCipher,
     IdentityCredentialCipher,
@@ -57,6 +58,7 @@ class PostgresRepos:
 
     connections: PostgresWhatsAppConnectionRepository
     webhooks: PostgresWebhookDedupStore
+    bot_inbox: PostgresWebhookInbox
     idempotency: PostgresIdempotencyStore
     scheduled_actions: PostgresScheduledActionRepository
     messages: PostgresMessageRepository
@@ -91,6 +93,7 @@ def build_postgres_repos(settings: DBSettings) -> PostgresRepos:
 
     connections = PostgresWhatsAppConnectionRepository(factory, cipher)
     webhooks = PostgresWebhookDedupStore(factory)
+    bot_inbox = PostgresWebhookInbox(factory)
     idempotency = PostgresIdempotencyStore(factory)
     scheduled_actions = PostgresScheduledActionRepository(factory)
     messages = PostgresMessageRepository(factory)
@@ -112,6 +115,7 @@ def build_postgres_repos(settings: DBSettings) -> PostgresRepos:
     return PostgresRepos(
         connections=connections,
         webhooks=webhooks,
+        bot_inbox=bot_inbox,
         idempotency=idempotency,
         scheduled_actions=scheduled_actions,
         messages=messages,
