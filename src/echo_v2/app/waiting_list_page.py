@@ -138,9 +138,6 @@ body {
 }
 .btn-secondary.send:hover { background: #3b82f6; color: white; }
 .snooze-other {
-  display: block;
-  text-align: center;
-  margin-top: 6px;
   font-size: 0.85rem;
   color: var(--text-secondary);
   text-decoration: none;
@@ -149,7 +146,8 @@ body {
 .snooze-other:hover { color: var(--primary); }
 .snooze-other.false-positive { color: var(--danger); }
 .snooze-other.false-positive:hover { color: #d33a47; }
-.link-row { display: flex; gap: 16px; justify-content: center; margin-top: 6px; }
+.link-row { display: flex; gap: 8px; justify-content: center; margin-top: 6px; }
+.link-row .snooze-other { flex: 1; text-align: center; }
 .card .retry {
   margin-top: 8px;
   padding: 8px;
