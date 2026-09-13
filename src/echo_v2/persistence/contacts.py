@@ -2,15 +2,21 @@
 
 Supports two flows:
 * ``save`` — upsert on ``(user_id, phone_number)``, updating display_name.
+  Preserves ``is_starred`` on update (does not reset it).
 * ``find_by_name`` — case-insensitive lookup by display_name for a user.
 * ``find_by_phone`` — lookup by phone number for a user.
+* ``set_starred`` — upsert a contact, setting only ``is_starred`` (and
+  ``updated_at``). If the contact does not exist, creates it with the
+  given ``display_name``.
+* ``list_starred_phones`` — returns the set of starred phone numbers
+  for a user (single query for sorting the waiting list).
 
 In-memory implementation for tests; Postgres implementation for production.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 
 from sqlalchemy import select
@@ -29,18 +35,31 @@ __all__ = [
 
 @dataclass(frozen=True)
 class ContactRecord:
-    """A saved contact."""
+    """A saved contact.
+
+    Attributes:
+        user_id: The user who owns this contact.
+        display_name: The contact's display name (from vCard or chat).
+        phone_number: The contact's phone number (no @c.us suffix).
+        is_starred: Whether the user has marked this contact as
+            important. Defaults to ``False``. Starred contacts are
+            sorted first in the waiting-list mini app.
+    """
 
     user_id: str
     display_name: str
     phone_number: str
+    is_starred: bool = False
 
 
 class ContactRepository:
     """Protocol-style base class for contact repositories."""
 
     async def save(self, contact: ContactRecord) -> None:
-        """Upsert a contact (update name if phone already exists)."""
+        """Upsert a contact (update name if phone already exists).
+
+        Preserves ``is_starred`` on update — does not reset it.
+        """
         raise NotImplementedError
 
     async def find_by_name(self, user_id: str, name: str) -> ContactRecord | None:
@@ -51,6 +70,29 @@ class ContactRepository:
         """Lookup by phone number for a user."""
         raise NotImplementedError
 
+    async def set_starred(
+        self,
+        user_id: str,
+        phone: str,
+        *,
+        is_starred: bool,
+        display_name: str,
+    ) -> ContactRecord:
+        """Set ``is_starred`` on a contact, creating it if necessary.
+
+        If the contact exists, only ``is_starred`` and ``updated_at`` are
+        updated — ``display_name`` is preserved. If the contact does not
+        exist, it is created with the given ``display_name`` and
+        ``is_starred`` value.
+
+        Returns the final :class:`ContactRecord`.
+        """
+        raise NotImplementedError
+
+    async def list_starred_phones(self, user_id: str) -> set[str]:
+        """Return the set of starred phone numbers for a user."""
+        raise NotImplementedError
+
 
 class InMemoryContactRepository(ContactRepository):
     """In-memory contact store for tests."""
@@ -59,7 +101,12 @@ class InMemoryContactRepository(ContactRepository):
         self._contacts: dict[tuple[str, str], ContactRecord] = {}
 
     async def save(self, contact: ContactRecord) -> None:
-        self._contacts[(contact.user_id, contact.phone_number)] = contact
+        key = (contact.user_id, contact.phone_number)
+        existing = self._contacts.get(key)
+        # Preserve is_starred from existing record; use contact's value
+        # only for new contacts.
+        is_starred = existing.is_starred if existing else contact.is_starred
+        self._contacts[key] = replace(contact, is_starred=is_starred)
 
     async def find_by_name(self, user_id: str, name: str) -> ContactRecord | None:
         name_lower = name.lower().strip()
@@ -70,6 +117,35 @@ class InMemoryContactRepository(ContactRepository):
 
     async def find_by_phone(self, user_id: str, phone: str) -> ContactRecord | None:
         return self._contacts.get((user_id, phone))
+
+    async def set_starred(
+        self,
+        user_id: str,
+        phone: str,
+        *,
+        is_starred: bool,
+        display_name: str,
+    ) -> ContactRecord:
+        key = (user_id, phone)
+        existing = self._contacts.get(key)
+        if existing is None:
+            record = ContactRecord(
+                user_id=user_id,
+                display_name=display_name,
+                phone_number=phone,
+                is_starred=is_starred,
+            )
+        else:
+            record = replace(existing, is_starred=is_starred)
+        self._contacts[key] = record
+        return record
+
+    async def list_starred_phones(self, user_id: str) -> set[str]:
+        return {
+            phone
+            for (uid, phone), contact in self._contacts.items()
+            if uid == user_id and contact.is_starred
+        }
 
 
 class PostgresContactRepository(ContactRepository):
@@ -116,6 +192,7 @@ class PostgresContactRepository(ContactRepository):
                 user_id=str(row.user_id),
                 display_name=row.display_name,
                 phone_number=row.phone_number,
+                is_starred=row.is_starred,
             )
 
     async def find_by_phone(self, user_id: str, phone: str) -> ContactRecord | None:
@@ -131,4 +208,51 @@ class PostgresContactRepository(ContactRepository):
                 user_id=str(row.user_id),
                 display_name=row.display_name,
                 phone_number=row.phone_number,
+                is_starred=row.is_starred,
             )
+
+    async def set_starred(
+        self,
+        user_id: str,
+        phone: str,
+        *,
+        is_starred: bool,
+        display_name: str,
+    ) -> ContactRecord:
+        now = datetime.now(timezone.utc)
+        async with self._session_factory() as session:
+            stmt = (
+                pg_insert(ContactRow)
+                .values(
+                    user_id=user_id,
+                    display_name=display_name,
+                    phone_number=phone,
+                    is_starred=is_starred,
+                    updated_at=now,
+                )
+                .on_conflict_do_update(
+                    constraint="contacts_user_phone_key",
+                    set_={
+                        "is_starred": is_starred,
+                        "updated_at": now,
+                    },
+                )
+                .returning(ContactRow)
+            )
+            row = (await session.execute(stmt)).scalar_one()
+            await session.commit()
+            return ContactRecord(
+                user_id=str(row.user_id),
+                display_name=row.display_name,
+                phone_number=row.phone_number,
+                is_starred=row.is_starred,
+            )
+
+    async def list_starred_phones(self, user_id: str) -> set[str]:
+        async with self._session_factory() as session:
+            stmt = select(ContactRow.phone_number).where(
+                ContactRow.user_id == user_id,
+                ContactRow.is_starred.is_(True),
+            )
+            result = await session.execute(stmt)
+            return {row[0] for row in result.all()}

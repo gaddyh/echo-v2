@@ -105,7 +105,20 @@ body {
   max-height: 500px;
 }
 .card.removing { opacity: 0; transform: scale(0.95); max-height: 0; padding: 0; margin: 0; border: 0; }
-.card .name { font-weight: 600; font-size: 1.05rem; }
+.card .name { font-weight: 600; font-size: 1.05rem; display: flex; align-items: center; gap: 6px; }
+.card .name .star-btn {
+  background: none; border: none; cursor: pointer;
+  font-size: 1.2rem; line-height: 1; padding: 8px;
+  min-width: 44px; min-height: 44px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 50%; transition: background 0.15s;
+  -webkit-tap-highlight-color: transparent;
+}
+.card .name .star-btn:hover { background: rgba(0,0,0,0.05); }
+.card .name .star-btn:disabled { opacity: 0.5; cursor: wait; }
+.card .name .star-btn.starred { color: #e8a800; }
+.card .name .star-btn:not(.starred) { color: var(--text-secondary); opacity: 0.5; }
+.card .name .name-text { flex: 1; }
 .card .meta { font-size: 0.8rem; color: var(--text-secondary); margin-top: 2px; }
 .card .preview {
   font-size: 0.9rem;
@@ -414,8 +427,11 @@ function renderCurrent() {
 
 function renderCard(item) {
   const hours = formatHours(item.waiting_hours);
-  return '<div class="card" data-active-id="' + item.active_id + '" data-version="' + item.expected_version + '">'
-    + '<div class="name"></div>'
+  return '<div class="card" data-active-id="' + item.active_id + '" data-version="' + item.expected_version + '" data-starred="' + (item.is_starred ? "1" : "0") + '">'
+    + '<div class="name">'
+    + '<button class="star-btn' + (item.is_starred ? " starred" : "") + '" data-action="star" aria-label="סמן איש קשר כחשוב" aria-pressed="' + (item.is_starred ? "true" : "false") + '">' + (item.is_starred ? "★" : "☆") + '</button>'
+    + '<span class="name-text"></span>'
+    + '</div>'
     + '<div class="meta">ממתין ' + hours + '</div>'
     + '<div class="summary"></div>'
     + '<div class="quote"></div>'
@@ -437,7 +453,7 @@ function renderCard(item) {
 }
 
 function setCardText(card, item) {
-  card.querySelector(".name").textContent = item.contact_name || "לא ידוע";
+  card.querySelector(".name-text").textContent = item.contact_name || "לא ידוע";
   const summaryEl = card.querySelector(".summary");
   const quoteEl = card.querySelector(".quote");
   const summary = item.situation_summary || item.message_preview || "שלח/ה הודעה";
@@ -461,6 +477,46 @@ function attachCardListeners(card) {
   });
 }
 
+async function toggleStar(card, activeId) {
+  const starBtn = card.querySelector(".star-btn");
+  if (!starBtn || starBtn.disabled) return;
+  const wasStarred = starBtn.classList.contains("starred");
+  const newStarred = !wasStarred;
+  // Optimistic update.
+  starBtn.classList.toggle("starred", newStarred);
+  starBtn.textContent = newStarred ? "★" : "☆";
+  starBtn.setAttribute("aria-pressed", newStarred ? "true" : "false");
+  starBtn.disabled = true;
+  try {
+    const resp = await fetchAPI("/items/" + activeId + "/star", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({is_starred: newStarred}),
+    });
+    if (!resp) {
+      // Session invalid — redirect already handled by fetchAPI.
+      return;
+    }
+    if (resp.outcome === "updated") {
+      card.dataset.starred = resp.is_starred ? "1" : "0";
+    } else if (resp.outcome === "not_found") {
+      // Revert optimistic update.
+      starBtn.classList.toggle("starred", wasStarred);
+      starBtn.textContent = wasStarred ? "★" : "☆";
+      starBtn.setAttribute("aria-pressed", wasStarred ? "true" : "false");
+      showRetry(card, "הפריט לא נמצא.");
+    }
+  } catch (e) {
+    // Revert on network error.
+    starBtn.classList.toggle("starred", wasStarred);
+    starBtn.textContent = wasStarred ? "★" : "☆";
+    starBtn.setAttribute("aria-pressed", wasStarred ? "true" : "false");
+    showRetry(card, "בעיית רשת. נסה שוב.");
+  } finally {
+    starBtn.disabled = false;
+  }
+}
+
 function actionStatType(action) {
   if (action === "done") return "done";
   if (action === "snooze" || action === "tomorrow" || action === "snooze_other") return "snoozed";
@@ -470,6 +526,10 @@ function actionStatType(action) {
 }
 
 async function handleAction(card, activeId, expectedVersion, action) {
+  if (action === "star") {
+    await toggleStar(card, activeId);
+    return;
+  }
   if (action === "snooze") {
     await sendAction(card, activeId, expectedVersion, "snooze", {snooze_preset: "1h"});
     return;

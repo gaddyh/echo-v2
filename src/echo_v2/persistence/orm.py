@@ -23,6 +23,7 @@ from __future__ import annotations
 from datetime import date, datetime
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     ForeignKey,
     Index,
@@ -358,6 +359,11 @@ class ContactRow(Base):
     )
     display_name: Mapped[str] = mapped_column(Text, nullable=False)
     phone_number: Mapped[str] = mapped_column(Text, nullable=False)
+    is_starred: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        server_default=text("false"),
+    )
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True),
         nullable=False,

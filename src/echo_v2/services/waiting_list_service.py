@@ -37,6 +37,7 @@ from echo_v2.services.waiting_list_token_service import WaitingListTokenService
 __all__ = [
     "ActionResponse",
     "SendResponse",
+    "StarResponse",
     "WaitingListItem",
     "WaitingListResponse",
     "WaitingListService",
@@ -75,6 +76,7 @@ class WaitingListItem:
     waiting_since: datetime
     waiting_hours: float
     expected_version: int
+    is_starred: bool = False
 
 
 @dataclass(frozen=True)
@@ -138,6 +140,22 @@ class SendResponse:
     outcome: Literal["scheduled", "duplicate", "not_found", "invalid"]
     scheduled_for: str | None = None
     action_id: str | None = None
+
+
+@dataclass(frozen=True)
+class StarResponse:
+    """Response for POST /api/waiting/items/{active_id}/star.
+
+    Attributes:
+        outcome: ``"updated"`` if the star was set successfully,
+            ``"not_found"`` if the active item is missing or not owned
+            by the user.
+        is_starred: The new ``is_starred`` value. ``None`` for
+            ``not_found`` outcomes.
+    """
+
+    outcome: Literal["updated", "not_found"]
+    is_starred: bool | None = None
 
 
 class WaitingListService:
@@ -207,9 +225,19 @@ class WaitingListService:
         now = datetime.now(timezone.utc)
         actives = await self._query_service.current_actionable(user_id, now=now)
 
+        # Sort: starred contacts first (oldest first), then non-starred
+        # (oldest first). Single query for all starred phones.
+        starred_phones = await self._contact_repo.list_starred_phones(user_id)
+        actives.sort(
+            key=lambda active: (
+                _phone_from_chat_id(active.chat_id) not in starred_phones,
+                active.waiting_since,
+            )
+        )
+
         items = []
         for active in actives:
-            item = await self._build_item(user_id, active, now)
+            item = await self._build_item(user_id, active, now, starred_phones)
             items.append(item)
 
         summary = await self._build_summary(session_id, user_id, len(items))
@@ -384,13 +412,71 @@ class WaitingListService:
             action_id=action.id,
         )
 
+    async def set_starred(
+        self,
+        session_id: str,
+        user_id: str,
+        active_id: str,
+        is_starred: bool,
+    ) -> StarResponse | None:
+        """Set ``is_starred`` on the contact associated with a waiting item.
+
+        Returns ``None`` if the session is invalid/expired/revoked.
+        Returns ``StarResponse(outcome="not_found")`` if the active item
+        is missing or not owned by the user.
+
+        The star is stored on the contact (by phone number), not on the
+        waiting item. If no contact record exists, one is created with
+        the resolved display name.
+        """
+        resolved = await self._token_service.resolve_session(session_id)
+        if resolved is None or resolved.user_id != user_id:
+            return None
+
+        await self._token_service.touch(session_id)
+
+        active = await self._active_repo.get_by_id(active_id)
+        if active is None or active.user_id != user_id:
+            return StarResponse(outcome="not_found")
+
+        phone = _phone_from_chat_id(active.chat_id)
+
+        # Resolve a display name for potential contact creation.
+        chat = await self._chat_state_repo.get(user_id, active.chat_id)
+        display_name = chat.chat_name if chat else None
+        if not display_name:
+            contact = await self._contact_repo.find_by_phone(user_id, phone)
+            display_name = contact.display_name if contact else None
+        if not display_name:
+            msg = await self._message_repo.get_latest_inbound(
+                user_id=user_id, chat_id=active.chat_id
+            )
+            display_name = msg.chat_name or msg.sender_name if msg else None
+        if not display_name:
+            display_name = phone
+
+        await self._contact_repo.set_starred(
+            user_id=user_id,
+            phone=phone,
+            is_starred=is_starred,
+            display_name=display_name,
+        )
+        return StarResponse(outcome="updated", is_starred=is_starred)
+
     async def _build_item(
         self,
         user_id: str,
         active: WaitingForMeActive,
         now: datetime,
+        starred_phones: set[str] | None = None,
     ) -> WaitingListItem:
-        """Build a WaitingListItem with name resolution + preview + summary."""
+        """Build a WaitingListItem with name resolution + preview + summary.
+
+        Args:
+            starred_phones: Optional pre-fetched set of starred phone
+                numbers for this user. If provided, avoids a per-item
+                ``find_by_phone`` call for the star state.
+        """
         phone = _phone_from_chat_id(active.chat_id)
 
         # Name resolution: chat_name → contact → message names.
@@ -426,6 +512,13 @@ class WaitingListService:
 
         waiting_hours = (now - active.waiting_since).total_seconds() / 3600.0
 
+        # Resolve is_starred from the pre-fetched set or via find_by_phone.
+        if starred_phones is not None:
+            is_starred = phone in starred_phones
+        else:
+            contact = await self._contact_repo.find_by_phone(user_id, phone)
+            is_starred = contact.is_starred if contact else False
+
         return WaitingListItem(
             active_id=active.id,
             contact_name=chat_name,
@@ -434,6 +527,7 @@ class WaitingListService:
             waiting_since=active.waiting_since,
             waiting_hours=round(waiting_hours, 1),
             expected_version=active.target_version,
+            is_starred=is_starred,
         )
 
     async def _build_summary(

@@ -943,3 +943,95 @@ async def test_api_send_security_headers_preserved():
     assert resp.headers.get("cache-control") == "no-store"
     assert resp.headers.get("referrer-policy") == "no-referrer"
     assert resp.headers.get("x-content-type-options") == "nosniff"
+
+
+# --- POST /api/waiting/items/{active_id}/star tests ---
+
+
+async def test_api_star_succeeds():
+    app, token_service, service, active_repo = _make_app()
+    _, raw_token = await token_service.issue(USER_ID)
+    active_id = await _setup_active(active_repo, service._chat_state_repo)
+    async with _client(app) as client:
+        await client.get(f"/q/{raw_token}")
+        resp = await client.post(
+            f"/api/waiting/items/{active_id}/star",
+            json={"is_starred": True},
+        )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["outcome"] == "updated"
+    assert data["is_starred"] is True
+
+
+async def test_api_star_false_unstars():
+    app, token_service, service, active_repo = _make_app()
+    _, raw_token = await token_service.issue(USER_ID)
+    active_id = await _setup_active(active_repo, service._chat_state_repo)
+    async with _client(app) as client:
+        await client.get(f"/q/{raw_token}")
+        await client.post(
+            f"/api/waiting/items/{active_id}/star",
+            json={"is_starred": True},
+        )
+        resp = await client.post(
+            f"/api/waiting/items/{active_id}/star",
+            json={"is_starred": False},
+        )
+    assert resp.status_code == 200
+    assert resp.json()["is_starred"] is False
+
+
+async def test_api_star_invalid_active_id_returns_404():
+    app, token_service, _, _ = _make_app()
+    _, raw_token = await token_service.issue(USER_ID)
+    async with _client(app) as client:
+        await client.get(f"/q/{raw_token}")
+        resp = await client.post(
+            "/api/waiting/items/nonexistent/star",
+            json={"is_starred": True},
+        )
+    assert resp.status_code == 404
+    assert resp.json()["outcome"] == "not_found"
+
+
+async def test_api_star_without_cookie_returns_401():
+    app, _, _, _ = _make_app()
+    async with _client(app) as client:
+        resp = await client.post(
+            "/api/waiting/items/any/star",
+            json={"is_starred": True},
+        )
+    assert resp.status_code == 401
+
+
+async def test_api_star_invalid_body_returns_422():
+    app, token_service, service, active_repo = _make_app()
+    _, raw_token = await token_service.issue(USER_ID)
+    active_id = await _setup_active(active_repo, service._chat_state_repo)
+    async with _client(app) as client:
+        await client.get(f"/q/{raw_token}")
+        resp = await client.post(
+            f"/api/waiting/items/{active_id}/star",
+            json={},  # missing is_starred
+        )
+    assert resp.status_code == 422
+
+
+async def test_api_waiting_includes_is_starred_field():
+    """GET /api/waiting response items include is_starred."""
+    app, token_service, service, active_repo = _make_app()
+    _, raw_token = await token_service.issue(USER_ID)
+    active_id = await _setup_active(active_repo, service._chat_state_repo)
+    async with _client(app) as client:
+        await client.get(f"/q/{raw_token}")
+        # Star the contact.
+        await client.post(
+            f"/api/waiting/items/{active_id}/star",
+            json={"is_starred": True},
+        )
+        resp = await client.get("/api/waiting")
+    assert resp.status_code == 200
+    items = resp.json()["items"]
+    assert len(items) == 1
+    assert items[0]["is_starred"] is True

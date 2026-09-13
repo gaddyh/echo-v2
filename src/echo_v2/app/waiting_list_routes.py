@@ -94,6 +94,16 @@ class SendRequest(BaseModel):
         return self
 
 
+class StarRequest(BaseModel):
+    """Request body for POST /api/waiting/items/{active_id}/star.
+
+    Explicit (not toggle): the client sends the desired ``is_starred``
+    value. This is idempotent — retrying the same value is a no-op.
+    """
+
+    is_starred: bool = Field(..., description="True to star, False to unstar")
+
+
 def build_waiting_list_router(
     *,
     token_service: WaitingListTokenService,
@@ -214,6 +224,7 @@ def build_waiting_list_router(
                         "waiting_since": item.waiting_since.isoformat(),
                         "waiting_hours": item.waiting_hours,
                         "expected_version": item.expected_version,
+                        "is_starred": item.is_starred,
                     }
                     for item in result.items
                 ],
@@ -344,6 +355,46 @@ def build_waiting_list_router(
                 "outcome": result.outcome,
                 "scheduled_for": result.scheduled_for,
                 "action_id": result.action_id,
+            },
+            headers=_security_headers(),
+        )
+
+    # --- POST /api/waiting/items/{active_id}/star — star/unstar contact ---
+
+    @router.post("/api/waiting/items/{active_id}/star")
+    async def set_starred(
+        active_id: str,
+        body: StarRequest,
+        wls: str | None = Cookie(default=None, alias=_SESSION_COOKIE),
+    ) -> JSONResponse:
+        if wls is None:
+            raise HTTPException(status_code=401, detail="no session")
+
+        resolved = await token_service.resolve_session(wls)
+        if resolved is None:
+            raise HTTPException(status_code=401, detail="session expired")
+
+        if not _check_rate_limit(resolved.session_id):
+            raise HTTPException(status_code=429, detail="rate limited")
+
+        result = await waiting_list_service.set_starred(
+            session_id=resolved.session_id,
+            user_id=resolved.user_id,
+            active_id=active_id,
+            is_starred=body.is_starred,
+        )
+        if result is None:
+            raise HTTPException(status_code=401, detail="session invalid")
+
+        status_code = 200
+        if result.outcome == "not_found":
+            status_code = 404
+
+        return JSONResponse(
+            status_code=status_code,
+            content={
+                "outcome": result.outcome,
+                "is_starred": result.is_starred,
             },
             headers=_security_headers(),
         )

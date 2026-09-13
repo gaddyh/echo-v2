@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -73,6 +73,7 @@ def _make_service() -> tuple[
         message_repo=message_repo,
         contact_repo=contact_repo,
         result_repo=result_repo,
+        active_repo=active_repo,
     )
     return service, active_repo, action_repo, feedback_repo, token_service
 
@@ -1168,3 +1169,156 @@ async def test_schedule_send_payload_uses_internal_chat_id_not_client_phone():
     assert len(actions) == 1
     # chat_id must be the internal WhatsApp chat ID, not a phone number.
     assert actions[0].payload["chat_id"] == CHAT_ID
+
+
+# --- Star tests ---------------------------------------------------------------
+
+
+async def test_list_items_starred_contact_sorted_first():
+    """Starred contacts appear before non-starred, each group oldest-first."""
+    from datetime import timedelta
+
+    service, active_repo, _, _, token_service = _make_service()
+    session_id, _ = await token_service.issue(USER_ID)
+
+    # Two chats: one starred, one not. The non-starred is older.
+    starred_chat = "972500000001@c.us"
+    normal_chat = "972500000002@c.us"
+    await _setup_chat_and_active(
+        active_repo, service._chat_state_repo, chat_id=normal_chat
+    )
+    await _setup_chat_and_active(
+        active_repo, service._chat_state_repo, chat_id=starred_chat
+    )
+
+    # Star the second chat's contact.
+    starred_active = await active_repo.get(user_id=USER_ID, chat_id=starred_chat)
+    await service.set_starred(
+        session_id=session_id,
+        user_id=USER_ID,
+        active_id=starred_active.id,
+        is_starred=True,
+    )
+
+    result = await service.list_items(session_id, USER_ID)
+    assert result is not None
+    assert len(result.items) == 2
+    # Starred item first despite being newer.
+    assert result.items[0].is_starred is True
+    assert result.items[1].is_starred is False
+
+
+async def test_list_items_starred_preserves_oldest_first_within_group():
+    """Within starred group, oldest first; within non-starred, oldest first."""
+    service, active_repo, _, _, token_service = _make_service()
+    session_id, _ = await token_service.issue(USER_ID)
+
+    # Two starred chats with different waiting_since.
+    chat_old = "972500000003@c.us"
+    chat_new = "972500000004@c.us"
+    from echo_v2.ports.whatsapp import MessageDirection
+
+    await service._chat_state_repo.upsert_on_message(
+        user_id=USER_ID, chat_id=chat_old,
+        direction=MessageDirection.INBOUND, observed_at=NOW, next_analysis_at=None,
+    )
+    await active_repo.upsert(
+        user_id=USER_ID, chat_id=chat_old, target_version=1,
+        result_id=RESULT_ID, waiting_since=NOW,
+    )
+    await service._chat_state_repo.upsert_on_message(
+        user_id=USER_ID, chat_id=chat_new,
+        direction=MessageDirection.INBOUND, observed_at=NOW, next_analysis_at=None,
+    )
+    await active_repo.upsert(
+        user_id=USER_ID, chat_id=chat_new, target_version=1,
+        result_id=RESULT_ID, waiting_since=NOW + timedelta(hours=1),
+    )
+
+    active_old = await active_repo.get(user_id=USER_ID, chat_id=chat_old)
+    active_new = await active_repo.get(user_id=USER_ID, chat_id=chat_new)
+    await service.set_starred(session_id, USER_ID, active_old.id, True)
+    await service.set_starred(session_id, USER_ID, active_new.id, True)
+
+    result = await service.list_items(session_id, USER_ID)
+    assert result is not None
+    assert len(result.items) == 2
+    assert result.items[0].is_starred is True
+    assert result.items[1].is_starred is True
+    # Older first.
+    assert result.items[0].active_id == active_old.id
+
+
+async def test_set_starred_returns_updated():
+    service, active_repo, _, _, token_service = _make_service()
+    session_id, _ = await token_service.issue(USER_ID)
+    active_id = await _setup_chat_and_active(active_repo, service._chat_state_repo)
+
+    result = await service.set_starred(session_id, USER_ID, active_id, True)
+    assert result is not None
+    assert result.outcome == "updated"
+    assert result.is_starred is True
+
+
+async def test_set_starred_invalid_session_returns_none():
+    service, active_repo, _, _, _ = _make_service()
+    active_id = await _setup_chat_and_active(active_repo, service._chat_state_repo)
+    result = await service.set_starred("invalid", USER_ID, active_id, True)
+    assert result is None
+
+
+async def test_set_starred_not_found_for_missing_active():
+    service, _, _, _, token_service = _make_service()
+    session_id, _ = await token_service.issue(USER_ID)
+    result = await service.set_starred(session_id, USER_ID, "missing-id", True)
+    assert result is not None
+    assert result.outcome == "not_found"
+    assert result.is_starred is None
+
+
+async def test_set_starred_not_found_for_other_user():
+    """Active item owned by another user → not_found."""
+    service, active_repo, _, _, token_service = _make_service()
+    session_id, _ = await token_service.issue(USER_ID)
+    # Create an active for a different user.
+    other_user = "user-other"
+    other_chat = "972500000099@c.us"
+    from echo_v2.ports.whatsapp import MessageDirection
+
+    await service._chat_state_repo.upsert_on_message(
+        user_id=other_user, chat_id=other_chat,
+        direction=MessageDirection.INBOUND, observed_at=NOW, next_analysis_at=None,
+    )
+    await active_repo.upsert(
+        user_id=other_user, chat_id=other_chat, target_version=1,
+        result_id=RESULT_ID, waiting_since=NOW,
+    )
+    other_active = await active_repo.get(user_id=other_user, chat_id=other_chat)
+    result = await service.set_starred(session_id, USER_ID, other_active.id, True)
+    assert result is not None
+    assert result.outcome == "not_found"
+
+
+async def test_set_starred_creates_contact_if_missing():
+    """If no contact record exists, set_starred creates one with resolved name."""
+    service, active_repo, _, _, token_service = _make_service()
+    session_id, _ = await token_service.issue(USER_ID)
+    active_id = await _setup_chat_and_active(active_repo, service._chat_state_repo)
+
+    await service.set_starred(session_id, USER_ID, active_id, True)
+    phone = CHAT_ID.split("@")[0]
+    contact = await service._contact_repo.find_by_phone(USER_ID, phone)
+    assert contact is not None
+    assert contact.is_starred is True
+
+
+async def test_set_starred_false_unstars():
+    service, active_repo, _, _, token_service = _make_service()
+    session_id, _ = await token_service.issue(USER_ID)
+    active_id = await _setup_chat_and_active(active_repo, service._chat_state_repo)
+
+    await service.set_starred(session_id, USER_ID, active_id, True)
+    result = await service.set_starred(session_id, USER_ID, active_id, False)
+    assert result is not None
+    assert result.outcome == "updated"
+    assert result.is_starred is False
