@@ -225,6 +225,23 @@ body {
   margin-bottom: 12px;
   box-sizing: border-box;
 }
+.send-templates {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+.send-template {
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--card);
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+  cursor: pointer;
+  transition: background 0.2s, color 0.2s;
+}
+.send-template:hover { background: var(--primary); color: white; border-color: var(--primary); }
 .overlay .overlay-submit {
   width: 100%;
   padding: 12px;
@@ -280,6 +297,12 @@ body {
 <!-- Send overlay (תזמון הודעה) -->
 <div class="overlay" id="send-overlay">
   <div class="overlay-title">תזמון הודעה</div>
+  <div class="send-templates">
+    <button class="send-template" data-template="קיבלתי, בודק וחוזר אלייך">קיבלתי, בודק וחוזר</button>
+    <button class="send-template" data-template="אחזור אלייך בהמשך היום">אחזור בהמשך היום</button>
+    <button class="send-template" data-template="אפשר לדבר מחר בבוקר?">לדבר מחר בבוקר?</button>
+    <button class="send-template" data-template="תודה, מטפל בזה">תודה, מטפל בזה</button>
+  </div>
   <textarea id="send-message" placeholder="מה לשלוח?" maxlength="1000"></textarea>
   <button class="overlay-option" data-send-preset="10m">עוד 10 דקות</button>
   <button class="overlay-option" data-send-preset="1h">עוד שעה</button>
@@ -534,6 +557,15 @@ function closeSend() {
   document.getElementById("send-overlay").classList.remove("active");
   pendingAction = null;
 }
+
+// Send overlay: template chips fill the textarea.
+document.querySelectorAll("#send-overlay .send-template").forEach(btn => {
+  btn.addEventListener("click", () => {
+    const tpl = btn.dataset.template;
+    document.getElementById("send-message").value = tpl;
+    document.getElementById("send-message").focus();
+  });
+});
 
 // Send overlay: preset buttons select a preset and submit.
 document.querySelectorAll("#send-overlay .overlay-option[data-send-preset]").forEach(btn => {
