@@ -1074,6 +1074,7 @@ function removeTag(tag) {
 async function submitTags() {
   if (!pendingAction) return;
   const activeId = pendingAction.activeId;
+  const tagsToSave = [...editingTags];  // copy before closeTags clears it
   const item = queue.find(i => i.active_id === activeId);
   const oldTags = item && item.tags ? [...item.tags] : [];
   if (item) item.tags = [...editingTags];
@@ -1083,7 +1084,7 @@ async function submitTags() {
     const resp = await fetchAPI("/items/" + activeId + "/tags", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({tags: editingTags}),
+      body: JSON.stringify({tags: tagsToSave}),
     });
     if (!resp) return;
     if (resp.outcome === "updated") {
