@@ -1073,6 +1073,11 @@ function removeTag(tag) {
 
 async function submitTags() {
   if (!pendingAction) return;
+  // Grab any leftover text in the input before saving.
+  const input = document.getElementById("tags-input");
+  if (input && input.value.trim()) {
+    addTagFromInput();
+  }
   const activeId = pendingAction.activeId;
   const tagsToSave = [...editingTags];  // copy before closeTags clears it
   const item = queue.find(i => i.active_id === activeId);
