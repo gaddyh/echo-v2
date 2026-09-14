@@ -23,6 +23,7 @@ from __future__ import annotations
 from datetime import date, datetime
 
 from sqlalchemy import (
+    ARRAY,
     Boolean,
     CheckConstraint,
     ForeignKey,
@@ -364,6 +365,16 @@ class ContactRow(Base):
         nullable=False,
         server_default=text("false"),
     )
+    color_label: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+        server_default=None,
+    )
+    tags: Mapped[list[str]] = mapped_column(
+        ARRAY(Text),
+        nullable=False,
+        server_default=text("'{}'::text[]"),
+    )
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True),
         nullable=False,
@@ -384,6 +395,10 @@ class ContactRow(Base):
         Index(
             "ix_contacts_user_id",
             "user_id",
+        ),
+        CheckConstraint(
+            "color_label IS NULL OR color_label IN ('red','yellow','green','blue','purple')",
+            name="contacts_color_label_check",
         ),
     )
 

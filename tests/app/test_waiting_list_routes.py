@@ -1035,3 +1035,239 @@ async def test_api_waiting_includes_is_starred_field():
     items = resp.json()["items"]
     assert len(items) == 1
     assert items[0]["is_starred"] is True
+
+
+# --- POST /api/waiting/items/{active_id}/label tests -------------------------
+
+
+async def test_api_label_succeeds():
+    app, token_service, service, active_repo = _make_app()
+    _, raw_token = await token_service.issue(USER_ID)
+    active_id = await _setup_active(active_repo, service._chat_state_repo)
+    async with _client(app) as client:
+        await client.get(f"/q/{raw_token}")
+        resp = await client.post(
+            f"/api/waiting/items/{active_id}/label",
+            json={"color_label": "red"},
+        )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["outcome"] == "updated"
+    assert data["color_label"] == "red"
+
+
+async def test_api_label_none_clears():
+    app, token_service, service, active_repo = _make_app()
+    _, raw_token = await token_service.issue(USER_ID)
+    active_id = await _setup_active(active_repo, service._chat_state_repo)
+    async with _client(app) as client:
+        await client.get(f"/q/{raw_token}")
+        await client.post(
+            f"/api/waiting/items/{active_id}/label",
+            json={"color_label": "red"},
+        )
+        resp = await client.post(
+            f"/api/waiting/items/{active_id}/label",
+            json={"color_label": None},
+        )
+    assert resp.status_code == 200
+    assert resp.json()["color_label"] is None
+
+
+async def test_api_label_invalid_active_id_returns_404():
+    app, token_service, _, _ = _make_app()
+    _, raw_token = await token_service.issue(USER_ID)
+    async with _client(app) as client:
+        await client.get(f"/q/{raw_token}")
+        resp = await client.post(
+            "/api/waiting/items/nonexistent/label",
+            json={"color_label": "red"},
+        )
+    assert resp.status_code == 404
+    assert resp.json()["outcome"] == "not_found"
+
+
+async def test_api_label_without_cookie_returns_401():
+    app, _, _, _ = _make_app()
+    async with _client(app) as client:
+        resp = await client.post(
+            "/api/waiting/items/any/label",
+            json={"color_label": "red"},
+        )
+    assert resp.status_code == 401
+
+
+async def test_api_label_invalid_color_returns_422():
+    app, token_service, service, active_repo = _make_app()
+    _, raw_token = await token_service.issue(USER_ID)
+    active_id = await _setup_active(active_repo, service._chat_state_repo)
+    async with _client(app) as client:
+        await client.get(f"/q/{raw_token}")
+        resp = await client.post(
+            f"/api/waiting/items/{active_id}/label",
+            json={"color_label": "pink"},
+        )
+    assert resp.status_code == 422
+
+
+# --- POST /api/waiting/items/{active_id}/tags tests -------------------------
+
+
+async def test_api_tags_succeeds():
+    app, token_service, service, active_repo = _make_app()
+    _, raw_token = await token_service.issue(USER_ID)
+    active_id = await _setup_active(active_repo, service._chat_state_repo)
+    async with _client(app) as client:
+        await client.get(f"/q/{raw_token}")
+        resp = await client.post(
+            f"/api/waiting/items/{active_id}/tags",
+            json={"tags": ["work", "urgent"]},
+        )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["outcome"] == "updated"
+    assert data["tags"] == ["work", "urgent"]
+
+
+async def test_api_tags_empty_clears():
+    app, token_service, service, active_repo = _make_app()
+    _, raw_token = await token_service.issue(USER_ID)
+    active_id = await _setup_active(active_repo, service._chat_state_repo)
+    async with _client(app) as client:
+        await client.get(f"/q/{raw_token}")
+        await client.post(
+            f"/api/waiting/items/{active_id}/tags",
+            json={"tags": ["work"]},
+        )
+        resp = await client.post(
+            f"/api/waiting/items/{active_id}/tags",
+            json={"tags": []},
+        )
+    assert resp.status_code == 200
+    assert resp.json()["tags"] == []
+
+
+async def test_api_tags_normalizes():
+    app, token_service, service, active_repo = _make_app()
+    _, raw_token = await token_service.issue(USER_ID)
+    active_id = await _setup_active(active_repo, service._chat_state_repo)
+    async with _client(app) as client:
+        await client.get(f"/q/{raw_token}")
+        resp = await client.post(
+            f"/api/waiting/items/{active_id}/tags",
+            json={"tags": ["  Work  ", "", "work", "URGENT"]},
+        )
+    assert resp.status_code == 200
+    assert resp.json()["tags"] == ["Work", "URGENT"]
+
+
+async def test_api_tags_invalid_active_id_returns_404():
+    app, token_service, _, _ = _make_app()
+    _, raw_token = await token_service.issue(USER_ID)
+    async with _client(app) as client:
+        await client.get(f"/q/{raw_token}")
+        resp = await client.post(
+            "/api/waiting/items/nonexistent/tags",
+            json={"tags": ["work"]},
+        )
+    assert resp.status_code == 404
+    assert resp.json()["outcome"] == "not_found"
+
+
+async def test_api_tags_without_cookie_returns_401():
+    app, _, _, _ = _make_app()
+    async with _client(app) as client:
+        resp = await client.post(
+            "/api/waiting/items/any/tags",
+            json={"tags": ["work"]},
+        )
+    assert resp.status_code == 401
+
+
+async def test_api_tags_too_many_returns_422():
+    app, token_service, service, active_repo = _make_app()
+    _, raw_token = await token_service.issue(USER_ID)
+    active_id = await _setup_active(active_repo, service._chat_state_repo)
+    async with _client(app) as client:
+        await client.get(f"/q/{raw_token}")
+        resp = await client.post(
+            f"/api/waiting/items/{active_id}/tags",
+            json={"tags": [f"tag{i}" for i in range(15)]},
+        )
+    assert resp.status_code == 422
+
+
+# --- GET /api/waiting/tags tests --------------------------------------------
+
+
+async def test_api_list_tags_returns_distinct_sorted():
+    app, token_service, service, active_repo = _make_app()
+    _, raw_token = await token_service.issue(USER_ID)
+    active_id = await _setup_active(active_repo, service._chat_state_repo)
+    async with _client(app) as client:
+        await client.get(f"/q/{raw_token}")
+        await client.post(
+            f"/api/waiting/items/{active_id}/tags",
+            json={"tags": ["work", "urgent"]},
+        )
+        resp = await client.get("/api/waiting/tags")
+    assert resp.status_code == 200
+    assert resp.json()["tags"] == ["urgent", "work"]
+
+
+async def test_api_list_tags_empty():
+    app, token_service, _, _ = _make_app()
+    _, raw_token = await token_service.issue(USER_ID)
+    async with _client(app) as client:
+        await client.get(f"/q/{raw_token}")
+        resp = await client.get("/api/waiting/tags")
+    assert resp.status_code == 200
+    assert resp.json()["tags"] == []
+
+
+async def test_api_list_tags_without_cookie_returns_401():
+    app, _, _, _ = _make_app()
+    async with _client(app) as client:
+        resp = await client.get("/api/waiting/tags")
+    assert resp.status_code == 401
+
+
+# --- GET /api/waiting includes color_label and tags -------------------------
+
+
+async def test_api_waiting_includes_color_label_and_tags():
+    """GET /api/waiting response items include color_label and tags."""
+    app, token_service, service, active_repo = _make_app()
+    _, raw_token = await token_service.issue(USER_ID)
+    active_id = await _setup_active(active_repo, service._chat_state_repo)
+    async with _client(app) as client:
+        await client.get(f"/q/{raw_token}")
+        await client.post(
+            f"/api/waiting/items/{active_id}/label",
+            json={"color_label": "blue"},
+        )
+        await client.post(
+            f"/api/waiting/items/{active_id}/tags",
+            json={"tags": ["work", "family"]},
+        )
+        resp = await client.get("/api/waiting")
+    assert resp.status_code == 200
+    items = resp.json()["items"]
+    assert len(items) == 1
+    assert items[0]["color_label"] == "blue"
+    assert items[0]["tags"] == ["work", "family"]
+
+
+async def test_api_waiting_defaults_no_label_no_tags():
+    """GET /api/waiting items default to null color_label and empty tags."""
+    app, token_service, service, active_repo = _make_app()
+    _, raw_token = await token_service.issue(USER_ID)
+    await _setup_active(active_repo, service._chat_state_repo)
+    async with _client(app) as client:
+        await client.get(f"/q/{raw_token}")
+        resp = await client.get("/api/waiting")
+    assert resp.status_code == 200
+    items = resp.json()["items"]
+    assert len(items) == 1
+    assert items[0]["color_label"] is None
+    assert items[0]["tags"] == []

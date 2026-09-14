@@ -13,7 +13,7 @@ Per-session summary counts (completed, snoozed) are computed from the
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Literal
 
@@ -26,7 +26,7 @@ from echo_v2.persistence.chat_repositories import (
     WaitingForMeActiveRepository,
     WaitingForMeResultRepository,
 )
-from echo_v2.persistence.contacts import ContactRepository
+from echo_v2.persistence.contacts import ContactRecord, ContactRepository
 from echo_v2.persistence.feedback_repositories import WaitingForMeActionRepository
 from echo_v2.services.feedback_service import WaitingForMeActionService
 from echo_v2.services.scheduling import SchedulingService
@@ -36,8 +36,10 @@ from echo_v2.services.waiting_list_token_service import WaitingListTokenService
 
 __all__ = [
     "ActionResponse",
+    "LabelResponse",
     "SendResponse",
     "StarResponse",
+    "TagsResponse",
     "WaitingListItem",
     "WaitingListResponse",
     "WaitingListService",
@@ -77,6 +79,8 @@ class WaitingListItem:
     waiting_hours: float
     expected_version: int
     is_starred: bool = False
+    color_label: str | None = None
+    tags: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -158,6 +162,38 @@ class StarResponse:
     is_starred: bool | None = None
 
 
+@dataclass(frozen=True)
+class LabelResponse:
+    """Response for POST /api/waiting/items/{active_id}/label.
+
+    Attributes:
+        outcome: ``"updated"`` if the label was set successfully,
+            ``"not_found"`` if the active item is missing or not owned
+            by the user.
+        color_label: The new ``color_label`` value. ``None`` for
+            ``not_found`` outcomes or when the label was cleared.
+    """
+
+    outcome: Literal["updated", "not_found"]
+    color_label: str | None = None
+
+
+@dataclass(frozen=True)
+class TagsResponse:
+    """Response for POST /api/waiting/items/{active_id}/tags.
+
+    Attributes:
+        outcome: ``"updated"`` if the tags were set successfully,
+            ``"not_found"`` if the active item is missing or not owned
+            by the user.
+        tags: The new normalized tags list. Empty for ``not_found``
+            outcomes.
+    """
+
+    outcome: Literal["updated", "not_found"]
+    tags: list[str] = field(default_factory=list)
+
+
 class WaitingListService:
     """List waiting items and execute actions for the mini web app.
 
@@ -225,9 +261,14 @@ class WaitingListService:
         now = datetime.now(timezone.utc)
         actives = await self._query_service.current_actionable(user_id, now=now)
 
+        # Batch-fetch contact metadata (star, color_label, tags) for all
+        # phones in a single query.
+        phones = {_phone_from_chat_id(a.chat_id) for a in actives}
+        contact_meta = await self._contact_repo.get_contact_metadata(user_id, phones)
+        starred_phones = {p for p, c in contact_meta.items() if c.is_starred}
+
         # Sort: starred contacts first (oldest first), then non-starred
-        # (oldest first). Single query for all starred phones.
-        starred_phones = await self._contact_repo.list_starred_phones(user_id)
+        # (oldest first).
         actives.sort(
             key=lambda active: (
                 _phone_from_chat_id(active.chat_id) not in starred_phones,
@@ -237,7 +278,7 @@ class WaitingListService:
 
         items = []
         for active in actives:
-            item = await self._build_item(user_id, active, now, starred_phones)
+            item = await self._build_item(user_id, active, now, contact_meta)
             items.append(item)
 
         summary = await self._build_summary(session_id, user_id, len(items))
@@ -463,19 +504,137 @@ class WaitingListService:
         )
         return StarResponse(outcome="updated", is_starred=is_starred)
 
+    async def set_label(
+        self,
+        session_id: str,
+        user_id: str,
+        active_id: str,
+        color_label: str | None,
+    ) -> LabelResponse | None:
+        """Set ``color_label`` on the contact associated with a waiting item.
+
+        Returns ``None`` if the session is invalid/expired/revoked.
+        Returns :class:`LabelResponse` with ``outcome="not_found"`` if the
+        active item is missing or not owned by the user.
+
+        The label is stored on the contact (by phone number), not on the
+        waiting item. If no contact record exists, one is created with
+        the resolved display name.
+        """
+        resolved = await self._token_service.resolve_session(session_id)
+        if resolved is None or resolved.user_id != user_id:
+            return None
+
+        await self._token_service.touch(session_id)
+
+        active = await self._active_repo.get_by_id(active_id)
+        if active is None or active.user_id != user_id:
+            return LabelResponse(outcome="not_found")
+
+        phone = _phone_from_chat_id(active.chat_id)
+
+        # Resolve a display name for potential contact creation.
+        chat = await self._chat_state_repo.get(user_id, active.chat_id)
+        display_name = chat.chat_name if chat else None
+        if not display_name:
+            contact = await self._contact_repo.find_by_phone(user_id, phone)
+            display_name = contact.display_name if contact else None
+        if not display_name:
+            msg = await self._message_repo.get_latest_inbound(
+                user_id=user_id, chat_id=active.chat_id
+            )
+            display_name = msg.chat_name or msg.sender_name if msg else None
+        if not display_name:
+            display_name = phone
+
+        await self._contact_repo.set_label(
+            user_id=user_id,
+            phone=phone,
+            color_label=color_label,
+            display_name=display_name,
+        )
+        return LabelResponse(outcome="updated", color_label=color_label)
+
+    async def set_tags(
+        self,
+        session_id: str,
+        user_id: str,
+        active_id: str,
+        tags: list[str],
+    ) -> TagsResponse | None:
+        """Set ``tags`` on the contact associated with a waiting item.
+
+        Returns ``None`` if the session is invalid/expired/revoked.
+        Returns :class:`TagsResponse` with ``outcome="not_found"`` if the
+        active item is missing or not owned by the user.
+
+        Tags are normalized (strip, dedupe case-insensitive, max 40 chars,
+        max 10 tags) before storage. The label is stored on the contact
+        (by phone number), not on the waiting item. If no contact record
+        exists, one is created with the resolved display name.
+        """
+        resolved = await self._token_service.resolve_session(session_id)
+        if resolved is None or resolved.user_id != user_id:
+            return None
+
+        await self._token_service.touch(session_id)
+
+        active = await self._active_repo.get_by_id(active_id)
+        if active is None or active.user_id != user_id:
+            return TagsResponse(outcome="not_found")
+
+        phone = _phone_from_chat_id(active.chat_id)
+
+        # Resolve a display name for potential contact creation.
+        chat = await self._chat_state_repo.get(user_id, active.chat_id)
+        display_name = chat.chat_name if chat else None
+        if not display_name:
+            contact = await self._contact_repo.find_by_phone(user_id, phone)
+            display_name = contact.display_name if contact else None
+        if not display_name:
+            msg = await self._message_repo.get_latest_inbound(
+                user_id=user_id, chat_id=active.chat_id
+            )
+            display_name = msg.chat_name or msg.sender_name if msg else None
+        if not display_name:
+            display_name = phone
+
+        record = await self._contact_repo.set_tags(
+            user_id=user_id,
+            phone=phone,
+            tags=tags,
+            display_name=display_name,
+        )
+        return TagsResponse(outcome="updated", tags=list(record.tags))
+
+    async def list_tags(
+        self,
+        session_id: str,
+        user_id: str,
+    ) -> list[str] | None:
+        """Return all distinct tags for the user, sorted alphabetically.
+
+        Returns ``None`` if the session is invalid/expired/revoked.
+        """
+        resolved = await self._token_service.resolve_session(session_id)
+        if resolved is None or resolved.user_id != user_id:
+            return None
+
+        return await self._contact_repo.list_tags(user_id)
+
     async def _build_item(
         self,
         user_id: str,
         active: WaitingForMeActive,
         now: datetime,
-        starred_phones: set[str] | None = None,
+        contact_meta: dict[str, ContactRecord] | None = None,
     ) -> WaitingListItem:
         """Build a WaitingListItem with name resolution + preview + summary.
 
         Args:
-            starred_phones: Optional pre-fetched set of starred phone
-                numbers for this user. If provided, avoids a per-item
-                ``find_by_phone`` call for the star state.
+            contact_meta: Optional pre-fetched dict of phone → ContactRecord
+                for this user. If provided, avoids per-item
+                ``find_by_phone`` calls for star/label/tags state.
         """
         phone = _phone_from_chat_id(active.chat_id)
 
@@ -483,8 +642,13 @@ class WaitingListService:
         chat = await self._chat_state_repo.get(user_id, active.chat_id)
         chat_name = chat.chat_name if chat else None
 
+        # Resolve contact record for name fallback + star/label/tags.
+        contact = None
+        if contact_meta is not None:
+            contact = contact_meta.get(phone)
         if not chat_name:
-            contact = await self._contact_repo.find_by_phone(user_id, phone)
+            if contact is None:
+                contact = await self._contact_repo.find_by_phone(user_id, phone)
             chat_name = contact.display_name if contact else None
 
         msg = await self._message_repo.get_latest_inbound(
@@ -512,12 +676,16 @@ class WaitingListService:
 
         waiting_hours = (now - active.waiting_since).total_seconds() / 3600.0
 
-        # Resolve is_starred from the pre-fetched set or via find_by_phone.
-        if starred_phones is not None:
-            is_starred = phone in starred_phones
-        else:
+        # Resolve star/label/tags from the pre-fetched metadata or via
+        # find_by_phone.
+        if contact is None and contact_meta is not None:
+            contact = contact_meta.get(phone)
+        if contact is None:
             contact = await self._contact_repo.find_by_phone(user_id, phone)
-            is_starred = contact.is_starred if contact else False
+
+        is_starred = contact.is_starred if contact else False
+        color_label = contact.color_label if contact else None
+        tags = list(contact.tags) if contact else []
 
         return WaitingListItem(
             active_id=active.id,
@@ -528,6 +696,8 @@ class WaitingListService:
             waiting_hours=round(waiting_hours, 1),
             expected_version=active.target_version,
             is_starred=is_starred,
+            color_label=color_label,
+            tags=tags,
         )
 
     async def _build_summary(

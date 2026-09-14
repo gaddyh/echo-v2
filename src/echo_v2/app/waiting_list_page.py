@@ -334,6 +334,189 @@ body {
 .loading { text-align: center; padding: 40px; color: var(--text-secondary); }
 .error-page { text-align: center; padding: 40px 20px; }
 .error-page h2 { font-size: 1.2rem; margin-bottom: 12px; }
+
+/* --- color label dot + tag chips on card --- */
+.card .name .color-dot {
+  display: inline-block;
+  width: 12px; height: 12px;
+  border-radius: 50%;
+  margin-inline-start: 2px;
+  flex-shrink: 0;
+}
+.card .color-dot.red    { background: #e74c3c; }
+.card .color-dot.yellow { background: #f1c40f; }
+.card .color-dot.green  { background: #27ae60; }
+.card .color-dot.blue   { background: #3498db; }
+.card .color-dot.purple { background: #9b59b6; }
+.card .tags-row {
+  display: flex; flex-wrap: wrap; gap: 4px;
+  margin-top: 4px;
+}
+.card .tag-chip {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: #eef0f2;
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+
+/* --- filter chips bar --- */
+.filter-bar {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  background: var(--bg);
+  padding: 8px 0;
+  margin: 0 -16px 8px;
+  overflow-x: auto;
+  white-space: nowrap;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.filter-bar::-webkit-scrollbar { display: none; }
+.filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--card);
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  -webkit-tap-highlight-color: transparent;
+}
+.filter-chip:hover { background: var(--bg); }
+.filter-chip.active {
+  background: var(--text);
+  color: white;
+  border-color: var(--text);
+}
+.filter-chip .chip-dot {
+  display: inline-block;
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.filter-chip .chip-dot.red    { background: #e74c3c; }
+.filter-chip .chip-dot.yellow { background: #f1c40f; }
+.filter-chip .chip-dot.green  { background: #27ae60; }
+.filter-chip .chip-dot.blue   { background: #3498db; }
+.filter-chip .chip-dot.purple { background: #9b59b6; }
+.filter-chip .chip-count {
+  font-size: 0.72rem;
+  opacity: 0.7;
+  margin-inline-start: 2px;
+}
+
+/* --- swipe navigation --- */
+.card-swipe-wrap {
+  position: relative;
+  overflow: hidden;
+}
+.card-current.swiping {
+  transition: none;
+}
+.card-nav-chevrons {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 4px;
+  gap: 8px;
+}
+.card-nav-chevrons button {
+  flex: 1;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.card-nav-chevrons button:hover { background: var(--bg); }
+.card-nav-chevrons button:disabled { opacity: 0.3; cursor: default; }
+
+/* --- label picker overlay --- */
+.label-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.label-option {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  padding: 8px;
+  border-radius: 8px;
+  transition: background 0.15s;
+  -webkit-tap-highlight-color: transparent;
+}
+.label-option:hover { background: var(--bg); }
+.label-option .label-circle {
+  width: 36px; height: 36px;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+}
+.label-option .label-circle.red    { background: #e74c3c; border-color: #e74c3c; }
+.label-option .label-circle.yellow { background: #f1c40f; border-color: #f1c40f; }
+.label-option .label-circle.green  { background: #27ae60; border-color: #27ae60; }
+.label-option .label-circle.blue   { background: #3498db; border-color: #3498db; }
+.label-option .label-circle.purple { background: #9b59b6; border-color: #9b59b6; }
+.label-option .label-circle.none   { background: var(--card); }
+.label-option .label-name { font-size: 0.8rem; color: var(--text-secondary); }
+.label-option.selected .label-circle { border-width: 4px; }
+.label-option.selected .label-name { color: var(--text); font-weight: 600; }
+
+/* --- tags editor overlay --- */
+.tags-current {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+.tags-current .tag-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: 14px;
+  background: #e3e8ee;
+  color: var(--text);
+  font-size: 0.85rem;
+}
+.tags-current .tag-pill .tag-remove {
+  cursor: pointer;
+  color: var(--text-secondary);
+  font-size: 1rem;
+  line-height: 1;
+  padding: 0 2px;
+}
+.tags-current .tag-pill .tag-remove:hover { color: var(--danger); }
+.tags-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+.tags-suggestion {
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--card);
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.tags-suggestion:hover { background: var(--primary); color: white; border-color: var(--primary); }
 </style>
 </head>
 <body>
@@ -370,12 +553,36 @@ body {
   <button class="overlay-close" onclick="closeSend()">ביטול</button>
 </div>
 
+<!-- Label overlay (צבע) -->
+<div class="overlay" id="label-overlay">
+  <div class="overlay-title">צבע</div>
+  <div class="label-options" id="label-options"></div>
+  <button class="overlay-close" onclick="closeLabel()">ביטול</button>
+</div>
+
+<!-- Tags overlay (תגיות) -->
+<div class="overlay" id="tags-overlay">
+  <div class="overlay-title">תגיות</div>
+  <div class="tags-current" id="tags-current"></div>
+  <input type="text" id="tags-input" placeholder="הוסף תגית..." maxlength="40" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;font-size:1rem;margin-bottom:8px;">
+  <div class="tags-suggestions" id="tags-suggestions"></div>
+  <button class="overlay-submit" id="tags-submit" onclick="submitTags()">שמור</button>
+  <button class="overlay-close" onclick="closeTags()">ביטול</button>
+</div>
+
 <script>
 const BOT_PHONE = "{{BOT_PHONE}}";
 let pendingAction = null; // {activeId, action, cardEl, expectedVersion, requestId}
-let queue = [];        // local copy of items
+let queue = [];        // authoritative current items from server
+let filteredQueue = []; // derived from queue + active filters
+let currentIndex = 0; // index inside filteredQueue
 let totalStarted = 0;  // queue length at load (for progress)
 let stats = {done: 0, snoozed: 0, scheduled: 0, not_needed: 0};
+let allTags = [];     // all distinct tags for this user (for autocomplete)
+let activeFilters = {starred: false, colors: new Set(), tags: new Set()};
+
+const COLOR_LABELS = ["red", "yellow", "green", "blue", "purple"];
+const COLOR_NAMES = {red: "אדום", yellow: "צהוב", green: "ירוק", blue: "כחול", purple: "סגול"};
 
 async function fetchAPI(path, options) {
   const resp = await fetch("/api/waiting" + path, options);
@@ -392,47 +599,184 @@ async function loadItems() {
   queue = data.items;
   totalStarted = queue.length;
   stats = {done: 0, snoozed: 0, scheduled: 0, not_needed: 0};
+  activeFilters = {starred: false, colors: new Set(), tags: new Set()};
+  // Fetch all tags for autocomplete + filter chips.
+  const tagsResp = await fetchAPI("/tags", {});
+  if (tagsResp && tagsResp.tags) allTags = tagsResp.tags;
+  recomputeFilteredQueue(null);
   renderCurrent();
+}
+
+// --- Queue/filter state machine ---
+
+function recomputeFilteredQueue(preserveActiveId) {
+  filteredQueue = queue.filter(item => {
+    if (activeFilters.starred && !item.is_starred) return false;
+    if (activeFilters.colors.size > 0 && !activeFilters.colors.has(item.color_label)) return false;
+    if (activeFilters.tags.size > 0) {
+      if (!item.tags || !item.tags.some(t => activeFilters.tags.has(t))) return false;
+    }
+    return true;
+  });
+  // Preserve current selection if possible, else clamp.
+  if (preserveActiveId) {
+    const idx = filteredQueue.findIndex(i => i.active_id === preserveActiveId);
+    if (idx >= 0) {
+      currentIndex = idx;
+      return;
+    }
+  }
+  if (currentIndex >= filteredQueue.length) {
+    currentIndex = Math.max(0, filteredQueue.length - 1);
+  }
+}
+
+function currentItem() {
+  return filteredQueue[currentIndex] || null;
 }
 
 function renderCurrent() {
   const app = document.getElementById("app");
-  if (queue.length === 0) {
-    renderComplete();
+  if (filteredQueue.length === 0) {
+    if (queue.length === 0) {
+      renderComplete();
+    } else {
+      renderEmptyFiltered();
+    }
     return;
   }
-  const item = queue[0];
-  const next = queue[1];
+  const item = currentItem();
+  const next = filteredQueue[currentIndex + 1];
+  const prev = filteredQueue[currentIndex - 1];
   const processed = totalStarted - queue.length;
   const backUrl = "https://wa.me/" + BOT_PHONE + "?text=" + encodeURIComponent("סיימתי לעבור על רשימת ההמתנה ✅, תודה");
   let html = '<div class="back-bar"><a href="' + backUrl + '">← חזרה ל־WhatsApp</a></div>';
   // Progress bar
   html += '<div class="progress-bar">'
-    + '<div class="count">' + (processed + 1) + ' מתוך ' + totalStarted + '</div>'
-    + '<div class="bar"><div class="fill" style="width:' + (processed / totalStarted * 100) + '%"></div></div>'
+    + '<div class="count">' + (currentIndex + 1) + ' מתוך ' + filteredQueue.length + '</div>'
+    + '<div class="bar"><div class="fill" style="width:' + (currentIndex / Math.max(filteredQueue.length, 1) * 100) + '%"></div></div>'
     + '</div>';
+  // Filter chips bar
+  html += renderFilterBar();
   // Card stack with peek
-  html += '<div class="card-stack">';
+  html += '<div class="card-stack card-swipe-wrap">';
   if (next) {
     html += '<div class="card-peek"></div>';
   }
   html += renderCard(item);
   html += '</div>';
+  // Navigation chevrons (desktop-friendly)
+  html += '<div class="card-nav-chevrons">'
+    + '<button onclick="navPrev()" ' + (currentIndex <= 0 ? "disabled" : "") + '>→ הקודם</button>'
+    + '<button onclick="navNext()" ' + (currentIndex >= filteredQueue.length - 1 ? "disabled" : "") + '>הבא ←</button>'
+    + '</div>';
   app.innerHTML = html;
   const card = app.querySelector(".card");
   card.classList.add("card-current");
   setCardText(card, item);
   attachCardListeners(card);
+  attachSwipeHandlers(card);
+}
+
+function renderFilterBar() {
+  let html = '<div class="filter-bar" id="filter-bar">';
+  // All chip
+  const noFilters = !activeFilters.starred && activeFilters.colors.size === 0 && activeFilters.tags.size === 0;
+  html += '<span class="filter-chip' + (noFilters ? " active" : "") + '" data-filter="all" onclick="clearFilters()">הכל</span>';
+  // Starred chip
+  html += '<span class="filter-chip' + (activeFilters.starred ? " active" : "") + '" data-filter="starred" onclick="toggleFilterStarred()">★</span>';
+  // Color chips
+  for (const color of COLOR_LABELS) {
+    const count = queue.filter(i => i.color_label === color).length;
+    if (count === 0) continue;
+    const active = activeFilters.colors.has(color);
+    html += '<span class="filter-chip' + (active ? " active" : "") + '" data-filter="color:' + color + '" onclick="toggleFilterColor(\'' + color + '\')">'
+      + '<span class="chip-dot ' + color + '"></span>'
+      + '<span class="chip-count">' + count + '</span>'
+      + '</span>';
+  }
+  // Tag chips
+  for (const tag of allTags) {
+    const count = queue.filter(i => i.tags && i.tags.includes(tag)).length;
+    if (count === 0) continue;
+    const active = activeFilters.tags.has(tag);
+    html += '<span class="filter-chip' + (active ? " active" : "") + '" data-filter="tag:' + escapeAttr(tag) + '" onclick="toggleFilterTag(\'' + escapeAttr(tag) + '\')">'
+      + '#' + escapeText(tag)
+      + '<span class="chip-count">' + count + '</span>'
+      + '</span>';
+  }
+  html += '</div>';
+  return html;
+}
+
+function clearFilters() {
+  activeFilters = {starred: false, colors: new Set(), tags: new Set()};
+  recomputeFilteredQueue(currentItem() ? currentItem().active_id : null);
+  renderCurrent();
+}
+
+function toggleFilterStarred() {
+  activeFilters.starred = !activeFilters.starred;
+  recomputeFilteredQueue(currentItem() ? currentItem().active_id : null);
+  renderCurrent();
+}
+
+function toggleFilterColor(color) {
+  if (activeFilters.colors.has(color)) {
+    activeFilters.colors.delete(color);
+  } else {
+    activeFilters.colors.add(color);
+  }
+  recomputeFilteredQueue(currentItem() ? currentItem().active_id : null);
+  renderCurrent();
+}
+
+function toggleFilterTag(tag) {
+  if (activeFilters.tags.has(tag)) {
+    activeFilters.tags.delete(tag);
+  } else {
+    activeFilters.tags.add(tag);
+  }
+  recomputeFilteredQueue(currentItem() ? currentItem().active_id : null);
+  renderCurrent();
+}
+
+function navNext() {
+  if (currentIndex < filteredQueue.length - 1) {
+    currentIndex++;
+    renderCurrent();
+  }
+}
+
+function navPrev() {
+  if (currentIndex > 0) {
+    currentIndex--;
+    renderCurrent();
+  }
 }
 
 function renderCard(item) {
   const hours = formatHours(item.waiting_hours);
-  return '<div class="card" data-active-id="' + item.active_id + '" data-version="' + item.expected_version + '" data-starred="' + (item.is_starred ? "1" : "0") + '">'
+  let colorDotHtml = "";
+  if (item.color_label) {
+    colorDotHtml = '<span class="color-dot ' + item.color_label + '"></span>';
+  }
+  let tagsHtml = "";
+  if (item.tags && item.tags.length > 0) {
+    tagsHtml = '<div class="tags-row">';
+    for (const tag of item.tags) {
+      tagsHtml += '<span class="tag-chip"></span>';
+    }
+    tagsHtml += '</div>';
+  }
+  return '<div class="card" data-active-id="' + item.active_id + '" data-version="' + item.expected_version + '" data-starred="' + (item.is_starred ? "1" : "0") + '" data-color="' + (item.color_label || "") + '">'
     + '<div class="name">'
     + '<button class="star-btn' + (item.is_starred ? " starred" : "") + '" data-action="star" aria-label="סמן איש קשר כחשוב" aria-pressed="' + (item.is_starred ? "true" : "false") + '">' + (item.is_starred ? "★" : "☆") + '</button>'
     + '<span class="name-text"></span>'
+    + colorDotHtml
     + '</div>'
     + '<div class="meta">ממתין ' + hours + '</div>'
+    + tagsHtml
     + '<div class="summary"></div>'
     + '<div class="quote"></div>'
     + '<div class="actions">'
@@ -440,6 +784,10 @@ function renderCard(item) {
     + '<div class="btn-row">'
     + '<button class="btn-secondary send" data-action="send">תזמן הודעה</button>'
     + '<button class="btn-secondary" data-action="tomorrow">מחר</button>'
+    + '</div>'
+    + '<div class="btn-row">'
+    + '<button class="btn-secondary" data-action="label">צבע</button>'
+    + '<button class="btn-secondary" data-action="tags">תגיות</button>'
     + '</div>'
     + '<div class="btn-row">'
     + '<button class="btn-secondary" data-action="snooze">נודניק לשעה</button>'
@@ -459,10 +807,21 @@ function setCardText(card, item) {
   const summary = item.situation_summary || item.message_preview || "שלח/ה הודעה";
   summaryEl.textContent = summary;
   if (item.situation_summary && item.message_preview) {
-    quoteEl.textContent = "“" + item.message_preview + "”";
+    quoteEl.textContent = "\u201C" + item.message_preview + "\u201D";
     quoteEl.style.display = "";
   } else {
     quoteEl.style.display = "none";
+  }
+  // Fill tag chips via textContent (safe — no innerHTML for user tags).
+  const tagsRow = card.querySelector(".tags-row");
+  if (tagsRow) {
+    tagsRow.textContent = "";
+    for (const tag of (item.tags || [])) {
+      const chip = document.createElement("span");
+      chip.className = "tag-chip";
+      chip.textContent = "#" + tag;
+      tagsRow.appendChild(chip);
+    }
   }
 }
 
@@ -470,12 +829,63 @@ function attachCardListeners(card) {
   const itemId = card.dataset.activeId;
   const version = parseInt(card.dataset.version);
   card.querySelectorAll("button, .snooze-other").forEach(btn => {
-    btn.addEventListener("click", () => {
+    btn.addEventListener("click", (e) => {
+      // Prevent swipe handler from also firing.
+      e.stopPropagation();
       const action = btn.dataset.action;
       handleAction(card, itemId, version, action);
     });
   });
 }
+
+// --- Swipe navigation ---
+
+function attachSwipeHandlers(card) {
+  let startX = 0, startY = 0, dx = 0, dy = 0, swiping = false;
+  let gestureOnControl = false;
+
+  card.addEventListener("touchstart", (e) => {
+    if (e.touches.length !== 1) return;
+    startX = e.touches[0].clientX;
+    startY = e.touches[0].clientY;
+    dx = 0; dy = 0;
+    swiping = true;
+    // Check if gesture started on a button, input, or tag chip.
+    const target = e.target;
+    gestureOnControl = !!target.closest("button, .snooze-other, .tag-chip, input, .filter-chip");
+  }, {passive: true});
+
+  card.addEventListener("touchmove", (e) => {
+    if (!swiping || e.touches.length !== 1) return;
+    dx = e.touches[0].clientX - startX;
+    dy = e.touches[0].clientY - startY;
+    if (gestureOnControl) return;
+    // Only translate if horizontal-dominant.
+    if (Math.abs(dx) > Math.abs(dy)) {
+      card.classList.add("swiping");
+      card.style.transform = "translateX(" + dx + "px)";
+    }
+  }, {passive: true});
+
+  card.addEventListener("touchend", () => {
+    if (!swiping) return;
+    swiping = false;
+    card.classList.remove("swiping");
+    card.style.transform = "";
+    if (gestureOnControl) return;
+    const threshold = 80;
+    if (Math.abs(dx) > threshold && Math.abs(dx) > Math.abs(dy) * 1.2) {
+      // RTL: swipe right (positive dx) = previous, swipe left (negative dx) = next.
+      if (dx > 0) {
+        navPrev();
+      } else {
+        navNext();
+      }
+    }
+  });
+}
+
+// --- Star toggle ---
 
 async function toggleStar(card, activeId) {
   const starBtn = card.querySelector(".star-btn");
@@ -487,47 +897,250 @@ async function toggleStar(card, activeId) {
   starBtn.textContent = newStarred ? "★" : "☆";
   starBtn.setAttribute("aria-pressed", newStarred ? "true" : "false");
   starBtn.disabled = true;
+  // Update local queue immediately.
+  const item = queue.find(i => i.active_id === activeId);
+  if (item) item.is_starred = newStarred;
   try {
     const resp = await fetchAPI("/items/" + activeId + "/star", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({is_starred: newStarred}),
     });
-    if (!resp) {
-      // Session invalid — redirect already handled by fetchAPI.
-      return;
-    }
+    if (!resp) return;
     if (resp.outcome === "updated") {
       card.dataset.starred = resp.is_starred ? "1" : "0";
+      // If starred filter is active and we just un-starred, recompute.
+      if (activeFilters.starred && !newStarred) {
+        recomputeFilteredQueue(null);
+        renderCurrent();
+      }
     } else if (resp.outcome === "not_found") {
-      // Revert optimistic update.
+      // Revert.
       starBtn.classList.toggle("starred", wasStarred);
       starBtn.textContent = wasStarred ? "★" : "☆";
       starBtn.setAttribute("aria-pressed", wasStarred ? "true" : "false");
+      if (item) item.is_starred = wasStarred;
       showRetry(card, "הפריט לא נמצא.");
     }
   } catch (e) {
-    // Revert on network error.
     starBtn.classList.toggle("starred", wasStarred);
     starBtn.textContent = wasStarred ? "★" : "☆";
     starBtn.setAttribute("aria-pressed", wasStarred ? "true" : "false");
+    if (item) item.is_starred = wasStarred;
     showRetry(card, "בעיית רשת. נסה שוב.");
   } finally {
     starBtn.disabled = false;
   }
 }
 
+// --- Label editor ---
+
+function openLabelEditor(card, activeId) {
+  const item = queue.find(i => i.active_id === activeId);
+  const currentLabel = item ? item.color_label : null;
+  pendingAction = {activeId, card};
+  const container = document.getElementById("label-options");
+  container.textContent = "";
+  // "No color" option.
+  const noneOpt = document.createElement("div");
+  noneOpt.className = "label-option" + (currentLabel === null ? " selected" : "");
+  noneOpt.innerHTML = '<div class="label-circle none"></div><span class="label-name">ללא</span>';
+  noneOpt.onclick = () => selectLabel(null);
+  container.appendChild(noneOpt);
+  // Color options.
+  for (const color of COLOR_LABELS) {
+    const opt = document.createElement("div");
+    opt.className = "label-option" + (currentLabel === color ? " selected" : "");
+    opt.innerHTML = '<div class="label-circle ' + color + '"></div><span class="label-name">' + COLOR_NAMES[color] + '</span>';
+    opt.onclick = () => selectLabel(color);
+    container.appendChild(opt);
+  }
+  document.getElementById("label-overlay").classList.add("active");
+}
+
+function selectLabel(color) {
+  if (!pendingAction) return;
+  const activeId = pendingAction.activeId;
+  closeLabel();
+  applyLabel(activeId, color);
+}
+
+async function applyLabel(activeId, color) {
+  const item = queue.find(i => i.active_id === activeId);
+  const oldLabel = item ? item.color_label : null;
+  if (item) item.color_label = color;
+  // Re-render to show the dot immediately.
+  renderCurrent();
+  try {
+    const resp = await fetchAPI("/items/" + activeId + "/label", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({color_label: color}),
+    });
+    if (!resp) return;
+    if (resp.outcome === "updated") {
+      // If color filter is active and this item no longer matches, recompute.
+      if (activeFilters.colors.size > 0 && !activeFilters.colors.has(color)) {
+        recomputeFilteredQueue(null);
+        renderCurrent();
+      }
+    } else if (resp.outcome === "not_found") {
+      if (item) item.color_label = oldLabel;
+      renderCurrent();
+    }
+  } catch (e) {
+    if (item) item.color_label = oldLabel;
+    renderCurrent();
+  }
+}
+
+function closeLabel() {
+  document.getElementById("label-overlay").classList.remove("active");
+  pendingAction = null;
+}
+
+// --- Tags editor ---
+
+let editingTags = []; // working copy in the editor
+
+function openTagsEditor(card, activeId) {
+  const item = queue.find(i => i.active_id === activeId);
+  editingTags = item && item.tags ? [...item.tags] : [];
+  pendingAction = {activeId, card};
+  renderTagsEditor();
+  document.getElementById("tags-input").value = "";
+  document.getElementById("tags-overlay").classList.add("active");
+  // Enter key adds tag.
+  document.getElementById("tags-input").onkeydown = (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      addTagFromInput();
+    }
+  };
+}
+
+function renderTagsEditor() {
+  // Current tags as removable pills.
+  const currentEl = document.getElementById("tags-current");
+  currentEl.textContent = "";
+  for (const tag of editingTags) {
+    const pill = document.createElement("span");
+    pill.className = "tag-pill";
+    const txt = document.createElement("span");
+    txt.textContent = "#" + tag;
+    pill.appendChild(txt);
+    const rm = document.createElement("span");
+    rm.className = "tag-remove";
+    rm.textContent = "×";
+    rm.onclick = () => removeTag(tag);
+    pill.appendChild(rm);
+    currentEl.appendChild(pill);
+  }
+  // Suggestions (allTags minus already selected).
+  const suggestionsEl = document.getElementById("tags-suggestions");
+  suggestionsEl.textContent = "";
+  for (const tag of allTags) {
+    if (editingTags.some(t => t.toLowerCase() === tag.toLowerCase())) continue;
+    const sug = document.createElement("span");
+    sug.className = "tags-suggestion";
+    sug.textContent = "#" + tag;
+    sug.onclick = () => addTag(tag);
+    suggestionsEl.appendChild(sug);
+  }
+}
+
+function addTagFromInput() {
+  const input = document.getElementById("tags-input");
+  const val = input.value.trim();
+  if (!val) return;
+  addTag(val);
+  input.value = "";
+}
+
+function addTag(tag) {
+  const t = tag.trim().slice(0, 40);
+  if (!t) return;
+  if (editingTags.some(x => x.toLowerCase() === t.toLowerCase())) return;
+  if (editingTags.length >= 10) return;
+  editingTags.push(t);
+  renderTagsEditor();
+}
+
+function removeTag(tag) {
+  editingTags = editingTags.filter(t => t !== tag);
+  renderTagsEditor();
+}
+
+async function submitTags() {
+  if (!pendingAction) return;
+  const activeId = pendingAction.activeId;
+  const item = queue.find(i => i.active_id === activeId);
+  const oldTags = item && item.tags ? [...item.tags] : [];
+  if (item) item.tags = [...editingTags];
+  closeTags();
+  renderCurrent();
+  try {
+    const resp = await fetchAPI("/items/" + activeId + "/tags", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({tags: editingTags}),
+    });
+    if (!resp) return;
+    if (resp.outcome === "updated") {
+      // Update local tags with server-normalized version.
+      if (item) item.tags = resp.tags || [];
+      // Refresh allTags if a new tag was introduced.
+      for (const t of (resp.tags || [])) {
+        if (!allTags.some(a => a.toLowerCase() === t.toLowerCase())) {
+          allTags.push(t);
+          allTags.sort();
+        }
+      }
+      // If tag filter is active and this item no longer matches, recompute.
+      if (activeFilters.tags.size > 0) {
+        const matches = (item.tags || []).some(t => activeFilters.tags.has(t));
+        if (!matches) {
+          recomputeFilteredQueue(null);
+        }
+      }
+      renderCurrent();
+    } else if (resp.outcome === "not_found") {
+      if (item) item.tags = oldTags;
+      renderCurrent();
+    }
+  } catch (e) {
+    if (item) item.tags = oldTags;
+    renderCurrent();
+  }
+}
+
+function closeTags() {
+  document.getElementById("tags-overlay").classList.remove("active");
+  pendingAction = null;
+  editingTags = [];
+}
+
+// --- Actions ---
+
 function actionStatType(action) {
   if (action === "done") return "done";
   if (action === "snooze" || action === "tomorrow" || action === "snooze_other") return "snoozed";
   if (action === "not_needed") return "not_needed";
-  if (action === "false_positive") return "done"; // resolves like done
+  if (action === "false_positive") return "done";
   return null;
 }
 
 async function handleAction(card, activeId, expectedVersion, action) {
   if (action === "star") {
     await toggleStar(card, activeId);
+    return;
+  }
+  if (action === "label") {
+    openLabelEditor(card, activeId);
+    return;
+  }
+  if (action === "tags") {
+    openTagsEditor(card, activeId);
     return;
   }
   if (action === "snooze") {
@@ -583,7 +1196,7 @@ async function sendAction(card, activeId, expectedVersion, action, extra) {
     });
     if (!resp) return;
     if (resp.outcome === "applied" || resp.outcome === "duplicate" || resp.outcome === "not_found") {
-      advanceQueue(actionStatType(action));
+      removeFromQueue(activeId, actionStatType(action));
     } else if (resp.outcome === "stale") {
       if (resp.item) {
         card.dataset.version = resp.item.expected_version;
@@ -604,12 +1217,23 @@ async function sendAction(card, activeId, expectedVersion, action, extra) {
   }
 }
 
-function advanceQueue(statType) {
+function removeFromQueue(activeId, statType) {
   if (statType) stats[statType]++;
   const card = document.querySelector(".card-current");
   if (card) card.classList.add("removing");
   setTimeout(() => {
-    queue.shift();
+    // Find and remove from queue.
+    const queueIdx = queue.findIndex(i => i.active_id === activeId);
+    if (queueIdx >= 0) queue.splice(queueIdx, 1);
+    // Recompute filtered queue, preserving position.
+    const wasAt = currentIndex;
+    recomputeFilteredQueue(null);
+    // If we removed the current item, stay at same index (now points to next).
+    // If we removed an item before current, index already adjusted by recompute.
+    // Clamp.
+    if (currentIndex >= filteredQueue.length) {
+      currentIndex = Math.max(0, filteredQueue.length - 1);
+    }
     renderCurrent();
   }, 250);
 }
@@ -623,6 +1247,17 @@ function showRetry(card, msg) {
   }
   retry.textContent = msg;
   retry.onclick = () => { retry.remove(); };
+}
+
+function renderEmptyFiltered() {
+  const app = document.getElementById("app");
+  const backUrl = "https://wa.me/" + BOT_PHONE + "?text=" + encodeURIComponent("סיכום חדש בבקשה");
+  app.innerHTML = '<div class="summary">'
+    + '<div class="icon">🔍</div>'
+    + '<h2>אין פריטים בסינון הנוכחי</h2>'
+    + '<div class="stats-line">סה"כ ' + queue.length + ' פריטים ברשימה</div>'
+    + '<a class="back-btn" href="#" onclick="clearFilters(); return false;" style="margin-top:16px;display:inline-block;padding:10px 24px;background:var(--text);color:white;border-radius:20px;font-size:0.9rem;text-decoration:none;">נקה סינון</a>'
+    + '</div>';
 }
 
 function renderComplete() {
@@ -647,6 +1282,25 @@ function formatHours(h) {
   if (h < 24) return Math.round(h) + " שעות";
   return Math.round(h / 24) + " ימים";
 }
+
+// --- Utility: safe text/attr escaping for inline HTML ---
+// Used only for filter chip rendering; tag content uses textContent.
+function escapeText(s) {
+  return s.replace(/&/g, "&").replace(/</g, "<").replace(/>/g, ">");
+}
+function escapeAttr(s) {
+  return s.replace(/'/g, "\\'").replace(/"/g, "\\\"");
+}
+
+// --- Keyboard navigation (desktop) ---
+document.addEventListener("keydown", (e) => {
+  // Don't interfere with inputs.
+  if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
+  // Don't fire if an overlay is open.
+  if (document.querySelector(".overlay.active")) return;
+  if (e.key === "ArrowLeft") { navNext(); e.preventDefault(); }
+  if (e.key === "ArrowRight") { navPrev(); e.preventDefault(); }
+});
 
 // Snooze overlay handlers
 document.querySelectorAll("#snooze-overlay .overlay-option[data-preset]").forEach(btn => {
@@ -727,7 +1381,7 @@ async function submitSendWith(extra) {
     }
     if (resp.outcome === "scheduled" || resp.outcome === "duplicate") {
       closeSend();
-      advanceQueue("scheduled");
+      removeFromQueue(pendingAction.activeId, "scheduled");
     } else if (resp.outcome === "not_found") {
       showSendError("הפריט לא נמצא או שייך למשתמש אחר.");
       submitBtn.disabled = false;

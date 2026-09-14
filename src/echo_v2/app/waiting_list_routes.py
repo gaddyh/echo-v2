@@ -104,6 +104,52 @@ class StarRequest(BaseModel):
     is_starred: bool = Field(..., description="True to star, False to unstar")
 
 
+class LabelRequest(BaseModel):
+    """Request body for POST /api/waiting/items/{active_id}/label.
+
+    Explicit: the client sends the desired ``color_label`` value.
+    ``None`` clears the label. This is idempotent.
+    """
+
+    color_label: str | None = Field(
+        None,
+        description="Color label: red, yellow, green, blue, purple, or null to clear",
+        pattern=r"^(red|yellow|green|blue|purple)$",
+    )
+
+
+class TagsRequest(BaseModel):
+    """Request body for POST /api/waiting/items/{active_id}/tags.
+
+    Explicit: the client sends the full desired tags list. This is
+    idempotent — retrying the same list is a no-op.
+    """
+
+    tags: list[str] = Field(
+        ...,
+        max_length=10,
+        description="Full tags list (max 10 tags, each max 40 chars)",
+    )
+
+    @field_validator("tags")
+    @classmethod
+    def _validate_tags(cls, v: list[str]) -> list[str]:
+        result: list[str] = []
+        seen: set[str] = set()
+        for tag in v:
+            t = tag.strip()[:40]
+            if not t:
+                continue
+            key = t.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(t)
+            if len(result) >= 10:
+                break
+        return result
+
+
 def build_waiting_list_router(
     *,
     token_service: WaitingListTokenService,
@@ -225,6 +271,8 @@ def build_waiting_list_router(
                         "waiting_hours": item.waiting_hours,
                         "expected_version": item.expected_version,
                         "is_starred": item.is_starred,
+                        "color_label": item.color_label,
+                        "tags": item.tags,
                     }
                     for item in result.items
                 ],
@@ -396,6 +444,114 @@ def build_waiting_list_router(
                 "outcome": result.outcome,
                 "is_starred": result.is_starred,
             },
+            headers=_security_headers(),
+        )
+
+    # --- POST /api/waiting/items/{active_id}/label — set color label ---
+
+    @router.post("/api/waiting/items/{active_id}/label")
+    async def set_label(
+        active_id: str,
+        body: LabelRequest,
+        wls: str | None = Cookie(default=None, alias=_SESSION_COOKIE),
+    ) -> JSONResponse:
+        if wls is None:
+            raise HTTPException(status_code=401, detail="no session")
+
+        resolved = await token_service.resolve_session(wls)
+        if resolved is None:
+            raise HTTPException(status_code=401, detail="session expired")
+
+        if not _check_rate_limit(resolved.session_id):
+            raise HTTPException(status_code=429, detail="rate limited")
+
+        result = await waiting_list_service.set_label(
+            session_id=resolved.session_id,
+            user_id=resolved.user_id,
+            active_id=active_id,
+            color_label=body.color_label,
+        )
+        if result is None:
+            raise HTTPException(status_code=401, detail="session invalid")
+
+        status_code = 200
+        if result.outcome == "not_found":
+            status_code = 404
+
+        return JSONResponse(
+            status_code=status_code,
+            content={
+                "outcome": result.outcome,
+                "color_label": result.color_label,
+            },
+            headers=_security_headers(),
+        )
+
+    # --- POST /api/waiting/items/{active_id}/tags — set tags ---
+
+    @router.post("/api/waiting/items/{active_id}/tags")
+    async def set_tags(
+        active_id: str,
+        body: TagsRequest,
+        wls: str | None = Cookie(default=None, alias=_SESSION_COOKIE),
+    ) -> JSONResponse:
+        if wls is None:
+            raise HTTPException(status_code=401, detail="no session")
+
+        resolved = await token_service.resolve_session(wls)
+        if resolved is None:
+            raise HTTPException(status_code=401, detail="session expired")
+
+        if not _check_rate_limit(resolved.session_id):
+            raise HTTPException(status_code=429, detail="rate limited")
+
+        result = await waiting_list_service.set_tags(
+            session_id=resolved.session_id,
+            user_id=resolved.user_id,
+            active_id=active_id,
+            tags=body.tags,
+        )
+        if result is None:
+            raise HTTPException(status_code=401, detail="session invalid")
+
+        status_code = 200
+        if result.outcome == "not_found":
+            status_code = 404
+
+        return JSONResponse(
+            status_code=status_code,
+            content={
+                "outcome": result.outcome,
+                "tags": result.tags,
+            },
+            headers=_security_headers(),
+        )
+
+    # --- GET /api/waiting/tags — list all tags for autocomplete ---
+
+    @router.get("/api/waiting/tags")
+    async def list_tags(
+        wls: str | None = Cookie(default=None, alias=_SESSION_COOKIE),
+    ) -> JSONResponse:
+        if wls is None:
+            raise HTTPException(status_code=401, detail="no session")
+
+        resolved = await token_service.resolve_session(wls)
+        if resolved is None:
+            raise HTTPException(status_code=401, detail="session expired")
+
+        if not _check_rate_limit(resolved.session_id):
+            raise HTTPException(status_code=429, detail="rate limited")
+
+        tags = await waiting_list_service.list_tags(
+            session_id=resolved.session_id,
+            user_id=resolved.user_id,
+        )
+        if tags is None:
+            raise HTTPException(status_code=401, detail="session invalid")
+
+        return JSONResponse(
+            content={"tags": tags},
             headers=_security_headers(),
         )
 
