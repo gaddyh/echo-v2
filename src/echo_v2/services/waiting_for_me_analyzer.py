@@ -25,6 +25,10 @@ from typing import TYPE_CHECKING, Any, Protocol
 from langsmith import traceable
 
 from echo_v2.domain.waiting_for_me import WaitingForMeDecision, WaitingForMeResult
+from echo_v2.services.waiting_for_me_prompts import (
+    DEFAULT_PROMPT_VERSION,
+    get_prompt,
+)
 
 if TYPE_CHECKING:
     from echo_v2.services.chat_analysis_worker import ConversationInput
@@ -34,12 +38,13 @@ __all__ = [
     "ChatCompletionClient",
     "LLMWaitingForMeAnalyzer",
     "WaitingForMeAnalyzer",
+    "WaitingForMeResult",
 ]
 
 _logger = logging.getLogger("echo_v2.services.waiting_for_me_analyzer")
 
 # Bump when the prompt or output contract changes. Used in trace metadata.
-WFM_PROMPT_VERSION = "wfm-v1"
+WFM_PROMPT_VERSION = DEFAULT_PROMPT_VERSION
 
 
 # Direction labels as the LLM sees them.
@@ -165,15 +170,20 @@ class LLMWaitingForMeAnalyzer:
         client: An OpenAI-compatible async client (e.g.
             ``wrap_openai(AsyncOpenAI(...))``).
         model: Model name. Default ``gpt-4.1``.
+        prompt_version: System prompt version (``"v0"``, ``"v1"``, ``"v2"``).
+            Default ``"v0"`` (original baseline prompt).
     """
 
     def __init__(
         self,
         client: ChatCompletionClient,
         model: str = "gpt-4.1",
+        prompt_version: str = DEFAULT_PROMPT_VERSION,
     ) -> None:
         self._client = client
         self._model = model
+        self._system_prompt = get_prompt(prompt_version)
+        self._prompt_version = prompt_version
 
     @traceable(
         name="wfm.llm_analyze",
@@ -181,12 +191,31 @@ class LLMWaitingForMeAnalyzer:
         process_outputs=safe_analysis_output,
     )
     async def analyze(self, conversation: ConversationInput) -> WaitingForMeResult:
+        result, _raw = await self._analyze_core(conversation)
+        return result
+
+    async def analyze_with_raw(
+        self, conversation: ConversationInput
+    ) -> tuple[WaitingForMeResult, str]:
+        """Run analysis and return ``(result, raw_llm_response)``.
+
+        Same as :meth:`analyze` but also returns the raw LLM output text.
+        Intended for evaluation harnesses that need to persist full traces.
+        """
+        return await self._analyze_core(conversation)
+
+    async def _analyze_core(
+        self, conversation: ConversationInput
+    ) -> tuple[WaitingForMeResult, str]:
         if not conversation.messages:
-            return WaitingForMeResult(
-                decision=WaitingForMeDecision.UNCERTAIN,
-                confidence=1.0,
-                reason="No messages to analyze.",
-                target_version=conversation.target_version,
+            return (
+                WaitingForMeResult(
+                    decision=WaitingForMeDecision.UNCERTAIN,
+                    confidence=1.0,
+                    reason="No messages to analyze.",
+                    target_version=conversation.target_version,
+                ),
+                "",
             )
 
         user_msg = _build_user_message(conversation)
@@ -195,7 +224,7 @@ class LLMWaitingForMeAnalyzer:
             response = await self._client.chat.completions.create(
                 model=self._model,
                 messages=[
-                    {"role": "system", "content": _SYSTEM_PROMPT},
+                    {"role": "system", "content": self._system_prompt},
                     {"role": "user", "content": user_msg},
                 ],
                 temperature=0,
@@ -206,7 +235,8 @@ class LLMWaitingForMeAnalyzer:
             raise AnalysisError(f"LLM request failed: {exc}") from exc
 
         raw_output = response.choices[0].message.content or ""
-        return _parse_llm_output(raw_output, conversation.target_version)
+        result = _parse_llm_output(raw_output, conversation.target_version)
+        return result, raw_output
 
 
 def _build_user_message(conversation: ConversationInput) -> str:

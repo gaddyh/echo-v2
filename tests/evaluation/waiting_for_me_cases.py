@@ -16,7 +16,12 @@ from dataclasses import dataclass
 
 from echo_v2.domain.waiting_for_me import WaitingForMeDecision
 
-__all__ = ["EVAL_CASES", "EvalCase"]
+__all__ = [
+    "EVAL_CASES",
+    "SANITY_CASES",
+    "SOC_CASES",
+    "EvalCase",
+]
 
 
 @dataclass(frozen=True)
@@ -29,6 +34,18 @@ class EvalCase:
         messages: List of (direction, text) tuples. ``inbound`` = from
             the other person, ``outbound`` = from the user.
         expected: The expected :class:`WaitingForMeDecision`.
+        notes: Optional explanation of the expected decision.
+        family: Semantic family this case belongs to (e.g.
+            ``"user_created_commitment"``, ``"offer_not_obligation"``).
+            Defaults to ``""`` for sanity cases that don't belong to a
+            specific SOC family.
+        source_group: Identifier for the underlying conversation/scenario
+            this case was derived from. Cases sharing a source_group are
+            correlated and must go in the same split to prevent leakage.
+            Defaults to ``""`` for sanity cases.
+        split: Which data split this case belongs to: ``"train"``,
+            ``"dev"``, ``"test"``, or ``""`` for sanity cases that are
+            not part of the train/dev/test workflow.
     """
 
     id: str
@@ -36,9 +53,12 @@ class EvalCase:
     messages: list[tuple[str, str]]
     expected: WaitingForMeDecision
     notes: str = ""
+    family: str = ""
+    source_group: str = ""
+    split: str = ""
 
 
-EVAL_CASES: list[EvalCase] = [
+SANITY_CASES: list[EvalCase] = [
     # --- WAITING_FOR_ME: direct questions ---------------------------------
     EvalCase(
         id="wfm-01",
@@ -278,8 +298,8 @@ EVAL_CASES: list[EvalCase] = [
             ("outbound", "אצלי, אני אשלח כתובת"),
             ("inbound", "מצוין, תודה!"),
         ],
-        expected=WaitingForMeDecision.NOT_WAITING_FOR_ME,
-        notes="Meeting fully planned and confirmed — the other person said thanks and closed.",
+        expected=WaitingForMeDecision.WAITING_FOR_ME,
+        notes="User explicitly committed to send the address; thanks does not fulfill that commitment.",
     ),
     EvalCase(
         id="long-03",
@@ -396,8 +416,8 @@ EVAL_CASES: list[EvalCase] = [
             ("outbound", "מעולה, מחכה"),
             ("inbound", "שלחתי, תודה שוב"),
         ],
-        expected=WaitingForMeDecision.NOT_WAITING_FOR_ME,
-        notes="Favor agreed, flight number sent, friend said thanks — conversation closed.",
+        expected=WaitingForMeDecision.WAITING_FOR_ME,
+        notes="User committed to pick the friend up at 08:00; the real-world commitment is still open.",
     ),
     EvalCase(
         id="long-10",
@@ -451,3 +471,129 @@ EVAL_CASES: list[EvalCase] = [
         notes="The other person asked to see the counter-offer before the user sends it — waiting for the user.",
     ),
 ]
+
+
+# --- SOC-2508 adaptations: state transitions / open commitments ---------
+# Adapted into short WhatsApp-style snapshots for WFM evaluation.
+# These are intentionally richer than the basic cases above: several
+# require tracking an obligation across turns rather than classifying
+# only the final message.
+
+SOC_CASES: list[EvalCase] = [
+    EvalCase(
+        id="soc-01",
+        description="Direct action request with deadline and follow-up",
+        messages=[
+            ("inbound", "בוקר טוב, צירפתי את הטופס."),
+            ("inbound", "אני צריכה שתחתום עליו עד 16:00."),
+            ("inbound", "רק מוודאת שראית, זה די דחוף 🙏"),
+        ],
+        expected=WaitingForMeDecision.WAITING_FOR_ME,
+        notes="Direct request is still open despite the follow-up.",
+    ),
+    EvalCase(
+        id="soc-02",
+        description="User acknowledges request but does not complete it",
+        messages=[
+            ("inbound", "בוקר טוב, צירפתי את הטופס."),
+            ("inbound", "אני צריכה שתחתום עליו עד 16:00."),
+            ("inbound", "רק מוודאת שראית, זה די דחוף 🙏"),
+            ("outbound", "ראיתי."),
+        ],
+        expected=WaitingForMeDecision.WAITING_FOR_ME,
+        notes="Acknowledging receipt is not the requested action; the signature is still owed.",
+    ),
+    EvalCase(
+        id="soc-03",
+        description="Last message is mine but my promised action is still open",
+        messages=[
+            ("inbound", "בוקר טוב, צירפתי את הטופס."),
+            ("inbound", "אני צריכה שתחתום עליו עד 16:00."),
+            ("inbound", "רק מוודאת שראית, זה די דחוף 🙏"),
+            ("outbound", "ראיתי, אחתום ואשלח לך אחרי הצהריים."),
+        ],
+        expected=WaitingForMeDecision.WAITING_FOR_ME,
+        notes="Critical case: an outbound promise does not move the ball away from the user.",
+    ),
+    EvalCase(
+        id="soc-04",
+        description="User completes requested action and recipient confirms receipt",
+        messages=[
+            ("inbound", "בוקר טוב, צירפתי את הטופס."),
+            ("inbound", "אני צריכה שתחתום עליו עד 16:00."),
+            ("outbound", "ראיתי, אחתום ואשלח לך אחרי הצהריים."),
+            ("outbound", "חתמתי ושלחתי עכשיו במייל."),
+            ("inbound", "קיבלתי, תודה!"),
+        ],
+        expected=WaitingForMeDecision.NOT_WAITING_FOR_ME,
+        notes="The requested action was explicitly completed and acknowledged.",
+    ),
+    EvalCase(
+        id="soc-05",
+        description="Opinion question requires a reply",
+        messages=[
+            ("inbound", "אני עובד על העדכון ללקוחות לגבי שינוי המחירים."),
+            ("inbound", "לדעתך כדאי להסביר גם למה אנחנו משנים אותם?"),
+        ],
+        expected=WaitingForMeDecision.WAITING_FOR_ME,
+        notes="Open question asking for the user's opinion.",
+    ),
+    EvalCase(
+        id="soc-06",
+        description="Question answered but user's new commitment remains open",
+        messages=[
+            ("inbound", "אני עובד על העדכון ללקוחות לגבי שינוי המחירים."),
+            ("inbound", "לדעתך כדאי להסביר גם למה אנחנו משנים אותם?"),
+            ("outbound", "כן, אחרת זה יישמע שרירותי."),
+            ("outbound", "אנסח לך פסקה קצרה אחרי ארוחת הצהריים."),
+            ("inbound", "מעולה, תודה."),
+        ],
+        expected=WaitingForMeDecision.WAITING_FOR_ME,
+        notes="The original question is answered, but the user's newly-created commitment is still open.",
+    ),
+    EvalCase(
+        id="soc-07",
+        description="New commitment is fulfilled and accepted",
+        messages=[
+            ("inbound", "לדעתך כדאי להסביר גם למה אנחנו משנים אותם?"),
+            ("outbound", "כן, אחרת זה יישמע שרירותי."),
+            ("outbound", "אנסח לך פסקה קצרה אחרי ארוחת הצהריים."),
+            ("inbound", "מעולה, תודה."),
+            ("outbound", "הנה ניסוח: אנחנו מעדכנים את המחירים בעקבות העלייה בעלויות..."),
+            ("inbound", "מצוין, לוקח את זה."),
+        ],
+        expected=WaitingForMeDecision.NOT_WAITING_FOR_ME,
+        notes="The promised paragraph was sent and accepted.",
+    ),
+    EvalCase(
+        id="soc-08",
+        description="User requests details from the other person — ball is with them",
+        messages=[
+            ("inbound", "ניפגש מחר באזור קיסריה?"),
+            ("outbound", "מתאים."),
+            ("outbound", "תשלחי לי כתובת ושעה ונקבע."),
+        ],
+        expected=WaitingForMeDecision.NOT_WAITING_FOR_ME,
+        notes="There is an open thread, but the next action belongs to the other person.",
+    ),
+    EvalCase(
+        id="soc-09",
+        description="Waiting-for-them state must not become WFM merely because time passed",
+        messages=[
+            ("inbound", "ניפגש מחר באזור קיסריה?"),
+            ("outbound", "מתאים."),
+            ("outbound", "תשלחי לי כתובת ושעה ונקבע."),
+        ],
+        expected=WaitingForMeDecision.NOT_WAITING_FOR_ME,
+        notes=(
+            "Persistence invariant corresponding to the 24h snapshot. "
+            "With the current eval harness this sends the same semantic input as soc-08; "
+            "the elapsed-time behavior is better covered by a state/integration test."
+        ),
+    ),
+]
+
+
+# Union of all cases — kept for backward compatibility.
+EVAL_CASES: list[EvalCase] = SANITY_CASES + SOC_CASES
+

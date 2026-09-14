@@ -25,3 +25,6 @@ htmlcov/
 
 # Local env
 .env
+
+# Evaluation run results (per-run JSON + Markdown)
+tests/evaluation/results/

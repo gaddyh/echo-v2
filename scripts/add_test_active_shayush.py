@@ -1,10 +1,10 @@
-"""Create a test active waiting-for-me item for שיוש and issue a waiting-list link.
+"""Create test active waiting-for-me items for שיוש + a dummy, and issue a waiting-list link.
 
 Usage:
     .venv/bin/python scripts/add_test_active_shayush.py
 
-Reads DATABASE_URL from .env. Inserts:
-- 1 chat (activity_version=1, chat_name=שיוש)
+Reads DATABASE_URL from .env. Inserts for each contact:
+- 1 chat (activity_version=1, chat_name=...)
 - 1 waiting_for_me_result (decision=waiting_for_me)
 - 1 waiting_for_me_active row (target_version=1)
 - 1 waiting_list_session (token) for the user
@@ -25,10 +25,23 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 USER_ID = "bd1c584a-0d44-45c4-ac61-26e2b7415d5b"
-CHAT_ID = "972512217037@c.us"
-CHAT_NAME = "שיוש"
-LAST_TEXT = "היי, מתי נדבר?"
 BASE_URL = "https://i-me.onrender.com"
+
+# Contacts to add as active waiting items.
+CONTACTS = [
+    {
+        "chat_id": "972512217037@c.us",
+        "chat_name": "שיוש",
+        "last_text": "היי, מתי נדבר?",
+        "summary": "שיוש שואל מתי תדברו",
+    },
+    {
+        "chat_id": "972500000099@c.us",
+        "chat_name": "דמי אבירם",
+        "last_text": "שלחתי לך את המסמכים, תכתוב כשתראה",
+        "summary": "דמי שלח מסמכים ומחכה לאישור",
+    },
+]
 
 
 async def main() -> None:
@@ -50,59 +63,72 @@ async def main() -> None:
             print(f"ERROR: user {USER_ID} not found")
             return
 
-        # 1. Upsert chat row (activity_version=1).
-        await conn.execute(
-            text(
-                "INSERT INTO chats (user_id, chat_id, chat_name, "
-                "activity_version, last_message_at, last_direction, "
-                "next_analysis_at, last_processed_version) "
-                "VALUES (:uid, :cid, :cname, 1, :now, 'inbound', NULL, 1) "
-                "ON CONFLICT (user_id, chat_id) DO UPDATE SET "
-                "activity_version = 1, "
-                "chat_name = :cname, "
-                "last_message_at = :now, "
-                "last_direction = 'inbound', "
-                "next_analysis_at = NULL, "
-                "last_processed_version = 1"
-            ),
-            {"uid": USER_ID, "cid": CHAT_ID, "cname": CHAT_NAME, "now": now},
-        )
+        for c in CONTACTS:
+            chat_id = c["chat_id"]
+            chat_name = c["chat_name"]
+            last_text = c["last_text"]
+            summary = c["summary"]
 
-        # 2. Insert a waiting_for_me_result.
-        result_id = str(uuid.uuid4())
-        await conn.execute(
-            text(
-                "INSERT INTO waiting_for_me_results "
-                "(id, user_id, chat_id, target_version, decision, reason, summary) "
-                "VALUES (:id, :uid, :cid, 1, 'waiting_for_me', :reason, :summary)"
-            ),
-            {
-                "id": result_id,
-                "uid": USER_ID,
-                "cid": CHAT_ID,
-                "reason": f"Test: {LAST_TEXT}",
-                "summary": "שיוש שואל מתי תדברו",
-            },
-        )
+            # 1. Upsert chat row (activity_version=1).
+            await conn.execute(
+                text(
+                    "INSERT INTO chats (user_id, chat_id, chat_name, "
+                    "activity_version, last_message_at, last_direction, "
+                    "next_analysis_at, last_processed_version) "
+                    "VALUES (:uid, :cid, :cname, 1, :now, 'inbound', NULL, 1) "
+                    "ON CONFLICT (user_id, chat_id) DO UPDATE SET "
+                    "activity_version = 1, "
+                    "chat_name = :cname, "
+                    "last_message_at = :now, "
+                    "last_direction = 'inbound', "
+                    "next_analysis_at = NULL, "
+                    "last_processed_version = 1"
+                ),
+                {"uid": USER_ID, "cid": chat_id, "cname": chat_name, "now": now},
+            )
 
-        # 3. Delete any existing active row for this chat, then insert.
-        await conn.execute(
-            text(
-                "DELETE FROM waiting_for_me_active "
-                "WHERE user_id = :uid AND chat_id = :cid"
-            ),
-            {"uid": USER_ID, "cid": CHAT_ID},
-        )
-        await conn.execute(
-            text(
-                "INSERT INTO waiting_for_me_active "
-                "(id, user_id, chat_id, target_version, result_id, waiting_since) "
-                "VALUES (gen_random_uuid(), :uid, :cid, 1, :rid, :now)"
-            ),
-            {"uid": USER_ID, "cid": CHAT_ID, "rid": result_id, "now": now},
-        )
+            # 2. Delete any existing active + result rows for this chat, then insert fresh.
+            await conn.execute(
+                text(
+                    "DELETE FROM waiting_for_me_active "
+                    "WHERE user_id = :uid AND chat_id = :cid"
+                ),
+                {"uid": USER_ID, "cid": chat_id},
+            )
+            await conn.execute(
+                text(
+                    "DELETE FROM waiting_for_me_results "
+                    "WHERE user_id = :uid AND chat_id = :cid"
+                ),
+                {"uid": USER_ID, "cid": chat_id},
+            )
+            result_id = str(uuid.uuid4())
+            await conn.execute(
+                text(
+                    "INSERT INTO waiting_for_me_results "
+                    "(id, user_id, chat_id, target_version, decision, reason, summary) "
+                    "VALUES (:id, :uid, :cid, 1, 'waiting_for_me', :reason, :summary)"
+                ),
+                {
+                    "id": result_id,
+                    "uid": USER_ID,
+                    "cid": chat_id,
+                    "reason": f"Test: {last_text}",
+                    "summary": summary,
+                },
+            )
 
-        print(f"Added: {CHAT_NAME} ({CHAT_ID}) → result={result_id}")
+            # 3. Insert a fresh active row.
+            await conn.execute(
+                text(
+                    "INSERT INTO waiting_for_me_active "
+                    "(id, user_id, chat_id, target_version, result_id, waiting_since) "
+                    "VALUES (gen_random_uuid(), :uid, :cid, 1, :rid, :now)"
+                ),
+                {"uid": USER_ID, "cid": chat_id, "rid": result_id, "now": now},
+            )
+
+            print(f"Added: {chat_name} ({chat_id}) → result={result_id}")
 
         # 4. Issue a waiting-list session token.
         raw_token = secrets.token_urlsafe(32)

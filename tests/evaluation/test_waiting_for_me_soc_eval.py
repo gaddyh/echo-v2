@@ -1,27 +1,20 @@
-"""Evaluation harness for the WaitingForMe analyzer.
+"""Evaluation harness for the SOC family cases.
 
-Runs the labeled cases in :mod:`tests.evaluation.waiting_for_me_cases`
+Runs the labeled cases in :mod:`tests.evaluation.waiting_for_me_soc_cases`
 against the real LLM API and reports accuracy, confusion matrix, and
-per-case results.
+per-case results — same rich output as the main eval harness.
 
 This is NOT part of the normal test suite. It only runs when:
   - ``OPENAI_API_KEY`` is set, AND
-  - the ``eval`` marker is selected: ``pytest -m eval``
+  - the ``eval`` marker is selected: ``pytest -m eval_soc -v -s``
 
 Usage::
 
-    # Run the full evaluation
-    pytest -m eval -v -s
-
-    # Run only WAITING_FOR_ME cases
-    pytest -m eval -v -s -k wfm
+    # Run only the SOC family evaluation
+    pytest -m eval_soc -v -s
 
     # Override accuracy threshold (default 70%)
-    EVAL_MIN_ACCURACY=0.8 pytest -m eval -v -s
-
-The harness asserts a minimum accuracy threshold but does NOT assert
-per-case pass/fail (LLMs are non-deterministic). The printed report shows
-which cases the LLM got right or wrong.
+    EVAL_SOC_FAMILY_MIN_ACCURACY=0.8 pytest -m eval_soc -v -s
 """
 
 from __future__ import annotations
@@ -39,15 +32,14 @@ from echo_v2.services.waiting_for_me_analyzer import (
     LLMWaitingForMeAnalyzer,
 )
 from tests.evaluation.eval_results import CaseResult, save_eval_run
-from tests.evaluation.waiting_for_me_cases import (
-    EVAL_CASES,
-    SANITY_CASES,
-    SOC_CASES,
-    EvalCase,
+from tests.evaluation.waiting_for_me_cases import EvalCase
+from tests.evaluation.waiting_for_me_soc_cases import (
+    SOC_DEV_CASES,
+    SOC_TEST_CASES,
 )
 
 pytestmark = [
-    pytest.mark.eval,
+    pytest.mark.eval_soc,
     pytest.mark.skipif(
         not os.environ.get("OPENAI_API_KEY"),
         reason="OPENAI_API_KEY not set — eval requires real API access",
@@ -265,13 +257,22 @@ def _print_table_rows(rows):
     print("  " + "".join(parts))
 
 
-async def _run_eval_suite(
+async def _run_split(
     analyzer: LLMWaitingForMeAnalyzer,
     cases: list[EvalCase],
     label: str,
-    min_accuracy: float,
+    min_accuracy: float | None,
 ) -> None:
-    """Run a set of eval cases, print a rich report, save results, and assert accuracy."""
+    """Run a split of SOC cases, print a rich report, save results, and
+    optionally assert accuracy.
+
+    Args:
+        analyzer: The LLM analyzer fixture.
+        cases: The cases to run.
+        label: Human-readable label for the report and saved files.
+        min_accuracy: If not ``None``, assert accuracy >= this threshold.
+            Use ``None`` for the train split (no assertion).
+    """
     case_results: list[CaseResult] = []
     for case in cases:
         cr = await _run_case(analyzer, case)
@@ -298,7 +299,6 @@ async def _run_eval_suite(
     print(f"  WaitingForMe Evaluation Report — {label}")
     print("=" * 70)
 
-    # Convert to tuples for the print functions (which expect (case, actual, error)).
     tuple_results = [(cr.case, cr.actual, cr.error) for cr in case_results]
     _print_summary_table(tuple_results, correct, errors, accuracy)
     _print_confusion_matrix(matrix)
@@ -308,51 +308,46 @@ async def _run_eval_suite(
     # Save results to disk.
     model = os.environ.get("LLM_MODEL_NAME", "gpt-4.1")
     prompt_version = os.environ.get("WFM_PROMPT_VERSION", "v1")
+    safe_label = label.lower().replace(" ", "_")
     run_id = save_eval_run(
         label, model, case_results, prompt_version=prompt_version,
     )
     print(f"\n  Results saved: run_id={run_id} (prompt={prompt_version})")
-    print(f"  → tests/evaluation/results/{run_id}_{label.lower().replace(' ', '_')}/")
+    print(f"  → tests/evaluation/results/{run_id}_{safe_label}/")
 
-    assert accuracy >= min_accuracy, (
-        f"{label} accuracy {accuracy:.1%} below threshold {min_accuracy:.1%}"
-    )
+    if min_accuracy is not None:
+        assert accuracy >= min_accuracy, (
+            f"{label} accuracy {accuracy:.1%} below threshold {min_accuracy:.1%}"
+        )
 
 
-@pytest.mark.eval
-async def test_sanity_eval(analyzer):
-    """Run the sanity (baseline/regression) cases.
+@pytest.mark.eval_soc
+async def test_soc_dev_eval(analyzer):
+    """Run the DEV split (40 hard cases).
 
-    These are the original 40 easy cases: direct questions, closings,
-    and simple context. They serve as a regression baseline — a drop
-    here signals a fundamental regression.
+    Cases we freely inspect and use to improve the prompt. No accuracy
+    threshold is asserted — the dev split is for inspection and iteration,
+    not gating.
 
-    Threshold: 70% (default). Override with ``EVAL_SANITY_MIN_ACCURACY``.
+    Run with::
+
+        pytest -m eval_soc -v -s -k dev_eval
     """
-    min_accuracy = float(os.environ.get("EVAL_SANITY_MIN_ACCURACY", "0.7"))
-    await _run_eval_suite(analyzer, SANITY_CASES, "Sanity", min_accuracy)
+    await _run_split(analyzer, SOC_DEV_CASES, "SOC Dev", min_accuracy=None)
 
 
-@pytest.mark.eval
-async def test_soc_eval(analyzer):
-    """Run the SOC (state-transition / open-commitment) cases.
+@pytest.mark.eval_soc
+async def test_soc_test_eval(analyzer):
+    """Run the TEST split (40 hard cases).
 
-    These 9 cases test the edge that matters for Echo: tracking an
-    obligation across turns rather than classifying only the final
-    message. This is the harder set and the primary quality signal.
+    Cases we score but do not use to decide prompt changes. Run only at
+    milestones to get an unbiased quality signal.
 
-    Threshold: 70% (default). Override with ``EVAL_SOC_MIN_ACCURACY``.
+    Threshold: 70% (default). Override with ``EVAL_SOC_FAMILY_MIN_ACCURACY``.
+
+    Run with::
+
+        pytest -m eval_soc -v -s -k test_eval
     """
-    min_accuracy = float(os.environ.get("EVAL_SOC_MIN_ACCURACY", "0.7"))
-    await _run_eval_suite(analyzer, SOC_CASES, "SOC", min_accuracy)
-
-
-@pytest.mark.eval
-async def test_evaluation_summary(analyzer):
-    """Run all eval cases (sanity + SOC) and report overall accuracy.
-
-    Kept for backward compatibility. The sanity and SOC tests above
-    give finer-grained signal.
-    """
-    min_accuracy = float(os.environ.get("EVAL_MIN_ACCURACY", "0.7"))
-    await _run_eval_suite(analyzer, EVAL_CASES, "All", min_accuracy)
+    min_accuracy = float(os.environ.get("EVAL_SOC_FAMILY_MIN_ACCURACY", "0.7"))
+    await _run_split(analyzer, SOC_TEST_CASES, "SOC Test", min_accuracy=min_accuracy)
