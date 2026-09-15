@@ -45,3 +45,30 @@ async def test_list_all_ordered_oldest_first(waitlist_repo):
 
     signups = await waitlist_repo.list_all()
     assert [s.name for s in signups] == ["ראשונה", "שני", "שלישית"]
+
+
+async def test_add_with_willingness_to_pay(waitlist_repo):
+    inserted = await waitlist_repo.add(
+        name="דנה",
+        phone_number="+972501234567",
+        willingness_to_pay="20_50",
+    )
+    assert inserted is True
+    signups = await waitlist_repo.list_all()
+    assert len(signups) == 1
+    assert signups[0].willingness_to_pay == "20_50"
+
+
+async def test_add_without_willingness_to_pay_defaults_null(waitlist_repo):
+    await waitlist_repo.add(name="דנה", phone_number="+972501234567")
+    signups = await waitlist_repo.list_all()
+    assert signups[0].willingness_to_pay is None
+
+
+async def test_count_returns_total_signups(waitlist_repo):
+    assert await waitlist_repo.count() == 0
+    await waitlist_repo.add(name="ראשונה", phone_number="+972501111111")
+    await waitlist_repo.add(name="שני", phone_number="+972502222222")
+    # Duplicate — should not increment count.
+    await waitlist_repo.add(name="שכפול", phone_number="+972501111111")
+    assert await waitlist_repo.count() == 2

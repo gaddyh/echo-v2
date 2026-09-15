@@ -947,6 +947,7 @@ class WaitlistSignupRow(Base):
     )
     name: Mapped[str] = mapped_column(Text, nullable=False)
     phone_number: Mapped[str] = mapped_column(Text, nullable=False)
+    willingness_to_pay: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True),
         nullable=False,
@@ -955,4 +956,8 @@ class WaitlistSignupRow(Base):
 
     __table_args__ = (
         UniqueConstraint("phone_number", name="uq_waitlist_phone"),
+        CheckConstraint(
+            "willingness_to_pay IN ('free', 'under_20', '20_50', '50_plus')",
+            name="waitlist_wtp_check",
+        ),
     )

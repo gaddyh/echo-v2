@@ -126,3 +126,78 @@ async def test_waitlist_rate_limit():
             "/api/waitlist", json={"name": "דנה", "phone": "0509999999"},
         )
     assert resp.status_code == 429
+
+
+# --- WTP, counter, OG image --------------------------------------------------
+
+
+async def test_waitlist_signup_accepts_wtp():
+    app, repo = _make_app()
+    async with _client(app) as client:
+        resp = await client.post(
+            "/api/waitlist",
+            json={"name": "דנה", "phone": "0546610653", "wtp": "20_50"},
+        )
+    assert resp.status_code == 200
+    signups = await repo.list_all()
+    assert signups[0].willingness_to_pay == "20_50"
+
+
+async def test_waitlist_signup_without_wtp_defaults_null():
+    app, repo = _make_app()
+    async with _client(app) as client:
+        resp = await client.post(
+            "/api/waitlist",
+            json={"name": "דנה", "phone": "0546610653"},
+        )
+    assert resp.status_code == 200
+    signups = await repo.list_all()
+    assert signups[0].willingness_to_pay is None
+
+
+async def test_waitlist_signup_rejects_invalid_wtp():
+    app, _ = _make_app()
+    async with _client(app) as client:
+        resp = await client.post(
+            "/api/waitlist",
+            json={"name": "דנה", "phone": "0546610653", "wtp": "bogus"},
+        )
+    assert resp.status_code == 422
+
+
+async def test_landing_page_has_og_tags_and_scarcity():
+    app, _ = _make_app()
+    async with _client(app) as client:
+        resp = await client.get("/")
+    assert resp.status_code == 200
+    html = resp.text
+    assert 'og:title' in html
+    assert 'og:image' in html
+    assert '{{BASE_URL}}' not in html  # template substituted
+    # Scarcity messaging is always present.
+    assert "50 מקומות" in html
+    # Counter is hidden below the display threshold.
+    assert "{{COUNTER}}" not in html
+    assert "כבר ברשימה" not in html
+
+
+async def test_landing_page_shows_counter_above_threshold():
+    """When the list crosses the threshold, the live counter appears."""
+    from echo_v2.app import landing_routes
+
+    app, repo = _make_app()
+    # Stuff the repo past the threshold.
+    for i in range(landing_routes._COUNTER_DISPLAY_THRESHOLD):
+        await repo.add(name=f"u{i}", phone_number=f"+97250100{i:04d}")
+    async with _client(app) as client:
+        resp = await client.get("/")
+    assert "כבר ברשימה" in resp.text
+
+
+async def test_og_image_endpoint_serves_png():
+    app, _ = _make_app()
+    async with _client(app) as client:
+        resp = await client.get("/og.png")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "image/png"
+    assert resp.content[:8] == b"\x89PNG\r\n\x1a\n"

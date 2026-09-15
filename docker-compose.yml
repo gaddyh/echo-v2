@@ -8,7 +8,7 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      echo_pgdata:/var/lib/postgresql/data
+      - echo_pgdata:/var/lib/postgresql/data
 
 volumes:
   echo_pgdata:

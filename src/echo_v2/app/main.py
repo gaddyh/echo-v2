@@ -495,7 +495,10 @@ def create_app() -> FastAPI:
     # Public landing page + waitlist signup.
     from echo_v2.app.landing_routes import build_landing_router
 
-    landing_router = build_landing_router(waitlist_repo=repos.waitlist)
+    landing_router = build_landing_router(
+        waitlist_repo=repos.waitlist,
+        base_url=webhook_base_url,
+    )
     app.include_router(landing_router)
 
     @app.get("/health")

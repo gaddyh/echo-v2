@@ -16,8 +16,20 @@ LANDING_PAGE = r"""<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Echo — מי באמת מחכה לך בוואטסאפ?</title>
-<meta name="description" content="Echo עוקב אחרי השיחות שלך בוואטסאפ ומזהה מי מחכה לתשובה ממך — כדי ששום דבר לא ייפול בין הכיסאות.">
+<title>Echo — איזה לקוח מחכה לך עכשיו בוואטסאפ?</title>
+<meta name="description" content="Echo מזהה אילו לקוחות מחכים לתשובה ממך בוואטסאפ — לפני שזה עולה לך בעסקה. הצטרפו לרשימת ההמתנה לגישה מוקדמת.">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Echo — איזה לקוח מחכה לך עכשיו בוואטסאפ?">
+<meta property="og:description" content="Echo מזהה אילו לקוחות מחכים לתשובה ממך בוואטסאפ — לפני שזה עולה לך בעסקה. הצטרפו לרשימת ההמתנה.">
+<meta property="og:url" content="{{BASE_URL}}/">
+<meta property="og:image" content="{{BASE_URL}}/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:locale" content="he_IL">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Echo — איזה לקוח מחכה לך עכשיו בוואטסאפ?">
+<meta name="twitter:description" content="Echo מזהה אילו לקוחות מחכים לתשובה ממך בוואטסאפ.">
+<meta name="twitter:image" content="{{BASE_URL}}/og.png">
 <style>
 :root {
   --bg: #f0f2f5;
@@ -391,6 +403,46 @@ body {
 }
 .waitlist button:hover { background: var(--primary-hover); }
 .waitlist button:disabled { opacity: 0.6; cursor: not-allowed; }
+.waitlist .scarcity {
+  display: inline-block;
+  background: #fff4e5;
+  color: #b45309;
+  border: 1px solid #fcd9a8;
+  border-radius: 14px;
+  padding: 3px 12px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  margin-bottom: 10px;
+}
+.waitlist .counter {
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  margin-bottom: 8px;
+}
+.waitlist .wtp-label {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  margin: 6px 0 6px;
+  text-align: right;
+}
+.waitlist .wtp-chips { display: flex; gap: 6px; margin-bottom: 10px; }
+.waitlist .wtp-chip {
+  flex: 1;
+  padding: 8px 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  font-size: 0.8rem;
+  color: var(--text);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  text-align: center;
+}
+.waitlist .wtp-chip.selected {
+  background: var(--primary);
+  color: white;
+  border-color: var(--primary);
+}
 .waitlist .error {
   display: none;
   color: var(--danger);
@@ -419,16 +471,16 @@ body {
 <section class="hero">
   <div class="container">
     <div class="logo">ECHO</div>
-    <h1>מי באמת מחכה לך בוואטסאפ?</h1>
-    <p class="sub">שאלה שלא ענית עליה. הבטחה ששכחת. לקוח שממתין כבר יומיים. Echo מזהה את השיחות שמחכות לך — לפני שהן נופלות בין הכיסאות.</p>
+    <h1>איזה לקוח מחכה לך עכשיו בוואטסאפ?</h1>
+    <p class="sub">הצעת מחיר שלא יצאה. פרויקט שנתקע כי שכחת לענות. לקוח שממתין יומיים ומתחיל לחפש מישהו אחר. Echo מזהה את השיחות שמחכות לך — לפני שהן עולות לך בעסקה.</p>
     <a class="cta" href="#waitlist">אני רוצה גישה מוקדמת</a>
   </div>
 </section>
 
 <section class="pain">
   <div class="container">
-    <h2>עשרות שיחות ביום. מי נשאר בלי תשובה?</h2>
-    <p>וואטסאפ לא מזכיר לך. ההודעה הלא־נענית צוללת למטה, ומי שחיכה לך — עדיין מחכה.</p>
+    <h2>כשהעסק שלך רץ על וואטסאפ, כל הודעה שנשכחת היא כסף</h2>
+    <p>פרילנסרים ועצמאים מנהלים עשרות שיחות לקוח ביום באותו מקום שבו רצה הקבוצה המשפחתית. וואטסאפ לא מזכיר לך מי מחכה — ההודעה צוללת למטה, והלקוח מסיק מסקנות.</p>
   </div>
 </section>
 
@@ -537,11 +589,20 @@ body {
   <div class="container">
     <div class="form-card">
       <div id="form-view">
+        <div class="scarcity">⏳ הגל הראשון מוגבל ל־50 מקומות</div>
+        {{COUNTER}}
         <h2>רשימת המתנה לגישה מוקדמת</h2>
         <p class="form-sub">אנחנו פותחים את Echo בהדרגה. השאירו שם וטלפון ונחזור אליכם בוואטסאפ.</p>
         <form id="waitlist-form">
           <input type="text" id="wl-name" placeholder="שם מלא" maxlength="80" autocomplete="name" required>
           <input type="tel" id="wl-phone" placeholder="מספר וואטסאפ (למשל 050-1234567)" maxlength="20" autocomplete="tel" required>
+          <div class="wtp-label">כמה היית משלם/ת על זה בחודש? (לא חובה)</div>
+          <div class="wtp-chips" id="wtp-chips">
+            <span class="wtp-chip" data-wtp="free">חינם</span>
+            <span class="wtp-chip" data-wtp="under_20">עד 20 ₪</span>
+            <span class="wtp-chip" data-wtp="20_50">20–50 ₪</span>
+            <span class="wtp-chip" data-wtp="50_plus">50+ ₪</span>
+          </div>
           <button type="submit" id="wl-submit">שריינו לי מקום</button>
         </form>
         <div class="error" id="wl-error"></div>
@@ -562,6 +623,22 @@ const form = document.getElementById("waitlist-form");
 const errEl = document.getElementById("wl-error");
 const submitBtn = document.getElementById("wl-submit");
 
+// Optional willingness-to-pay chips: single select, tap again to clear.
+let selectedWtp = null;
+document.querySelectorAll("#wtp-chips .wtp-chip").forEach(chip => {
+  chip.addEventListener("click", () => {
+    const value = chip.dataset.wtp;
+    if (selectedWtp === value) {
+      selectedWtp = null;
+      chip.classList.remove("selected");
+      return;
+    }
+    selectedWtp = value;
+    document.querySelectorAll("#wtp-chips .wtp-chip").forEach(c => c.classList.remove("selected"));
+    chip.classList.add("selected");
+  });
+});
+
 form.addEventListener("submit", async (e) => {
   e.preventDefault();
   errEl.style.display = "none";
@@ -572,10 +649,12 @@ form.addEventListener("submit", async (e) => {
   submitBtn.disabled = true;
   submitBtn.textContent = "רק רגע...";
   try {
+    const payload = {name: name, phone: phone};
+    if (selectedWtp) payload.wtp = selectedWtp;
     const resp = await fetch("/api/waitlist", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({name: name, phone: phone}),
+      body: JSON.stringify(payload),
     });
     if (resp.status === 422) {
       showError("המספר לא נראה תקין — נסו שוב עם מספר וואטסאפ ישראלי.");

@@ -1,7 +1,10 @@
 """FastAPI routes for the public landing page.
 
-* ``GET /`` — serves the landing page HTML.
-* ``POST /api/waitlist`` — waitlist signup (name + phone).
+* ``GET /`` — serves the landing page HTML (with a live signup counter
+  injected server-side, shown only above a display threshold).
+* ``GET /og.png`` — Open Graph share image for WhatsApp/social previews.
+* ``POST /api/waitlist`` — waitlist signup (name + phone + optional
+  willingness-to-pay signal).
 
 Security:
 * Phone numbers are normalized to canonical E.164 before storage; invalid
@@ -18,9 +21,11 @@ from __future__ import annotations
 
 import logging
 import time
+from pathlib import Path
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field, field_validator
 
 from echo_v2.app.landing_page import LANDING_PAGE
@@ -35,12 +40,21 @@ _logger = logging.getLogger("echo_v2.app.landing_routes")
 _RATE_LIMIT_MAX = 10
 _RATE_LIMIT_WINDOW = 60  # seconds
 
+# The live counter is shown only once the list is at least this long —
+# an empty counter hurts conversion more than no counter.
+_COUNTER_DISPLAY_THRESHOLD = 25
+
+_OG_IMAGE_PATH = Path(__file__).parent / "static" / "og.png"
+
 
 class WaitlistRequest(BaseModel):
     """Request body for POST /api/waitlist."""
 
     name: str = Field(..., min_length=1, max_length=80, description="Full name")
     phone: str = Field(..., min_length=6, max_length=20, description="Phone number")
+    wtp: Literal["free", "under_20", "20_50", "50_plus"] | None = Field(
+        None, description="Optional willingness-to-pay signal"
+    )
 
     @field_validator("name")
     @classmethod
@@ -51,11 +65,16 @@ class WaitlistRequest(BaseModel):
         return v
 
 
-def build_landing_router(*, waitlist_repo: WaitlistRepository) -> APIRouter:
+def build_landing_router(
+    *,
+    waitlist_repo: WaitlistRepository,
+    base_url: str = "",
+) -> APIRouter:
     """Build the landing page router.
 
     Args:
         waitlist_repo: The :class:`WaitlistRepository` for signups.
+        base_url: Public base URL (for absolute Open Graph URLs).
     """
     router = APIRouter()
 
@@ -80,13 +99,35 @@ def build_landing_router(*, waitlist_repo: WaitlistRepository) -> APIRouter:
             "Content-Security-Policy": (
                 "default-src 'self'; "
                 "script-src 'unsafe-inline' 'self'; "
-                "style-src 'unsafe-inline' 'self'"
+                "style-src 'unsafe-inline' 'self'; "
+                "img-src 'self' data:"
             ),
         }
 
     @router.get("/", response_class=HTMLResponse)
     async def landing() -> HTMLResponse:
-        return HTMLResponse(content=LANDING_PAGE, headers=_security_headers())
+        count = await waitlist_repo.count()
+        counter_html = ""
+        if count >= _COUNTER_DISPLAY_THRESHOLD:
+            counter_html = (
+                f'<div class="counter">🔥 {count} כבר ברשימה</div>'
+            )
+        html = (
+            LANDING_PAGE
+            .replace("{{COUNTER}}", counter_html)
+            .replace("{{BASE_URL}}", base_url.rstrip("/"))
+        )
+        return HTMLResponse(content=html, headers=_security_headers())
+
+    @router.get("/og.png")
+    async def og_image() -> FileResponse:
+        if not _OG_IMAGE_PATH.exists():
+            raise HTTPException(status_code=404, detail="not found")
+        return FileResponse(
+            _OG_IMAGE_PATH,
+            media_type="image/png",
+            headers={"Cache-Control": "public, max-age=86400"},
+        )
 
     @router.post("/api/waitlist")
     async def waitlist_signup(body: WaitlistRequest, request: Request) -> JSONResponse:
@@ -99,7 +140,11 @@ def build_landing_router(*, waitlist_repo: WaitlistRepository) -> APIRouter:
         except PhoneParseError:
             raise HTTPException(status_code=422, detail="invalid phone number")
 
-        inserted = await waitlist_repo.add(name=body.name, phone_number=phone_e164)
+        inserted = await waitlist_repo.add(
+            name=body.name,
+            phone_number=phone_e164,
+            willingness_to_pay=body.wtp,
+        )
         # Duplicates get the same response as new signups — the endpoint
         # must not leak whether a number is already on the list.
         if inserted:
