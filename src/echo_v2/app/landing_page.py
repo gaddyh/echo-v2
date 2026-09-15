@@ -599,9 +599,10 @@ body {
           <div class="wtp-label">כמה היית משלם/ת על זה בחודש? (לא חובה)</div>
           <div class="wtp-chips" id="wtp-chips">
             <span class="wtp-chip" data-wtp="free">חינם</span>
-            <span class="wtp-chip" data-wtp="under_20">עד 20 ₪</span>
-            <span class="wtp-chip" data-wtp="20_50">20–50 ₪</span>
-            <span class="wtp-chip" data-wtp="50_plus">50+ ₪</span>
+            <span class="wtp-chip" data-wtp="under_30">עד 30 ₪</span>
+            <span class="wtp-chip" data-wtp="30_70">30–70 ₪</span>
+            <span class="wtp-chip" data-wtp="70_120">70–120 ₪</span>
+            <span class="wtp-chip" data-wtp="120_plus">120+ ₪</span>
           </div>
           <button type="submit" id="wl-submit">שריינו לי מקום</button>
         </form>

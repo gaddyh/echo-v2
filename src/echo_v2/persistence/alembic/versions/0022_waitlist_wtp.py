@@ -5,7 +5,7 @@ Revises: 0021_waitlist_signups
 Create Date: 2026-09-15
 
 Optional willingness-to-pay signal collected at signup ("how much would
-you pay per month?"): ``free`` / ``under_20`` / ``20_50`` / ``50_plus``.
+you pay per month?"): ``free`` / ``under_30`` / ``30_70`` / ``70_120`` / ``120_plus``.
 Nullable — the question is optional and skippable.
 """
 
@@ -26,7 +26,7 @@ def upgrade() -> None:
     op.create_check_constraint(
         "waitlist_wtp_check",
         "waitlist_signups",
-        "willingness_to_pay IN ('free', 'under_20', '20_50', '50_plus')",
+        "willingness_to_pay IN ('free', 'under_30', '30_70', '70_120', '120_plus')",
     )
 
 

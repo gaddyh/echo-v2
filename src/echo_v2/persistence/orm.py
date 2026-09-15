@@ -957,7 +957,7 @@ class WaitlistSignupRow(Base):
     __table_args__ = (
         UniqueConstraint("phone_number", name="uq_waitlist_phone"),
         CheckConstraint(
-            "willingness_to_pay IN ('free', 'under_20', '20_50', '50_plus')",
+            "willingness_to_pay IN ('free', 'under_30', '30_70', '70_120', '120_plus')",
             name="waitlist_wtp_check",
         ),
     )

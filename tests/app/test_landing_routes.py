@@ -136,11 +136,11 @@ async def test_waitlist_signup_accepts_wtp():
     async with _client(app) as client:
         resp = await client.post(
             "/api/waitlist",
-            json={"name": "דנה", "phone": "0546610653", "wtp": "20_50"},
+            json={"name": "דנה", "phone": "0546610653", "wtp": "30_70"},
         )
     assert resp.status_code == 200
     signups = await repo.list_all()
-    assert signups[0].willingness_to_pay == "20_50"
+    assert signups[0].willingness_to_pay == "30_70"
 
 
 async def test_waitlist_signup_without_wtp_defaults_null():

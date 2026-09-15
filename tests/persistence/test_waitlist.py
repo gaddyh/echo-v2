@@ -51,12 +51,12 @@ async def test_add_with_willingness_to_pay(waitlist_repo):
     inserted = await waitlist_repo.add(
         name="דנה",
         phone_number="+972501234567",
-        willingness_to_pay="20_50",
+        willingness_to_pay="30_70",
     )
     assert inserted is True
     signups = await waitlist_repo.list_all()
     assert len(signups) == 1
-    assert signups[0].willingness_to_pay == "20_50"
+    assert signups[0].willingness_to_pay == "30_70"
 
 
 async def test_add_without_willingness_to_pay_defaults_null(waitlist_repo):

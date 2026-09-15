@@ -52,7 +52,7 @@ class WaitlistRequest(BaseModel):
 
     name: str = Field(..., min_length=1, max_length=80, description="Full name")
     phone: str = Field(..., min_length=6, max_length=20, description="Phone number")
-    wtp: Literal["free", "under_20", "20_50", "50_plus"] | None = Field(
+    wtp: Literal["free", "under_30", "30_70", "70_120", "120_plus"] | None = Field(
         None, description="Optional willingness-to-pay signal"
     )
 

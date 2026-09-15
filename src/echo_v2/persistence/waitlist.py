@@ -5,8 +5,8 @@ same phone is a silent no-op (``add`` returns ``False``), so the landing
 page can always show "you're on the list" without leaking whether the
 number was already registered.
 
-An optional ``willingness_to_pay`` signal (``free`` / ``under_20`` /
-``20_50`` / ``50_plus``) is captured at signup for demand validation.
+An optional ``willingness_to_pay`` signal (``free`` / ``under_30`` /
+``30_70`` / ``70_120`` / ``120_plus``) is captured at signup for demand validation.
 """
 
 from __future__ import annotations
