@@ -5,7 +5,7 @@ Revises: 0021_waitlist_signups
 Create Date: 2026-09-15
 
 Optional willingness-to-pay signal collected at signup ("how much would
-you pay per month?"): ``free`` / ``under_30`` / ``30_70`` / ``70_120`` / ``120_plus``.
+you pay per month?"): ``free`` / ``under_20`` / ``20_50`` / ``50_plus``.
 Nullable — the question is optional and skippable.
 """
 
