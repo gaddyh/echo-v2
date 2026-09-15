@@ -190,6 +190,10 @@ class LLMWaitingForMeAnalyzer:
         self._model = model
         self._system_prompt = get_prompt(prompt_version)
         self._prompt_version = prompt_version
+        # GPT-5+ reasoning models only support the default temperature (1)
+        # and consume completion tokens for reasoning, so they need a larger
+        # budget than the 200 tokens that suffice for gpt-4.x.
+        self._is_reasoning_model = model.startswith(("gpt-5", "gpt-6", "o"))
 
     @traceable(
         name="wfm.llm_analyze",
@@ -229,16 +233,22 @@ class LLMWaitingForMeAnalyzer:
 
         user_msg = _build_user_message(conversation)
 
+        request_kwargs: dict[str, Any] = {
+            "model": self._model,
+            "messages": [
+                {"role": "system", "content": self._system_prompt},
+                {"role": "user", "content": user_msg},
+            ],
+        }
+        if self._is_reasoning_model:
+            # Default temperature only; leave room for reasoning tokens.
+            request_kwargs["max_completion_tokens"] = 4000
+        else:
+            request_kwargs["temperature"] = 0
+            request_kwargs["max_completion_tokens"] = 200
+
         try:
-            response = await self._client.chat.completions.create(
-                model=self._model,
-                messages=[
-                    {"role": "system", "content": self._system_prompt},
-                    {"role": "user", "content": user_msg},
-                ],
-                temperature=0,
-                max_completion_tokens=200,
-            )
+            response = await self._client.chat.completions.create(**request_kwargs)
         except Exception as exc:
             _logger.warning("WaitingForMe analyzer API error: %s", exc)
             raise AnalysisError(f"LLM request failed: {exc}") from exc
