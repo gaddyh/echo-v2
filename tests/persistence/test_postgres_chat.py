@@ -859,6 +859,161 @@ async def test_wfm_active_delete_returns_false_if_not_exists(wfm_active_repo, se
     assert deleted is False
 
 
+async def test_wfm_active_get_by_id_and_list_all(wfm_active_repo, session_factory):
+    """get_by_id resolves the surrogate ID; list_all_for_user returns all rows."""
+    user_id = await insert_user(session_factory)
+    result_id = await _seed_wfm_result(session_factory, user_id)
+
+    active_id = await wfm_active_repo.upsert(
+        user_id=user_id,
+        chat_id="chat-1@c.us",
+        target_version=1,
+        result_id=result_id,
+        waiting_since=datetime.now(timezone.utc),
+    )
+    row = await wfm_active_repo.get_by_id(active_id)
+    assert row is not None
+    assert row.chat_id == "chat-1@c.us"
+
+    missing = await wfm_active_repo.get_by_id(str(uuid.uuid4()))
+    assert missing is None
+
+    all_rows = await wfm_active_repo.list_all_for_user(user_id=user_id)
+    assert len(all_rows) == 1
+    assert all_rows[0].id == active_id
+
+
+async def test_wfm_active_acknowledge_and_snooze(wfm_active_repo, session_factory):
+    """acknowledge and snooze update the row; both return False when missing."""
+    user_id = await insert_user(session_factory)
+    result_id = await _seed_wfm_result(session_factory, user_id)
+    now = datetime.now(timezone.utc)
+
+    await wfm_active_repo.upsert(
+        user_id=user_id,
+        chat_id="chat-1@c.us",
+        target_version=1,
+        result_id=result_id,
+        waiting_since=now,
+    )
+    assert await wfm_active_repo.acknowledge(
+        user_id=user_id, chat_id="chat-1@c.us", acknowledged_at=now,
+    ) is True
+    assert await wfm_active_repo.snooze(
+        user_id=user_id, chat_id="chat-1@c.us", snoozed_until=now + timedelta(hours=1),
+    ) is True
+
+    row = await wfm_active_repo.get(user_id=user_id, chat_id="chat-1@c.us")
+    assert row.acknowledged_at is not None
+    assert row.snoozed_until is not None
+
+    assert await wfm_active_repo.acknowledge(
+        user_id=user_id, chat_id="missing@c.us", acknowledged_at=now,
+    ) is False
+    assert await wfm_active_repo.snooze(
+        user_id=user_id, chat_id="missing@c.us", snoozed_until=now,
+    ) is False
+
+
+async def test_wfm_active_expired_snoozes_and_clear(wfm_active_repo, session_factory):
+    """list_expired_snoozes finds past snoozes; clear_snooze resets them."""
+    user_id = await insert_user(session_factory)
+    result_id = await _seed_wfm_result(session_factory, user_id)
+    now = datetime.now(timezone.utc)
+
+    await wfm_active_repo.upsert(
+        user_id=user_id,
+        chat_id="chat-1@c.us",
+        target_version=1,
+        result_id=result_id,
+        waiting_since=now,
+    )
+    await wfm_active_repo.snooze(
+        user_id=user_id, chat_id="chat-1@c.us", snoozed_until=now - timedelta(minutes=5),
+    )
+
+    expired = await wfm_active_repo.list_expired_snoozes(now=now)
+    assert len(expired) == 1
+    assert expired[0].chat_id == "chat-1@c.us"
+
+    assert await wfm_active_repo.clear_snooze(
+        user_id=user_id, chat_id="chat-1@c.us",
+    ) is True
+    row = await wfm_active_repo.get(user_id=user_id, chat_id="chat-1@c.us")
+    assert row.snoozed_until is None
+    assert await wfm_active_repo.list_expired_snoozes(now=now) == []
+
+    assert await wfm_active_repo.clear_snooze(
+        user_id=user_id, chat_id="missing@c.us",
+    ) is False
+
+
+async def test_wfm_active_apply_if_version(wfm_active_repo, session_factory):
+    """apply_if_version mutates only when the version matches."""
+    user_id = await insert_user(session_factory)
+    result_id = await _seed_wfm_result(session_factory, user_id)
+    now = datetime.now(timezone.utc)
+
+    active_id = await wfm_active_repo.upsert(
+        user_id=user_id,
+        chat_id="chat-1@c.us",
+        target_version=1,
+        result_id=result_id,
+        waiting_since=now,
+    )
+    # Version mismatch — no mutation.
+    assert await wfm_active_repo.apply_if_version(
+        active_id=active_id,
+        user_id=user_id,
+        target_version=99,
+        mutate={"acknowledged_at": now},
+    ) is False
+    # Version match — mutation applied.
+    assert await wfm_active_repo.apply_if_version(
+        active_id=active_id,
+        user_id=user_id,
+        target_version=1,
+        mutate={"acknowledged_at": now},
+    ) is True
+    row = await wfm_active_repo.get_by_id(active_id)
+    assert row.acknowledged_at is not None
+
+
+async def test_wfm_result_get_by_id(session_factory, clean_db):
+    """PostgresWaitingForMeResultRepository.get_by_id round-trips a result."""
+    from echo_v2.domain.waiting_for_me import (
+        WaitingForMeDecision,
+        WaitingForMeResult,
+    )
+    from echo_v2.persistence.postgres_chat import PostgresWaitingForMeResultRepository
+
+    user_id = await insert_user(session_factory)
+    result_repo = PostgresWaitingForMeResultRepository(session_factory)
+
+    result_id = await result_repo.save(
+        user_id=user_id,
+        chat_id="chat-1@c.us",
+        result=WaitingForMeResult(
+            decision=WaitingForMeDecision.WAITING_FOR_ME,
+            confidence=0.8,
+            reason="test",
+            target_version=1,
+            model="gpt-4.1",
+            prompt_version="v1",
+            analyzer_version="2026-09-15.1",
+        ),
+    )
+    fetched = await result_repo.get_by_id(result_id)
+    assert fetched is not None
+    assert fetched.decision == WaitingForMeDecision.WAITING_FOR_ME
+    assert fetched.model == "gpt-4.1"
+    assert fetched.prompt_version == "v1"
+    assert fetched.analyzer_version == "2026-09-15.1"
+
+    missing = await result_repo.get_by_id(str(uuid.uuid4()))
+    assert missing is None
+
+
 async def test_wfm_active_list_active(wfm_active_repo, session_factory):
     user_id = await insert_user(session_factory)
     result_id_1 = await _seed_wfm_result(session_factory, user_id, chat_id="chat-1@c.us", version=5)
@@ -1123,6 +1278,68 @@ async def test_message_get_latest_inbound_returns_none_if_empty(session_factory,
     assert latest is None
 
 
+async def test_message_list_recent_for_chat(session_factory, clean_db):
+    """list_recent_for_chat returns the last N messages, chronological."""
+    from echo_v2.persistence.postgres_chat import PostgresMessageRepository
+
+    user_id = await insert_user(session_factory)
+    conn_id = await _seed_connection(session_factory, user_id)
+    message_repo = PostgresMessageRepository(session_factory)
+
+    for i in range(12):
+        direction = (
+            MessageDirection.INBOUND if i % 2 == 0 else MessageDirection.OUTBOUND
+        )
+        await message_repo.save(Message(
+            id=str(uuid.uuid4()),
+            user_id=user_id,
+            connection_id=conn_id,
+            chat_id="chat-1@c.us",
+            provider_message_id=f"pm-{i}",
+            direction=direction,
+            sender_id=None,
+            timestamp=datetime(2026, 9, 12, 10, i, 0, tzinfo=timezone.utc),
+            message_type="text",
+            text=f"message {i}",
+        ))
+    # A message in another chat must not leak in.
+    await message_repo.save(Message(
+        id=str(uuid.uuid4()),
+        user_id=user_id,
+        connection_id=conn_id,
+        chat_id="other@c.us",
+        provider_message_id="pm-other",
+        direction=MessageDirection.INBOUND,
+        sender_id=None,
+        timestamp=datetime(2026, 9, 12, 11, 0, 0, tzinfo=timezone.utc),
+        message_type="text",
+        text="other chat",
+    ))
+
+    messages = await message_repo.list_recent_for_chat(
+        user_id=user_id,
+        chat_id="chat-1@c.us",
+        limit=8,
+    )
+    assert len(messages) == 8
+    # Last 8 messages (4..11), chronological order.
+    assert [m.text for m in messages] == [f"message {i}" for i in range(4, 12)]
+    assert messages[0].direction == MessageDirection.INBOUND
+    assert messages[1].direction == MessageDirection.OUTBOUND
+
+
+async def test_message_list_recent_for_chat_empty(session_factory, clean_db):
+    from echo_v2.persistence.postgres_chat import PostgresMessageRepository
+
+    user_id = await insert_user(session_factory)
+    message_repo = PostgresMessageRepository(session_factory)
+    messages = await message_repo.list_recent_for_chat(
+        user_id=user_id,
+        chat_id="chat-1@c.us",
+    )
+    assert messages == []
+
+
 # --- PostgresAnalysisCommitRepository ----------------------------------------
 
 
@@ -1208,6 +1425,49 @@ async def test_commit_if_current_commits_on_matching_version(
     assert chat is not None
     assert chat.last_processed_version == 1
     assert chat.next_analysis_at is None
+
+
+async def test_commit_if_current_persists_analysis_versions(
+    commit_repo, session_factory,
+):
+    """Critical: commit_if_current (production path) saves model/prompt/analyzer version."""
+    from echo_v2.domain.waiting_for_me import (
+        PreparedAnalysis,
+        WaitingForMeDecision,
+        WaitingForMeResult,
+    )
+
+    user_id = await insert_user(session_factory)
+    await _seed_chat_row(session_factory, user_id, version=1)
+
+    outcome = await commit_repo.commit_if_current(
+        user_id=user_id,
+        chat_id="chat-1@c.us",
+        target_version=1,
+        analysis=PreparedAnalysis(
+            result=WaitingForMeResult(
+                decision=WaitingForMeDecision.WAITING_FOR_ME,
+                confidence=0.9,
+                reason="test",
+                target_version=1,
+                model="gpt-4.1",
+                prompt_version="v1",
+                analyzer_version="2026-09-15.1",
+            ),
+            conversation_snapshot={"messages": [], "target_version": 1},
+        ),
+    )
+
+    assert outcome.status == "committed"
+    assert outcome.result_id is not None
+
+    from echo_v2.persistence.postgres_chat import PostgresWaitingForMeResultRepository
+    result_repo = PostgresWaitingForMeResultRepository(session_factory)
+    results = await result_repo.list_recent(user_id=user_id, chat_id="chat-1@c.us")
+    assert len(results) == 1
+    assert results[0].model == "gpt-4.1"
+    assert results[0].prompt_version == "v1"
+    assert results[0].analyzer_version == "2026-09-15.1"
 
 
 async def test_commit_if_current_returns_stale_on_version_mismatch(

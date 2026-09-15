@@ -285,6 +285,48 @@ def build_waiting_list_router(
             headers=_security_headers(),
         )
 
+    # --- GET /api/waiting/items/{active_id}/context — read-only context ---
+
+    @router.get("/api/waiting/items/{active_id}/context")
+    async def get_context(
+        active_id: str,
+        limit: int = 8,
+        wls: str | None = Cookie(default=None, alias=_SESSION_COOKIE),
+    ) -> JSONResponse:
+        if wls is None:
+            raise HTTPException(status_code=401, detail="no session")
+
+        resolved = await token_service.resolve_session(wls)
+        if resolved is None:
+            raise HTTPException(status_code=401, detail="session expired")
+
+        if not _check_rate_limit(resolved.session_id):
+            raise HTTPException(status_code=429, detail="rate limited")
+
+        result = await waiting_list_service.get_context(
+            session_id=resolved.session_id,
+            user_id=resolved.user_id,
+            active_id=active_id,
+            limit=limit,
+        )
+        if result is None:
+            raise HTTPException(status_code=404, detail="item not found")
+
+        return JSONResponse(
+            content={
+                "messages": [
+                    {
+                        "direction": message.direction,
+                        "timestamp": message.timestamp.isoformat(),
+                        "text": message.text,
+                        "message_type": message.message_type,
+                    }
+                    for message in result
+                ]
+            },
+            headers=_security_headers(),
+        )
+
     # --- POST /api/waiting/items/{active_id}/actions — execute action ---
 
     @router.post("/api/waiting/items/{active_id}/actions")

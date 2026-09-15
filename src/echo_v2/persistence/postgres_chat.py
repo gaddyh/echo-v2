@@ -236,6 +236,30 @@ class PostgresMessageRepository:
                 return None
             return self._row_to_domain(row)
 
+    async def list_recent_for_chat(
+        self,
+        *,
+        user_id: str,
+        chat_id: str,
+        limit: int = 8,
+    ) -> list[Message]:
+        async with self._session() as session:
+            stmt = (
+                select(MessageRow)
+                .where(
+                    MessageRow.user_id == user_id,
+                    MessageRow.chat_id == chat_id,
+                )
+                .order_by(
+                    desc(MessageRow.timestamp),
+                    desc(MessageRow.created_at),
+                    desc(MessageRow.id),
+                )
+                .limit(max(0, limit))
+            )
+            rows = (await session.execute(stmt)).scalars().all()
+            return [self._row_to_domain(row) for row in reversed(rows)]
+
     @staticmethod
     def _row_to_domain(row: MessageRow) -> Message:
         return Message(
@@ -425,6 +449,9 @@ class PostgresWaitingForMeResultRepository:
                     reason=result.reason,
                     summary=result.summary,
                     conversation_snapshot=result.conversation_snapshot,
+                    model=result.model,
+                    prompt_version=result.prompt_version,
+                    analyzer_version=result.analyzer_version,
                 )
                 .returning(WaitingForMeResultRow.id)
             )
@@ -471,6 +498,9 @@ class PostgresWaitingForMeResultRepository:
             summary=row.summary,
             target_version=row.target_version,
             conversation_snapshot=row.conversation_snapshot,
+            model=row.model,
+            prompt_version=row.prompt_version,
+            analyzer_version=row.analyzer_version,
         )
 
 
@@ -824,6 +854,9 @@ class PostgresAnalysisCommitRepository:
                         reason=result_to_save.reason,
                         summary=result_to_save.summary,
                         conversation_snapshot=result_to_save.conversation_snapshot,
+                        model=result_to_save.model,
+                        prompt_version=result_to_save.prompt_version,
+                        analyzer_version=result_to_save.analyzer_version,
                     )
                     .returning(WaitingForMeResultRow.id)
                 )

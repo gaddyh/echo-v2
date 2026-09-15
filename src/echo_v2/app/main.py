@@ -374,6 +374,7 @@ def create_app() -> FastAPI:
         contact_repo=contact_repo,
         mute_repo=repos.chat_mutes,
         user_resolver=flow_service._user_resolver,
+        query_service=query_service,
         token_service=token_service,
         base_url=webhook_base_url,
     )

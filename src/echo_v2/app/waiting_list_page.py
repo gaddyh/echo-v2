@@ -145,6 +145,15 @@ body {
   border-right: 2px solid var(--border);
   font-style: italic;
 }
+.context-link {
+  display: inline-block;
+  margin-top: 6px;
+  color: var(--primary);
+  font-size: 0.82rem;
+  text-decoration: none;
+  cursor: pointer;
+}
+.context-link:hover { text-decoration: underline; }
 .actions { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
 .btn-done {
   width: 100%;
@@ -289,6 +298,39 @@ body {
   resize: vertical;
   margin-bottom: 12px;
   box-sizing: border-box;
+}
+.context-messages {
+  max-height: 55vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.context-message {
+  max-width: 86%;
+  padding: 8px 10px;
+  border-radius: 10px;
+  font-size: 0.88rem;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.context-message.inbound {
+  align-self: flex-start;
+  background: #e8f5e9;
+  border-right: 3px solid var(--primary);
+}
+.context-message.outbound {
+  align-self: flex-end;
+  background: var(--bg);
+  border-left: 3px solid var(--border);
+}
+.context-message-meta {
+  display: block;
+  color: var(--text-secondary);
+  font-size: 0.72rem;
+  margin-bottom: 3px;
 }
 .send-templates {
   display: flex;
@@ -560,6 +602,13 @@ body {
   <button class="overlay-close" onclick="closeLabel()">ביטול</button>
 </div>
 
+<!-- Context overlay (הודעות +) -->
+<div class="overlay" id="context-overlay">
+  <div class="overlay-title">הודעות אחרונות</div>
+  <div class="context-messages" id="context-messages"></div>
+  <button class="overlay-close" onclick="closeContext()">סגירה</button>
+</div>
+
 <!-- Tags overlay (תגיות) -->
 <div class="overlay" id="tags-overlay">
   <div class="overlay-title">תגיות</div>
@@ -756,7 +805,7 @@ function navPrev() {
 }
 
 function renderCard(item) {
-  const hours = formatHours(item.waiting_hours);
+  const waitingTime = formatWaitingTime(item.waiting_hours);
   let colorDotHtml = "";
   if (item.color_label) {
     colorDotHtml = '<span class="color-dot ' + item.color_label + '"></span>';
@@ -775,10 +824,11 @@ function renderCard(item) {
     + '<span class="name-text"></span>'
     + colorDotHtml
     + '</div>'
-    + '<div class="meta">ממתין ' + hours + '</div>'
+    + '<div class="meta">ממתין ' + waitingTime + '</div>'
     + tagsHtml
     + '<div class="summary"></div>'
     + '<div class="quote"></div>'
+    + '<a class="context-link" data-action="context">הודעות +</a>'
     + '<div class="actions">'
     + '<button class="btn-done" data-action="done">בוצע</button>'
     + '<div class="btn-row">'
@@ -791,11 +841,11 @@ function renderCard(item) {
     + '</div>'
     + '<div class="btn-row">'
     + '<button class="btn-secondary" data-action="snooze">נודניק לשעה</button>'
-    + '<button class="btn-secondary muted" data-action="not_needed">לא לטיפול</button>'
+    + '<button class="btn-secondary muted" data-action="not_needed">לא דורש תגובה</button>'
     + '</div>'
     + '<div class="link-row">'
     + '<a class="snooze-other" data-action="snooze_other">זמן אחר</a>'
-    + '<a class="snooze-other false-positive" data-action="false_positive">זיהוי שגוי</a>'
+    + '<a class="snooze-other false-positive" data-action="false_positive">לא מחכים לי</a>'
     + '</div>'
     + '</div></div>';
 }
@@ -807,7 +857,7 @@ function setCardText(card, item) {
   const summary = item.situation_summary || item.message_preview || "שלח/ה הודעה";
   summaryEl.textContent = summary;
   if (item.situation_summary && item.message_preview) {
-    quoteEl.textContent = "\u201C" + item.message_preview + "\u201D";
+    quoteEl.textContent = "הודעה אחרונה: \u201C" + item.message_preview + "\u201D";
     quoteEl.style.display = "";
   } else {
     quoteEl.style.display = "none";
@@ -828,7 +878,7 @@ function setCardText(card, item) {
 function attachCardListeners(card) {
   const itemId = card.dataset.activeId;
   const version = parseInt(card.dataset.version);
-  card.querySelectorAll("button, .snooze-other").forEach(btn => {
+  card.querySelectorAll("button, .snooze-other, .context-link").forEach(btn => {
     btn.addEventListener("click", (e) => {
       // Prevent swipe handler from also firing.
       e.stopPropagation();
@@ -1126,6 +1176,42 @@ function closeTags() {
   editingTags = [];
 }
 
+async function openContextViewer(activeId) {
+  const overlay = document.getElementById("context-overlay");
+  const messagesEl = document.getElementById("context-messages");
+  messagesEl.textContent = "טוען הודעות...";
+  overlay.classList.add("active");
+
+  try {
+    const data = await fetchAPI("/items/" + activeId + "/context?limit=8", {});
+    if (!data) return;
+    messagesEl.textContent = "";
+    if (!data.messages || data.messages.length === 0) {
+      messagesEl.textContent = "אין הודעות להצגה.";
+      return;
+    }
+    for (const message of data.messages) {
+      const bubble = document.createElement("div");
+      bubble.className = "context-message " + (message.direction === "outbound" ? "outbound" : "inbound");
+      const meta = document.createElement("span");
+      meta.className = "context-message-meta";
+      meta.textContent = new Date(message.timestamp).toLocaleString("he-IL");
+      const text = document.createElement("span");
+      text.textContent = message.text || "[הודעה ללא טקסט]";
+      bubble.appendChild(meta);
+      bubble.appendChild(text);
+      messagesEl.appendChild(bubble);
+    }
+  } catch (_err) {
+    messagesEl.textContent = "לא ניתן לטעון את ההודעות כרגע.";
+  }
+}
+
+function closeContext() {
+  document.getElementById("context-overlay").classList.remove("active");
+  document.getElementById("context-messages").textContent = "";
+}
+
 // --- Actions ---
 
 function actionStatType(action) {
@@ -1149,6 +1235,10 @@ async function handleAction(card, activeId, expectedVersion, action) {
     openTagsEditor(card, activeId);
     return;
   }
+  if (action === "context") {
+    await openContextViewer(activeId);
+    return;
+  }
   if (action === "snooze") {
     await sendAction(card, activeId, expectedVersion, "snooze", {snooze_preset: "1h"});
     return;
@@ -1158,7 +1248,7 @@ async function handleAction(card, activeId, expectedVersion, action) {
     return;
   }
   if (action === "not_needed") {
-    await sendAction(card, activeId, expectedVersion, "dismiss", {dismiss_reason: "already_handled"});
+    await sendAction(card, activeId, expectedVersion, "dismiss", {dismiss_reason: "no_response_required"});
     return;
   }
   if (action === "false_positive") {
@@ -1283,10 +1373,18 @@ function renderComplete() {
     + '</div>';
 }
 
-function formatHours(h) {
-  if (h < 1) return Math.round(h * 60) + " דקות";
-  if (h < 24) return Math.round(h) + " שעות";
-  return Math.round(h / 24) + " ימים";
+function formatWaitingTime(hours) {
+  const minutes = Math.max(0, Math.floor(hours * 60));
+  if (minutes < 1) return "עכשיו";
+  if (minutes < 60) return minutes + " דקות";
+
+  const roundedHours = Math.floor(minutes / 60);
+  if (roundedHours < 24) {
+    return roundedHours === 1 ? "שעה" : roundedHours + " שעות";
+  }
+
+  const days = Math.floor(roundedHours / 24);
+  return days === 1 ? "יום" : days + " ימים";
 }
 
 // --- Utility: safe text/attr escaping for inline HTML ---

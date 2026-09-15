@@ -40,6 +40,7 @@ from echo_v2.services.feedback_service import (
     WaitingForMeActionService,
     WaitingForMeFeedbackService,
 )
+from echo_v2.services.waiting_list_query import WaitingListQueryService
 
 pytestmark = pytest.mark.asyncio
 
@@ -167,6 +168,11 @@ def _make_handler(
         feedback_repo=feedback_repo,
         result_repo=result_repo,
     )
+    query_service = WaitingListQueryService(
+        active_repo=active_repo,
+        chat_state_repo=chat_state_repo,
+        mute_repo=mute_repo,
+    )
     handler = FeedbackHandler(
         bot=bot,
         action_service=action_service,
@@ -178,6 +184,7 @@ def _make_handler(
         contact_repo=contact_repo,
         mute_repo=mute_repo,
         user_resolver=FakeUserResolver(user_id),
+        query_service=query_service,
         token_service=token_service,
         base_url=base_url,
     )
@@ -354,6 +361,75 @@ async def test_view_details_max_5_cards():
     result = await handler.handle(event)
     assert result is True
     assert len(bot.buttons) == 5
+
+
+async def test_whatsapp_cards_and_mini_app_return_same_actionable_ids():
+    """Critical invariant: WhatsApp cards and the query service agree.
+
+    Setup: A active, B snoozed, C muted, D stale, E active.
+    The WhatsApp cards (via _handle_view_details) must show exactly the
+    same active_ids as query_service.current_actionable, in the same
+    order, capped at MAX_CARDS.
+    """
+    # Use a snooze time relative to the real clock — the handler uses
+    # datetime.now(timezone.utc), not the test's NOW.
+    real_now = datetime.now(timezone.utc)
+    bot = FakeBot()
+    handler, _, _, active_repo, _ = _make_handler(bot=bot)
+
+    # A — active
+    await _setup_chat_state(handler, "a@c.us", version=1)
+    id_a = await _setup_active(active_repo, chat_id="a@c.us", result_id="ra")
+    # B — snoozed (should be excluded)
+    await _setup_chat_state(handler, "b@c.us", version=1)
+    id_b = await _setup_active(active_repo, chat_id="b@c.us", result_id="rb")
+    await active_repo.snooze(
+        user_id=USER_ID,
+        chat_id="b@c.us",
+        snoozed_until=real_now + timedelta(hours=2),
+    )
+    # C — muted (should be excluded)
+    await _setup_chat_state(handler, "c@c.us", version=1)
+    id_c = await _setup_active(active_repo, chat_id="c@c.us", result_id="rc")
+    await handler._mute_repo.mute_permanent(
+        user_id=USER_ID, chat_id="c@c.us",
+    )
+    # D — stale (activity_version mismatch, should be excluded)
+    await _setup_chat_state(handler, "d@c.us", version=5)
+    id_d = await _setup_active(
+        active_repo, chat_id="d@c.us", result_id="rd", target_version=1
+    )
+    # E — active
+    await _setup_chat_state(handler, "e@c.us", version=1)
+    id_e = await _setup_active(active_repo, chat_id="e@c.us", result_id="re")
+
+    # Query service: should return [A, E] (sorted by waiting_since ascending).
+    query_items = await handler._query_service.current_actionable(USER_ID, now=real_now)
+    query_ids = [a.id for a in query_items]
+    assert set(query_ids) == {id_a, id_e}
+    assert id_b not in query_ids
+    assert id_c not in query_ids
+    assert id_d not in query_ids
+
+    # WhatsApp cards: should show the same ids.
+    event = _make_event(
+        event_id="evt-consistency",
+        event_type=BotEventType.TEXT,
+        text="צפה בשיחות",
+    )
+    result = await handler.handle(event)
+    assert result is True
+    # Extract active_id from each card's "action:{active_id}:handled" button.
+    card_active_ids = []
+    for _phone, _body, buttons in bot.buttons:
+        for btn in buttons:
+            if btn["id"].startswith("action:") and btn["id"].endswith(":handled"):
+                card_active_ids.append(btn["id"].split(":")[1])
+                break
+    assert set(card_active_ids) == set(query_ids)
+    assert id_b not in card_active_ids
+    assert id_c not in card_active_ids
+    assert id_d not in card_active_ids
 
 
 # --- Action: handled (טופל) -------------------------------------------------

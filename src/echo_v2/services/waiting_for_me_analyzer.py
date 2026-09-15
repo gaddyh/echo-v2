@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Protocol
 
 from langsmith import traceable
@@ -45,6 +46,11 @@ _logger = logging.getLogger("echo_v2.services.waiting_for_me_analyzer")
 
 # Bump when the prompt or output contract changes. Used in trace metadata.
 WFM_PROMPT_VERSION = DEFAULT_PROMPT_VERSION
+
+# Bump when the analysis pipeline changes — preprocessing, window, rules,
+# schema, thresholds, post-processing — not just model+prompt. Stored on
+# every result so feedback can be correlated with the exact algorithm.
+WFM_ANALYZER_VERSION = "2026-09-15.1"
 
 
 # Direction labels as the LLM sees them.
@@ -214,6 +220,9 @@ class LLMWaitingForMeAnalyzer:
                     confidence=1.0,
                     reason="No messages to analyze.",
                     target_version=conversation.target_version,
+                    model=self._model,
+                    prompt_version=self._prompt_version,
+                    analyzer_version=WFM_ANALYZER_VERSION,
                 ),
                 "",
             )
@@ -236,6 +245,14 @@ class LLMWaitingForMeAnalyzer:
 
         raw_output = response.choices[0].message.content or ""
         result = _parse_llm_output(raw_output, conversation.target_version)
+        # Attach analyzer metadata so feedback can be correlated with the
+        # exact model/prompt/analyzer version that produced this result.
+        result = replace(
+            result,
+            model=self._model,
+            prompt_version=self._prompt_version,
+            analyzer_version=WFM_ANALYZER_VERSION,
+        )
         return result, raw_output
 
 

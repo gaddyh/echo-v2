@@ -93,6 +93,15 @@ class WaitingForMeResult:
         conversation_snapshot: JSON snapshot of the conversation as it
             was at analysis time. Stored so feedback can reference the
             exact messages the model saw, not messages loaded later.
+        model: The LLM model name used for this analysis (e.g. ``"gpt-4.1"``).
+            ``None`` for deterministic/non-LLM analyzers. Stored so feedback
+            can be correlated with the model version that produced it.
+        prompt_version: The system prompt version (e.g. ``"v1"``).
+            ``None`` for deterministic/non-LLM analyzers.
+        analyzer_version: The WFM analyzer version (e.g. ``"2026-09-15.1"``).
+            Covers the full analysis pipeline — preprocessing, window,
+            rules, schema, thresholds — not just model+prompt. Lets us
+            correlate feedback with the exact algorithm that produced it.
     """
 
     decision: WaitingForMeDecision
@@ -101,6 +110,9 @@ class WaitingForMeResult:
     summary: str | None = None
     target_version: int = 0
     conversation_snapshot: dict | None = None
+    model: str | None = None
+    prompt_version: str | None = None
+    analyzer_version: str | None = None
 
 
 @dataclass(frozen=True)

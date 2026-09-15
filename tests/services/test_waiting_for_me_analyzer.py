@@ -159,6 +159,39 @@ async def test_analyze_passes_model_and_messages_to_client():
     assert len(call_kwargs.kwargs["messages"]) == 2  # system + user
 
 
+async def test_analyze_fills_analysis_version_metadata():
+    """The analyzer fills model/prompt_version/analyzer_version on the result."""
+    conv = _make_conversation()
+    response = _mock_openai_response(
+        json.dumps({"decision": "waiting_for_me", "confidence": 0.9, "reason": "test"})
+    )
+    client = _mock_client(response)
+
+    analyzer = LLMWaitingForMeAnalyzer(client=client, model="gpt-4o", prompt_version="v2")
+    result = await analyzer.analyze(conv)
+
+    assert result.model == "gpt-4o"
+    assert result.prompt_version == "v2"
+    assert result.analyzer_version is not None
+    assert result.analyzer_version != ""
+
+
+async def test_analyze_empty_conversation_fills_analysis_version_metadata():
+    """Even the empty-conversation path fills model/prompt_version/analyzer_version."""
+    conv = ConversationInput(
+        user_id="user-1",
+        chat_id="972501234567@c.us",
+        target_version=1,
+        messages=[],
+    )
+    client = _mock_client()
+    analyzer = LLMWaitingForMeAnalyzer(client=client, model="gpt-4o", prompt_version="v2")
+    result = await analyzer.analyze(conv)
+    assert result.model == "gpt-4o"
+    assert result.prompt_version == "v2"
+    assert result.analyzer_version is not None
+
+
 # --- _parse_llm_output ------------------------------------------------------
 
 

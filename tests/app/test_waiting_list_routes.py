@@ -1271,3 +1271,81 @@ async def test_api_waiting_defaults_no_label_no_tags():
     assert len(items) == 1
     assert items[0]["color_label"] is None
     assert items[0]["tags"] == []
+
+
+# --- GET /api/waiting/items/{active_id}/context (הודעות +) -------------------
+
+
+async def _seed_messages(service, count: int = 3):
+    from echo_v2.domain.chat import Message
+    from echo_v2.ports.whatsapp import MessageDirection
+
+    for i in range(count):
+        direction = (
+            MessageDirection.INBOUND if i % 2 == 0 else MessageDirection.OUTBOUND
+        )
+        await service._message_repo.save(
+            Message(
+                id=f"msg-{i}",
+                user_id=USER_ID,
+                connection_id="conn-1",
+                chat_id=CHAT_ID,
+                provider_message_id=f"pm-{i}",
+                direction=direction,
+                sender_id=None,
+                timestamp=NOW + timedelta(minutes=i),
+                text=f"הודעה {i}",
+            )
+        )
+
+
+async def test_api_context_without_cookie_returns_401():
+    app, _, service, active_repo = _make_app()
+    active_id = await _setup_active(active_repo, service._chat_state_repo)
+    async with _client(app) as client:
+        resp = await client.get(f"/api/waiting/items/{active_id}/context")
+    assert resp.status_code == 401
+
+
+async def test_api_context_unknown_item_returns_404():
+    app, token_service, _, _ = _make_app()
+    _, raw_token = await token_service.issue(USER_ID)
+    async with _client(app) as client:
+        await client.get(f"/q/{raw_token}")
+        resp = await client.get("/api/waiting/items/no-such-id/context")
+    assert resp.status_code == 404
+
+
+async def test_api_context_returns_messages():
+    app, token_service, service, active_repo = _make_app()
+    _, raw_token = await token_service.issue(USER_ID)
+    active_id = await _setup_active(active_repo, service._chat_state_repo)
+    await _seed_messages(service, count=3)
+    async with _client(app) as client:
+        await client.get(f"/q/{raw_token}")
+        resp = await client.get(f"/api/waiting/items/{active_id}/context")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "messages" in data
+    assert len(data["messages"]) == 3
+    first = data["messages"][0]
+    # Minimal response — only UI fields, no provider/internal IDs.
+    assert set(first.keys()) == {"direction", "timestamp", "text", "message_type"}
+    assert first["direction"] == "inbound"
+    assert first["text"] == "הודעה 0"
+    # Security headers present.
+    assert resp.headers.get("cache-control") == "no-store"
+
+
+async def test_api_context_limit_clamped():
+    app, token_service, service, active_repo = _make_app()
+    _, raw_token = await token_service.issue(USER_ID)
+    active_id = await _setup_active(active_repo, service._chat_state_repo)
+    await _seed_messages(service, count=25)
+    async with _client(app) as client:
+        await client.get(f"/q/{raw_token}")
+        resp = await client.get(
+            f"/api/waiting/items/{active_id}/context?limit=100"
+        )
+    assert resp.status_code == 200
+    assert len(resp.json()["messages"]) == 20

@@ -36,6 +36,7 @@ from echo_v2.services.waiting_list_token_service import WaitingListTokenService
 
 __all__ = [
     "ActionResponse",
+    "ContextMessage",
     "LabelResponse",
     "SendResponse",
     "StarResponse",
@@ -81,6 +82,16 @@ class WaitingListItem:
     is_starred: bool = False
     color_label: str | None = None
     tags: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class ContextMessage:
+    """A safe, UI-oriented message for the read-only context viewer."""
+
+    direction: str
+    timestamp: datetime
+    text: str | None
+    message_type: str
 
 
 @dataclass(frozen=True)
@@ -283,6 +294,42 @@ class WaitingListService:
 
         summary = await self._build_summary(session_id, user_id, len(items))
         return WaitingListResponse(items=items, summary=summary)
+
+    async def get_context(
+        self,
+        session_id: str,
+        user_id: str,
+        active_id: str,
+        limit: int = 8,
+    ) -> list[ContextMessage] | None:
+        """Return recent messages for an owned waiting item.
+
+        The active row is resolved server-side to prevent the client from
+        selecting an arbitrary chat. Returns ``None`` for an invalid session,
+        missing item, or item owned by another user.
+        """
+        resolved = await self._token_service.resolve_session(session_id)
+        if resolved is None or resolved.user_id != user_id:
+            return None
+
+        active = await self._active_repo.get_by_id(active_id) if self._active_repo else None
+        if active is None or active.user_id != user_id:
+            return None
+
+        messages = await self._message_repo.list_recent_for_chat(
+            user_id=user_id,
+            chat_id=active.chat_id,
+            limit=max(1, min(limit, 20)),
+        )
+        return [
+            ContextMessage(
+                direction=message.direction.value,
+                timestamp=message.timestamp,
+                text=message.text,
+                message_type=message.message_type,
+            )
+            for message in messages
+        ]
 
     async def execute_action(
         self,

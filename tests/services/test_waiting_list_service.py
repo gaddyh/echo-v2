@@ -1563,3 +1563,128 @@ async def test_list_items_defaults_no_label_no_tags():
     item = result.items[0]
     assert item.color_label is None
     assert item.tags == []
+
+
+# --- get_context (הודעות +) --------------------------------------------------
+
+
+async def _seed_context_messages(service, chat_id: str = CHAT_ID, count: int = 3):
+    """Insert alternating inbound/outbound messages into the message repo."""
+    from echo_v2.domain.chat import Message
+    from echo_v2.ports.whatsapp import MessageDirection
+
+    for i in range(count):
+        direction = (
+            MessageDirection.INBOUND if i % 2 == 0 else MessageDirection.OUTBOUND
+        )
+        await service._message_repo.save(
+            Message(
+                id=f"msg-{i}",
+                user_id=USER_ID,
+                connection_id="conn-1",
+                chat_id=chat_id,
+                provider_message_id=f"pm-{i}",
+                direction=direction,
+                sender_id=None,
+                timestamp=NOW + timedelta(minutes=i),
+                text=f"הודעה {i}",
+            )
+        )
+
+
+async def test_get_context_returns_messages_chronological():
+    service, active_repo, _, _, token_service = _make_service()
+    session_id, _ = await token_service.issue(USER_ID)
+    active_id = await _setup_chat_and_active(active_repo, service._chat_state_repo)
+    await _seed_context_messages(service, count=3)
+
+    result = await service.get_context(session_id, USER_ID, active_id)
+    assert result is not None
+    assert len(result) == 3
+    assert [m.text for m in result] == ["הודעה 0", "הודעה 1", "הודעה 2"]
+    assert result[0].direction == "inbound"
+    assert result[1].direction == "outbound"
+
+
+async def test_get_context_respects_limit():
+    service, active_repo, _, _, token_service = _make_service()
+    session_id, _ = await token_service.issue(USER_ID)
+    active_id = await _setup_chat_and_active(active_repo, service._chat_state_repo)
+    await _seed_context_messages(service, count=12)
+
+    result = await service.get_context(session_id, USER_ID, active_id, limit=8)
+    assert result is not None
+    assert len(result) == 8
+    # Should be the LAST 8 messages, chronological.
+    assert result[0].text == "הודעה 4"
+    assert result[-1].text == "הודעה 11"
+
+
+async def test_get_context_limit_clamped_to_20():
+    service, active_repo, _, _, token_service = _make_service()
+    session_id, _ = await token_service.issue(USER_ID)
+    active_id = await _setup_chat_and_active(active_repo, service._chat_state_repo)
+    await _seed_context_messages(service, count=25)
+
+    result = await service.get_context(session_id, USER_ID, active_id, limit=100)
+    assert result is not None
+    assert len(result) == 20
+
+
+async def test_get_context_invalid_session_returns_none():
+    service, active_repo, _, _, _ = _make_service()
+    active_id = await _setup_chat_and_active(active_repo, service._chat_state_repo)
+    result = await service.get_context("invalid-session", USER_ID, active_id)
+    assert result is None
+
+
+async def test_get_context_unknown_active_id_returns_none():
+    service, _, _, _, token_service = _make_service()
+    session_id, _ = await token_service.issue(USER_ID)
+    result = await service.get_context(session_id, USER_ID, "no-such-id")
+    assert result is None
+
+
+async def test_get_context_other_users_item_returns_none():
+    """Ownership check: an item owned by another user is not accessible."""
+    service, active_repo, _, _, token_service = _make_service()
+    session_id, _ = await token_service.issue(USER_ID)
+    # Active item owned by a different user.
+    await active_repo.upsert(
+        user_id="other-user",
+        chat_id=CHAT_ID,
+        target_version=1,
+        result_id=RESULT_ID,
+        waiting_since=NOW,
+    )
+    other_active = await active_repo.get(user_id="other-user", chat_id=CHAT_ID)
+    result = await service.get_context(session_id, USER_ID, other_active.id)
+    assert result is None
+
+
+async def test_get_context_media_message_has_null_text():
+    from echo_v2.domain.chat import Message
+    from echo_v2.ports.whatsapp import MessageDirection
+
+    service, active_repo, _, _, token_service = _make_service()
+    session_id, _ = await token_service.issue(USER_ID)
+    active_id = await _setup_chat_and_active(active_repo, service._chat_state_repo)
+    await service._message_repo.save(
+        Message(
+            id="msg-media",
+            user_id=USER_ID,
+            connection_id="conn-1",
+            chat_id=CHAT_ID,
+            provider_message_id="pm-media",
+            direction=MessageDirection.INBOUND,
+            sender_id=None,
+            timestamp=NOW,
+            message_type="image",
+            text=None,
+        )
+    )
+    result = await service.get_context(session_id, USER_ID, active_id)
+    assert result is not None
+    assert len(result) == 1
+    assert result[0].text is None
+    assert result[0].message_type == "image"

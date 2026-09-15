@@ -54,6 +54,7 @@ from echo_v2.services.feedback_service import (
     WaitingForMeActionService,
     WaitingForMeFeedbackService,
 )
+from echo_v2.services.waiting_list_query import WaitingListQueryService
 
 __all__ = ["FeedbackHandler"]
 
@@ -102,6 +103,9 @@ class FeedbackHandler:
         contact_repo: The :class:`ContactRepository` for name resolution.
         mute_repo: The :class:`ChatMuteRepository` for mute checks.
         user_resolver: Callable that maps phone → (user_id, status, first_name).
+        query_service: The shared :class:`WaitingListQueryService` for
+            querying actionable items. Required — ensures WhatsApp cards
+            and the mini-app always agree on what's actionable.
     """
 
     def __init__(
@@ -117,6 +121,7 @@ class FeedbackHandler:
         contact_repo: ContactRepository,
         mute_repo: ChatMuteRepository,
         user_resolver,
+        query_service: WaitingListQueryService,
         token_service=None,
         base_url: str = "",
     ) -> None:
@@ -130,6 +135,7 @@ class FeedbackHandler:
         self._contact_repo = contact_repo
         self._mute_repo = mute_repo
         self._user_resolver = user_resolver
+        self._query_service = query_service
         self._token_service = token_service
         self._base_url = base_url
 
@@ -189,22 +195,11 @@ class FeedbackHandler:
         user_id = user_info[0]
         now = datetime.now(timezone.utc)
 
-        # Get current, non-snoozed, non-muted, non-acknowledged active items.
-        all_active = await self._active_repo.list_all_for_user(user_id=user_id)
-        items = []
-        for active in all_active:
-            chat = await self._chat_state_repo.get(user_id, active.chat_id)
-            if chat is None or chat.activity_version != active.target_version:
-                continue
-            if active.acknowledged_at is not None:
-                continue  # acknowledged items are excluded
-            if active.snoozed_until is not None and active.snoozed_until > now:
-                continue
-            if await self._mute_repo.is_muted(
-                user_id=user_id, chat_id=active.chat_id, now=now
-            ):
-                continue
-            items.append(active)
+        # Use the shared query service so WhatsApp cards and the mini-app
+        # always agree on what's actionable. Items are sorted by
+        # waiting_since ascending (oldest first) by the query service.
+        items = await self._query_service.current_actionable(user_id, now=now)
+        items = items[:MAX_CARDS]
 
         if not items:
             await self._bot.send_text(
@@ -213,9 +208,6 @@ class FeedbackHandler:
             )
             return True
 
-        # Sort by waiting_since ascending (oldest first), max 5.
-        items.sort(key=lambda a: a.waiting_since)
-        items = items[:MAX_CARDS]
         total = len(items)
 
         for i, active in enumerate(items, 1):
@@ -252,22 +244,9 @@ class FeedbackHandler:
         user_id = user_info[0]
         now = datetime.now(timezone.utc)
 
-        # Count active, non-snoozed, non-muted items.
-        all_active = await self._active_repo.list_all_for_user(user_id=user_id)
-        count = 0
-        for active in all_active:
-            chat = await self._chat_state_repo.get(user_id, active.chat_id)
-            if chat is None or chat.activity_version != active.target_version:
-                continue
-            if active.acknowledged_at is not None:
-                continue
-            if active.snoozed_until is not None and active.snoozed_until > now:
-                continue
-            if await self._mute_repo.is_muted(
-                user_id=user_id, chat_id=active.chat_id, now=now
-            ):
-                continue
-            count += 1
+        # Use the shared query service for consistency with the mini-app.
+        items = await self._query_service.current_actionable(user_id, now=now)
+        count = len(items)
 
         if count == 0:
             await self._bot.send_text(

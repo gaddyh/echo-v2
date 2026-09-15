@@ -88,6 +88,16 @@ class MessageRepository(Protocol):
         """Get the latest inbound message for a chat, or ``None``."""
         ...
 
+    async def list_recent_for_chat(
+        self,
+        *,
+        user_id: str,
+        chat_id: str,
+        limit: int = 8,
+    ) -> list[Message]:
+        """Return the last ``limit`` messages in chronological order."""
+        ...
+
 
 class InMemoryMessageRepository:
     """Process-local message repository backed by a dict.
@@ -155,6 +165,20 @@ class InMemoryMessageRepository:
             key=lambda m: (m.timestamp, m.id),
         )
         return chat_msgs[-1] if chat_msgs else None
+
+    async def list_recent_for_chat(
+        self,
+        *,
+        user_id: str,
+        chat_id: str,
+        limit: int = 8,
+    ) -> list[Message]:
+        chat_msgs = sorted(
+            (m for m in self._messages.values()
+             if m.user_id == user_id and m.chat_id == chat_id),
+            key=lambda m: (m.timestamp, m.id),
+        )
+        return chat_msgs[-max(0, limit):] if limit else []
 
 
 # --- ChatStateRepository ---------------------------------------------------
