@@ -68,6 +68,9 @@ _ALREADY_ONBOARDING = (
     "אני כבר מכין את החיבור שלך. שלח 'קוד' כדי לקבל את הקוד מחדש."
 )
 
+# Sent when the 5-minute authorization poll times out (user didn't enter OTP).
+_OTP_TIMED_OUT = 'לא התחברת בזמן. שלח "קוד" כדי לקבל קוד חדש.'
+
 _RESEND_KEYWORD = "קוד"
 
 
@@ -343,6 +346,12 @@ class OnboardingService:
             phone,
             user_id,
         )
+        try:
+            await self._bot.send_text(phone, _OTP_TIMED_OUT)
+        except Exception:
+            _logger.exception(
+                "onboarding: failed to send timeout message to %s", phone
+            )
 
     async def _wait_for_instance_ready(
         self,

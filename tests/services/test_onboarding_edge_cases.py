@@ -400,7 +400,11 @@ async def test_poll_for_authorization_exception_then_authorized(no_sleep):
 
 
 async def test_poll_for_authorization_times_out(no_sleep):
-    """Poll never sees 'authorized' → times out after 30 attempts (328-332)."""
+    """Poll never sees 'authorized' → times out after 30 attempts (328-332).
+
+    On timeout, sends the OTP_TIMED_OUT message telling the user to reply
+    'קוד' for a fresh code. User remains pending so resend still works.
+    """
     service, bot, user_repo, _conn, green_client = _make_service()
 
     user_id = await user_repo.create_user(PHONE, onboarding_status="pending")
@@ -413,7 +417,83 @@ async def test_poll_for_authorization_times_out(no_sleep):
     # No welcome sent — onboarding not completed by the poll.
     user = await user_repo.get_by_phone(PHONE)
     assert user[1] == "pending"
-    assert len(bot.sent) == 0
+    # Timeout message sent.
+    assert len(bot.sent) == 1
+    _phone, msg = bot.sent[0]
+    assert _phone == PHONE
+    assert "לא התחברת בזמן" in msg
+    assert "קוד" in msg
+
+
+async def test_poll_timeout_user_remains_pending_and_resend_works(no_sleep):
+    """After timeout, user is still pending and replying 'קוד' issues a fresh OTP."""
+    service, bot, user_repo, conn_repo, green_client = _make_service()
+
+    user_id = await user_repo.create_user(PHONE, onboarding_status="pending")
+
+    # Store a connection row so _resend_otp can find it.
+    from echo_v2.persistence.whatsapp_connections import StoredConnection
+    from echo_v2.ports.whatsapp import (
+        ConnectionRef,
+        ConnectionStatus,
+        ProviderCredentials,
+    )
+
+    conn = StoredConnection(
+        user_id=user_id,
+        ref=ConnectionRef(provider="green", provider_connection_id="inst-1"),
+        credentials=ProviderCredentials(data=b"token-1"),
+        webhook_token_hash=b"\x00" * 32,
+        status=ConnectionStatus.PROVISIONING,
+    )
+    await conn_repo.save(conn)
+
+    # Poll times out.
+    green_client.set_state_sequence(["notAuthorized"] * 30)
+    await service._poll_for_authorization(user_id, PHONE, "inst-1", "token-1")
+
+    # User remains pending.
+    user = await user_repo.get_by_phone(PHONE)
+    assert user[1] == "pending"
+
+    # Replying 'קוד' triggers a fresh OTP.
+    sent_before = len(bot.sent)
+    otp_calls_before = len(green_client.otp_calls)
+    await service.handle_resend_request(PHONE)
+
+    # A new OTP was requested and a new OTP message was sent.
+    assert len(green_client.otp_calls) == otp_calls_before + 1
+    assert len(bot.sent) == sent_before + 1
+    _phone, otp_msg = bot.sent[-1]
+    assert "הקוד שלך" in otp_msg
+
+
+async def test_poll_timeout_send_failure_does_not_crash(no_sleep):
+    """If sending the timeout message raises, polling still exits cleanly."""
+    service, bot, user_repo, _conn, green_client = _make_service()
+
+    user_id = await user_repo.create_user(PHONE, onboarding_status="pending")
+
+    green_client.set_state_sequence(["notAuthorized"] * 30)
+
+    # Make send_text raise on the timeout message.
+    call_count = {"n": 0}
+
+    async def _failing_send(phone, text):
+        call_count["n"] += 1
+        # The timeout message is the only send in this test path.
+        raise RuntimeError("bot send boom")
+
+    bot.send_text = _failing_send  # type: ignore[assignment]
+
+    # Should not raise.
+    await service._poll_for_authorization(user_id, PHONE, "inst-1", "token-1")
+
+    # The timeout send was attempted.
+    assert call_count["n"] >= 1
+    # User remains pending.
+    user = await user_repo.get_by_phone(PHONE)
+    assert user[1] == "pending"
 
 
 # --- _wait_for_instance_ready: exception branch -----------------------------
