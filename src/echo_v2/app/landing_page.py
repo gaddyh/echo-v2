@@ -89,40 +89,164 @@ body {
 .pain h2 { font-size: 1.35rem; margin-bottom: 10px; }
 .pain p { color: var(--text-secondary); max-width: 460px; margin: 0 auto; }
 
-/* --- demo card --- */
+/* --- demo (faithful replica of the real mini-app) --- */
 .demo { padding: 28px 0 8px; }
+.demo-frame {
+  max-width: 380px;
+  margin: 0 auto;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  box-shadow: 0 8px 28px rgba(0,0,0,0.10);
+  padding: 16px 14px 12px;
+  pointer-events: none;
+  user-select: none;
+  position: relative;
+  overflow: hidden;
+}
+/* --- demo animation --- */
+.demo-pointer {
+  position: absolute;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: rgba(17,27,33,0.28);
+  border: 2px solid rgba(255,255,255,0.9);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.25);
+  z-index: 5;
+  top: 40%;
+  left: 50%;
+  opacity: 0;
+  transition: top 0.55s cubic-bezier(.5,0,.3,1), left 0.55s cubic-bezier(.5,0,.3,1), opacity 0.3s, transform 0.12s;
+  pointer-events: none;
+}
+.demo-pointer.visible { opacity: 1; }
+.demo-pointer.tap { transform: scale(0.72); }
+.demo-press {
+  filter: brightness(0.88);
+  transform: scale(0.97);
+}
+.demo-card .btn-done, .demo-card .btn-sec, .demo-card .link-row span {
+  transition: filter 0.15s, transform 0.15s;
+}
+.demo-toast {
+  position: absolute;
+  top: 12px;
+  right: 50%;
+  transform: translateX(50%) translateY(-8px);
+  background: var(--text);
+  color: white;
+  padding: 8px 18px;
+  border-radius: 20px;
+  font-size: 0.85rem;
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity 0.3s, transform 0.3s;
+  z-index: 6;
+}
+.demo-toast.show { opacity: 1; transform: translateX(50%) translateY(0); }
+.demo-card-inner { transition: opacity 0.3s, transform 0.3s; }
+.demo-card-inner.swap { opacity: 0; transform: translateX(-24px); }
+@media (prefers-reduced-motion: reduce) {
+  .demo-pointer, .demo-toast { display: none !important; }
+}
+.demo-progress { text-align: center; color: var(--text-secondary); font-size: 0.85rem; }
+.demo-progress-bar {
+  height: 4px;
+  background: var(--border);
+  border-radius: 2px;
+  margin: 8px 24px 12px;
+  overflow: hidden;
+}
+.demo-progress-bar span {
+  display: block;
+  width: 33%;
+  height: 100%;
+  background: var(--primary);
+  border-radius: 2px;
+}
+.demo-chips { display: flex; gap: 6px; justify-content: flex-start; flex-wrap: wrap; margin-bottom: 12px; }
+.demo-chip {
+  padding: 4px 12px;
+  border-radius: 16px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  font-size: 0.78rem;
+  color: var(--text);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.demo-chip.active { background: var(--text); color: white; border-color: var(--text); }
+.demo-dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+.demo-dot.red { background: #ff4757; }
+.demo-dot.blue { background: #3b82f6; }
 .demo-card {
   background: var(--card);
   border-radius: 14px;
   box-shadow: var(--shadow);
-  padding: 18px;
-  max-width: 400px;
-  margin: 0 auto;
-  border: 1px solid var(--border);
+  padding: 16px;
+  position: relative;
 }
-.demo-card .name { font-weight: 700; margin-bottom: 4px; }
-.demo-card .meta { color: var(--text-secondary); font-size: 0.82rem; margin-bottom: 10px; }
-.demo-card .summary { font-size: 0.95rem; margin-bottom: 8px; }
-.demo-card .quote {
-  font-size: 0.82rem;
-  color: var(--text-secondary);
-  font-style: italic;
+.demo-card .corner-dot { position: absolute; top: 16px; left: 16px; }
+.demo-card .name { font-weight: 700; font-size: 1.05rem; }
+.demo-card .name .star { color: #f5a623; }
+.demo-card .meta { color: var(--text-secondary); font-size: 0.82rem; margin-top: 2px; }
+.demo-card .tag-chip {
+  display: inline-block;
   background: var(--bg);
-  border-radius: 6px;
-  border-right: 2px solid var(--border);
-  padding: 6px 10px;
+  border-radius: 12px;
+  padding: 2px 10px;
+  font-size: 0.76rem;
+  color: var(--text-secondary);
+  margin-top: 6px;
 }
-.demo-card .demo-btn {
-  margin-top: 12px;
+.demo-card .summary { font-size: 0.95rem; margin: 14px 0 10px; text-align: center; }
+.demo-card .context-link { color: var(--primary); font-size: 0.82rem; }
+.demo-card .btn-done {
+  margin-top: 10px;
   width: 100%;
-  padding: 10px;
+  padding: 12px;
   border: none;
   border-radius: 8px;
   background: var(--primary);
   color: white;
   font-weight: 600;
-  font-size: 0.95rem;
-  pointer-events: none;
+  font-size: 1rem;
+}
+.demo-card .btn-row { display: flex; gap: 8px; margin-top: 8px; }
+.demo-card .btn-sec {
+  flex: 1;
+  padding: 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--text);
+  font-size: 0.85rem;
+  text-align: center;
+}
+.demo-card .btn-sec.send { border-color: #3b82f6; color: #3b82f6; background: #eff6ff; }
+.demo-card .btn-sec.muted { background: #f1f3f5; }
+.demo-card .link-row { display: flex; justify-content: space-around; margin-top: 10px; font-size: 0.82rem; }
+.demo-card .link-row .other { color: var(--text-secondary); }
+.demo-card .link-row .fp { color: var(--danger); }
+.demo-nav { display: flex; gap: 8px; margin-top: 12px; }
+.demo-nav div {
+  flex: 1;
+  padding: 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--text);
+  font-size: 0.85rem;
+  text-align: center;
+}
+.demo-nav .disabled { color: var(--border); }
+.demo-caption {
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  margin-top: 14px;
 }
 
 /* --- how it works --- */
@@ -254,13 +378,52 @@ body {
 
 <section class="demo">
   <div class="container">
-    <div class="demo-card">
-      <div class="name">☆ דנה לוי</div>
-      <div class="meta">ממתינה 26 שעות</div>
-      <div class="summary">דנה שלחה את החוזה ומחכה לאישור שלך לפני שהיא שולחת ללקוח</div>
-      <div class="quote">הודעה אחרונה: &ldquo;תעבור על הסעיף האחרון כשתוכל?&rdquo;</div>
-      <button class="demo-btn">בוצע ✓</button>
+    <div class="demo-frame" id="demo-frame" aria-hidden="true">
+      <div class="demo-toast" id="demo-toast"></div>
+      <div class="demo-pointer" id="demo-pointer"></div>
+      <div class="demo-progress" id="demo-progress">1 מתוך 3</div>
+      <div class="demo-progress-bar"><span id="demo-progress-fill" style="width:33%"></span></div>
+      <div class="demo-chips">
+        <span class="demo-chip active">הכל</span>
+        <span class="demo-chip">★</span>
+        <span class="demo-chip"><span class="demo-dot red"></span> 1</span>
+        <span class="demo-chip"><span class="demo-dot blue"></span> 1</span>
+        <span class="demo-chip">#בית 1</span>
+        <span class="demo-chip">#לקוח 1</span>
+      </div>
+      <div class="demo-card">
+        <div class="demo-card-inner" id="demo-card-inner">
+          <span class="corner-dot demo-dot red" id="demo-color-dot"></span>
+          <div class="name"><span class="star" id="demo-star">★</span> <span id="demo-name">דמי אבירם</span></div>
+          <div class="meta" id="demo-meta">ממתין שעה</div>
+          <span class="tag-chip" id="demo-tag">#לקוח</span>
+          <div class="summary" id="demo-summary">דמי שלח מסמכים ומחכה לאישור קבלה</div>
+          <div class="context-link">הודעות +</div>
+          <div class="btn-done" id="demo-done">בוצע</div>
+          <div class="btn-row">
+            <div class="btn-sec send" id="demo-send">תזמן הודעה</div>
+            <div class="btn-sec">מחר</div>
+          </div>
+          <div class="btn-row">
+            <div class="btn-sec">צבע</div>
+            <div class="btn-sec">תגיות</div>
+          </div>
+          <div class="btn-row">
+            <div class="btn-sec" id="demo-snooze">נודניק לשעה</div>
+            <div class="btn-sec muted">לא דורש תגובה</div>
+          </div>
+          <div class="link-row">
+            <span class="other">זמן אחר</span>
+            <span class="fp" id="demo-fp">לא מחכים לי</span>
+          </div>
+        </div>
+      </div>
+      <div class="demo-nav">
+        <div class="disabled">→ הקודם</div>
+        <div>הבא ←</div>
+      </div>
     </div>
+    <div class="demo-caption">ככה זה נראה — כרטיס אחד לכל מי שמחכה, פעולה אחת וממשיכים.</div>
   </div>
 </section>
 
@@ -271,7 +434,7 @@ body {
       <div class="num">1</div>
       <div>
         <h3>מחברים את הוואטסאפ</h3>
-        <p>חיבור מאובטח בדקה, בלי סריקת QR ובלי אפליקציה.</p>
+        <p>מצ'אט עם Echo מקבלים קוד חד־פעמי ומזינים אותו בוואטסאפ (הגדרות ← מכשירים מקושרים) — בלי סריקת QR ובלי להתקין שום דבר. החיבור נעשה דרך Green API, שכבת גישה מאובטחת בין וואטסאפ ל־Echo, ולוקח דקה־שתיים.</p>
       </div>
     </div>
     <div class="step">
@@ -365,6 +528,114 @@ function showError(msg) {
   submitBtn.disabled = false;
   submitBtn.textContent = "שריינו לי מקום";
 }
+
+// --- demo card animation: a looping tour of the possible actions ---
+(function () {
+  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+
+  const frame = document.getElementById("demo-frame");
+  const pointer = document.getElementById("demo-pointer");
+  const toast = document.getElementById("demo-toast");
+  const inner = document.getElementById("demo-card-inner");
+
+  const CARDS = [
+    {name: "דמי אבירם", meta: "ממתין שעה", tag: "#לקוח", dot: "red", star: true,
+     summary: "דמי שלח מסמכים ומחכה לאישור קבלה", progress: "1 מתוך 3", fill: "33%"},
+    {name: "שרה כהן", meta: "ממתינה 3 שעות", tag: "#בית", dot: "blue", star: false,
+     summary: "שרה שאלה אם אתם מגיעים בשבת ומחכה לתשובה", progress: "2 מתוך 3", fill: "66%"},
+    {name: "יוסי לוי", meta: "ממתין 26 שעות", tag: "", dot: "", star: false,
+     summary: "יוסי מחכה להצעת המחיר שהבטחת לשלוח", progress: "3 מתוך 3", fill: "100%"},
+  ];
+
+  function setCard(i) {
+    const c = CARDS[i];
+    document.getElementById("demo-name").textContent = c.name;
+    document.getElementById("demo-meta").textContent = c.meta;
+    document.getElementById("demo-summary").textContent = c.summary;
+    document.getElementById("demo-progress").textContent = c.progress;
+    document.getElementById("demo-progress-fill").style.width = c.fill;
+    document.getElementById("demo-star").style.display = c.star ? "" : "none";
+    const tag = document.getElementById("demo-tag");
+    tag.textContent = c.tag;
+    tag.style.display = c.tag ? "" : "none";
+    const dot = document.getElementById("demo-color-dot");
+    dot.className = "corner-dot demo-dot " + c.dot;
+    dot.style.display = c.dot ? "" : "none";
+  }
+
+  function moveTo(el) {
+    const fr = frame.getBoundingClientRect();
+    const r = el.getBoundingClientRect();
+    pointer.style.top = (r.top - fr.top + r.height / 2 - 17) + "px";
+    pointer.style.left = (r.left - fr.left + r.width / 2 - 17) + "px";
+  }
+
+  function sleep(ms) { return new Promise(res => setTimeout(res, ms)); }
+
+  async function press(el) {
+    moveTo(el);
+    await sleep(650);
+    pointer.classList.add("tap");
+    el.classList.add("demo-press");
+    await sleep(180);
+    pointer.classList.remove("tap");
+    el.classList.remove("demo-press");
+  }
+
+  async function showToast(text) {
+    toast.textContent = text;
+    toast.classList.add("show");
+    await sleep(1400);
+    toast.classList.remove("show");
+    await sleep(250);
+  }
+
+  async function swapCard(i) {
+    inner.classList.add("swap");
+    await sleep(300);
+    setCard(i);
+    inner.classList.remove("swap");
+    await sleep(350);
+  }
+
+  async function loop() {
+    pointer.classList.add("visible");
+    for (;;) {
+      // Scene 1: done → next card.
+      setCard(0);
+      await sleep(900);
+      await press(document.getElementById("demo-done"));
+      await showToast("✓ טופל");
+      await swapCard(1);
+
+      // Scene 2: snooze → next card.
+      await press(document.getElementById("demo-snooze"));
+      await showToast("⏰ אזכיר בעוד שעה");
+      await swapCard(2);
+
+      // Scene 3: schedule a message.
+      await press(document.getElementById("demo-send"));
+      await showToast("📤 ההודעה תישלח מחר ב־9:00");
+      await sleep(300);
+
+      // Scene 4: false-positive feedback → back to start.
+      await press(document.getElementById("demo-fp"));
+      await showToast("🧠 Echo לומד מהפידבק");
+      await swapCard(0);
+    }
+  }
+
+  // Start when the demo scrolls into view.
+  let started = false;
+  const observer = new IntersectionObserver((entries) => {
+    if (!started && entries.some(e => e.isIntersecting)) {
+      started = true;
+      observer.disconnect();
+      loop();
+    }
+  }, {threshold: 0.4});
+  observer.observe(frame);
+})();
 </script>
 </body>
 </html>
