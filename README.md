@@ -33,27 +33,31 @@ New users message the Echo bot → Echo creates a Green API instance → sends a
 - Deduplication on provider message ID (`INSERT ON CONFLICT DO NOTHING`)
 - Delayed LLM analysis after a quiet period (default 5 min)
 - Analysis results stored historically + active projection (version-fenced)
+- Each result records `model`, `prompt_version`, and `analyzer_version`, so feedback can be correlated with the exact algorithm that produced it
 - Outbound messages do not automatically resolve `WAITING_FOR_ME` — every meaningful message triggers re-analysis
+- Supports GPT-5+ reasoning models (default temperature, larger completion budget) alongside gpt-4.x
 
 ### Waiting for me
 
-Three states per chat:
+Three analysis decisions per chat:
 
 - `WAITING_FOR_ME` — another person is waiting for the user
-- `WAITING_FOR_THEM` — the user is waiting for someone else (planned)
 - `NOT_WAITING_FOR_ME` — no one is waiting
+- `UNCERTAIN` — not enough information (media-only, ambiguous)
 
 An active result is valid only when `active.target_version == chats.activity_version`. This version-fence prevents stale analysis from overriding newer state.
 
-### Feedback flyloop
+All surfaces (morning digest, WhatsApp cards, mini web app) query actionable items through a single shared `WaitingListQueryService`, so they can never disagree on what's waiting.
 
-Users correct Echo's analysis directly from the digest or waiting-list:
+### Actions vs. feedback semantics
 
-- **"לא מחכה לי"** (not waiting for me) — dismisses an item; records a negative signal
-- **"לא מעניין"** (not interested) — dismisses + mutes the chat
-- **"טעיתי"** (I was wrong) — undoes a previous dismiss; restores the item
-- **Miss report** — user reports that Echo missed a waiting item; recorded for model improvement
-- Feedback is stored per-result and used to improve future analysis
+Operational actions and correctness feedback are deliberately separate:
+
+- **בוצע** (done) — operational resolution only; not a correctness judgment
+- **נודניק / snooze** — postpone; not feedback
+- **לא דורש תגובה** (no response required) — dismisses without feedback
+- **לא מחכים לי** (not waiting for me) — dismisses and records a `FALSE_POSITIVE`, the real accuracy signal
+- Feedback rows link to the result (and its model/prompt/analyzer version) with the conversation snapshot the model actually saw
 
 ### Morning digest
 
@@ -69,12 +73,15 @@ Users correct Echo's analysis directly from the digest or waiting-list:
 
 A token-authenticated web page linked from the digest:
 
-- One-time token issued per digest, stored as a session cookie (TTL 48h default)
-- Shows all active waiting items with snooze/dismiss/resolve actions
-- Snooze: push the item back by a duration (e.g. "tomorrow", "3 hours")
-- Resolve: mark as handled, removes from the active list
-- No login required — the token in the URL is the only credential
-- Server-rendered HTML (no JS framework); JSON API for actions
+- One-time token issued per digest, exchanged for a Secure/HttpOnly session cookie (TTL 48h default)
+- Card-per-item UI with RTL swipe navigation between items
+- Actions: **בוצע** (done), snooze (1h / tomorrow / custom), **לא דורש תגובה**, **לא מחכים לי** (false-positive feedback), schedule a message
+- **הודעות +** context viewer: read-only overlay with the last 8 messages of the chat (on-demand, ownership-checked)
+- Contact conveniences: star (sorts first), color label, free-text tags with filtering
+- Schedule a WhatsApp message to the contact (sent from the user's own number, preset or custom time)
+- Every action carries a client-generated `action_id` — double clicks, retries, and timeouts are idempotent
+- Server returns authoritative state after every action; the client never guesses
+- No login required — the token in the URL is the only credential; raw tokens are never stored (SHA-256 hash only)
 
 ### Scheduled messages
 
@@ -237,7 +244,7 @@ src/echo_v2/
 │   ├── contacts.py                   # Contact repository
 │   ├── conversation_state.py        # In-memory scheduling flow state (MVP)
 │   ├── waiting_list_tokens.py       # Waiting-list session tokens (Postgres)
-│   └── alembic/versions/            # Migrations 0001-0017
+│   └── alembic/versions/            # Migrations 0001-0020
 ├── ports/
 │   ├── whatsapp.py                   # Provider-neutral WhatsApp ports (events, messaging)
 │   └── bot.py                         # Provider-neutral bot ports (events, channel)
@@ -256,7 +263,7 @@ src/echo_v2/
 
 ## Database
 
-PostgreSQL with 17 Alembic migrations:
+PostgreSQL with 20 Alembic migrations:
 
 | Migration | Description |
 |-----------|-------------|
@@ -277,6 +284,9 @@ PostgreSQL with 17 Alembic migrations:
 | 0015 | Result summary |
 | 0016 | WfM results unique constraint (user_id, chat_id, target_version) |
 | 0017 | Bot webhook inbox (persistent processing/processed/failed) |
+| 0018 | Contact starred |
+| 0019 | Contact color labels + tags |
+| 0020 | Result model / prompt_version / analyzer_version |
 
 ## Getting started
 
@@ -332,7 +342,7 @@ uvicorn echo_v2.app.main:app --factory
 ruff check src tests scripts
 pytest                              # unit + integration (testcontainers Postgres)
 pytest --cov                        # with coverage (gate: 95%)
-pytest tests/evaluation/ -v        # LLM eval harness (real API calls)
+pytest -m eval_soc -v -s           # LLM eval harness (real API calls)
 ```
 
 ## Environment variables
@@ -348,7 +358,7 @@ pytest tests/evaluation/ -v        # LLM eval harness (real API calls)
 | `D360_API_BASE_URL` | No | `https://waba-v2.360dialog.io` | 360dialog API base URL |
 | `D360_WEBHOOK_SECRET` | **Yes** | — | 360dialog webhook bearer secret (server refuses to start without it) |
 | `OPENAI_API_KEY` | Yes | — | OpenAI API key |
-| `LLM_MODEL_NAME` | No | `gpt-4.1` | LLM model for analysis + time parsing |
+| `LLM_MODEL_NAME` | No | `gpt-4.1` | LLM model for analysis + time parsing (production runs `gpt-5.6-luna`; GPT-5+/o* reasoning models are auto-detected) |
 | `ECHO_WEBHOOK_BASE_URL` | No | `https://i-me.onrender.com` | Public URL for Green API webhook configuration |
 | `ECHO_BOT_PHONE` | No | — | Echo bot's WhatsApp number (for web app "back to WhatsApp" link) |
 | `SCHEDULER_LEASE_SECONDS` | No | `300` | Scheduler action lease duration |
@@ -406,19 +416,27 @@ Background workers (scheduler, analysis, digest) start in the FastAPI lifespan. 
 
 ## Evaluation
 
-The waiting-for-me classifier is evaluated against 40 labeled cases (including 12 realistic 8-10 message conversations) using the real LLM API. The harness prints Rich tables with accuracy, confusion matrix, and per-case details.
+The waiting-for-me classifier is evaluated against real LLM API calls using three labeled suites. The harness prints rich tables (accuracy, confusion matrix, per-case detail) and persists every run to `tests/evaluation/results/` (JSON + Markdown) with model and prompt version.
+
+| Suite | Cases | What it tests |
+|-------|-------|---------------|
+| Sanity (`eval` marker) | 40 | Baseline forms: direct questions, requests, closings |
+| SOC families (`eval_soc`) | 80 | 19 obligation-state phenomena as contrast pairs: acknowledgement ≠ fulfillment, conditional activation, cancellation/supersession, ball handoffs, implicit completion. Train/dev/test splits with leakage validation |
+| SOC-2508 realistic (`eval_soc`) | 40 | Grounded in the [SOC-2508 dataset](https://huggingface.co/datasets/marcodsn/SOC-2508): long noisy windows, buried obligations, base-rate banter negatives, UNCERTAIN labels, time decay via `<delay/>`, wrong-chat retractions |
 
 ```bash
-pytest tests/evaluation/ -v
+pytest -m eval_soc -v -s                 # SOC families + SOC-2508 realistic
+pytest -m eval_soc -v -s -k soc2508      # realistic suite only
+pytest -m eval -v -s                     # sanity suite
 ```
 
-Latest result: 95% accuracy (38/40), 100% for `WAITING_FOR_ME`, 100% for `NOT_WAITING_FOR_ME`.
+Latest results (gpt-5.6-luna, prompt v1): SOC dev 39/40, SOC test 39/40, SOC-2508 dev 21/21, SOC-2508 test 18/19. Remaining failures are all in the conservative direction (predicting `WAITING_FOR_ME` on ambiguous negatives).
 
 ## Tech stack
 
 - Python 3.13, FastAPI, SQLAlchemy 2 async, PostgreSQL, Alembic
 - httpx, websockets (Green API)
-- OpenAI-compatible LLM API (gpt-4.1)
+- OpenAI-compatible LLM API (gpt-5.6-luna in production; gpt-4.x supported)
 - 360dialog WhatsApp Business API
 - Green API (user's WhatsApp)
 - LangSmith tracing (privacy-hardened)
