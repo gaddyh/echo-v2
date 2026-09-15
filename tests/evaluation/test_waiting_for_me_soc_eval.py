@@ -33,6 +33,10 @@ from echo_v2.services.waiting_for_me_analyzer import (
 )
 from tests.evaluation.eval_results import CaseResult, save_eval_run
 from tests.evaluation.waiting_for_me_cases import EvalCase
+from tests.evaluation.waiting_for_me_soc2508_cases import (
+    SOC2508_DEV_CASES,
+    SOC2508_TEST_CASES,
+)
 from tests.evaluation.waiting_for_me_soc_cases import (
     SOC_DEV_CASES,
     SOC_TEST_CASES,
@@ -351,3 +355,32 @@ async def test_soc_test_eval(analyzer):
     """
     min_accuracy = float(os.environ.get("EVAL_SOC_FAMILY_MIN_ACCURACY", "0.7"))
     await _run_split(analyzer, SOC_TEST_CASES, "SOC Test", min_accuracy=min_accuracy)
+
+
+@pytest.mark.eval_soc
+async def test_soc2508_dev_eval(analyzer):
+    """Run the SOC-2508 realistic DEV split (21 cases).
+
+    Realistic cases derived from the SOC-2508 dataset dynamics: long
+    noisy windows, buried obligations, base-rate negatives, UNCERTAIN
+    labels, and time decay. No accuracy threshold — for inspection.
+
+    Run with::
+
+        pytest -m eval_soc -v -s -k soc2508_dev
+    """
+    await _run_split(analyzer, SOC2508_DEV_CASES, "SOC2508 Dev", min_accuracy=None)
+
+
+@pytest.mark.eval_soc
+async def test_soc2508_test_eval(analyzer):
+    """Run the SOC-2508 realistic TEST split (19 cases).
+
+    Threshold: 70% (default). Override with ``EVAL_SOC_FAMILY_MIN_ACCURACY``.
+
+    Run with::
+
+        pytest -m eval_soc -v -s -k soc2508_test
+    """
+    min_accuracy = float(os.environ.get("EVAL_SOC_FAMILY_MIN_ACCURACY", "0.7"))
+    await _run_split(analyzer, SOC2508_TEST_CASES, "SOC2508 Test", min_accuracy=min_accuracy)
