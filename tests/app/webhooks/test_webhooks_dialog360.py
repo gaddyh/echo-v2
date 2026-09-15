@@ -271,7 +271,7 @@ class StubOnboarding:
     def __init__(self, *, is_onboarding: bool = True, user_exists: bool = True) -> None:
         self._is_onboarding = is_onboarding
         self._user_exists = user_exists
-        self.unknown_users: list[str] = []
+        self.unknown_events: list[BotEvent] = []
         self.name_responses: list[tuple[str, str]] = []
         self.resend_requests: list[str] = []
 
@@ -285,8 +285,8 @@ class StubOnboarding:
     async def handle_resend_request(self, phone: str) -> None:
         self.resend_requests.append(phone)
 
-    async def handle_unknown_user(self, phone: str) -> None:
-        self.unknown_users.append(phone)
+    async def handle_unknown_event(self, event: BotEvent) -> None:
+        self.unknown_events.append(event)
 
 
 class StubUserResolver:
@@ -385,7 +385,7 @@ def test_onboarding_intercepts_known_onboarding_user():
 
 
 def test_onboarding_routes_unknown_user():
-    """When the user is unknown, onboarding.handle_unknown_user is called."""
+    """When the user is unknown, onboarding.handle_unknown_event is called."""
     flow = RecordingFlowService()
     flow._user_resolver = StubUserResolver(user_exists=False)
     onboarding = StubOnboarding(is_onboarding=False)
@@ -405,7 +405,7 @@ def test_onboarding_routes_unknown_user():
         )
         assert resp.status_code == 200
         assert resp.json()["status"] == "received"
-        assert len(onboarding.unknown_users) == 1
+        assert len(onboarding.unknown_events) == 1
         assert len(flow.handled) == 0
 
 

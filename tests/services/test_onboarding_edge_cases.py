@@ -15,6 +15,7 @@ from echo_v2.integrations.green.provisioner import GreenProvisioner
 from echo_v2.persistence.whatsapp_connections import (
     InMemoryWhatsAppConnectionRepository,
 )
+from echo_v2.ports.bot import BotEvent, BotEventType
 from echo_v2.ports.whatsapp import ConnectionConfig, CreatedConnection
 from echo_v2.services.onboarding import OnboardingService
 
@@ -31,6 +32,8 @@ class FakeBot:
     """Records sent messages for assertion."""
 
     sent: list[tuple[str, str]] = field(default_factory=list)
+    sent_buttons: list[tuple[str, str, list[dict]]] = field(default_factory=list)
+    send_buttons_should_fail: bool = False
 
     async def send_text(self, user_phone: str, text: str) -> None:
         self.sent.append((user_phone, text))
@@ -43,6 +46,18 @@ class FakeBot:
         body_params: list[str],
     ) -> str:
         self.sent.append((user_phone, f"[template:{template_name}]"))
+        return "fake-msg-id"
+
+    async def send_buttons(
+        self,
+        user_phone: str,
+        *,
+        body_text: str,
+        buttons: list[dict],
+    ) -> str:
+        if self.send_buttons_should_fail:
+            raise RuntimeError("buttons boom")
+        self.sent_buttons.append((user_phone, body_text, buttons))
         return "fake-msg-id"
 
 
@@ -247,7 +262,7 @@ def _make_service(
     return service, bot, user_repo, connection_repo, green_client
 
 
-# --- handle_unknown_user: connected / failed / create_user failure ----------
+# --- start_onboarding: connected / failed / create_user failure ----------
 
 
 async def test_connected_user_skipped():
@@ -257,7 +272,7 @@ async def test_connected_user_skipped():
     user_id = await user_repo.create_user(PHONE, onboarding_status="connected")
     await user_repo.update_onboarding_status(user_id, "connected")
 
-    await service.handle_unknown_user(PHONE)
+    await service.start_onboarding(PHONE)
 
     assert len(green_client.otp_calls) == 0
     assert len(bot.sent) == 0
@@ -274,7 +289,7 @@ async def test_failed_user_retries_onboarding():
     await user_repo.create_user(PHONE, onboarding_status="failed")
     assert (await user_repo.get_by_phone(PHONE))[1] == "failed"
 
-    await service.handle_unknown_user(PHONE)
+    await service.start_onboarding(PHONE)
     import asyncio
     await asyncio.sleep(0.2)
 
@@ -292,7 +307,7 @@ async def test_create_user_exception_returns():
         user_repo=user_repo
     )
 
-    await service.handle_unknown_user(PHONE)
+    await service.start_onboarding(PHONE)
 
     assert len(green_client.otp_calls) == 0
     assert len(bot.sent) == 0
@@ -307,7 +322,7 @@ async def test_provisioner_create_connection_fails():
         provisioner=FailingProvisioner()
     )
 
-    await service.handle_unknown_user(PHONE)
+    await service.start_onboarding(PHONE)
     import asyncio
     await asyncio.sleep(0.2)
 
@@ -329,7 +344,7 @@ async def test_get_authorization_code_fails():
         green_client=green_client
     )
 
-    await service.handle_unknown_user(PHONE)
+    await service.start_onboarding(PHONE)
     import asyncio
     await asyncio.sleep(0.2)
 
@@ -341,6 +356,185 @@ async def test_get_authorization_code_fails():
     _phone, failure_msg = bot.sent[1]
     assert "מצטער" in failure_msg
     assert "קוד האימות" in failure_msg
+
+
+# --- Consent-first: handle_unknown_event / send_introduction ---------------
+
+
+def _button_event(phone: str, button_id: str) -> BotEvent:
+    """Build a BUTTON_REPLY BotEvent for tests."""
+    return BotEvent(
+        event_id="test-evt",
+        user_phone=phone,
+        type=BotEventType.BUTTON_REPLY,
+        button_id=button_id,
+    )
+
+
+def _text_event(phone: str, text: str) -> BotEvent:
+    """Build a TEXT BotEvent for tests."""
+    return BotEvent(
+        event_id="test-evt",
+        user_phone=phone,
+        type=BotEventType.TEXT,
+        text=text,
+    )
+
+
+def _contact_event(phone: str) -> BotEvent:
+    """Build a CONTACT BotEvent for tests."""
+    from echo_v2.ports.bot import BotContact
+
+    return BotEvent(
+        event_id="test-evt",
+        user_phone=phone,
+        type=BotEventType.CONTACT,
+        contact=BotContact(phone="+972500000000", name="Test"),
+    )
+
+
+async def test_handle_unknown_event_start_button_triggers_onboarding():
+    """onboarding:start button → start_onboarding (creates user + provisions)."""
+    service, _bot, user_repo, _conn, _green_client = _make_service()
+
+    event = _button_event(PHONE, "onboarding:start")
+    await service.handle_unknown_event(event)
+
+    # User was created (start_onboarding ran synchronously up to the background task).
+    user = await user_repo.get_by_phone(PHONE)
+    assert user is not None
+    assert user[1] == "pending"
+
+
+async def test_handle_unknown_event_info_button_sends_explanation():
+    """onboarding:info button → send_explanation (no user created, no Green call)."""
+    service, bot, user_repo, _conn, green_client = _make_service()
+
+    event = _button_event(PHONE, "onboarding:info")
+    await service.handle_unknown_event(event)
+
+    # No user created.
+    user = await user_repo.get_by_phone(PHONE)
+    assert user is None
+    # No OTP call.
+    assert len(green_client.otp_calls) == 0
+    # Explanation buttons sent.
+    assert len(bot.sent_buttons) == 1
+    _phone, body, buttons = bot.sent_buttons[0]
+    assert _phone == PHONE
+    assert "WhatsApp" in body
+    # Only the connect button (not the info button again).
+    assert len(buttons) == 1
+    assert buttons[0]["id"] == "onboarding:start"
+
+
+async def test_handle_unknown_event_text_consent_phrase_triggers_onboarding():
+    """Text 'חברו אותי' → start_onboarding (fallback for button delivery failure)."""
+    service, _bot, user_repo, _conn, _green_client = _make_service()
+
+    event = _text_event(PHONE, "חברו אותי")
+    await service.handle_unknown_event(event)
+
+    user = await user_repo.get_by_phone(PHONE)
+    assert user is not None
+    assert user[1] == "pending"
+
+
+async def test_handle_unknown_event_text_hello_sends_intro():
+    """Text 'hello' (not the consent phrase) → send_introduction, no user created."""
+    service, bot, user_repo, _conn, green_client = _make_service()
+
+    event = _text_event(PHONE, "hello")
+    await service.handle_unknown_event(event)
+
+    # No user created, no OTP.
+    user = await user_repo.get_by_phone(PHONE)
+    assert user is None
+    assert len(green_client.otp_calls) == 0
+    # Intro buttons sent.
+    assert len(bot.sent_buttons) == 1
+    _phone, body, buttons = bot.sent_buttons[0]
+    assert _phone == PHONE
+    assert "Echo" in body
+    assert len(buttons) == 2
+    ids = [b["id"] for b in buttons]
+    assert "onboarding:start" in ids
+    assert "onboarding:info" in ids
+
+
+async def test_handle_unknown_event_generic_yes_does_not_trigger_onboarding():
+    """Text 'כן' is NOT accepted as consent — only the deliberate phrase."""
+    service, bot, user_repo, _conn, _green_client = _make_service()
+
+    event = _text_event(PHONE, "כן")
+    await service.handle_unknown_event(event)
+
+    user = await user_repo.get_by_phone(PHONE)
+    assert user is None
+    # Intro sent instead.
+    assert len(bot.sent_buttons) == 1
+
+
+async def test_handle_unknown_event_unknown_button_sends_intro():
+    """Unknown button_id → send_introduction."""
+    service, bot, user_repo, _conn, _green_client = _make_service()
+
+    event = _button_event(PHONE, "something:else")
+    await service.handle_unknown_event(event)
+
+    user = await user_repo.get_by_phone(PHONE)
+    assert user is None
+    assert len(bot.sent_buttons) == 1
+
+
+async def test_handle_unknown_event_contact_sends_intro():
+    """CONTACT event from unknown user → send_introduction."""
+    service, bot, user_repo, _conn, _green_client = _make_service()
+
+    event = _contact_event(PHONE)
+    await service.handle_unknown_event(event)
+
+    user = await user_repo.get_by_phone(PHONE)
+    assert user is None
+    assert len(bot.sent_buttons) == 1
+
+
+async def test_send_introduction_sends_two_buttons():
+    """send_introduction sends the intro body with start + info buttons."""
+    service, bot, _user_repo, _conn, _green_client = _make_service()
+
+    await service.send_introduction(PHONE)
+
+    assert len(bot.sent_buttons) == 1
+    _phone, body, buttons = bot.sent_buttons[0]
+    assert _phone == PHONE
+    assert "רוצה להתחבר" in body
+    assert len(buttons) == 2
+    assert buttons[0]["id"] == "onboarding:start"
+    assert buttons[1]["id"] == "onboarding:info"
+
+
+async def test_send_explanation_sends_one_button():
+    """send_explanation sends the info body with only the connect button."""
+    service, bot, _user_repo, _conn, _green_client = _make_service()
+
+    await service.send_explanation(PHONE)
+
+    assert len(bot.sent_buttons) == 1
+    _phone, body, buttons = bot.sent_buttons[0]
+    assert _phone == PHONE
+    assert "מכשיר מקושר" in body
+    assert len(buttons) == 1
+    assert buttons[0]["id"] == "onboarding:start"
+
+
+async def test_send_introduction_send_failure_does_not_crash():
+    """If send_buttons raises in send_introduction, it logs and returns."""
+    service, bot, _user_repo, _conn, _green_client = _make_service()
+    bot.send_buttons_should_fail = True
+
+    # Should not raise.
+    await service.send_introduction(PHONE)
 
 
 # --- _poll_for_authorization: authorized / exception / timeout ---------------
@@ -662,7 +856,7 @@ async def test_resend_otp_get_code_fails():
     )
 
     # Start onboarding to create a connection record (succeeds, user pending).
-    await service.handle_unknown_user(PHONE)
+    await service.start_onboarding(PHONE)
     import asyncio
     await asyncio.sleep(0.2)
     assert len(green_client.otp_calls) == 1

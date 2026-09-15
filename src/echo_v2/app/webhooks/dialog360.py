@@ -114,10 +114,10 @@ def build_router(
                         return
                 return
 
-            # Check if user is fully unknown — start onboarding.
+            # Check if user is fully unknown — consent-first onboarding.
             user_info = await flow_service._user_resolver.resolve(event.user_phone)
             if user_info is None:
-                await onboarding_service.handle_unknown_user(event.user_phone)
+                await onboarding_service.handle_unknown_event(event)
                 return
 
         # Dispatch to the flow service.

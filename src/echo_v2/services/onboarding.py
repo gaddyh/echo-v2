@@ -31,7 +31,7 @@ from echo_v2.persistence.whatsapp_connections import (
     StoredConnection,
     WhatsAppConnectionRepository,
 )
-from echo_v2.ports.bot import BotChannel
+from echo_v2.ports.bot import BotChannel, BotEvent, BotEventType
 from echo_v2.ports.whatsapp import (
     ConnectionConfig,
     ConnectionStatus,
@@ -72,6 +72,33 @@ _ALREADY_ONBOARDING = (
 _OTP_TIMED_OUT = 'לא התחברת בזמן. שלח "קוד" כדי לקבל קוד חדש.'
 
 _RESEND_KEYWORD = "קוד"
+
+# --- Consent-first introduction ---------------------------------------------
+# First contact from an unknown user shows this intro with two buttons.
+# No DB row or Green instance is created until the user taps "חברו אותי".
+_INTRO_BODY = (
+    "היי, אני Echo 👋\n\n"
+    "אני עוזר לך לזהות שיחות ב־WhatsApp שמחכות לתשובה, "
+    "ושולח לך סיכום יומי.\n\n"
+    "כדי לעשות זאת, נחבר את חשבון ה־WhatsApp שלך כמכשיר מקושר. "
+    "החיבור מאפשר ל־Echo לקרוא את השיחות כדי לזהות מה ממתין לך; "
+    "Echo שולח הודעות רק כשאתה מבקש ממנו.\n\n"
+    "רוצה להתחבר?"
+)
+
+# Short reassurance shown when the user taps "איך זה עובד?".
+_INFO_BODY = (
+    "Echo מתחבר ל־WhatsApp שלך כמו מכשיר מקושר נוסף — בלי להחליף אותך.\n\n"
+    "הוא קורא את השיחות כדי לזהות מה מחכה לתגובה, ושולח לך סיכום יומי. "
+    "Echo שולח הודעות משמך רק כשאתה מבקש ממנו תזכורת.\n\n"
+    "החשבון שלך נשאר שלך לגמרי — אפשר לנתק את Echo בכל רגע מהגדרות WhatsApp."
+)
+
+_ONBOARDING_START_BUTTON = {"id": "onboarding:start", "title": "חברו אותי"}
+_ONBOARDING_INFO_BUTTON = {"id": "onboarding:info", "title": "איך זה עובד?"}
+
+# Text fallback for consent if button delivery is unavailable.
+_CONSENT_PHRASE = "חברו אותי"
 
 
 @runtime_checkable
@@ -143,8 +170,73 @@ class OnboardingService:
         self._poll_interval = poll_interval
         self._poll_max_attempts = poll_max_attempts
 
-    async def handle_unknown_user(self, phone: str) -> None:
-        """Start onboarding for an unknown user who messaged the bot.
+    async def handle_unknown_event(self, event: BotEvent) -> None:
+        """Handle an event from a user with no DB row — consent-first.
+
+        No DB row or Green instance is created until the user explicitly
+        consents via the "חברו אותי" button (or the text fallback).
+
+        - BUTTON_REPLY ``onboarding:start`` → start_onboarding
+        - BUTTON_REPLY ``onboarding:info`` → send_explanation
+        - TEXT matching the consent phrase → start_onboarding (fallback)
+        - Anything else → send_introduction
+        """
+        phone = event.user_phone
+
+        if event.type is BotEventType.BUTTON_REPLY:
+            if event.button_id == "onboarding:start":
+                await self.start_onboarding(phone)
+                return
+            if event.button_id == "onboarding:info":
+                await self.send_explanation(phone)
+                return
+            # Unknown button → show intro.
+            await self.send_introduction(phone)
+            return
+
+        # TEXT event — only the deliberate consent phrase triggers onboarding.
+        if event.type is BotEventType.TEXT and event.text:
+            if event.text.strip() == _CONSENT_PHRASE:
+                await self.start_onboarding(phone)
+                return
+            await self.send_introduction(phone)
+            return
+
+        # Any other event type (CONTACT, LIST_REPLY) → show intro.
+        await self.send_introduction(phone)
+
+    async def send_introduction(self, phone: str) -> None:
+        """Send the consent-first intro message with two buttons."""
+        normalized = self._normalize_phone(phone)
+        if normalized is None:
+            _logger.warning("onboarding: invalid phone number format")
+            return
+        try:
+            await self._bot.send_buttons(
+                normalized,
+                body_text=_INTRO_BODY,
+                buttons=[_ONBOARDING_START_BUTTON, _ONBOARDING_INFO_BUTTON],
+            )
+        except Exception:
+            _logger.exception("onboarding: failed to send introduction to %s", phone)
+
+    async def send_explanation(self, phone: str) -> None:
+        """Send the "איך זה עובד?" explanation with the connect button."""
+        normalized = self._normalize_phone(phone)
+        if normalized is None:
+            _logger.warning("onboarding: invalid phone number format")
+            return
+        try:
+            await self._bot.send_buttons(
+                normalized,
+                body_text=_INFO_BODY,
+                buttons=[_ONBOARDING_START_BUTTON],
+            )
+        except Exception:
+            _logger.exception("onboarding: failed to send explanation to %s", phone)
+
+    async def start_onboarding(self, phone: str) -> None:
+        """Start onboarding for a user who has explicitly consented.
 
         Idempotent: if onboarding is already pending, re-send OTP instructions
         instead of creating a new instance.
