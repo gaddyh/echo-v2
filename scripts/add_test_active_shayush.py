@@ -146,7 +146,7 @@ async def main() -> None:
         )
 
         link = f"{BASE_URL}/q/{raw_token}"
-        print(f"\nWaiting-list link (one-time, expires in 48h):")
+        print("\nWaiting-list link (one-time, expires in 48h):")
         print(link)
 
     await engine.dispose()

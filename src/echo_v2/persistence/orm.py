@@ -924,3 +924,35 @@ class WaitingListSessionRow(Base):
         Index("ix_wls_user_id", "user_id"),
         Index("ix_wls_expires_at", "expires_at"),
     )
+
+
+# --- waitlist_signups ---------------------------------------------------------
+
+
+class WaitlistSignupRow(Base):
+    """A landing-page waitlist signup — name + phone number.
+
+    Not linked to ``users``: signups happen before onboarding. Deduplicated
+    by canonical E.164 ``phone_number`` (``INSERT ON CONFLICT DO NOTHING``)
+    so repeat submissions are a no-op.
+    """
+
+    __tablename__ = "waitlist_signups"
+
+    id: Mapped[str] = mapped_column(
+        Uuid,
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+        nullable=False,
+    )
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    phone_number: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    __table_args__ = (
+        UniqueConstraint("phone_number", name="uq_waitlist_phone"),
+    )

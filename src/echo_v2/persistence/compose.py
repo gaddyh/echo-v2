@@ -48,6 +48,7 @@ from echo_v2.persistence.unit_of_work import PostgresUnitOfWork
 from echo_v2.persistence.waiting_list_tokens import (
     PostgresWaitingListSessionRepository,
 )
+from echo_v2.persistence.waitlist import PostgresWaitlistRepository
 
 __all__ = ["PostgresRepos", "build_postgres_repos"]
 
@@ -71,6 +72,7 @@ class PostgresRepos:
     chat_mutes: PostgresChatMuteRepository
     daily_digests: PostgresDailyDigestRepository
     waiting_list_sessions: PostgresWaitingListSessionRepository
+    waitlist: PostgresWaitlistRepository
     session_factory: async_sessionmaker
     unit_of_work: type[PostgresUnitOfWork]
 
@@ -106,6 +108,7 @@ def build_postgres_repos(settings: DBSettings) -> PostgresRepos:
     chat_mutes = PostgresChatMuteRepository(factory)
     daily_digests = PostgresDailyDigestRepository(factory)
     waiting_list_sessions = PostgresWaitingListSessionRepository(factory)
+    waitlist = PostgresWaitlistRepository(factory)
 
     # A UoW factory bound to the same session_factory + cipher.
     class _BoundUoW(PostgresUnitOfWork):
@@ -128,6 +131,7 @@ def build_postgres_repos(settings: DBSettings) -> PostgresRepos:
         chat_mutes=chat_mutes,
         daily_digests=daily_digests,
         waiting_list_sessions=waiting_list_sessions,
+        waitlist=waitlist,
         session_factory=factory,
         unit_of_work=_BoundUoW,
     )

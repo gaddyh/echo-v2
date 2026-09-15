@@ -12,7 +12,7 @@ Versions:
 
 from __future__ import annotations
 
-__all__ = ["PROMPTS", "DEFAULT_PROMPT_VERSION", "get_prompt"]
+__all__ = ["DEFAULT_PROMPT_VERSION", "PROMPTS", "get_prompt"]
 
 DEFAULT_PROMPT_VERSION = "v1"
 

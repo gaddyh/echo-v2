@@ -150,6 +150,7 @@ async def clean_db(engine) -> AsyncIterator[None]:
         # Order matters: respect FK constraints (children first).
         await conn.exec_driver_sql(
             "TRUNCATE TABLE "
+            "waitlist_signups, "
             "waiting_for_me_feedback, "
             "waiting_for_me_actions, "
             "chat_mutes, "

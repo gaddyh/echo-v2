@@ -1,0 +1,128 @@
+"""Tests for the landing page + waitlist signup routes."""
+
+from __future__ import annotations
+
+import pytest
+from fastapi import FastAPI
+from httpx import ASGITransport, AsyncClient
+
+from echo_v2.app.landing_routes import build_landing_router
+from echo_v2.persistence.waitlist import InMemoryWaitlistRepository
+
+pytestmark = pytest.mark.asyncio
+
+
+def _make_app() -> tuple[FastAPI, InMemoryWaitlistRepository]:
+    repo = InMemoryWaitlistRepository()
+    app = FastAPI()
+    app.include_router(build_landing_router(waitlist_repo=repo))
+    return app, repo
+
+
+def _client(app: FastAPI) -> AsyncClient:
+    return AsyncClient(transport=ASGITransport(app=app), base_url="https://test")
+
+
+# --- GET / -------------------------------------------------------------------
+
+
+async def test_landing_page_serves_html():
+    app, _ = _make_app()
+    async with _client(app) as client:
+        resp = await client.get("/")
+    assert resp.status_code == 200
+    assert "text/html" in resp.headers.get("content-type", "")
+    assert "Echo" in resp.text
+    assert "רשימת המתנה" in resp.text
+    # Security headers.
+    assert resp.headers.get("x-content-type-options") == "nosniff"
+    assert "default-src 'self'" in resp.headers.get("content-security-policy", "")
+
+
+# --- POST /api/waitlist ------------------------------------------------------
+
+
+async def test_waitlist_signup_success():
+    app, repo = _make_app()
+    async with _client(app) as client:
+        resp = await client.post(
+            "/api/waitlist",
+            json={"name": "דנה לוי", "phone": "0546610653"},
+        )
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ok"}
+    signups = await repo.list_all()
+    assert len(signups) == 1
+    assert signups[0].name == "דנה לוי"
+    # Phone normalized to E.164.
+    assert signups[0].phone_number == "+972546610653"
+
+
+async def test_waitlist_signup_normalizes_phone_variants():
+    """0546610653, 972546610653, +972546610653 all collapse to one row."""
+    app, repo = _make_app()
+    async with _client(app) as client:
+        for phone in ["0546610653", "972546610653", "+972-54-661-0653"]:
+            resp = await client.post(
+                "/api/waitlist",
+                json={"name": "דנה", "phone": phone},
+            )
+            assert resp.status_code == 200
+    signups = await repo.list_all()
+    assert len(signups) == 1
+
+
+async def test_waitlist_duplicate_returns_same_response():
+    """A duplicate signup must be indistinguishable from a new one."""
+    app, _ = _make_app()
+    async with _client(app) as client:
+        first = await client.post(
+            "/api/waitlist", json={"name": "דנה", "phone": "0546610653"},
+        )
+        second = await client.post(
+            "/api/waitlist", json={"name": "אחר", "phone": "0546610653"},
+        )
+    assert first.status_code == second.status_code == 200
+    assert first.json() == second.json()
+
+
+async def test_waitlist_invalid_phone_returns_422():
+    app, repo = _make_app()
+    async with _client(app) as client:
+        resp = await client.post(
+            "/api/waitlist", json={"name": "דנה", "phone": "123456"},
+        )
+    assert resp.status_code == 422
+    assert await repo.list_all() == []
+
+
+async def test_waitlist_empty_name_returns_422():
+    app, _ = _make_app()
+    async with _client(app) as client:
+        resp = await client.post(
+            "/api/waitlist", json={"name": "   ", "phone": "0546610653"},
+        )
+    assert resp.status_code == 422
+
+
+async def test_waitlist_missing_fields_return_422():
+    app, _ = _make_app()
+    async with _client(app) as client:
+        resp = await client.post("/api/waitlist", json={"name": "דנה"})
+    assert resp.status_code == 422
+
+
+async def test_waitlist_rate_limit():
+    app, _ = _make_app()
+    async with _client(app) as client:
+        # 10 allowed per window; the 11th is rejected.
+        for i in range(10):
+            resp = await client.post(
+                "/api/waitlist",
+                json={"name": "דנה", "phone": f"05012345{i:02d}"},
+            )
+            assert resp.status_code in (200, 422)
+        resp = await client.post(
+            "/api/waitlist", json={"name": "דנה", "phone": "0509999999"},
+        )
+    assert resp.status_code == 429

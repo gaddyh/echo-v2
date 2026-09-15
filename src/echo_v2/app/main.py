@@ -492,6 +492,12 @@ def create_app() -> FastAPI:
     # Waiting-list mini web app: token→cookie exchange + JSON API.
     app.include_router(waiting_list_router)
 
+    # Public landing page + waitlist signup.
+    from echo_v2.app.landing_routes import build_landing_router
+
+    landing_router = build_landing_router(waitlist_repo=repos.waitlist)
+    app.include_router(landing_router)
+
     @app.get("/health")
     async def health() -> dict[str, str]:
         return {"status": "ok"}
