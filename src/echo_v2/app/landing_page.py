@@ -353,7 +353,13 @@ body {
 .transparency h2 {
   font-size: 1.35rem;
   text-align: center;
-  margin-bottom: 26px;
+  margin-bottom: 8px;
+}
+.transparency .section-sub {
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: 0.92rem;
+  margin-bottom: 22px;
 }
 .transparency .grid {
   display: grid;
@@ -422,6 +428,11 @@ body {
   color: var(--text-secondary);
   font-size: 0.85rem;
   line-height: 1.5;
+}
+.faq details a {
+  color: var(--primary);
+  text-decoration: underline;
+  font-weight: 600;
 }
 
 /* --- waitlist form --- */
@@ -640,6 +651,7 @@ body {
 <section class="transparency">
   <div class="container">
     <h2>שקיפות מלאה — כי זה המחיר של האמון</h2>
+    <p class="section-sub">וואטסאפ הוא אישי. אז הנה בדיוק מה Echo רואה — ומה לא.</p>
     <div class="grid">
       <div class="card">
         <h3>מה Echo רואה?</h3>
@@ -647,7 +659,7 @@ body {
       </div>
       <div class="card">
         <h3>מה נשמר?</h3>
-        <p>Echo שומר את ההודעות הדרושות להפעלת השירות, פרטי שיחה, תוצאות הניתוח והפעולות שביצעת. המידע נשמר במסד הנתונים של Echo. מחיקת החשבון מוחקת את המידע המשויך אליו.</p>
+        <p>Echo שומר את הודעות הטקסט שהמערכת מקבלת לצורך הניתוח, פרטי שיחה, תוצאות הניתוח והפעולות שביצעת. המידע נשמר במסד הנתונים של Echo. מחיקת החשבון מוחקת את המידע המשויך אליו.</p>
       </div>
       <div class="card">
         <h3>מי מעבד את המידע?</h3>
@@ -670,11 +682,11 @@ body {
     </details>
     <details>
       <summary>מי יכול לגשת למידע?</summary>
-      <p>רק אתה והמפתח (גדי). אין צוות, אין גישה לעובדים אחרים. המידע נשמר במסד נתונים מאובטח.</p>
+      <p>בצד של Echo, רק גדי, שמפתח ומפעיל את השירות, יכול לגשת למידע לצורכי תפעול ותמיכה. אין צוות נוסף עם גישה. Green API ו־OpenAI מעבדים מידע כחלק מהשירות, כפי שמפורט למעלה.</p>
     </details>
     <details>
       <summary>ואם אני רוצה למחוק הכל?</summary>
-      <p>ניתק את Echo מהגדרות וואטסאפ כדי לעצור הודעות חדשות. למחיקת הנתונים שכבר נשמרו, שלח הודעה וזה יימחק — בקרוב גם כפתור self-service.</p>
+      <p>ניתק את Echo מהגדרות וואטסאפ כדי לעצור הודעות חדשות. למחיקת הנתונים שכבר נשמרו, <a href="https://wa.me/972546610653?text=מחק%20לי%20הכל">שלח לי הודעת WhatsApp</a> ואמחק את כל הנתונים המשויכים לחשבון. בקרוב יהיה גם כפתור מחיקה עצמית.</p>
     </details>
     <details>
       <summary>מה קורה אם אני רק רוצה לנסות?</summary>
