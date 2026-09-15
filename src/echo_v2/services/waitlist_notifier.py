@@ -69,7 +69,12 @@ class Dialog360WaitlistNotifier:
             f"טלפון: {phone}\n"
             f"WTP: {wtp_label}"
         )
+        _logger.info(
+            "waitlist: notifying owner %s about new signup %s (%s)",
+            self._owner_phone, name, phone,
+        )
         try:
-            await self._bot.send_text(self._owner_phone, text)
+            msg_id = await self._bot.send_text(self._owner_phone, text)
+            _logger.info("waitlist: notified owner, msg_id=%s", msg_id)
         except Exception:
             _logger.exception("waitlist: failed to notify owner")

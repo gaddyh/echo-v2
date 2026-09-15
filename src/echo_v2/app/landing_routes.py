@@ -153,7 +153,9 @@ def build_landing_router(
         # must not leak whether a number is already on the list.
         if inserted:
             _logger.info("waitlist: new signup")
-            if notifier is not None:
+            if notifier is None:
+                _logger.warning("waitlist: notifier is None (ECHO_OWNER_PHONE not set?)")
+            else:
                 try:
                     await notifier.notify(
                         name=body.name,

@@ -502,6 +502,9 @@ def create_app() -> FastAPI:
         notifier = Dialog360WaitlistNotifier(
             bot=d360_client, owner_phone=owner_phone,
         )
+        _logger.info("waitlist notifier enabled for %s", owner_phone)
+    else:
+        _logger.warning("ECHO_OWNER_PHONE not set — waitlist notifier disabled")
 
     landing_router = build_landing_router(
         waitlist_repo=repos.waitlist,
