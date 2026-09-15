@@ -319,6 +319,19 @@ class OnboardingService:
                         id_instance,
                         attempt + 1,
                     )
+                    connection = await self._connection_repo.get_by_user(user_id)
+                    if connection is None:
+                        _logger.warning(
+                            "onboarding: authorized instance has no connection row "
+                            "for user %s",
+                            user_id,
+                        )
+                    else:
+                        await self._connection_repo.update_status(
+                            connection.ref,
+                            ConnectionStatus.CONNECTED,
+                            "authorized",
+                        )
                     await self.handle_connection_established(user_id, phone)
                     return
             except Exception:  # noqa: BLE001, S110
