@@ -147,8 +147,64 @@ body {
 .demo-toast.show { opacity: 1; transform: translateX(50%) translateY(0); }
 .demo-card-inner { transition: opacity 0.3s, transform 0.3s; }
 .demo-card-inner.swap { opacity: 0; transform: translateX(-24px); }
+.demo-overlay {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: var(--card);
+  border-radius: 16px 16px 0 0;
+  box-shadow: 0 -2px 12px rgba(0,0,0,0.14);
+  padding: 14px 14px 16px;
+  z-index: 4;
+  transform: translateY(105%);
+  transition: transform 0.35s cubic-bezier(.4,0,.2,1);
+}
+.demo-overlay.open { transform: translateY(0); }
+.demo-overlay .ov-title { font-weight: 600; font-size: 0.95rem; margin-bottom: 10px; }
+.demo-overlay .ov-templates { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 8px; }
+.demo-overlay .ov-tpl {
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--card);
+  font-size: 0.76rem;
+  color: var(--text-secondary);
+  transition: filter 0.15s, transform 0.15s, background 0.2s, color 0.2s;
+}
+.demo-overlay .ov-tpl.selected { background: var(--primary); color: white; border-color: var(--primary); }
+.demo-overlay .ov-msg {
+  min-height: 44px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 0.85rem;
+  color: var(--text);
+  background: var(--bg);
+  margin-bottom: 8px;
+}
+.demo-overlay .ov-msg .caret {
+  display: inline-block;
+  width: 1px;
+  border-left: 1.5px solid var(--text);
+  animation: demo-blink 0.8s step-end infinite;
+}
+@keyframes demo-blink { 50% { border-color: transparent; } }
+.demo-overlay .ov-msg:empty::before { content: "מה לשלוח?"; color: var(--text-secondary); }
+.demo-overlay .ov-presets { display: flex; gap: 6px; margin-bottom: 8px; }
+.demo-overlay .ov-preset {
+  flex: 1;
+  padding: 8px 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+  font-size: 0.78rem;
+  text-align: center;
+  color: var(--text);
+  transition: filter 0.15s, transform 0.15s;
+}
 @media (prefers-reduced-motion: reduce) {
-  .demo-pointer, .demo-toast { display: none !important; }
+  .demo-pointer, .demo-toast, .demo-overlay { display: none !important; }
 }
 .demo-progress { text-align: center; color: var(--text-secondary); font-size: 0.85rem; }
 .demo-progress-bar {
@@ -422,6 +478,20 @@ body {
         <div class="disabled">→ הקודם</div>
         <div>הבא ←</div>
       </div>
+      <div class="demo-overlay" id="demo-overlay">
+        <div class="ov-title">תזמון הודעה</div>
+        <div class="ov-templates">
+          <span class="ov-tpl" id="demo-tpl">קיבלתי, בודק וחוזר</span>
+          <span class="ov-tpl">אחזור בהמשך היום</span>
+          <span class="ov-tpl">תודה, מטפל בזה</span>
+        </div>
+        <div class="ov-msg" id="demo-msg"></div>
+        <div class="ov-presets">
+          <span class="ov-preset">עוד 10 דקות</span>
+          <span class="ov-preset">עוד שעה</span>
+          <span class="ov-preset" id="demo-preset">מחר בבוקר</span>
+        </div>
+      </div>
     </div>
     <div class="demo-caption">ככה זה נראה — כרטיס אחד לכל מי שמחכה, פעולה אחת וממשיכים.</div>
   </div>
@@ -598,6 +668,45 @@ function showError(msg) {
     await sleep(350);
   }
 
+  async function typeInto(el, text) {
+    el.textContent = "";
+    const caret = document.createElement("span");
+    caret.className = "caret";
+    el.appendChild(caret);
+    for (const ch of text) {
+      caret.insertAdjacentText("beforebegin", ch);
+      await sleep(28);
+    }
+    await sleep(250);
+    caret.remove();
+  }
+
+  async function sendMessageScene() {
+    const overlay = document.getElementById("demo-overlay");
+    const tpl = document.getElementById("demo-tpl");
+    const msg = document.getElementById("demo-msg");
+    const preset = document.getElementById("demo-preset");
+
+    // Open the scheduling popup.
+    await press(document.getElementById("demo-send"));
+    overlay.classList.add("open");
+    await sleep(600);
+
+    // Pick a template — it fills the message box (typed).
+    await press(tpl);
+    tpl.classList.add("selected");
+    await typeInto(msg, "קיבלתי, בודק וחוזר");
+
+    // Pick a time preset — submits immediately, like the real app.
+    await press(preset);
+    await sleep(150);
+    overlay.classList.remove("open");
+    tpl.classList.remove("selected");
+    msg.textContent = "";
+    await sleep(350);
+    await showToast("📤 ההודעה תישלח מחר ב־9:00");
+  }
+
   async function loop() {
     pointer.classList.add("visible");
     for (;;) {
@@ -613,9 +722,8 @@ function showError(msg) {
       await showToast("⏰ אזכיר בעוד שעה");
       await swapCard(2);
 
-      // Scene 3: schedule a message.
-      await press(document.getElementById("demo-send"));
-      await showToast("📤 ההודעה תישלח מחר ב־9:00");
+      // Scene 3: schedule a message — popup, template, time, send.
+      await sendMessageScene();
       await sleep(300);
 
       // Scene 4: false-positive feedback → back to start.
