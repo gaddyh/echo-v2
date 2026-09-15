@@ -346,22 +346,83 @@ body {
 .step h3 { font-size: 1rem; margin-bottom: 2px; }
 .step p { color: var(--text-secondary); font-size: 0.9rem; }
 
-/* --- privacy --- */
-.privacy {
-  padding: 32px 0 8px;
-  text-align: center;
+/* --- transparency --- */
+.transparency {
+  padding: 44px 0 12px;
 }
-.privacy .box {
+.transparency h2 {
+  font-size: 1.35rem;
+  text-align: center;
+  margin-bottom: 26px;
+}
+.transparency .grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  max-width: 640px;
+  margin: 0 auto;
+}
+.transparency .card {
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 12px;
-  padding: 18px 20px;
-  max-width: 460px;
-  margin: 0 auto;
-  font-size: 0.9rem;
-  color: var(--text-secondary);
+  padding: 16px 18px;
 }
-.privacy .box strong { color: var(--text); }
+.transparency .card h3 {
+  font-size: 0.95rem;
+  margin-bottom: 4px;
+}
+.transparency .card p {
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+@media (max-width: 600px) {
+  .transparency .grid { grid-template-columns: 1fr; }
+}
+
+/* --- faq --- */
+.faq {
+  padding: 32px 0 12px;
+  max-width: 640px;
+  margin: 0 auto;
+}
+.faq h2 {
+  font-size: 1.35rem;
+  text-align: center;
+  margin-bottom: 20px;
+}
+.faq details {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  margin-bottom: 8px;
+  overflow: hidden;
+}
+.faq summary {
+  padding: 14px 18px;
+  font-size: 0.92rem;
+  font-weight: 600;
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.faq summary::-webkit-details-marker { display: none; }
+.faq summary::after {
+  content: "›";
+  font-size: 1.3rem;
+  color: var(--text-secondary);
+  transition: transform 0.2s;
+}
+.faq details[open] summary::after { transform: rotate(90deg); }
+.faq details p {
+  padding: 0 18px 14px;
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
 
 /* --- waitlist form --- */
 .waitlist { padding: 44px 0 60px; }
@@ -576,12 +637,49 @@ body {
   </div>
 </section>
 
-<section class="privacy">
+<section class="transparency">
   <div class="container">
-    <div class="box">
-      <strong>🔒 הפרטיות שלך קודמת לכל.</strong><br>
-      ההודעות שלך נשארות שלך. בלי פרסום, בלי מכירת מידע, עם הצפנה ואבטחה ברמה שאנחנו היינו דורשים לעצמנו.
+    <h2>שקיפות מלאה — כי זה המחיר של האמון</h2>
+    <div class="grid">
+      <div class="card">
+        <h3>מה Echo רואה?</h3>
+        <p>Echo מקבל את הודעות הטקסט הנכנסות והיוצאות ב־WhatsApp כדי להבין מי מחכה למי. בתמונות, הקלטות, וידאו ומסמכים Echo מזהה כרגע רק את סוג ההודעה — ולא קורא או מנתח את התוכן שלהם.</p>
+      </div>
+      <div class="card">
+        <h3>מה נשמר?</h3>
+        <p>Echo שומר את ההודעות הדרושות להפעלת השירות, פרטי שיחה, תוצאות הניתוח והפעולות שביצעת. המידע נשמר במסד הנתונים של Echo. מחיקת החשבון מוחקת את המידע המשויך אליו.</p>
+      </div>
+      <div class="card">
+        <h3>מי מעבד את המידע?</h3>
+        <p>החיבור ל־WhatsApp נעשה באמצעות Green API. קטעי טקסט רלוונטיים מהשיחה נשלחים ל־OpenAI API כדי לזהות מי מחכה לתשובה. המידע לא נמכר ולא משמש לפרסום. OpenAI אינה משתמשת בנתוני API לאימון המודלים כברירת מחדל.</p>
+      </div>
+      <div class="card">
+        <h3>איך מפסיקים?</h3>
+        <p>אפשר בכל רגע להסיר את Echo דרך WhatsApp ← הגדרות ← מכשירים מקושרים. זה מנתק מיד את הגישה להודעות חדשות. מחיקת חשבון Echo היא פעולה נפרדת שמוחקת את הנתונים שכבר נשמרו.</p>
+      </div>
     </div>
+  </div>
+</section>
+
+<section class="faq">
+  <div class="container">
+    <h2>שאלות נפוצות</h2>
+    <details>
+      <summary>רגע, Echo מקבל גישה להודעות שלי?</summary>
+      <p>כן. כדי לזהות מי מחכה לך, Echo צריך לקרוא את הודעות הטקסט הרלוונטיות. זו גישה רגישה ואנחנו לא מנסים להסתיר את זה. לכן אנחנו מסבירים כאן בדיוק מה נקרא, מה נשמר ולאן המידע נשלח — ואפשר לנתק את Echo בכל רגע.</p>
+    </details>
+    <details>
+      <summary>מי יכול לגשת למידע?</summary>
+      <p>רק אתה והמפתח (גדי). אין צוות, אין גישה לעובדים אחרים. המידע נשמר במסד נתונים מאובטח.</p>
+    </details>
+    <details>
+      <summary>ואם אני רוצה למחוק הכל?</summary>
+      <p>ניתק את Echo מהגדרות וואטסאפ כדי לעצור הודעות חדשות. למחיקת הנתונים שכבר נשמרו, שלח הודעה וזה יימחק — בקרוב גם כפתור self-service.</p>
+    </details>
+    <details>
+      <summary>מה קורה אם אני רק רוצה לנסות?</summary>
+      <p>מתחבר, משתמש כמה ימים. לא מתאים? מנתקים מהגדרות וואטסאפ והגישה להודעות חדשות נעצרת מיד. בלי התחייבות.</p>
+    </details>
   </div>
 </section>
 
