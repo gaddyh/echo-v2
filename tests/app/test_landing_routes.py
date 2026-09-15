@@ -201,3 +201,77 @@ async def test_og_image_endpoint_serves_png():
     assert resp.status_code == 200
     assert resp.headers["content-type"] == "image/png"
     assert resp.content[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+# --- Notifier ----------------------------------------------------------------
+
+
+async def test_notifier_fires_on_new_signup():
+    calls: list[dict] = []
+
+    class FakeNotifier:
+        async def notify(self, *, name, phone, willingness_to_pay=None):
+            calls.append(
+                {"name": name, "phone": phone, "wtp": willingness_to_pay}
+            )
+
+    repo = InMemoryWaitlistRepository()
+    app = FastAPI()
+    app.include_router(
+        build_landing_router(waitlist_repo=repo, notifier=FakeNotifier())
+    )
+    async with _client(app) as client:
+        resp = await client.post(
+            "/api/waitlist",
+            json={"name": "דנה", "phone": "0546610653", "wtp": "30_70"},
+        )
+    assert resp.status_code == 200
+    assert len(calls) == 1
+    assert calls[0] == {
+        "name": "דנה",
+        "phone": "+972546610653",
+        "wtp": "30_70",
+    }
+
+
+async def test_notifier_silent_on_duplicate():
+    calls: list[dict] = []
+
+    class FakeNotifier:
+        async def notify(self, *, name, phone, willingness_to_pay=None):
+            calls.append({"name": name})
+
+    repo = InMemoryWaitlistRepository()
+    app = FastAPI()
+    app.include_router(
+        build_landing_router(waitlist_repo=repo, notifier=FakeNotifier())
+    )
+    async with _client(app) as client:
+        await client.post(
+            "/api/waitlist", json={"name": "דנה", "phone": "0546610653"},
+        )
+        await client.post(
+            "/api/waitlist", json={"name": "אחר", "phone": "0546610653"},
+        )
+    # Only the first (new) signup triggers a notification.
+    assert len(calls) == 1
+    assert calls[0]["name"] == "דנה"
+
+
+async def test_notifier_failure_does_not_break_signup():
+    class BoomNotifier:
+        async def notify(self, *, name, phone, willingness_to_pay=None):
+            raise RuntimeError("boom")
+
+    repo = InMemoryWaitlistRepository()
+    app = FastAPI()
+    app.include_router(
+        build_landing_router(waitlist_repo=repo, notifier=BoomNotifier())
+    )
+    async with _client(app) as client:
+        resp = await client.post(
+            "/api/waitlist", json={"name": "דנה", "phone": "0546610653"},
+        )
+    assert resp.status_code == 200
+    signups = await repo.list_all()
+    assert len(signups) == 1

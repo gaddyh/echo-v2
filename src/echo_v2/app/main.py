@@ -494,10 +494,19 @@ def create_app() -> FastAPI:
 
     # Public landing page + waitlist signup.
     from echo_v2.app.landing_routes import build_landing_router
+    from echo_v2.services.waitlist_notifier import Dialog360WaitlistNotifier
+
+    owner_phone = os.environ.get("ECHO_OWNER_PHONE", "")
+    notifier: Dialog360WaitlistNotifier | None = None
+    if owner_phone:
+        notifier = Dialog360WaitlistNotifier(
+            bot=d360_client, owner_phone=owner_phone,
+        )
 
     landing_router = build_landing_router(
         waitlist_repo=repos.waitlist,
         base_url=webhook_base_url,
+        notifier=notifier,
     )
     app.include_router(landing_router)
 

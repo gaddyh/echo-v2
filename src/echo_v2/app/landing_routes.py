@@ -31,6 +31,7 @@ from pydantic import BaseModel, Field, field_validator
 from echo_v2.app.landing_page import LANDING_PAGE
 from echo_v2.persistence.identity import PhoneParseError, normalize_phone_e164
 from echo_v2.persistence.waitlist import WaitlistRepository
+from echo_v2.services.waitlist_notifier import WaitlistNotifier
 
 __all__ = ["build_landing_router"]
 
@@ -69,12 +70,15 @@ def build_landing_router(
     *,
     waitlist_repo: WaitlistRepository,
     base_url: str = "",
+    notifier: WaitlistNotifier | None = None,
 ) -> APIRouter:
     """Build the landing page router.
 
     Args:
         waitlist_repo: The :class:`WaitlistRepository` for signups.
         base_url: Public base URL (for absolute Open Graph URLs).
+        notifier: Optional :class:`WaitlistNotifier` invoked on each *new*
+            signup. Failures are logged and never break the signup.
     """
     router = APIRouter()
 
@@ -149,6 +153,15 @@ def build_landing_router(
         # must not leak whether a number is already on the list.
         if inserted:
             _logger.info("waitlist: new signup")
+            if notifier is not None:
+                try:
+                    await notifier.notify(
+                        name=body.name,
+                        phone=phone_e164,
+                        willingness_to_pay=body.wtp,
+                    )
+                except Exception:
+                    _logger.exception("waitlist: notifier failed")
         return JSONResponse(
             content={"status": "ok"},
             headers={**_security_headers(), "Cache-Control": "no-store"},
