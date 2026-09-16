@@ -296,6 +296,9 @@ class PostgresMessageRepository:
             timestamp=row.timestamp,
             message_type=row.message_type,
             text=row.text,
+            audio_download_url=row.audio_download_url,
+            audio_mime_type=row.audio_mime_type,
+            audio_file_name=row.audio_file_name,
         )
 
 
