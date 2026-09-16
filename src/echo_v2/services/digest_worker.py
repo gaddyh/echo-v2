@@ -9,8 +9,8 @@ Runs as a background task (like ChatAnalysisWorker). On each poll:
    d. If claimed (new row): query active waiting chats, build digest, send.
    e. If not claimed (row exists): skip — already processed today.
 
-The active query joins ``waiting_for_me_active`` with ``chats`` to ensure
-only current (non-stale) active states are included.
+The active query uses the shared :class:`WaitingListQueryService.current_views`
+so the digest and the mini-app always agree on what's actionable.
 
 Send errors:
   - IndeterminateError → status = indeterminate (no blind retry)
@@ -22,22 +22,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 from echo_v2.domain.digest import DailyDigestStatus
-from echo_v2.domain.waiting_for_me import WaitingForMeActive
-from echo_v2.persistence.chat_repositories import (
-    ChatStateRepository,
-    MessageRepository,
-    WaitingForMeActiveRepository,
-)
-from echo_v2.persistence.contacts import ContactRepository
 from echo_v2.persistence.digest_repositories import DailyDigestRepository
-from echo_v2.persistence.feedback_repositories import ChatMuteRepository
 from echo_v2.ports.bot import BotChannel
 from echo_v2.runtime.errors import IndeterminateError, PermanentError
-from echo_v2.services.digest_formatter import DigestFormatter, DigestItem
+from echo_v2.services.digest_formatter import DigestFormatter
+from echo_v2.services.waiting_list_query import WaitingListQueryService
+from echo_v2.services.waiting_list_token_service import WaitingListTokenService
 
 __all__ = ["DigestWorker"]
 
@@ -53,18 +48,15 @@ class DigestWorker:
 
     Args:
         digest_repo: The :class:`DailyDigestRepository` for claim/status.
-        active_repo: The :class:`WaitingForMeActiveRepository` for active states.
-        chat_state_repo: The :class:`ChatStateRepository` for current versions.
-        message_repo: The :class:`MessageRepository` for latest inbound text.
-        contact_repo: The :class:`ContactRepository` for name resolution.
+        query_service: The shared :class:`WaitingListQueryService`. Must
+            be wired with ``message_repo`` and ``contact_repo`` so
+            ``current_views`` works. The canonical read path — the
+            digest and the mini-app always agree on what's actionable.
         bot: The :class:`BotChannel` to send the digest through.
         user_provider: Callable that returns a list of (user_id, phone, timezone).
-        mute_repo: Optional :class:`ChatMuteRepository` for mute filtering.
         token_service: Optional :class:`WaitingListTokenService` for issuing
             waiting-list web sessions. When provided, the digest template
             is sent with a ``url_suffix`` containing the session token.
-        query_service: Optional shared :class:`WaitingListQueryService`.
-            When provided, used instead of the internal ``_get_current_active``.
         poll_interval_seconds: How often to poll. Default 300 (5 min).
     """
 
@@ -72,28 +64,18 @@ class DigestWorker:
         self,
         *,
         digest_repo: DailyDigestRepository,
-        active_repo: WaitingForMeActiveRepository,
-        chat_state_repo: ChatStateRepository,
-        message_repo: MessageRepository,
-        contact_repo: ContactRepository,
+        query_service: WaitingListQueryService,
         bot: BotChannel,
-        user_provider,
-        mute_repo: ChatMuteRepository | None = None,
-        token_service=None,
-        query_service=None,
+        user_provider: Callable[[], Awaitable[list[tuple[str, str, str, str | None]]]],
+        token_service: WaitingListTokenService | None = None,
         poll_interval_seconds: float = 300.0,
         template_name: str = "morning_waiting_digest6",
     ) -> None:
         self._digest_repo = digest_repo
-        self._active_repo = active_repo
-        self._chat_state_repo = chat_state_repo
-        self._message_repo = message_repo
-        self._contact_repo = contact_repo
+        self._query_service = query_service
         self._bot = bot
         self._user_provider = user_provider
-        self._mute_repo = mute_repo
         self._token_service = token_service
-        self._query_service = query_service
         self._poll_interval = poll_interval_seconds
         self._template_name = template_name
         self._formatter = DigestFormatter()
@@ -162,13 +144,10 @@ class DigestWorker:
             # Already processed today.
             return False
 
-        # Query active waiting chats with version match.
-        if self._query_service is not None:
-            active_states = await self._query_service.current_actionable(user_id)
-        else:
-            active_states = await self._get_current_active(user_id)
+        # Query active waiting chats via the shared view query.
+        views = await self._query_service.current_views(user_id)
 
-        if not active_states:
+        if not views:
             # No waiting chats — mark as empty so we don't retry later today.
             await self._digest_repo.update_status(
                 digest_id=digest.id,
@@ -178,12 +157,9 @@ class DigestWorker:
             _logger.info("digest for user %s on %s: empty", user_id, local_date)
             return False
 
-        # Build digest items.
-        items = await self._build_items(user_id, active_states)
-
         # Format template parameters.
         name = first_name or "חבר"  # fallback if user has no first_name
-        params = self._formatter.format(items, first_name=name)
+        params = self._formatter.format(views, first_name=name)
 
         # Issue a waiting-list web session token (if token service is wired).
         url_suffix: str | None = None
@@ -213,7 +189,7 @@ class DigestWorker:
             await self._digest_repo.update_status(
                 digest_id=digest.id,
                 status=DailyDigestStatus.INDETERMINATE,
-                item_count=len(active_states),
+                item_count=len(views),
             )
             return False
         except PermanentError as exc:
@@ -223,7 +199,7 @@ class DigestWorker:
             await self._digest_repo.update_status(
                 digest_id=digest.id,
                 status=DailyDigestStatus.FAILED,
-                item_count=len(active_states),
+                item_count=len(views),
             )
             return False
         except Exception:
@@ -233,7 +209,7 @@ class DigestWorker:
             await self._digest_repo.update_status(
                 digest_id=digest.id,
                 status=DailyDigestStatus.FAILED,
-                item_count=len(active_states),
+                item_count=len(views),
             )
             return False
 
@@ -243,13 +219,13 @@ class DigestWorker:
             status=DailyDigestStatus.SENT,
             sent_at=datetime.now(timezone.utc),
             provider_message_id=msg_id,
-            item_count=len(active_states),
+            item_count=len(views),
         )
         _logger.info(
             "digest sent to user %s on %s: %d items",
             user_id,
             local_date,
-            len(active_states),
+            len(views),
         )
         return True
 
@@ -269,21 +245,15 @@ class DigestWorker:
 
         Returns ``True`` if sent, ``False`` if no active items or send failed.
         """
-        # Query active waiting chats with version match.
-        if self._query_service is not None:
-            active_states = await self._query_service.current_actionable(user_id)
-        else:
-            active_states = await self._get_current_active(user_id)
+        # Query active waiting chats via the shared view query.
+        views = await self._query_service.current_views(user_id)
 
-        if not active_states:
+        if not views:
             return False
-
-        # Build digest items.
-        items = await self._build_items(user_id, active_states)
 
         # Format template parameters.
         name = first_name or "חבר"
-        params = self._formatter.format(items, first_name=name)
+        params = self._formatter.format(views, first_name=name)
 
         # Issue a waiting-list web session token (if token service is wired).
         url_suffix: str | None = None
@@ -315,86 +285,12 @@ class DigestWorker:
         _logger.info(
             "on-demand digest sent to user %s: %d items",
             user_id,
-            len(active_states),
+            len(views),
         )
         return True
-
-    async def _get_current_active(self, user_id: str) -> list[WaitingForMeActive]:
-        """Get active states where target_version matches chats.activity_version.
-
-        Excludes snoozed items (snoozed_until > now) and muted chats.
-        """
-        now = datetime.now(timezone.utc)
-        all_active = await self._active_repo.list_all_for_user(user_id=user_id)
-        current: list[WaitingForMeActive] = []
-        for active in all_active:
-            chat = await self._chat_state_repo.get(user_id, active.chat_id)
-            if chat is not None and chat.activity_version == active.target_version:
-                # Skip acknowledged items — user already handling them.
-                if active.acknowledged_at is not None:
-                    continue
-                # Skip snoozed items.
-                if active.snoozed_until is not None and active.snoozed_until > now:
-                    continue
-                # Skip muted chats.
-                if self._mute_repo is not None and await self._mute_repo.is_muted(
-                    user_id=user_id, chat_id=active.chat_id, now=now
-                ):
-                    continue
-                current.append(active)
-        return current
-
-    async def _build_items(
-        self,
-        user_id: str,
-        active_states: list[WaitingForMeActive],
-    ) -> list[DigestItem]:
-        """Build DigestItems with contact names and last message text.
-
-        Name resolution priority:
-        1. chats.chat_name (from Green API senderData.chatName)
-        2. contacts.display_name (from contacts table)
-        3. message.chat_name or sender_name (from the latest message)
-        4. phone number from chat_id (fallback)
-        """
-        items: list[DigestItem] = []
-        for active in active_states:
-            phone = _phone_from_chat_id(active.chat_id)
-
-            # Try chat_name from chat state first.
-            chat = await self._chat_state_repo.get(user_id, active.chat_id)
-            chat_name = chat.chat_name if chat else None
-
-            # Fall back to contact lookup.
-            if not chat_name:
-                contact = await self._contact_repo.find_by_phone(user_id, phone)
-                chat_name = contact.display_name if contact else None
-
-            # Get latest inbound message text (also a name fallback source).
-            msg = await self._message_repo.get_latest_inbound(
-                user_id=user_id,
-                chat_id=active.chat_id,
-            )
-            last_text = msg.text if msg and msg.text else None
-
-            # Fall back to message-level names.
-            if not chat_name and msg:
-                chat_name = msg.chat_name or msg.sender_name
-
-            items.append(DigestItem(
-                active=active,
-                contact_name=chat_name,
-                last_message_text=last_text,
-            ))
-        return items
 
 
 def _in_digest_window(local_now: datetime) -> bool:
     """Check if local time is within the digest window (08:00–11:00)."""
     hour = local_now.hour
     return DIGEST_START_HOUR <= hour < DIGEST_END_HOUR
-
-
-def _phone_from_chat_id(chat_id: str) -> str:
-    """Extract phone number from a WhatsApp chat ID."""
-    return chat_id.split("@")[0] if "@" in chat_id else chat_id

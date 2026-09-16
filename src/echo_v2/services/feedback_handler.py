@@ -54,7 +54,10 @@ from echo_v2.services.feedback_service import (
     WaitingForMeActionService,
     WaitingForMeFeedbackService,
 )
+from echo_v2.services.scheduling_flow import UserResolver
+from echo_v2.services.waiting_for_me_view import phone_from_chat_id
 from echo_v2.services.waiting_list_query import WaitingListQueryService
+from echo_v2.services.waiting_list_token_service import WaitingListTokenService
 
 __all__ = ["FeedbackHandler"]
 
@@ -120,9 +123,9 @@ class FeedbackHandler:
         message_repo: MessageRepository,
         contact_repo: ContactRepository,
         mute_repo: ChatMuteRepository,
-        user_resolver,
+        user_resolver: UserResolver,
         query_service: WaitingListQueryService,
-        token_service=None,
+        token_service: WaitingListTokenService | None = None,
         base_url: str = "",
     ) -> None:
         self._bot = bot
@@ -195,31 +198,37 @@ class FeedbackHandler:
         user_id = user_info[0]
         now = datetime.now(timezone.utc)
 
-        # Use the shared query service so WhatsApp cards and the mini-app
-        # always agree on what's actionable. Items are sorted by
-        # waiting_since ascending (oldest first) by the query service.
-        items = await self._query_service.current_actionable(user_id, now=now)
-        items = items[:MAX_CARDS]
+        # Use the shared canonical view query so WhatsApp cards, the
+        # mini-app, and the morning digest always agree on what's
+        # actionable and on contact-name resolution. Views are sorted
+        # starred-first then oldest-first by the query service.
+        views = await self._query_service.current_views(user_id, now=now)
+        views = views[:MAX_CARDS]
 
-        if not items:
+        if not views:
             await self._bot.send_text(
                 event.user_phone,
                 "אין כרגע שיחות שמחכות לטיפול. 👍",
             )
             return True
 
-        total = len(items)
+        total = len(views)
 
-        for i, active in enumerate(items, 1):
-            name = await self._resolve_name(user_id, active.chat_id)
-            last_text = await self._get_last_text(user_id, active.chat_id)
-            display_name = name or _phone_from_chat_id(active.chat_id)
+        for i, view in enumerate(views, 1):
+            display_name = view.contact_name
+            if display_name is None:
+                # Fall back to the phone number extracted from the chat_id.
+                active = await self._active_repo.get_by_id(view.id)
+                display_name = (
+                    phone_from_chat_id(active.chat_id) if active else "—"
+                )
+            last_text = view.last_message
             body = f"{i} מתוך {total}\n\n{display_name}\n\"{last_text or 'שלח/ה הודעה'}\""
 
             buttons = [
-                {"id": f"action:{active.id}:handled", "title": _BUTTON_HANDLED},
-                {"id": f"action:{active.id}:snooze", "title": _BUTTON_SNOOZE},
-                {"id": f"action:{active.id}:dismiss", "title": _BUTTON_DISMISS},
+                {"id": f"action:{view.id}:handled", "title": _BUTTON_HANDLED},
+                {"id": f"action:{view.id}:snooze", "title": _BUTTON_SNOOZE},
+                {"id": f"action:{view.id}:dismiss", "title": _BUTTON_DISMISS},
             ]
 
             await self._bot.send_buttons(
@@ -256,6 +265,12 @@ class FeedbackHandler:
             return True
 
         # Issue a waiting-list token and build the link.
+        if self._token_service is None:
+            await self._bot.send_text(
+                event.user_phone,
+                "אירעה שגיאה. נסה שוב.",
+            )
+            return False
         try:
             _session_id, raw_token = await self._token_service.issue(user_id)
         except Exception:
@@ -279,6 +294,8 @@ class FeedbackHandler:
 
         user_id = user_info[0]
         # Parse: action:{active_id}:{action_type}
+        if not event.button_id:
+            return False
         parts = event.button_id.split(":", 2)
         if len(parts) < 3:
             return False
@@ -329,6 +346,8 @@ class FeedbackHandler:
 
         user_id = user_info[0]
         # Parse: dismiss:{active_id}:{reason}
+        if not event.button_id:
+            return False
         parts = event.button_id.split(":", 2)
         if len(parts) < 3:
             return False
@@ -408,35 +427,3 @@ class FeedbackHandler:
         else:
             # STALE or NOT_FOUND
             await self._bot.send_text(phone, _STALE_MESSAGE)
-
-    async def _resolve_name(self, user_id: str, chat_id: str) -> str | None:
-        """Resolve contact name for a chat."""
-        phone = _phone_from_chat_id(chat_id)
-        chat = await self._chat_state_repo.get(user_id, chat_id)
-        if chat and chat.chat_name:
-            return chat.chat_name
-        contact = await self._contact_repo.find_by_phone(user_id, phone)
-        if contact:
-            return contact.display_name
-        msg = await self._message_repo.get_latest_inbound(
-            user_id=user_id, chat_id=chat_id
-        )
-        if msg:
-            return msg.chat_name or msg.sender_name
-        return None
-
-    async def _get_last_text(self, user_id: str, chat_id: str) -> str | None:
-        """Get the latest inbound message text for a chat."""
-        msg = await self._message_repo.get_latest_inbound(
-            user_id=user_id, chat_id=chat_id
-        )
-        return msg.text if msg and msg.text else None
-
-
-def _phone_from_chat_id(chat_id: str) -> str:
-    """Extract phone number from a WhatsApp chat ID.
-
-    ``972501234567@c.us`` → ``972501234567``
-    ``group-123@g.us`` → ``group-123``
-    """
-    return chat_id.split("@")[0] if "@" in chat_id else chat_id

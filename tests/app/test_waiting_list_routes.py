@@ -36,8 +36,9 @@ from echo_v2.persistence.waiting_list_tokens import (
     InMemoryWaitingListSessionRepository,
 )
 from echo_v2.services.feedback_service import WaitingForMeActionService
+from echo_v2.services.waiting_for_me_view import ContactNameResolver
+from echo_v2.services.waiting_list_action_service import WaitingListActionService
 from echo_v2.services.waiting_list_query import WaitingListQueryService
-from echo_v2.services.waiting_list_service import WaitingListService
 from echo_v2.services.waiting_list_token_service import WaitingListTokenService
 
 pytestmark = pytest.mark.asyncio
@@ -52,7 +53,7 @@ BOT_PHONE = "972500000000"
 def _make_app() -> tuple[
     FastAPI,
     WaitingListTokenService,
-    WaitingListService,
+    WaitingListActionService,
     InMemoryWaitingForMeActiveRepository,
 ]:
     active_repo = InMemoryWaitingForMeActiveRepository()
@@ -66,10 +67,18 @@ def _make_app() -> tuple[
     session_repo = InMemoryWaitingListSessionRepository()
 
     token_service = WaitingListTokenService(session_repo)
+    resolver = ContactNameResolver(
+        chat_state_repo=chat_state_repo,
+        message_repo=message_repo,
+        contact_repo=contact_repo,
+    )
     query_service = WaitingListQueryService(
         active_repo=active_repo,
         chat_state_repo=chat_state_repo,
         mute_repo=mute_repo,
+        message_repo=message_repo,
+        contact_repo=contact_repo,
+        result_repo=result_repo,
     )
     action_service = WaitingForMeActionService(
         active_repo=active_repo,
@@ -115,7 +124,7 @@ def _make_app() -> tuple[
         idempotency_store=InMemoryIdempotencyStore(),
         event_sink=InMemoryEventSink(),
     )
-    service = WaitingListService(
+    service = WaitingListActionService(
         token_service=token_service,
         query_service=query_service,
         action_service=action_service,
@@ -123,6 +132,7 @@ def _make_app() -> tuple[
         chat_state_repo=chat_state_repo,
         message_repo=message_repo,
         contact_repo=contact_repo,
+        resolver=resolver,
         result_repo=result_repo,
         scheduling_service=scheduling_service,
         active_repo=active_repo,
@@ -229,7 +239,7 @@ async def test_api_waiting_includes_situation_summary():
     _, raw_token = await token_service.issue(USER_ID)
 
     # Save a result with a summary.
-    result_id = await service._result_repo.save(
+    result_id = await service._query_service._result_repo.save(
         user_id=USER_ID,
         chat_id=CHAT_ID,
         result=WaitingForMeResult(

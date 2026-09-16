@@ -172,6 +172,9 @@ def _make_handler(
         active_repo=active_repo,
         chat_state_repo=chat_state_repo,
         mute_repo=mute_repo,
+        message_repo=message_repo,
+        contact_repo=contact_repo,
+        result_repo=result_repo,
     )
     handler = FeedbackHandler(
         bot=bot,

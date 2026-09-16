@@ -23,7 +23,12 @@ the button, inside the 24-hour customer service window.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from echo_v2.services.waiting_for_me_view import WaitingForMeView
 
 __all__ = ["DigestFormatter", "DigestItem", "DigestTemplateParams"]
 
@@ -62,18 +67,30 @@ class DigestFormatter:
 
     Only produces the count — no conversation content is exposed in the
     template. The interactive list is sent after the user taps the button.
+
+    Accepts either legacy :class:`DigestItem` instances or
+    :class:`echo_v2.services.waiting_for_me_view.WaitingForMeView`
+    instances (the canonical read model). The current template only uses
+    the count, so the item shape is not inspected.
     """
 
-    def format(self, items: list[DigestItem], *, first_name: str) -> DigestTemplateParams:
+    def format(
+        self,
+        items: Iterable[DigestItem | WaitingForMeView],
+        *,
+        first_name: str,
+    ) -> DigestTemplateParams:
         """Format items into template parameters.
 
         Args:
-            items: The digest items (must be non-empty).
+            items: The digest items (must be non-empty). Accepts a list
+                of :class:`DigestItem` or :class:`WaitingForMeView`.
             first_name: The user's first name for {{1}}.
 
         Returns the two body parameters for the template.
         """
+        items_list = list(items)
         return DigestTemplateParams(
             first_name=first_name,
-            count=str(len(items)),
+            count=str(len(items_list)),
         )

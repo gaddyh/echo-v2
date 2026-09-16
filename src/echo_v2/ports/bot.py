@@ -22,7 +22,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 __all__ = [
     "BotChannel",
@@ -93,7 +93,7 @@ class BotEventAdapter(Protocol):
     ``None`` so an unexpected payload never breaks the webhook ingress.
     """
 
-    def parse(self, payload: dict) -> BotEvent | None: ...
+    def parse(self, payload: dict[str, Any]) -> BotEvent | None: ...
 
 
 @runtime_checkable
@@ -112,8 +112,17 @@ class BotChannel(Protocol):
         template_name: str,
         language: str,
         body_params: list[str],
+        *,
+        url_suffix: str | None = None,
     ) -> str:
-        """Send a template message. Returns the provider message ID."""
+        """Send a template message. Returns the provider message ID.
+
+        Args:
+            url_suffix: Optional URL suffix for the template's URL button.
+                When provided, the provider appends it to the configured
+                base URL. Used by the digest worker to embed a waiting-list
+                session token.
+        """
         ...
 
     async def send_interactive_list(
@@ -122,7 +131,7 @@ class BotChannel(Protocol):
         *,
         body_text: str,
         button_text: str,
-        sections: list[dict],
+        sections: list[dict[str, Any]],
     ) -> str:
         """Send an interactive list message. Returns the provider message ID.
 
@@ -141,7 +150,7 @@ class BotChannel(Protocol):
         user_phone: str,
         *,
         body_text: str,
-        buttons: list[dict],
+        buttons: list[dict[str, Any]],
     ) -> str:
         """Send an interactive button message. Returns the provider message ID.
 

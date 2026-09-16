@@ -1,13 +1,18 @@
-"""WaitingListService — list items + execute actions for the mini web app.
+"""WaitingListActionService — list items + execute actions for the mini web app.
 
-The service layer between the FastAPI routes and the action service.
-It validates the session, resolves the user, queries actionable items
-via the shared :class:`WaitingListQueryService`, and dispatches actions
-to :class:`WaitingForMeActionService`.
+The service layer between the FastAPI routes and the action service. It
+validates the session, resolves the user, lists items via the shared
+:class:`WaitingListQueryService` (the canonical read path), and dispatches
+actions to :class:`WaitingForMeActionService`.
 
 Per-session summary counts (completed, snoozed) are computed from the
 ``waiting_for_me_actions`` table by ``waiting_list_session_id`` in the
 ``action_payload``. This survives page refresh/reopen.
+
+Name resolution for contact creation (in ``set_starred``/``set_label``/
+``set_tags``) is delegated to the shared :class:`ContactNameResolver` —
+the cascade ``chat_name → contact.display_name → message.sender_name →
+phone`` lives once, in the resolver, not three times here.
 """
 
 from __future__ import annotations
@@ -19,18 +24,22 @@ from typing import Literal
 
 from echo_v2.domain.feedback import HandlingOutcome, WaitingForMeActionType
 from echo_v2.domain.scheduling import ScheduledActionType
-from echo_v2.domain.waiting_for_me import WaitingForMeActive
 from echo_v2.persistence.chat_repositories import (
     ChatStateRepository,
     MessageRepository,
     WaitingForMeActiveRepository,
     WaitingForMeResultRepository,
 )
-from echo_v2.persistence.contacts import ContactRecord, ContactRepository
+from echo_v2.persistence.contacts import ContactRepository
 from echo_v2.persistence.feedback_repositories import WaitingForMeActionRepository
 from echo_v2.services.feedback_service import WaitingForMeActionService
 from echo_v2.services.scheduling import SchedulingService
 from echo_v2.services.time_presets import preset_to_utc
+from echo_v2.services.waiting_for_me_view import (
+    ContactNameResolver,
+    WaitingForMeView,
+    phone_from_chat_id,
+)
 from echo_v2.services.waiting_list_query import WaitingListQueryService
 from echo_v2.services.waiting_list_token_service import WaitingListTokenService
 
@@ -41,16 +50,13 @@ __all__ = [
     "SendResponse",
     "StarResponse",
     "TagsResponse",
+    "WaitingListActionService",
     "WaitingListItem",
     "WaitingListResponse",
-    "WaitingListService",
     "WaitingListSummary",
 ]
 
 _logger = logging.getLogger("echo_v2.services.waiting_list")
-
-# Max preview length for customer messages (truncated server-side).
-MAX_PREVIEW_CHARS = 120
 
 
 @dataclass(frozen=True)
@@ -205,22 +211,43 @@ class TagsResponse:
     tags: list[str] = field(default_factory=list)
 
 
-class WaitingListService:
+def _view_to_item(view: WaitingForMeView, *, now: datetime) -> WaitingListItem:
+    """Convert a :class:`WaitingForMeView` to a :class:`WaitingListItem`."""
+    waiting_hours = (now - view.waiting_since).total_seconds() / 3600.0
+    return WaitingListItem(
+        active_id=view.id,
+        contact_name=view.contact_name,
+        situation_summary=view.summary,
+        message_preview=view.last_message,
+        waiting_since=view.waiting_since,
+        waiting_hours=round(waiting_hours, 1),
+        expected_version=view.version,
+        is_starred=view.is_starred,
+        color_label=view.color_label,
+        tags=view.tags,
+    )
+
+
+class WaitingListActionService:
     """List waiting items and execute actions for the mini web app.
 
     Args:
         token_service: The :class:`WaitingListTokenService` for session
             validation.
-        query_service: The shared :class:`WaitingListQueryService`.
+        query_service: The shared :class:`WaitingListQueryService`. The
+            canonical read path (``current_views``) lives here.
         action_service: The :class:`WaitingForMeActionService` for
             executing actions.
         action_repo: The :class:`WaitingForMeActionRepository` for
             per-session summary counts.
         chat_state_repo: The :class:`ChatStateRepository` for name
-            resolution.
+            resolution fallback in contact creation.
         message_repo: The :class:`MessageRepository` for last message
-            text.
-        contact_repo: The :class:`ContactRepository` for name resolution.
+            text in contact creation fallback.
+        contact_repo: The :class:`ContactRepository` for name resolution
+            and star/label/tags persistence.
+        resolver: The shared :class:`ContactNameResolver` for display
+            name resolution in contact creation.
         scheduling_service: Optional :class:`SchedulingService` for
             scheduling WhatsApp messages from the web app.
         active_repo: Optional :class:`WaitingForMeActiveRepository` for
@@ -238,6 +265,7 @@ class WaitingListService:
         chat_state_repo: ChatStateRepository,
         message_repo: MessageRepository,
         contact_repo: ContactRepository,
+        resolver: ContactNameResolver,
         result_repo: WaitingForMeResultRepository | None = None,
         scheduling_service: SchedulingService | None = None,
         active_repo: WaitingForMeActiveRepository | None = None,
@@ -250,6 +278,7 @@ class WaitingListService:
         self._chat_state_repo = chat_state_repo
         self._message_repo = message_repo
         self._contact_repo = contact_repo
+        self._resolver = resolver
         self._result_repo = result_repo
         self._scheduling_service = scheduling_service
         self._active_repo = active_repo
@@ -270,28 +299,8 @@ class WaitingListService:
             return None
 
         now = datetime.now(timezone.utc)
-        actives = await self._query_service.current_actionable(user_id, now=now)
-
-        # Batch-fetch contact metadata (star, color_label, tags) for all
-        # phones in a single query.
-        phones = {_phone_from_chat_id(a.chat_id) for a in actives}
-        contact_meta = await self._contact_repo.get_contact_metadata(user_id, phones)
-        starred_phones = {p for p, c in contact_meta.items() if c.is_starred}
-
-        # Sort: starred contacts first (oldest first), then non-starred
-        # (oldest first).
-        actives.sort(
-            key=lambda active: (
-                _phone_from_chat_id(active.chat_id) not in starred_phones,
-                active.waiting_since,
-            )
-        )
-
-        items = []
-        for active in actives:
-            item = await self._build_item(user_id, active, now, contact_meta)
-            items.append(item)
-
+        views = await self._query_service.current_views(user_id, now=now)
+        items = [_view_to_item(v, now=now) for v in views]
         summary = await self._build_summary(session_id, user_id, len(items))
         return WaitingListResponse(items=items, summary=summary)
 
@@ -400,10 +409,11 @@ class WaitingListService:
         # For stale, include the current item state.
         item = None
         if outcome == HandlingOutcome.STALE:
-            active = await self._action_service._active_repo.get_by_id(active_id)
+            active = await self._active_repo.get_by_id(active_id) if self._active_repo else None
             if active is not None:
+                view = await self._query_service.build_view_for_active(user_id, active)
                 now = datetime.now(timezone.utc)
-                item = await self._build_item(user_id, active, now)
+                item = _view_to_item(view, now=now)
 
         summary = await self._build_summary(session_id, user_id)
         return ActionResponse(
@@ -548,23 +558,15 @@ class WaitingListService:
 
         await self._token_service.touch(session_id)
 
+        assert self._active_repo is not None  # required for star/label/tags
         active = await self._active_repo.get_by_id(active_id)
         if active is None or active.user_id != user_id:
             return StarResponse(outcome="not_found")
 
-        phone = _phone_from_chat_id(active.chat_id)
+        phone = phone_from_chat_id(active.chat_id)
 
         # Resolve a display name for potential contact creation.
-        chat = await self._chat_state_repo.get(user_id, active.chat_id)
-        display_name = chat.chat_name if chat else None
-        if not display_name:
-            contact = await self._contact_repo.find_by_phone(user_id, phone)
-            display_name = contact.display_name if contact else None
-        if not display_name:
-            msg = await self._message_repo.get_latest_inbound(
-                user_id=user_id, chat_id=active.chat_id
-            )
-            display_name = msg.chat_name or msg.sender_name if msg else None
+        display_name = await self._resolver.resolve_name(user_id, active.chat_id)
         if not display_name:
             display_name = phone
 
@@ -599,23 +601,15 @@ class WaitingListService:
 
         await self._token_service.touch(session_id)
 
+        assert self._active_repo is not None  # required for star/label/tags
         active = await self._active_repo.get_by_id(active_id)
         if active is None or active.user_id != user_id:
             return LabelResponse(outcome="not_found")
 
-        phone = _phone_from_chat_id(active.chat_id)
+        phone = phone_from_chat_id(active.chat_id)
 
         # Resolve a display name for potential contact creation.
-        chat = await self._chat_state_repo.get(user_id, active.chat_id)
-        display_name = chat.chat_name if chat else None
-        if not display_name:
-            contact = await self._contact_repo.find_by_phone(user_id, phone)
-            display_name = contact.display_name if contact else None
-        if not display_name:
-            msg = await self._message_repo.get_latest_inbound(
-                user_id=user_id, chat_id=active.chat_id
-            )
-            display_name = msg.chat_name or msg.sender_name if msg else None
+        display_name = await self._resolver.resolve_name(user_id, active.chat_id)
         if not display_name:
             display_name = phone
 
@@ -651,23 +645,15 @@ class WaitingListService:
 
         await self._token_service.touch(session_id)
 
+        assert self._active_repo is not None  # required for star/label/tags
         active = await self._active_repo.get_by_id(active_id)
         if active is None or active.user_id != user_id:
             return TagsResponse(outcome="not_found")
 
-        phone = _phone_from_chat_id(active.chat_id)
+        phone = phone_from_chat_id(active.chat_id)
 
         # Resolve a display name for potential contact creation.
-        chat = await self._chat_state_repo.get(user_id, active.chat_id)
-        display_name = chat.chat_name if chat else None
-        if not display_name:
-            contact = await self._contact_repo.find_by_phone(user_id, phone)
-            display_name = contact.display_name if contact else None
-        if not display_name:
-            msg = await self._message_repo.get_latest_inbound(
-                user_id=user_id, chat_id=active.chat_id
-            )
-            display_name = msg.chat_name or msg.sender_name if msg else None
+        display_name = await self._resolver.resolve_name(user_id, active.chat_id)
         if not display_name:
             display_name = phone
 
@@ -693,84 +679,6 @@ class WaitingListService:
             return None
 
         return await self._contact_repo.list_tags(user_id)
-
-    async def _build_item(
-        self,
-        user_id: str,
-        active: WaitingForMeActive,
-        now: datetime,
-        contact_meta: dict[str, ContactRecord] | None = None,
-    ) -> WaitingListItem:
-        """Build a WaitingListItem with name resolution + preview + summary.
-
-        Args:
-            contact_meta: Optional pre-fetched dict of phone → ContactRecord
-                for this user. If provided, avoids per-item
-                ``find_by_phone`` calls for star/label/tags state.
-        """
-        phone = _phone_from_chat_id(active.chat_id)
-
-        # Name resolution: chat_name → contact → message names.
-        chat = await self._chat_state_repo.get(user_id, active.chat_id)
-        chat_name = chat.chat_name if chat else None
-
-        # Resolve contact record for name fallback + star/label/tags.
-        contact = None
-        if contact_meta is not None:
-            contact = contact_meta.get(phone)
-        if not chat_name:
-            if contact is None:
-                contact = await self._contact_repo.find_by_phone(user_id, phone)
-            chat_name = contact.display_name if contact else None
-
-        msg = await self._message_repo.get_latest_inbound(
-            user_id=user_id,
-            chat_id=active.chat_id,
-        )
-        last_text = msg.text if msg and msg.text else None
-
-        if not chat_name and msg:
-            chat_name = msg.chat_name or msg.sender_name
-
-        # Truncate preview.
-        preview = None
-        if last_text:
-            preview = last_text[:MAX_PREVIEW_CHARS]
-            if len(last_text) > MAX_PREVIEW_CHARS:
-                preview = preview + "…"
-
-        # Fetch the analysis result to get the situation summary.
-        situation_summary = None
-        if self._result_repo is not None and active.result_id:
-            result = await self._result_repo.get_by_id(active.result_id)
-            if result is not None:
-                situation_summary = result.summary
-
-        waiting_hours = (now - active.waiting_since).total_seconds() / 3600.0
-
-        # Resolve star/label/tags from the pre-fetched metadata or via
-        # find_by_phone.
-        if contact is None and contact_meta is not None:
-            contact = contact_meta.get(phone)
-        if contact is None:
-            contact = await self._contact_repo.find_by_phone(user_id, phone)
-
-        is_starred = contact.is_starred if contact else False
-        color_label = contact.color_label if contact else None
-        tags = list(contact.tags) if contact else []
-
-        return WaitingListItem(
-            active_id=active.id,
-            contact_name=chat_name,
-            situation_summary=situation_summary,
-            message_preview=preview,
-            waiting_since=active.waiting_since,
-            waiting_hours=round(waiting_hours, 1),
-            expected_version=active.target_version,
-            is_starred=is_starred,
-            color_label=color_label,
-            tags=tags,
-        )
 
     async def _build_summary(
         self,
@@ -817,8 +725,3 @@ def _outcome_to_str(outcome: HandlingOutcome) -> str:
         HandlingOutcome.INVALID: "invalid_snooze",
     }
     return mapping.get(outcome, "invalid")
-
-
-def _phone_from_chat_id(chat_id: str) -> str:
-    """Extract phone number from a WhatsApp chat ID."""
-    return chat_id.split("@")[0] if "@" in chat_id else chat_id

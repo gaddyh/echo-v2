@@ -1,4 +1,4 @@
-"""Tests for the WaitingListService — list items + execute actions + summary."""
+"""Tests for the WaitingListActionService — list items + execute actions + summary."""
 
 from __future__ import annotations
 
@@ -22,8 +22,9 @@ from echo_v2.persistence.waiting_list_tokens import (
     InMemoryWaitingListSessionRepository,
 )
 from echo_v2.services.feedback_service import WaitingForMeActionService
+from echo_v2.services.waiting_for_me_view import ContactNameResolver
+from echo_v2.services.waiting_list_action_service import WaitingListActionService
 from echo_v2.services.waiting_list_query import WaitingListQueryService
-from echo_v2.services.waiting_list_service import WaitingListService
 from echo_v2.services.waiting_list_token_service import WaitingListTokenService
 
 pytestmark = pytest.mark.asyncio
@@ -35,7 +36,7 @@ RESULT_ID = "result-1"
 
 
 def _make_service() -> tuple[
-    WaitingListService,
+    WaitingListActionService,
     InMemoryWaitingForMeActiveRepository,
     InMemoryWaitingForMeActionRepository,
     InMemoryWaitingForMeFeedbackRepository,
@@ -52,10 +53,18 @@ def _make_service() -> tuple[
     session_repo = InMemoryWaitingListSessionRepository()
 
     token_service = WaitingListTokenService(session_repo)
+    resolver = ContactNameResolver(
+        chat_state_repo=chat_state_repo,
+        message_repo=message_repo,
+        contact_repo=contact_repo,
+    )
     query_service = WaitingListQueryService(
         active_repo=active_repo,
         chat_state_repo=chat_state_repo,
         mute_repo=mute_repo,
+        message_repo=message_repo,
+        contact_repo=contact_repo,
+        result_repo=result_repo,
     )
     action_service = WaitingForMeActionService(
         active_repo=active_repo,
@@ -64,7 +73,7 @@ def _make_service() -> tuple[
         feedback_repo=feedback_repo,
         result_repo=result_repo,
     )
-    service = WaitingListService(
+    service = WaitingListActionService(
         token_service=token_service,
         query_service=query_service,
         action_service=action_service,
@@ -72,6 +81,7 @@ def _make_service() -> tuple[
         chat_state_repo=chat_state_repo,
         message_repo=message_repo,
         contact_repo=contact_repo,
+        resolver=resolver,
         result_repo=result_repo,
         active_repo=active_repo,
     )
@@ -718,7 +728,7 @@ async def test_list_items_includes_situation_summary():
     session_id, _ = await token_service.issue(USER_ID)
 
     # Save a result with a summary.
-    result_repo = service._result_repo
+    result_repo = service._query_service._result_repo
     result_id = await result_repo.save(
         user_id=USER_ID,
         chat_id=CHAT_ID,
@@ -759,7 +769,7 @@ async def test_list_items_summary_none_falls_back_to_message_preview():
     service, active_repo, _, _, token_service = _make_service()
     session_id, _ = await token_service.issue(USER_ID)
 
-    result_id = await service._result_repo.save(
+    result_id = await service._query_service._result_repo.save(
         user_id=USER_ID,
         chat_id=CHAT_ID,
         result=WaitingForMeResult(
@@ -790,8 +800,9 @@ async def test_list_items_summary_none_falls_back_to_message_preview():
 async def test_list_items_no_result_repo_summary_is_none():
     """Without a result_repo, situation_summary is always None."""
     service, active_repo, _, _, token_service = _make_service()
-    # Remove result_repo.
-    service._result_repo = None
+    # Remove result_repo from the underlying query service (where views
+    # are built). The action service itself doesn't hold a result_repo.
+    service._query_service._result_repo = None
     session_id, _ = await token_service.issue(USER_ID)
     await _setup_chat_and_active(active_repo, service._chat_state_repo)
 
@@ -849,7 +860,7 @@ class _FakeMessaging:
 def _make_service_with_scheduling(
     *, user_id: str = USER_ID
 ) -> tuple[
-    WaitingListService,
+    WaitingListActionService,
     InMemoryWaitingForMeActiveRepository,
     InMemoryScheduledActionRepository,
     _FakeMessaging,
@@ -877,10 +888,18 @@ def _make_service_with_scheduling(
     messaging = _FakeMessaging()
 
     token_service = WaitingListTokenService(session_repo)
+    resolver = ContactNameResolver(
+        chat_state_repo=chat_state_repo,
+        message_repo=message_repo,
+        contact_repo=contact_repo,
+    )
     query_service = WaitingListQueryService(
         active_repo=active_repo,
         chat_state_repo=chat_state_repo,
         mute_repo=mute_repo,
+        message_repo=message_repo,
+        contact_repo=contact_repo,
+        result_repo=result_repo,
     )
     action_service = WaitingForMeActionService(
         active_repo=active_repo,
@@ -896,7 +915,7 @@ def _make_service_with_scheduling(
         idempotency_store=InMemoryIdempotencyStore(),
         event_sink=InMemoryEventSink(),
     )
-    service = WaitingListService(
+    service = WaitingListActionService(
         token_service=token_service,
         query_service=query_service,
         action_service=action_service,
@@ -904,6 +923,7 @@ def _make_service_with_scheduling(
         chat_state_repo=chat_state_repo,
         message_repo=message_repo,
         contact_repo=contact_repo,
+        resolver=resolver,
         result_repo=result_repo,
         scheduling_service=scheduling_service,
         active_repo=active_repo,

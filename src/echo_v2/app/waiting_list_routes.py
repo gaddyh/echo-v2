@@ -30,7 +30,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from echo_v2.app.waiting_list_page import EXPIRED_LINK_PAGE, WAITING_LIST_PAGE
-from echo_v2.services.waiting_list_service import WaitingListService
+from echo_v2.services.waiting_list_action_service import WaitingListActionService
 from echo_v2.services.waiting_list_token_service import WaitingListTokenService
 
 __all__ = ["build_waiting_list_router"]
@@ -153,7 +153,7 @@ class TagsRequest(BaseModel):
 def build_waiting_list_router(
     *,
     token_service: WaitingListTokenService,
-    waiting_list_service: WaitingListService,
+    waiting_list_service: WaitingListActionService,
     bot_phone: str,
 ) -> APIRouter:
     """Build the waiting-list mini web app router.
@@ -161,7 +161,7 @@ def build_waiting_list_router(
     Args:
         token_service: The :class:`WaitingListTokenService` for token
             validation and cookie exchange.
-        waiting_list_service: The :class:`WaitingListService` for
+        waiting_list_service: The :class:`WaitingListActionService` for
             listing items and executing actions.
         bot_phone: The Echo bot's WhatsApp phone number (for the
             "back to WhatsApp" link).

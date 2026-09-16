@@ -102,6 +102,63 @@ def _make_user_provider(users):
     return provider
 
 
+def _make_query_service(
+    *,
+    active_repo=None,
+    chat_state_repo=None,
+    message_repo=None,
+    contact_repo=None,
+    mute_repo=None,
+):
+    """Build a WaitingListQueryService wired with view-supporting repos."""
+    from echo_v2.services.waiting_list_query import WaitingListQueryService
+
+    return WaitingListQueryService(
+        active_repo=active_repo,
+        chat_state_repo=chat_state_repo,
+        mute_repo=mute_repo,
+        message_repo=message_repo,
+        contact_repo=contact_repo,
+    )
+
+
+def _make_worker(
+    *,
+    digest_repo,
+    active_repo,
+    chat_state_repo,
+    message_repo,
+    contact_repo,
+    bot,
+    user_provider,
+    mute_repo=None,
+    token_service=None,
+    poll_interval_seconds=None,
+    template_name=None,
+):
+    """Build a DigestWorker wired with the shared query service."""
+    query_service = _make_query_service(
+        active_repo=active_repo,
+        chat_state_repo=chat_state_repo,
+        message_repo=message_repo,
+        contact_repo=contact_repo,
+        mute_repo=mute_repo,
+    )
+    kwargs = {
+        "digest_repo": digest_repo,
+        "query_service": query_service,
+        "bot": bot,
+        "user_provider": user_provider,
+    }
+    if token_service is not None:
+        kwargs["token_service"] = token_service
+    if poll_interval_seconds is not None:
+        kwargs["poll_interval_seconds"] = poll_interval_seconds
+    if template_name is not None:
+        kwargs["template_name"] = template_name
+    return DigestWorker(**kwargs)
+
+
 async def test_digest_sent_when_in_window_and_has_active():
     digest_repo = InMemoryDailyDigestRepository()
     active_repo = InMemoryWaitingForMeActiveRepository()
@@ -112,7 +169,7 @@ async def test_digest_sent_when_in_window_and_has_active():
 
     await _setup_chat_with_active(chat_state_repo, active_repo)
 
-    worker = DigestWorker(
+    worker = _make_worker(
         digest_repo=digest_repo,
         active_repo=active_repo,
         chat_state_repo=chat_state_repo,
@@ -146,7 +203,7 @@ async def test_digest_empty_when_no_active():
     contact_repo = InMemoryContactRepository()
     bot = FakeBot()
 
-    worker = DigestWorker(
+    worker = _make_worker(
         digest_repo=digest_repo,
         active_repo=active_repo,
         chat_state_repo=chat_state_repo,
@@ -179,7 +236,7 @@ async def test_digest_skipped_when_already_sent_today():
 
     await _setup_chat_with_active(chat_state_repo, active_repo)
 
-    worker = DigestWorker(
+    worker = _make_worker(
         digest_repo=digest_repo,
         active_repo=active_repo,
         chat_state_repo=chat_state_repo,
@@ -207,7 +264,7 @@ async def test_digest_skipped_when_outside_window():
     # 12:00 Israel time = 09:00 UTC (IDT = UTC+3)
     noon_utc = datetime(2026, 9, 12, 9, 0, 0, tzinfo=timezone.utc)
 
-    worker = DigestWorker(
+    worker = _make_worker(
         digest_repo=digest_repo,
         active_repo=active_repo,
         chat_state_repo=chat_state_repo,
@@ -237,7 +294,7 @@ async def test_digest_indeterminate_on_send_error():
 
     await _setup_chat_with_active(chat_state_repo, active_repo)
 
-    worker = DigestWorker(
+    worker = _make_worker(
         digest_repo=digest_repo,
         active_repo=active_repo,
         chat_state_repo=chat_state_repo,
@@ -266,7 +323,7 @@ async def test_digest_failed_on_permanent_error():
 
     await _setup_chat_with_active(chat_state_repo, active_repo)
 
-    worker = DigestWorker(
+    worker = _make_worker(
         digest_repo=digest_repo,
         active_repo=active_repo,
         chat_state_repo=chat_state_repo,
@@ -304,7 +361,7 @@ async def test_stale_active_excluded_from_digest():
         waiting_since=NOW,
     )
 
-    worker = DigestWorker(
+    worker = _make_worker(
         digest_repo=digest_repo,
         active_repo=active_repo,
         chat_state_repo=chat_state_repo,
@@ -333,7 +390,7 @@ async def test_default_timezone_used_when_user_has_none():
 
     await _setup_chat_with_active(chat_state_repo, active_repo)
 
-    worker = DigestWorker(
+    worker = _make_worker(
         digest_repo=digest_repo,
         active_repo=active_repo,
         chat_state_repo=chat_state_repo,
@@ -360,7 +417,7 @@ async def test_run_once_continues_on_user_error():
     async def user_provider():
         return [("bad-user", "bad-phone", "Asia/Jerusalem", None), (USER_ID, USER_PHONE, "Asia/Jerusalem", "גדי")]
 
-    worker = DigestWorker(
+    worker = _make_worker(
         digest_repo=digest_repo,
         active_repo=active_repo,
         chat_state_repo=chat_state_repo,
@@ -383,7 +440,7 @@ async def test_run_loop_cancellable():
     contact_repo = InMemoryContactRepository()
     bot = FakeBot()
 
-    worker = DigestWorker(
+    worker = _make_worker(
         digest_repo=digest_repo,
         active_repo=active_repo,
         chat_state_repo=chat_state_repo,
@@ -419,7 +476,7 @@ async def test_digest_excludes_acknowledged_items():
         user_id=USER_ID, chat_id="972508765432@c.us", acknowledged_at=NOW,
     )
 
-    worker = DigestWorker(
+    worker = _make_worker(
         digest_repo=digest_repo,
         active_repo=active_repo,
         chat_state_repo=chat_state_repo,
@@ -449,7 +506,7 @@ async def test_digest_excludes_snoozed_items():
         user_id=USER_ID, chat_id="972508765432@c.us", snoozed_until=future,
     )
 
-    worker = DigestWorker(
+    worker = _make_worker(
         digest_repo=digest_repo,
         active_repo=active_repo,
         chat_state_repo=chat_state_repo,
@@ -477,7 +534,7 @@ async def test_digest_excludes_muted_chats():
     await _setup_chat_with_active(chat_state_repo, active_repo)
     await mute_repo.mute_permanent(user_id=USER_ID, chat_id="972508765432@c.us")
 
-    worker = DigestWorker(
+    worker = _make_worker(
         digest_repo=digest_repo,
         active_repo=active_repo,
         chat_state_repo=chat_state_repo,
@@ -511,7 +568,7 @@ async def test_digest_name_fallback_to_contact():
         )
     )
 
-    worker = DigestWorker(
+    worker = _make_worker(
         digest_repo=digest_repo,
         active_repo=active_repo,
         chat_state_repo=chat_state_repo,
@@ -553,7 +610,7 @@ async def test_digest_name_fallback_to_message():
         )
     )
 
-    worker = DigestWorker(
+    worker = _make_worker(
         digest_repo=digest_repo,
         active_repo=active_repo,
         chat_state_repo=chat_state_repo,
@@ -584,7 +641,7 @@ async def test_digest_run_once_exception_continues():
         waiting_since=NOW,
     )
 
-    worker = DigestWorker(
+    worker = _make_worker(
         digest_repo=digest_repo,
         active_repo=active_repo,
         chat_state_repo=chat_state_repo,
@@ -609,7 +666,7 @@ async def test_digest_unexpected_error_marks_failed():
 
     await _setup_chat_with_active(chat_state_repo, active_repo)
 
-    worker = DigestWorker(
+    worker = _make_worker(
         digest_repo=digest_repo,
         active_repo=active_repo,
         chat_state_repo=chat_state_repo,
@@ -637,7 +694,7 @@ async def test_digest_run_once_continues_on_user_exception():
     await _setup_chat_with_active(chat_state_repo, active_repo, chat_id="chat-b@c.us")
 
     # First user raises (bad tz), second user succeeds.
-    worker = DigestWorker(
+    worker = _make_worker(
         digest_repo=digest_repo,
         active_repo=active_repo,
         chat_state_repo=chat_state_repo,
@@ -657,7 +714,6 @@ async def test_digest_run_once_continues_on_user_exception():
 async def test_digest_uses_query_service_when_provided():
     """When query_service is wired, it's used instead of _get_current_active."""
     from echo_v2.persistence.feedback_repositories import InMemoryChatMuteRepository
-    from echo_v2.services.waiting_list_query import WaitingListQueryService
 
     digest_repo = InMemoryDailyDigestRepository()
     active_repo = InMemoryWaitingForMeActiveRepository()
@@ -669,13 +725,7 @@ async def test_digest_uses_query_service_when_provided():
 
     await _setup_chat_with_active(chat_state_repo, active_repo)
 
-    query_service = WaitingListQueryService(
-        active_repo=active_repo,
-        chat_state_repo=chat_state_repo,
-        mute_repo=mute_repo,
-    )
-
-    worker = DigestWorker(
+    worker = _make_worker(
         digest_repo=digest_repo,
         active_repo=active_repo,
         chat_state_repo=chat_state_repo,
@@ -683,7 +733,7 @@ async def test_digest_uses_query_service_when_provided():
         contact_repo=contact_repo,
         bot=bot,
         user_provider=_make_user_provider([(USER_ID, USER_PHONE, "Asia/Jerusalem", "גדי")]),
-        query_service=query_service,
+        mute_repo=mute_repo,
     )
     sent = await worker.run_once(now_utc=NOW)
     assert sent == 1
@@ -713,7 +763,7 @@ async def test_digest_token_issue_failure_still_sends():
 
     token_service = WaitingListTokenService(BrokenRepo())
 
-    worker = DigestWorker(
+    worker = _make_worker(
         digest_repo=digest_repo,
         active_repo=active_repo,
         chat_state_repo=chat_state_repo,
@@ -746,7 +796,7 @@ async def test_digest_with_token_service_sends_url_suffix():
 
     token_service = WaitingListTokenService(InMemoryWaitingListSessionRepository())
 
-    worker = DigestWorker(
+    worker = _make_worker(
         digest_repo=digest_repo,
         active_repo=active_repo,
         chat_state_repo=chat_state_repo,
@@ -772,7 +822,7 @@ async def test_digest_no_first_name_uses_fallback():
 
     await _setup_chat_with_active(chat_state_repo, active_repo)
 
-    worker = DigestWorker(
+    worker = _make_worker(
         digest_repo=digest_repo,
         active_repo=active_repo,
         chat_state_repo=chat_state_repo,
