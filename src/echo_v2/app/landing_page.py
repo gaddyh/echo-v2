@@ -246,9 +246,6 @@ body {
   gap: 4px;
 }
 .demo-chip.active { background: var(--text); color: white; border-color: var(--text); }
-.demo-dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
-.demo-dot.red { background: #ff4757; }
-.demo-dot.blue { background: #3b82f6; }
 .demo-card {
   background: var(--card);
   border-radius: 14px;
@@ -256,19 +253,9 @@ body {
   padding: 16px;
   position: relative;
 }
-.demo-card .corner-dot { position: absolute; top: 16px; left: 16px; }
 .demo-card .name { font-weight: 700; font-size: 1.05rem; }
 .demo-card .name .star { color: #f5a623; }
 .demo-card .meta { color: var(--text-secondary); font-size: 0.82rem; margin-top: 2px; }
-.demo-card .tag-chip {
-  display: inline-block;
-  background: var(--bg);
-  border-radius: 12px;
-  padding: 2px 10px;
-  font-size: 0.76rem;
-  color: var(--text-secondary);
-  margin-top: 6px;
-}
 .demo-card .summary { font-size: 0.95rem; margin: 14px 0 10px; text-align: center; }
 .demo-card .context-link { color: var(--primary); font-size: 0.82rem; }
 .demo-card .btn-done {
@@ -566,31 +553,20 @@ body {
       <div class="demo-chips">
         <span class="demo-chip active">הכל</span>
         <span class="demo-chip">★</span>
-        <span class="demo-chip"><span class="demo-dot red"></span> 1</span>
-        <span class="demo-chip"><span class="demo-dot blue"></span> 1</span>
-        <span class="demo-chip">#בית 1</span>
-        <span class="demo-chip">#לקוח 1</span>
       </div>
       <div class="demo-card">
         <div class="demo-card-inner" id="demo-card-inner">
-          <span class="corner-dot demo-dot red" id="demo-color-dot"></span>
           <div class="name"><span class="star" id="demo-star">★</span> <span id="demo-name">דמי אבירם</span></div>
           <div class="meta" id="demo-meta">ממתין שעה</div>
-          <span class="tag-chip" id="demo-tag">#לקוח</span>
           <div class="summary" id="demo-summary">דמי שלח מסמכים ומחכה לאישור קבלה</div>
           <div class="context-link">הודעות +</div>
           <div class="btn-done" id="demo-done">בוצע</div>
           <div class="btn-row">
             <div class="btn-sec send" id="demo-send">תזמן הודעה</div>
-            <div class="btn-sec">מחר</div>
-          </div>
-          <div class="btn-row">
-            <div class="btn-sec">צבע</div>
-            <div class="btn-sec">תגיות</div>
           </div>
           <div class="btn-row">
             <div class="btn-sec" id="demo-snooze">נודניק לשעה</div>
-            <div class="btn-sec muted">לא דורש תגובה</div>
+            <div class="btn-sec muted">לא מעניין, שיחכו</div>
           </div>
           <div class="link-row">
             <span class="other">זמן אחר</span>
@@ -799,11 +775,11 @@ function showError(msg) {
   const inner = document.getElementById("demo-card-inner");
 
   const CARDS = [
-    {name: "דמי אבירם", meta: "ממתין שעה", tag: "#לקוח", dot: "red", star: true,
+    {name: "דמי אבירם", meta: "ממתין שעה", star: true,
      summary: "דמי שלח מסמכים ומחכה לאישור קבלה", progress: "1 מתוך 3", fill: "33%"},
-    {name: "שרה כהן", meta: "ממתינה 3 שעות", tag: "#בית", dot: "blue", star: false,
+    {name: "שרה כהן", meta: "ממתינה 3 שעות", star: false,
      summary: "שרה שאלה אם אתם מגיעים בשבת ומחכה לתשובה", progress: "2 מתוך 3", fill: "66%"},
-    {name: "יוסי לוי", meta: "ממתין 26 שעות", tag: "", dot: "", star: false,
+    {name: "יוסי לוי", meta: "ממתין 26 שעות", star: false,
      summary: "יוסי מחכה להצעת המחיר שהבטחת לשלוח", progress: "3 מתוך 3", fill: "100%"},
   ];
 
@@ -815,12 +791,6 @@ function showError(msg) {
     document.getElementById("demo-progress").textContent = c.progress;
     document.getElementById("demo-progress-fill").style.width = c.fill;
     document.getElementById("demo-star").style.display = c.star ? "" : "none";
-    const tag = document.getElementById("demo-tag");
-    tag.textContent = c.tag;
-    tag.style.display = c.tag ? "" : "none";
-    const dot = document.getElementById("demo-color-dot");
-    dot.className = "corner-dot demo-dot " + c.dot;
-    dot.style.display = c.dot ? "" : "none";
   }
 
   function moveTo(el) {
