@@ -444,6 +444,9 @@ class MessageRow(Base):
     )
     message_type: Mapped[str] = mapped_column(Text, nullable=False)
     text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    audio_download_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    audio_mime_type: Mapped[str | None] = mapped_column(Text, nullable=True)
+    audio_file_name: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True),
         nullable=False,

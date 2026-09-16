@@ -33,6 +33,7 @@ not wired into the lifespan loop until a real
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -51,6 +52,7 @@ from echo_v2.persistence.chat_repositories import (
     ChatStateRepository,
     MessageRepository,
 )
+from echo_v2.services.transcription import Transcriber, handle_direct_audio_download_url
 from echo_v2.services.waiting_for_me_analyzer import WaitingForMeAnalyzer
 
 __all__ = [
@@ -180,6 +182,11 @@ class ChatAnalysisProcessor:
             to include for context. Default 5.
         max_no_outbound: If no outbound exists, load this many recent
             messages. Default 20.
+        transcriber: Optional :class:`Transcriber` for lazy audio
+            transcription. When provided, audio messages with
+            ``audio_download_url`` are transcribed before analysis and
+            the transcript is persisted via ``message_repo.update_text``.
+            When ``None``, audio messages use ``text=""`` (same as today).
     """
 
     def __init__(
@@ -189,11 +196,13 @@ class ChatAnalysisProcessor:
         *,
         context_messages: int = 5,
         max_no_outbound: int = 20,
+        transcriber: Transcriber | None = None,
     ) -> None:
         self._messages = message_repo
         self._analyzer = analyzer
         self._context_messages = context_messages
         self._max_no_outbound = max_no_outbound
+        self._transcriber = transcriber
 
     async def process(
         self,
@@ -207,6 +216,12 @@ class ChatAnalysisProcessor:
             context_messages=self._context_messages,
             max_no_outbound=self._max_no_outbound,
         )
+
+        # Lazy audio transcription: if a transcriber is available, transcribe
+        # any audio messages that have a download URL but no text yet.
+        if self._transcriber is not None:
+            messages = await self._transcribe_audio_messages(messages)
+
         conversation = ConversationInput(
             user_id=user_id,
             chat_id=chat_id,
@@ -245,6 +260,48 @@ class ChatAnalysisProcessor:
             result=result,
             conversation_snapshot=conversation_snapshot,
         )
+
+    async def _transcribe_audio_messages(self, messages: list) -> list:
+        """Transcribe audio messages that have a download URL but no text.
+
+        For each message with ``message_type == "audio"``, ``text is None``,
+        and ``audio_download_url is not None``: download + convert +
+        transcribe via :func:`handle_direct_audio_download_url`, persist the
+        transcript via :meth:`MessageRepository.update_text`, and replace
+        the message in the returned list.
+
+        On failure: log and leave ``text=None`` (the conversation input
+        will use ``text=""`` for this message, same as today).
+        """
+        result_messages = []
+        for msg in messages:
+            if (
+                msg.message_type == "audio"
+                and msg.text is None
+                and msg.audio_download_url is not None
+            ):
+                try:
+                    transcript = await handle_direct_audio_download_url(
+                        transcriber=self._transcriber,
+                        download_url=msg.audio_download_url,
+                        file_name=msg.audio_file_name or "voice-message",
+                        mime_type=msg.audio_mime_type or "",
+                    )
+                    await self._messages.update_text(msg.id, transcript)
+                    _logger.info(
+                        "transcribed audio message %s: %s",
+                        msg.id,
+                        transcript[:100],
+                    )
+                    msg = dataclasses.replace(msg, text=transcript)
+                except Exception:
+                    _logger.exception(
+                        "audio transcription failed for message %s; "
+                        "using text=None",
+                        msg.id,
+                    )
+            result_messages.append(msg)
+        return result_messages
 
 
 class ChatAnalysisWorker:

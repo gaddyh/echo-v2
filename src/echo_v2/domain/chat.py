@@ -64,6 +64,9 @@ class Message:
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     message_type: str = "text"
     text: str | None = None
+    audio_download_url: str | None = None
+    audio_mime_type: str | None = None
+    audio_file_name: str | None = None
 
 
 @dataclass

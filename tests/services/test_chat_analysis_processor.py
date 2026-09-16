@@ -228,3 +228,189 @@ async def test_processor_does_not_persist():
 
     active = await active_repo.get(user_id="user-1", chat_id="972501234567@c.us")
     assert active is None
+
+
+# --- Audio transcription tests -----------------------------------------------
+
+
+def _make_audio_message(
+    *,
+    direction: MessageDirection = MessageDirection.INBOUND,
+    offset_minutes: int = 0,
+    audio_download_url: str = "https://example.com/audio.ogg",
+    audio_mime_type: str = "audio/ogg",
+    audio_file_name: str = "voice-message.ogg",
+    user_id: str = "user-1",
+    chat_id: str = "972501234567@c.us",
+) -> Message:
+    return Message(
+        id=str(uuid.uuid4()),
+        user_id=user_id,
+        connection_id="conn-1",
+        chat_id=chat_id,
+        provider_message_id=str(uuid.uuid4()),
+        direction=direction,
+        sender_id=None,
+        timestamp=BASE_TIME + timedelta(minutes=offset_minutes),
+        message_type="audio",
+        text=None,
+        audio_download_url=audio_download_url,
+        audio_mime_type=audio_mime_type,
+        audio_file_name=audio_file_name,
+    )
+
+
+class FakeTranscriber:
+    """Fake Transcriber that returns a fixed transcript and records calls."""
+
+    def __init__(self, transcript: str = "transcribed text") -> None:
+        self.transcript = transcript
+        self.calls: list[dict] = []
+
+    async def transcribe_bytes(
+        self,
+        *,
+        audio_bytes: bytes,
+        filename: str,
+        content_type: str,
+    ) -> object:
+        from echo_v2.services.transcription import TranscriptionResult
+
+        self.calls.append(
+            {"filename": filename, "content_type": content_type, "bytes_len": len(audio_bytes)}
+        )
+        return TranscriptionResult(text=self.transcript, model="fake")
+
+    async def close(self) -> None:
+        pass
+
+
+async def test_processor_transcribes_audio_messages_before_analysis():
+    """Audio messages with download_url are transcribed before analysis."""
+    from unittest.mock import AsyncMock, patch
+
+    repo = InMemoryMessageRepository()
+    audio_msg = _make_audio_message(offset_minutes=0)
+    text_msg = _make_message(direction=MessageDirection.OUTBOUND, text="reply", offset_minutes=1)
+    await repo.save(audio_msg)
+    await repo.save(text_msg)
+
+    analyzer = FakeAnalyzer()
+    processor = ChatAnalysisProcessor(
+        message_repo=repo, analyzer=analyzer, transcriber=object()  # non-None to enable
+    )
+    with patch(
+        "echo_v2.services.chat_analysis_worker.handle_direct_audio_download_url",
+        new_callable=AsyncMock,
+        return_value="שלום עולם",
+    ) as mock_helper:
+        await processor.process("user-1", "972501234567@c.us", target_version=1)
+
+    # Transcription helper was called once (for the audio message)
+    assert mock_helper.await_count == 1
+    _, kwargs = mock_helper.call_args
+    assert kwargs["download_url"] == "https://example.com/audio.ogg"
+    assert kwargs["file_name"] == "voice-message.ogg"
+    assert kwargs["mime_type"] == "audio/ogg"
+
+    # The analyzer received the transcript as text
+    conv = analyzer.calls[0]
+    assert conv.messages[0][1] == "שלום עולם"
+    assert conv.messages[1][1] == "reply"
+
+    # The transcript was persisted via update_text
+    updated_msg = repo._messages[(audio_msg.connection_id, audio_msg.provider_message_id)]
+    assert updated_msg.text == "שלום עולם"
+
+
+async def test_processor_with_no_transcriber_uses_empty_text_for_audio():
+    """Without a transcriber, audio messages use text='' (same as today)."""
+    repo = InMemoryMessageRepository()
+    audio_msg = _make_audio_message(offset_minutes=0)
+    await repo.save(audio_msg)
+
+    analyzer = FakeAnalyzer()
+    processor = ChatAnalysisProcessor(message_repo=repo, analyzer=analyzer)
+    await processor.process("user-1", "972501234567@c.us", target_version=1)
+
+    # No transcription attempted
+    conv = analyzer.calls[0]
+    assert conv.messages[0][1] == ""  # text or "" → ""
+
+    # Message text is still None in the repo
+    stored = repo._messages[(audio_msg.connection_id, audio_msg.provider_message_id)]
+    assert stored.text is None
+
+
+async def test_processor_transcription_failure_uses_empty_text():
+    """If transcription raises, the audio message uses text='' and no crash."""
+    from unittest.mock import AsyncMock, patch
+
+    repo = InMemoryMessageRepository()
+    audio_msg = _make_audio_message(offset_minutes=0)
+    await repo.save(audio_msg)
+
+    analyzer = FakeAnalyzer()
+    processor = ChatAnalysisProcessor(
+        message_repo=repo, analyzer=analyzer, transcriber=object()  # non-None to enable
+    )
+    with patch(
+        "echo_v2.services.chat_analysis_worker.handle_direct_audio_download_url",
+        new_callable=AsyncMock,
+        side_effect=RuntimeError("Modal timed out"),
+    ):
+        await processor.process("user-1", "972501234567@c.us", target_version=1)
+
+    # Analyzer still called, audio message has empty text
+    conv = analyzer.calls[0]
+    assert conv.messages[0][1] == ""
+
+    # Message text is still None in the repo (update_text not called)
+    stored = repo._messages[(audio_msg.connection_id, audio_msg.provider_message_id)]
+    assert stored.text is None
+
+
+async def test_processor_skips_transcription_for_text_messages():
+    """Text messages are not sent to the transcriber."""
+    from unittest.mock import AsyncMock, patch
+
+    repo = InMemoryMessageRepository()
+    text_msg = _make_message(direction=MessageDirection.INBOUND, text="hello", offset_minutes=0)
+    await repo.save(text_msg)
+
+    analyzer = FakeAnalyzer()
+    processor = ChatAnalysisProcessor(
+        message_repo=repo, analyzer=analyzer, transcriber=object()
+    )
+    with patch(
+        "echo_v2.services.chat_analysis_worker.handle_direct_audio_download_url",
+        new_callable=AsyncMock,
+    ) as mock_helper:
+        await processor.process("user-1", "972501234567@c.us", target_version=1)
+
+    assert mock_helper.await_count == 0
+    assert analyzer.calls[0].messages[0][1] == "hello"
+
+
+async def test_processor_skips_audio_with_no_download_url():
+    """Audio messages without a download_url are not transcribed."""
+    from unittest.mock import AsyncMock, patch
+
+    repo = InMemoryMessageRepository()
+    audio_msg = _make_audio_message(
+        offset_minutes=0, audio_download_url=None, audio_mime_type=None, audio_file_name=None
+    )
+    await repo.save(audio_msg)
+
+    analyzer = FakeAnalyzer()
+    processor = ChatAnalysisProcessor(
+        message_repo=repo, analyzer=analyzer, transcriber=object()
+    )
+    with patch(
+        "echo_v2.services.chat_analysis_worker.handle_direct_audio_download_url",
+        new_callable=AsyncMock,
+    ) as mock_helper:
+        await processor.process("user-1", "972501234567@c.us", target_version=1)
+
+    assert mock_helper.await_count == 0
+    assert analyzer.calls[0].messages[0][1] == ""

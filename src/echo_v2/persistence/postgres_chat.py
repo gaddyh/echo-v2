@@ -110,6 +110,9 @@ class PostgresMessageRepository:
                     timestamp=message.timestamp,
                     message_type=message.message_type,
                     text=message.text,
+                    audio_download_url=message.audio_download_url,
+                    audio_mime_type=message.audio_mime_type,
+                    audio_file_name=message.audio_file_name,
                 )
                 .on_conflict_do_nothing(
                     index_elements=["connection_id", "provider_message_id"],
@@ -119,6 +122,24 @@ class PostgresMessageRepository:
             result = await session.execute(stmt)
             inserted = result.scalar_one_or_none()
             return inserted is not None
+
+    async def update_text(self, message_id: str, text: str) -> bool:
+        """Update the ``text`` column of a message row.
+
+        Used to set the transcript of an audio message after lazy
+        transcription. Returns ``True`` if a row was updated.
+        """
+        from sqlalchemy import update
+
+        async with self._session() as session:
+            stmt = (
+                update(MessageRow)
+                .where(MessageRow.id == message_id)
+                .values(text=text)
+            )
+            result = await session.execute(stmt)
+            await session.commit()
+            return result.rowcount > 0
 
     async def list_for_analysis(
         self,

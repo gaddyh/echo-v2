@@ -183,6 +183,58 @@ def test_parse_image_message_with_caption():
     assert event.text == "look at this"
 
 
+def test_parse_audio_message_populates_audio_fields():
+    payload = _base(
+        "incomingMessageReceived",
+        chatId="9725@c.us",
+        idMessage="m-audio",
+        messageData={
+            "typeMessage": "audioMessage",
+            "fileMessageData": {
+                "downloadUrl": "https://api.green-api.com/waInstance123/file/abc.ogg",
+                "mimeType": "audio/ogg",
+                "fileName": "voice-message.ogg",
+            },
+        },
+    )
+    event = GreenEventAdapter().parse(payload)
+    assert isinstance(event, ProviderMessageEvent)
+    assert event.kind is MessageKind.AUDIO
+    assert event.text is None
+    assert event.audio_download_url == "https://api.green-api.com/waInstance123/file/abc.ogg"
+    assert event.audio_mime_type == "audio/ogg"
+    assert event.audio_file_name == "voice-message.ogg"
+
+
+def test_parse_audio_message_missing_file_data_returns_none_audio_fields():
+    payload = _base(
+        "incomingMessageReceived",
+        chatId="9725@c.us",
+        idMessage="m-audio",
+        messageData={"typeMessage": "audioMessage"},
+    )
+    event = GreenEventAdapter().parse(payload)
+    assert isinstance(event, ProviderMessageEvent)
+    assert event.kind is MessageKind.AUDIO
+    assert event.audio_download_url is None
+    assert event.audio_mime_type is None
+    assert event.audio_file_name is None
+
+
+def test_parse_text_message_has_no_audio_fields():
+    payload = _base(
+        "incomingMessageReceived",
+        chatId="c",
+        idMessage="m",
+        messageData={"typeMessage": "textMessage", "textMessage": "hi"},
+    )
+    event = GreenEventAdapter().parse(payload)
+    assert isinstance(event, ProviderMessageEvent)
+    assert event.audio_download_url is None
+    assert event.audio_mime_type is None
+    assert event.audio_file_name is None
+
+
 def test_parse_quoted_message_extracts_text():
     payload = _base(
         "incomingMessageReceived",

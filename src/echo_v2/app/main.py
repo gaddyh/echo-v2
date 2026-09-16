@@ -249,7 +249,10 @@ def create_app() -> FastAPI:
     )
 
     # --- chat analysis worker (NOT started by default — CHAT_ANALYSIS_ENABLED)
+    from echo_v2.services.transcription_factory import build_transcriber
     from echo_v2.services.waiting_for_me_analyzer import LLMWaitingForMeAnalyzer
+
+    transcriber = build_transcriber()
 
     analyzer = LLMWaitingForMeAnalyzer(
         client=openai_client,
@@ -260,6 +263,7 @@ def create_app() -> FastAPI:
         analyzer=analyzer,
         context_messages=5,
         max_no_outbound=20,
+        transcriber=transcriber,
     )
     analysis_worker = ChatAnalysisWorker(
         chat_state_repo=repos.chat_state,
@@ -462,6 +466,13 @@ def create_app() -> FastAPI:
             await raw_openai_client.close()
         except Exception:
             _logger.exception("error closing OpenAI client")
+
+        # Close the transcriber if one was built.
+        if transcriber is not None:
+            try:
+                await transcriber.close()
+            except Exception:
+                _logger.exception("error closing transcriber")
 
     app = FastAPI(title="Echo v2", version="0.1.0", lifespan=lifespan)
 

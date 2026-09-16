@@ -98,6 +98,14 @@ class MessageRepository(Protocol):
         """Return the last ``limit`` messages in chronological order."""
         ...
 
+    async def update_text(self, message_id: str, text: str) -> bool:
+        """Update the ``text`` column of a message row.
+
+        Used to set the transcript of an audio message after lazy
+        transcription. Returns ``True`` if a row was updated.
+        """
+        ...
+
 
 class InMemoryMessageRepository:
     """Process-local message repository backed by a dict.
@@ -179,6 +187,15 @@ class InMemoryMessageRepository:
             key=lambda m: (m.timestamp, m.id),
         )
         return chat_msgs[-max(0, limit):] if limit else []
+
+    async def update_text(self, message_id: str, text: str) -> bool:
+        import dataclasses as _dataclasses
+
+        for key, msg in self._messages.items():
+            if msg.id == message_id:
+                self._messages[key] = _dataclasses.replace(msg, text=text)
+                return True
+        return False
 
 
 # --- ChatStateRepository ---------------------------------------------------

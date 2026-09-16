@@ -151,6 +151,9 @@ def _message_event(
     provider_message_id = payload.get("idMessage")
     timestamp = _timestamp(payload.get("timestamp"))
     text = _extract_text(message_data, type_message)
+    audio_download_url, audio_mime_type, audio_file_name = _extract_audio_metadata(
+        message_data, type_message
+    )
 
     if not chat_id or not provider_message_id:
         return None
@@ -169,6 +172,9 @@ def _message_event(
         sender_id=str(sender_id) if sender_id else None,
         sender_name=str(sender_name) if sender_name else None,
         chat_name=str(chat_name) if chat_name else None,
+        audio_download_url=audio_download_url,
+        audio_mime_type=audio_mime_type,
+        audio_file_name=audio_file_name,
     )
 
 
@@ -249,6 +255,34 @@ def _extract_text(message_data: dict[str, Any], type_message: str) -> str | None
 def _extract_chat_id(message_data: dict[str, Any]) -> str | None:
     chat = message_data.get("chatId")
     return str(chat) if chat else None
+
+
+def _extract_audio_metadata(
+    message_data: dict[str, Any],
+    type_message: str,
+) -> tuple[str | None, str | None, str | None]:
+    """Extract ``(download_url, mime_type, file_name)`` from an audioMessage.
+
+    Green API populates ``messageData.fileMessageData`` for
+    image/video/audio/document messages. For ``audioMessage``, ``downloadUrl``
+    is a direct link to the audio file (often OGG/Opus for voice notes),
+    ``mimeType`` is the media type, and ``fileName`` is auto-generated but
+    carries the correct extension.
+
+    Returns ``(None, None, None)`` for non-audio messages.
+    """
+    if type_message != "audioMessage":
+        return None, None, None
+
+    file_data = message_data.get("fileMessageData")
+    if not isinstance(file_data, dict):
+        return None, None, None
+
+    return (
+        str(file_data["downloadUrl"]) if file_data.get("downloadUrl") else None,
+        str(file_data["mimeType"]) if file_data.get("mimeType") else None,
+        str(file_data["fileName"]) if file_data.get("fileName") else None,
+    )
 
 
 def _timestamp(raw: Any) -> datetime:

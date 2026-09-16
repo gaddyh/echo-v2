@@ -102,6 +102,9 @@ class ChatIngestionService:
             timestamp=event.timestamp,
             message_type=event.kind.value,
             text=event.text,
+            audio_download_url=event.audio_download_url,
+            audio_mime_type=event.audio_mime_type,
+            audio_file_name=event.audio_file_name,
         )
 
         inserted = await self._message_repo.save(message)
