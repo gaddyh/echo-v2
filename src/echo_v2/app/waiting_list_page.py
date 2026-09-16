@@ -156,7 +156,7 @@ body {
 .context-link:hover { text-decoration: underline; }
 .actions { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
 .btn-done {
-  width: 100%;
+  flex: 1;
   padding: 12px;
   border: none;
   border-radius: 8px;
@@ -628,10 +628,9 @@ function renderCard(item) {
     + '<div class="quote"></div>'
     + '<a class="context-link" data-action="context">הודעות +</a>'
     + '<div class="actions">'
-    + '<button class="btn-done" data-action="done">בוצע</button>'
     + '<div class="btn-row">'
+    + '<button class="btn-done" data-action="done">בוצע</button>'
     + '<button class="btn-secondary send" data-action="send">תזמן הודעה</button>'
-    + '<button class="btn-secondary" data-action="tomorrow">מחר</button>'
     + '</div>'
     + '<div class="btn-row">'
     + '<button class="btn-secondary" data-action="snooze">נודניק לשעה</button>'
