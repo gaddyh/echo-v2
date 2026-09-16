@@ -653,3 +653,28 @@ async def test_get_authorization_code_non_dict_response_raises():
             await client.get_authorization_code("123", "api-tok", "972501234567")
     finally:
         await client.aclose()
+
+
+async def test_get_authorization_code_uses_extended_timeout(monkeypatch):
+    """get_authorization_code passes a long timeout (OTP generation is slow)."""
+    captured: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return _ok({"status": "ok", "code": "123456"})
+
+    client = _client_with_handler(handler)
+    try:
+        original = client._client.request
+
+        async def spy(method, url, **kwargs):
+            captured["timeout"] = kwargs.get("timeout")
+            return await original(method, url, **kwargs)
+
+        monkeypatch.setattr(client._client, "request", spy)
+        await client.get_authorization_code("123", "api-tok", "972501234567")
+    finally:
+        await client.aclose()
+
+    timeout = captured["timeout"]
+    assert isinstance(timeout, httpx.Timeout)
+    assert timeout.read == 180.0

@@ -220,6 +220,9 @@ class GreenClient:
             is_write=True,
             json_body={"phoneNumber": phone_number},
             skip_error_envelope=True,
+            # Green generates the OTP server-side; this can take well over a
+            # minute. The shared client's 15s read timeout is far too short.
+            timeout=httpx.Timeout(180.0, connect=5.0),
         )
         if not isinstance(data, dict) or not data.get("status"):
             raise GreenApiError(
@@ -348,6 +351,7 @@ class GreenClient:
         is_write: bool,
         json_body: dict[str, Any] | None = None,
         skip_error_envelope: bool = False,
+        timeout: httpx.Timeout | None = None,
     ) -> dict[str, Any] | list[dict[str, Any]]:
         """Execute an HTTP request and return parsed JSON.
 
@@ -357,9 +361,14 @@ class GreenClient:
           RetryableError on reads, IndeterminateError on writes
         * 4xx (non-429) -> PermanentError
         * Green error body ``{"code":..., "description":...}`` -> PermanentError
+
+        ``timeout`` overrides the client's default timeout for slow
+        operations (e.g. ``getAuthorizationCode``).
         """
         try:
-            response = await self._client.request(method, url, json=json_body)
+            response = await self._client.request(
+                method, url, json=json_body, timeout=timeout
+            )
         except httpx.ConnectError as exc:
             _logger.info(
                 "provider=green operation=%s connection_id=%s status=connect_error",
