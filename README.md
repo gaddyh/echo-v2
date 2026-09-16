@@ -36,6 +36,7 @@ New users message the Echo bot → Echo creates a Green API instance → sends a
 - Each result records `model`, `prompt_version`, and `analyzer_version`, so feedback can be correlated with the exact algorithm that produced it
 - Outbound messages do not automatically resolve `WAITING_FOR_ME` — every meaningful message triggers re-analysis
 - Supports GPT-5+ reasoning models (default temperature, larger completion budget) alongside gpt-4.x
+- **Audio transcription**: inbound voice notes (Green API `audioMessage`) are transcribed via Modal Hebrew Whisper before LLM analysis, so the analyzer sees the spoken content as text. Transcription is lazy — the webhook stores the download URL and returns immediately; the analysis worker downloads and transcribes when it picks up the chat. If transcription is disabled or fails, the audio message is analyzed with `text=None` (no crash, no blocked webhook).
 
 ### Waiting for me
 
@@ -202,6 +203,8 @@ src/echo_v2/
 │   ├── chat_ingestion.py             # Message persistence + chat state
 │   ├── chat_analysis_worker.py       # Polls for due chats, runs LLM analysis, commits
 │   ├── waiting_for_me_analyzer.py    # LLM analysis (WaitingForMe classification)
+│   ├── transcription.py              # Transcriber protocol + audio download/convert/transcribe pipeline
+│   ├── transcription_factory.py      # Builds Transcriber from env (Modal or None)
 │   ├── digest_worker.py              # Morning digest sender (scheduled + on-demand)
 │   ├── digest_formatter.py           # Formats digest template parameters
 │   ├── digest_reply.py              # "הצג הכול" full-list reply handler
@@ -216,10 +219,14 @@ src/echo_v2/
 │   ├── green/
 │   │   ├── client.py                 # Green API HTTP client (error-classified)
 │   │   ├── provisioner.py            # Instance creation + settings + OTP
-│   │   ├── events.py                 # Green webhook JSON → canonical events
+│   │   ├── events.py                 # Green webhook JSON → canonical events (incl. audio metadata)
 │   │   ├── messaging.py             # Green send_message adapter
 │   │   ├── models.py                 # State mapping, subscription translation
 │   │   └── settings.py               # Green API env config
+│   ├── modal/
+│   │   ├── client.py                 # Modal Hebrew Whisper HTTP transport (retry, backoff)
+│   │   ├── transcriber.py            # ModalWhisperTranscriber (implements Transcriber protocol)
+│   │   └── settings.py               # Modal transcription env config
 │   └── dialog360/
 │       ├── client.py                 # 360dialog HTTP client (error-classified)
 │       ├── events.py                 # 360dialog webhook JSON → BotEvent
@@ -244,7 +251,7 @@ src/echo_v2/
 │   ├── contacts.py                   # Contact repository
 │   ├── conversation_state.py        # In-memory scheduling flow state (MVP)
 │   ├── waiting_list_tokens.py       # Waiting-list session tokens (Postgres)
-│   └── alembic/versions/            # Migrations 0001-0020
+│   └── alembic/versions/            # Migrations 0001-0024
 ├── ports/
 │   ├── whatsapp.py                   # Provider-neutral WhatsApp ports (events, messaging)
 │   └── bot.py                         # Provider-neutral bot ports (events, channel)
@@ -263,7 +270,7 @@ src/echo_v2/
 
 ## Database
 
-PostgreSQL with 20 Alembic migrations:
+PostgreSQL with 24 Alembic migrations:
 
 | Migration | Description |
 |-----------|-------------|
@@ -287,6 +294,7 @@ PostgreSQL with 20 Alembic migrations:
 | 0018 | Contact starred |
 | 0019 | Contact color labels + tags |
 | 0020 | Result model / prompt_version / analyzer_version |
+| 0024 | Message audio metadata (audio_download_url, audio_mime_type, audio_file_name) |
 
 ## Getting started
 
@@ -367,6 +375,10 @@ pytest -m eval_soc -v -s           # LLM eval harness (real API calls)
 | `CHAT_PRIVATE_ONLY` | No | `true` | Only ingest private chats (not groups) |
 | `CHAT_ANALYSIS_ENABLED` | No | `false` | Start the analysis worker loop in the app lifespan |
 | `CHAT_ANALYSIS_POLL_INTERVAL` | No | `60` | Analysis worker poll interval (seconds) |
+| `MODAL_TRANSCRIPTION_URL` | No | — | Modal Hebrew Whisper endpoint URL (enables audio transcription when set) |
+| `MODAL_TRANSCRIPTION_KEY` | No | — | Modal proxy key (required if `MODAL_TRANSCRIPTION_URL` is set) |
+| `MODAL_TRANSCRIPTION_SECRET` | No | — | Modal proxy secret (required if `MODAL_TRANSCRIPTION_URL` is set) |
+| `MODAL_TRANSCRIPTION_TIMEOUT_SECONDS` | No | `180` | Modal transcription request timeout |
 | `DIGEST_ENABLED` | No | `false` | Start the digest worker loop |
 | `DIGEST_POLL_INTERVAL` | No | `300` | Digest worker poll interval (seconds) |
 | `DIGEST_TEMPLATE_NAME` | No | `morning_waiting_digest6` | WhatsApp template name for the morning digest |
@@ -437,6 +449,7 @@ Latest results (gpt-5.6-luna, prompt v1): SOC dev 39/40, SOC test 39/40, SOC-250
 - Python 3.13, FastAPI, SQLAlchemy 2 async, PostgreSQL, Alembic
 - httpx, websockets (Green API)
 - OpenAI-compatible LLM API (gpt-5.6-luna in production; gpt-4.x supported)
+- Modal Hebrew Whisper (audio transcription via `ivrit-ai/whisper-large-v3-turbo-ct2`)
 - 360dialog WhatsApp Business API
 - Green API (user's WhatsApp)
 - LangSmith tracing (privacy-hardened)
