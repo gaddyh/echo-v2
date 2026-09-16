@@ -6,11 +6,14 @@ Runs as a background task (like ChatAnalysisWorker). On each poll:
    a. Compute the user's local time from their timezone.
    b. Check if local time is within the digest window (default 08:00–11:00).
    c. If yes, try to claim a daily_digest row for (user_id, local_date).
-   d. If claimed (new row): query active waiting chats, build digest, send.
+   d. If claimed (new row): count actionable waiting items, send template.
    e. If not claimed (row exists): skip — already processed today.
 
-The active query uses the shared :class:`WaitingListQueryService.current_views`
-so the digest and the mini-app always agree on what's actionable.
+The template only carries the count and a link — no conversation
+content is exposed in the template. The count comes from
+:meth:`WaitingListQueryService.count_actionable`, which applies the
+same actionable filter as the mini-app but doesn't resolve names or
+previews.
 
 Send errors:
   - IndeterminateError → status = indeterminate (no blind retry)
@@ -30,7 +33,6 @@ from echo_v2.domain.digest import DailyDigestStatus
 from echo_v2.persistence.digest_repositories import DailyDigestRepository
 from echo_v2.ports.bot import BotChannel
 from echo_v2.runtime.errors import IndeterminateError, PermanentError
-from echo_v2.services.digest_formatter import DigestFormatter
 from echo_v2.services.waiting_list_query import WaitingListQueryService
 from echo_v2.services.waiting_list_token_service import WaitingListTokenService
 
@@ -42,22 +44,27 @@ DEFAULT_TZ = "Asia/Jerusalem"
 DIGEST_START_HOUR = 8
 DIGEST_END_HOUR = 11
 
+# Fallback first name when the user has none.
+_FALLBACK_NAME = "חבר"
+
 
 class DigestWorker:
     """Polls users and sends morning digests via the Echo Business Bot.
 
     Args:
         digest_repo: The :class:`DailyDigestRepository` for claim/status.
-        query_service: The shared :class:`WaitingListQueryService`. Must
-            be wired with ``message_repo`` and ``contact_repo`` so
-            ``current_views`` works. The canonical read path — the
-            digest and the mini-app always agree on what's actionable.
+        query_service: The shared :class:`WaitingListQueryService`. Only
+            :meth:`count_actionable` is used — the digest doesn't need
+            names, previews, or summaries.
         bot: The :class:`BotChannel` to send the digest through.
-        user_provider: Callable that returns a list of (user_id, phone, timezone).
-        token_service: Optional :class:`WaitingListTokenService` for issuing
-            waiting-list web sessions. When provided, the digest template
-            is sent with a ``url_suffix`` containing the session token.
+        user_provider: Callable that returns a list of
+            (user_id, phone, timezone, first_name).
+        token_service: Optional :class:`WaitingListTokenService` for
+            issuing waiting-list web sessions. When provided, the
+            digest template is sent with a ``url_suffix`` containing
+            the session token.
         poll_interval_seconds: How often to poll. Default 300 (5 min).
+        template_name: The WhatsApp template name to send.
     """
 
     def __init__(
@@ -78,7 +85,6 @@ class DigestWorker:
         self._token_service = token_service
         self._poll_interval = poll_interval_seconds
         self._template_name = template_name
-        self._formatter = DigestFormatter()
 
     async def run_once(self, *, now_utc: datetime | None = None) -> int:
         """Process all eligible users once. Returns count of digests sent.
@@ -144,10 +150,10 @@ class DigestWorker:
             # Already processed today.
             return False
 
-        # Query active waiting chats via the shared view query.
-        views = await self._query_service.current_views(user_id)
+        # Count actionable waiting items via the shared query service.
+        count = await self._query_service.count_actionable(user_id)
 
-        if not views:
+        if count == 0:
             # No waiting chats — mark as empty so we don't retry later today.
             await self._digest_repo.update_status(
                 digest_id=digest.id,
@@ -156,10 +162,6 @@ class DigestWorker:
             )
             _logger.info("digest for user %s on %s: empty", user_id, local_date)
             return False
-
-        # Format template parameters.
-        name = first_name or "חבר"  # fallback if user has no first_name
-        params = self._formatter.format(views, first_name=name)
 
         # Issue a waiting-list web session token (if token service is wired).
         url_suffix: str | None = None
@@ -174,12 +176,13 @@ class DigestWorker:
                 )
 
         # Send via bot template (2 params: first_name, count).
+        name = first_name or _FALLBACK_NAME
         try:
             msg_id = await self._bot.send_template(
                 phone,
                 self._template_name,
                 "he",
-                [params.first_name, params.count],
+                [name, str(count)],
                 url_suffix=url_suffix,
             )
         except IndeterminateError as exc:
@@ -189,7 +192,7 @@ class DigestWorker:
             await self._digest_repo.update_status(
                 digest_id=digest.id,
                 status=DailyDigestStatus.INDETERMINATE,
-                item_count=len(views),
+                item_count=count,
             )
             return False
         except PermanentError as exc:
@@ -199,7 +202,7 @@ class DigestWorker:
             await self._digest_repo.update_status(
                 digest_id=digest.id,
                 status=DailyDigestStatus.FAILED,
-                item_count=len(views),
+                item_count=count,
             )
             return False
         except Exception:
@@ -209,7 +212,7 @@ class DigestWorker:
             await self._digest_repo.update_status(
                 digest_id=digest.id,
                 status=DailyDigestStatus.FAILED,
-                item_count=len(views),
+                item_count=count,
             )
             return False
 
@@ -219,13 +222,13 @@ class DigestWorker:
             status=DailyDigestStatus.SENT,
             sent_at=datetime.now(timezone.utc),
             provider_message_id=msg_id,
-            item_count=len(views),
+            item_count=count,
         )
         _logger.info(
             "digest sent to user %s on %s: %d items",
             user_id,
             local_date,
-            len(views),
+            count,
         )
         return True
 
@@ -240,20 +243,15 @@ class DigestWorker:
     ) -> bool:
         """Send an on-demand digest to a user immediately.
 
-        Skips the digest window check and the daily claim — just queries
+        Skips the digest window check and the daily claim — just counts
         active items, builds the digest, and sends the template.
 
         Returns ``True`` if sent, ``False`` if no active items or send failed.
         """
-        # Query active waiting chats via the shared view query.
-        views = await self._query_service.current_views(user_id)
+        count = await self._query_service.count_actionable(user_id)
 
-        if not views:
+        if count == 0:
             return False
-
-        # Format template parameters.
-        name = first_name or "חבר"
-        params = self._formatter.format(views, first_name=name)
 
         # Issue a waiting-list web session token (if token service is wired).
         url_suffix: str | None = None
@@ -268,12 +266,13 @@ class DigestWorker:
                 )
 
         # Send via bot template.
+        name = first_name or _FALLBACK_NAME
         try:
             await self._bot.send_template(
                 phone,
                 self._template_name,
                 "he",
-                [params.first_name, params.count],
+                [name, str(count)],
                 url_suffix=url_suffix,
             )
         except Exception:
@@ -285,7 +284,7 @@ class DigestWorker:
         _logger.info(
             "on-demand digest sent to user %s: %d items",
             user_id,
-            len(views),
+            count,
         )
         return True
 

@@ -16,9 +16,12 @@ Two entry points:
 * :meth:`current_actionable` — returns raw :class:`WaitingForMeActive`
   rows (used by surfaces that need the raw row, e.g. for version checks).
 * :meth:`current_views` — returns fully-resolved
-  :class:`WaitingForMeView` read models (used by the mini-app, the
-  morning digest, and the WhatsApp bot cards). This is the canonical
-  read path; no surface should resolve names/previews/summaries itself.
+  :class:`WaitingForMeView` read models (used by the mini-app and the
+  WhatsApp bot cards). This is the canonical read path; no surface
+  should resolve names/previews/summaries itself.
+* :meth:`count_actionable` — returns just the count of actionable
+  items (used by the digest worker, which only needs the count for
+  the template).
 """
 
 from __future__ import annotations
@@ -117,6 +120,25 @@ class WaitingListQueryService:
         current.sort(key=lambda a: a.waiting_since)
         return current
 
+    async def count_actionable(
+        self,
+        user_id: str,
+        *,
+        now: datetime | None = None,
+    ) -> int:
+        """Count actionable waiting items for a user.
+
+        Applies the same filtering as :meth:`current_actionable` but
+        returns only the count — no list construction, no name/preview
+        resolution. Used by the digest worker, which only needs the
+        count for the template.
+        """
+        # Reuse current_actionable — the filtering logic is identical.
+        # A future optimization could push the count into the repository
+        # layer, but the per-user active set is small enough that this
+        # is not a bottleneck today.
+        return len(await self.current_actionable(user_id, now=now))
+
     async def current_views(
         self,
         user_id: str,
@@ -125,10 +147,9 @@ class WaitingListQueryService:
     ) -> list[WaitingForMeView]:
         """Get fully-resolved views of currently actionable waiting items.
 
-        This is the canonical read path consumed by the mini-app, the
-        morning digest, and the WhatsApp bot cards. Items are sorted:
-        starred contacts first (oldest first), then non-starred (oldest
-        first).
+        This is the canonical read path consumed by the mini-app and the
+        WhatsApp bot cards. Items are sorted: starred contacts first
+        (oldest first), then non-starred (oldest first).
 
         Requires ``message_repo``, ``contact_repo`` (and ideally
         ``result_repo`` for summaries) to be wired at construction time.
