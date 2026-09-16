@@ -448,6 +448,18 @@ class WaitingListService:
         if self._scheduling_service is None or self._active_repo is None:
             return SendResponse(outcome="invalid")
 
+        # Check for duplicate first — the active item may already be
+        # resolved from a previous call with the same request_id.
+        existing = await self._scheduling_service.get_by_request_id(
+            request_id, user_id
+        )
+        if existing is not None:
+            return SendResponse(
+                outcome="duplicate",
+                scheduled_for=existing.execute_at_utc.isoformat(),
+                action_id=existing.id,
+            )
+
         # Resolve the active item server-side.
         active = await self._active_repo.get_by_id(active_id)
         if active is None or active.user_id != user_id:
@@ -494,6 +506,19 @@ class WaitingListService:
                 "active_id": active_id,
             },
         )
+
+        # Resolve the active waiting item — scheduling a message means
+        # the user has decided how to handle it. Only resolve on first
+        # creation (not on duplicate retries), to avoid a stale version
+        # error clobbering the scheduled send response.
+        if created:
+            await self._action_service.done(
+                user_id=user_id,
+                active_id=active_id,
+                target_version=active.target_version,
+                provider_message_id=f"send:{request_id}",
+                session_id=session_id,
+            )
         return SendResponse(
             outcome="scheduled" if created else "duplicate",
             scheduled_for=execute_at_utc.isoformat(),

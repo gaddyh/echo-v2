@@ -936,6 +936,26 @@ async def test_schedule_send_with_preset_creates_action():
     assert actions[0].payload["active_id"] == active_id
 
 
+async def test_schedule_send_resolves_active_item():
+    """After scheduling a message, the active waiting item is resolved."""
+    service, active_repo, _scheduled_repo, _, token_service = _make_service_with_scheduling()
+    session_id, _ = await token_service.issue(USER_ID)
+    active_id = await _setup_chat_and_active(active_repo, service._chat_state_repo)
+
+    result = await service.schedule_send(
+        session_id=session_id,
+        user_id=USER_ID,
+        active_id=active_id,
+        request_id="req-1",
+        message="היי, אחזור אליך",
+        send_preset="1h",
+    )
+    assert result.outcome == "scheduled"
+    # Active item is resolved (deleted).
+    active = await active_repo.get(user_id=USER_ID, chat_id=CHAT_ID)
+    assert active is None
+
+
 async def test_schedule_send_with_custom_datetime_creates_action():
     service, active_repo, scheduled_repo, _, token_service = _make_service_with_scheduling()
     session_id, _ = await token_service.issue(USER_ID)
@@ -985,21 +1005,27 @@ async def test_schedule_send_same_request_id_returns_duplicate():
     assert len(actions) == 1  # only one action created
 
 
-async def test_schedule_send_different_request_id_creates_second_action():
+async def test_schedule_send_different_request_id_after_resolve_returns_not_found():
+    """After the first schedule_send resolves the active item, a second call
+    with a different request_id returns not_found (item is already resolved).
+    """
     service, active_repo, scheduled_repo, _, token_service = _make_service_with_scheduling()
     session_id, _ = await token_service.issue(USER_ID)
     active_id = await _setup_chat_and_active(active_repo, service._chat_state_repo)
 
-    await service.schedule_send(
+    result1 = await service.schedule_send(
         session_id=session_id, user_id=USER_ID, active_id=active_id,
         request_id="req-1", message="היי", send_preset="1h",
     )
-    await service.schedule_send(
+    assert result1.outcome == "scheduled"
+    # Active item is now resolved.
+    result2 = await service.schedule_send(
         session_id=session_id, user_id=USER_ID, active_id=active_id,
         request_id="req-2", message="היי שוב", send_preset="1h",
     )
+    assert result2.outcome == "not_found"
     actions = await scheduled_repo.list_pending(USER_ID)
-    assert len(actions) == 2
+    assert len(actions) == 1
 
 
 async def test_schedule_send_invalid_active_id_returns_not_found():

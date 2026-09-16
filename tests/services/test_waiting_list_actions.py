@@ -207,6 +207,7 @@ async def test_dismiss_already_handled_no_feedback():
 
 
 async def test_dismiss_no_response_required_no_feedback():
+    """לא דורש תגובה → APPLIED, no feedback (true positive, user chose not to respond)."""
     service, active_repo, _, feedback_repo = _make_service()
     active_id = await _setup_active(active_repo)
 

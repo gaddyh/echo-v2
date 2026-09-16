@@ -841,7 +841,7 @@ function renderCard(item) {
     + '</div>'
     + '<div class="btn-row">'
     + '<button class="btn-secondary" data-action="snooze">נודניק לשעה</button>'
-    + '<button class="btn-secondary muted" data-action="not_needed">לא דורש תגובה</button>'
+    + '<button class="btn-secondary muted" data-action="not_needed">לא מעניין, שיחכו</button>'
     + '</div>'
     + '<div class="link-row">'
     + '<a class="snooze-other" data-action="snooze_other">זמן אחר</a>'
@@ -1484,8 +1484,9 @@ async function submitSendWith(extra) {
       return;
     }
     if (resp.outcome === "scheduled" || resp.outcome === "duplicate") {
+      const activeId = pendingAction.activeId;
       closeSend();
-      removeFromQueue(pendingAction.activeId, "scheduled");
+      removeFromQueue(activeId, "scheduled");
     } else if (resp.outcome === "not_found") {
       showSendError("הפריט לא נמצא או שייך למשתמש אחר.");
       submitBtn.disabled = false;

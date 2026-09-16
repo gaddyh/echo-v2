@@ -157,6 +157,13 @@ class SchedulingService:
         """List all PENDING actions for a user."""
         return await self._action_repo.list_pending(user_id)
 
+    async def get_by_request_id(
+        self, request_id: str, user_id: str
+    ) -> ScheduledAction | None:
+        """Check if a scheduled action already exists for this request_id."""
+        action_id = str(uuid5(NAMESPACE_URL, f"echo:send:{user_id}:{request_id}"))
+        return await self._action_repo.get(action_id)
+
     async def cancel(self, action_id: str, user_id: str) -> bool:
         """Cancel a PENDING action."""
         return await self._action_repo.cancel(action_id, user_id)
