@@ -14,6 +14,7 @@ Covers:
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi import FastAPI
@@ -1126,3 +1127,165 @@ async def test_api_context_limit_clamped():
         )
     assert resp.status_code == 200
     assert len(resp.json()["messages"]) == 20
+
+
+# --- Additional coverage: invalid cookie, rate limit, service returns None --
+
+
+async def test_api_context_invalid_session_cookie_returns_401():
+    """GET /api/waiting/items/{id}/context with an invalid cookie returns 401."""
+    app, _, _, _ = _make_app()
+    async with _client(app) as client:
+        resp = await client.get(
+            "/api/waiting/items/some-id/context",
+            cookies={"wls": "invalid-session-id"},
+        )
+    assert resp.status_code == 401
+
+
+async def test_api_send_invalid_session_cookie_returns_401():
+    """POST /api/waiting/items/{id}/send with an invalid cookie returns 401."""
+    app, _, _, _ = _make_app()
+    async with _client(app) as client:
+        resp = await client.post(
+            "/api/waiting/items/any/send",
+            json={
+                "request_id": "11111111-1111-1111-1111-111111111111",
+                "message": "היי",
+                "send_preset": "1h",
+            },
+            cookies={"wls": "invalid-session-id"},
+        )
+    assert resp.status_code == 401
+
+
+async def test_api_star_invalid_session_cookie_returns_401():
+    """POST /api/waiting/items/{id}/star with an invalid cookie returns 401."""
+    app, _, _, _ = _make_app()
+    async with _client(app) as client:
+        resp = await client.post(
+            "/api/waiting/items/any/star",
+            json={"is_starred": True},
+            cookies={"wls": "invalid-session-id"},
+        )
+    assert resp.status_code == 401
+
+
+async def test_api_context_rate_limit_returns_429():
+    """Exceeding the rate limit on GET /context returns 429."""
+    from echo_v2.app.waiting_list_routes import _RATE_LIMIT_MAX
+
+    app, token_service, service, active_repo = _make_app()
+    _, raw_token = await token_service.issue(USER_ID)
+    active_id = await _setup_active(active_repo, service._chat_state_repo)
+    await _seed_messages(service, count=3)
+    async with _client(app) as client:
+        await client.get(f"/q/{raw_token}")
+        for _ in range(_RATE_LIMIT_MAX):
+            await client.get(f"/api/waiting/items/{active_id}/context")
+        resp = await client.get(f"/api/waiting/items/{active_id}/context")
+    assert resp.status_code == 429
+
+
+async def test_api_send_rate_limit_returns_429():
+    """Exceeding the rate limit on POST /send returns 429."""
+    from echo_v2.app.waiting_list_routes import _RATE_LIMIT_MAX
+
+    app, token_service, service, active_repo = _make_app()
+    _, raw_token = await token_service.issue(USER_ID)
+    active_id = await _setup_active(active_repo, service._chat_state_repo)
+    async with _client(app) as client:
+        await client.get(f"/q/{raw_token}")
+        for _ in range(_RATE_LIMIT_MAX):
+            await client.get("/api/waiting")
+        resp = await client.post(
+            f"/api/waiting/items/{active_id}/send",
+            json={
+                "request_id": "11111111-1111-1111-1111-111111111111",
+                "message": "היי",
+                "send_preset": "1h",
+            },
+        )
+    assert resp.status_code == 429
+
+
+async def test_api_star_rate_limit_returns_429():
+    """Exceeding the rate limit on POST /star returns 429."""
+    from echo_v2.app.waiting_list_routes import _RATE_LIMIT_MAX
+
+    app, token_service, service, active_repo = _make_app()
+    _, raw_token = await token_service.issue(USER_ID)
+    active_id = await _setup_active(active_repo, service._chat_state_repo)
+    async with _client(app) as client:
+        await client.get(f"/q/{raw_token}")
+        for _ in range(_RATE_LIMIT_MAX):
+            await client.get("/api/waiting")
+        resp = await client.post(
+            f"/api/waiting/items/{active_id}/star",
+            json={"is_starred": True},
+        )
+    assert resp.status_code == 429
+
+
+async def test_list_items_service_returns_none_returns_401():
+    """If list_items returns None (session invalid at service level), returns 401."""
+    app, token_service, service, _ = _make_app()
+    _, raw_token = await token_service.issue(USER_ID)
+    async with _client(app) as client:
+        await client.get(f"/q/{raw_token}")
+        with patch.object(service, "list_items", new_callable=AsyncMock, return_value=None):
+            resp = await client.get("/api/waiting")
+    assert resp.status_code == 401
+    assert resp.json()["detail"] == "session invalid"
+
+
+async def test_execute_action_service_returns_none_returns_401():
+    """If execute_action returns None (session invalid at service level), returns 401."""
+    app, token_service, service, active_repo = _make_app()
+    _, raw_token = await token_service.issue(USER_ID)
+    active_id = await _setup_active(active_repo, service._chat_state_repo)
+    async with _client(app) as client:
+        await client.get(f"/q/{raw_token}")
+        with patch.object(service, "execute_action", new_callable=AsyncMock, return_value=None):
+            resp = await client.post(
+                f"/api/waiting/items/{active_id}/actions",
+                json={"action_id": "a1", "expected_version": 1, "action": "done"},
+            )
+    assert resp.status_code == 401
+    assert resp.json()["detail"] == "session invalid"
+
+
+async def test_schedule_send_service_returns_none_returns_401():
+    """If schedule_send returns None (session invalid at service level), returns 401."""
+    app, token_service, service, active_repo = _make_app()
+    _, raw_token = await token_service.issue(USER_ID)
+    active_id = await _setup_active(active_repo, service._chat_state_repo)
+    async with _client(app) as client:
+        await client.get(f"/q/{raw_token}")
+        with patch.object(service, "schedule_send", new_callable=AsyncMock, return_value=None):
+            resp = await client.post(
+                f"/api/waiting/items/{active_id}/send",
+                json={
+                    "request_id": "11111111-1111-1111-1111-111111111111",
+                    "message": "היי",
+                    "send_preset": "1h",
+                },
+            )
+    assert resp.status_code == 401
+    assert resp.json()["detail"] == "session invalid"
+
+
+async def test_set_starred_service_returns_none_returns_401():
+    """If set_starred returns None (session invalid at service level), returns 401."""
+    app, token_service, service, active_repo = _make_app()
+    _, raw_token = await token_service.issue(USER_ID)
+    active_id = await _setup_active(active_repo, service._chat_state_repo)
+    async with _client(app) as client:
+        await client.get(f"/q/{raw_token}")
+        with patch.object(service, "set_starred", new_callable=AsyncMock, return_value=None):
+            resp = await client.post(
+                f"/api/waiting/items/{active_id}/star",
+                json={"is_starred": True},
+            )
+    assert resp.status_code == 401
+    assert resp.json()["detail"] == "session invalid"

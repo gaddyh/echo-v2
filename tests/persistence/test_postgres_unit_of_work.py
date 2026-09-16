@@ -108,3 +108,37 @@ async def test_uow_claim_duplicate_inside_transaction(unit_of_work_factory, sess
         )
         assert first is True
         assert second is False
+
+
+async def test_uow_all_repos_share_one_session(unit_of_work_factory):
+    """Every repo property in a UoW uses the same shared AsyncSession."""
+    async with unit_of_work_factory() as uow:
+        shared = uow.connections._shared_session
+        assert uow.webhooks._shared_session is shared
+        assert uow.idempotency._shared_session is shared
+        assert uow.messages._shared_session is shared
+        assert uow.chat_state._shared_session is shared
+        assert uow.wfm_results._shared_session is shared
+        assert uow.wfm_active._shared_session is shared
+        assert uow.wfm_feedback._shared_session is shared
+        assert uow.wfm_actions._shared_session is shared
+        assert uow.chat_mutes._shared_session is shared
+
+
+async def test_uow_properties_raise_before_enter(unit_of_work_factory):
+    """Accessing repo properties before entering the UoW raises AssertionError."""
+    uow = unit_of_work_factory()
+    for prop in (
+        "connections",
+        "webhooks",
+        "idempotency",
+        "messages",
+        "chat_state",
+        "wfm_results",
+        "wfm_active",
+        "wfm_feedback",
+        "wfm_actions",
+        "chat_mutes",
+    ):
+        with pytest.raises(AssertionError, match="UnitOfWork not entered"):
+            getattr(uow, prop)

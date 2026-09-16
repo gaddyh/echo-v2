@@ -345,7 +345,7 @@ class PostgresWaitingForMeActionRepository:
                 if active is None:
                     await session.rollback()
                     return ActionCommandResult(outcome=HandlingOutcome.NOT_FOUND)
-                if active.user_id != user_id or active.target_version != target_version:
+                if str(active.user_id) != user_id or active.target_version != target_version:
                     await session.rollback()
                     return ActionCommandResult(outcome=HandlingOutcome.STALE)
 

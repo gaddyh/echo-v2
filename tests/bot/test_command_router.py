@@ -371,3 +371,177 @@ async def test_router_cancel_passes_to_fallback():
     await router.route(_text_event("בטל"))
     assert handlers.calls == []
     assert fallback.events != []
+
+
+# --- Router: no flow_registry falls through to fallback -------------------
+
+
+async def test_router_no_command_no_registry_falls_through():
+    """Known user, no command, flow_registry is None → fallback directly."""
+    handlers = _FakeHandlers()
+    onboarding = _FakeOnboardingEntry()
+    fallback = _FakeFallback()
+    router = BotCommandRouter(
+        user_resolver=_FakeUserResolver(),
+        command_handlers=handlers,
+        onboarding_entry=onboarding,
+        fallback_handler=fallback,
+    )
+    event = _text_event("hello world")
+    await router.route(event)
+    assert handlers.calls == []
+    assert fallback.events == [event]
+
+
+# --- Router: command dispatch for each command type -----------------------
+
+
+async def test_router_dispatches_responsibility_snooze():
+    handlers = _FakeHandlers()
+    onboarding = _FakeOnboardingEntry()
+    fallback = _FakeFallback()
+    router = BotCommandRouter(
+        user_resolver=_FakeUserResolver(),
+        command_handlers=handlers,
+        onboarding_entry=onboarding,
+        fallback_handler=fallback,
+    )
+    await router.route(_button_event("action:active-1:snooze"))
+    assert handlers.calls == ["snooze:active-1:None"]
+    assert fallback.events == []
+
+
+async def test_router_dispatches_responsibility_snooze_with_preset():
+    handlers = _FakeHandlers()
+    onboarding = _FakeOnboardingEntry()
+    fallback = _FakeFallback()
+    router = BotCommandRouter(
+        user_resolver=_FakeUserResolver(),
+        command_handlers=handlers,
+        onboarding_entry=onboarding,
+        fallback_handler=fallback,
+    )
+    await router.route(_button_event("action:active-1:snooze:1h"))
+    assert handlers.calls == ["snooze:active-1:1h"]
+    assert fallback.events == []
+
+
+async def test_router_dispatches_responsibility_dismiss():
+    handlers = _FakeHandlers()
+    onboarding = _FakeOnboardingEntry()
+    fallback = _FakeFallback()
+    router = BotCommandRouter(
+        user_resolver=_FakeUserResolver(),
+        command_handlers=handlers,
+        onboarding_entry=onboarding,
+        fallback_handler=fallback,
+    )
+    await router.route(_button_event("action:active-1:dismiss"))
+    assert handlers.calls == ["dismiss:active-1:None"]
+    assert fallback.events == []
+
+
+async def test_router_dispatches_responsibility_dismiss_with_reason():
+    handlers = _FakeHandlers()
+    onboarding = _FakeOnboardingEntry()
+    fallback = _FakeFallback()
+    router = BotCommandRouter(
+        user_resolver=_FakeUserResolver(),
+        command_handlers=handlers,
+        onboarding_entry=onboarding,
+        fallback_handler=fallback,
+    )
+    await router.route(_button_event("dismiss:active-1:not_waiting"))
+    assert handlers.calls == ["dismiss:active-1:not_waiting"]
+    assert fallback.events == []
+
+
+async def test_router_dispatches_responsibility_list():
+    handlers = _FakeHandlers()
+    onboarding = _FakeOnboardingEntry()
+    fallback = _FakeFallback()
+    router = BotCommandRouter(
+        user_resolver=_FakeUserResolver(),
+        command_handlers=handlers,
+        onboarding_entry=onboarding,
+        fallback_handler=fallback,
+    )
+    await router.route(_text_event("צפה בשיחות"))
+    assert handlers.calls == ["list"]
+    assert fallback.events == []
+
+
+async def test_router_dispatches_digest_open():
+    handlers = _FakeHandlers()
+    onboarding = _FakeOnboardingEntry()
+    fallback = _FakeFallback()
+    router = BotCommandRouter(
+        user_resolver=_FakeUserResolver(),
+        command_handlers=handlers,
+        onboarding_entry=onboarding,
+        fallback_handler=fallback,
+    )
+    await router.route(_text_event("סיכום חדש"))
+    assert handlers.calls == ["digest"]
+    assert fallback.events == []
+
+
+async def test_router_dispatches_list_done():
+    handlers = _FakeHandlers()
+    onboarding = _FakeOnboardingEntry()
+    fallback = _FakeFallback()
+    router = BotCommandRouter(
+        user_resolver=_FakeUserResolver(),
+        command_handlers=handlers,
+        onboarding_entry=onboarding,
+        fallback_handler=fallback,
+    )
+    await router.route(_text_event("סיימתי לעבור על רשימת ההמתנה"))
+    assert handlers.calls == ["list_done"]
+    assert fallback.events == []
+
+
+async def test_router_dispatches_onboarding_code():
+    handlers = _FakeHandlers()
+    onboarding = _FakeOnboardingEntry()
+    fallback = _FakeFallback()
+    router = BotCommandRouter(
+        user_resolver=_FakeUserResolver(),
+        command_handlers=handlers,
+        onboarding_entry=onboarding,
+        fallback_handler=fallback,
+    )
+    await router.route(_text_event("קוד"))
+    assert handlers.calls == ["code:972501234567"]
+    assert fallback.events == []
+
+
+async def test_router_dispatches_onboarding_start_known_user():
+    """Known user tapping onboarding:start re-sends OTP via handle_onboarding_code."""
+    handlers = _FakeHandlers()
+    onboarding = _FakeOnboardingEntry()
+    fallback = _FakeFallback()
+    router = BotCommandRouter(
+        user_resolver=_FakeUserResolver(),
+        command_handlers=handlers,
+        onboarding_entry=onboarding,
+        fallback_handler=fallback,
+    )
+    await router.route(_button_event("onboarding:start"))
+    assert handlers.calls == ["code:972501234567"]
+    assert fallback.events == []
+
+
+async def test_router_dispatches_onboarding_info():
+    handlers = _FakeHandlers()
+    onboarding = _FakeOnboardingEntry()
+    fallback = _FakeFallback()
+    router = BotCommandRouter(
+        user_resolver=_FakeUserResolver(),
+        command_handlers=handlers,
+        onboarding_entry=onboarding,
+        fallback_handler=fallback,
+    )
+    await router.route(_button_event("onboarding:info"))
+    assert handlers.calls == ["info:972501234567"]
+    assert fallback.events == []

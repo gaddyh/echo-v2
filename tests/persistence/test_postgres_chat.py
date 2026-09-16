@@ -1652,3 +1652,299 @@ async def test_commit_if_current_preserves_waiting_since(
     assert second_active is not None
     assert second_active.target_version == 2
     assert second_active.waiting_since == first_active.waiting_since
+
+
+# --- MessageRepository.update_text -------------------------------------------
+
+
+async def test_message_update_text_succeeds(messages_repo, session_factory):
+    """update_text updates the text column and returns True."""
+    user_id = await insert_user(session_factory)
+    conn_id = await _seed_connection(session_factory, user_id)
+
+    msg = _make_message(user_id, conn_id)
+    await messages_repo.save(msg)
+
+    updated = await messages_repo.update_text(msg.id, "transcribed text")
+    assert updated is True
+
+    # Verify the text was updated.
+    result = await messages_repo.list_recent_for_chat(
+        user_id=user_id, chat_id=msg.chat_id, limit=1,
+    )
+    assert len(result) == 1
+    assert result[0].text == "transcribed text"
+
+
+async def test_message_update_text_returns_false_if_not_found(messages_repo):
+    """update_text returns False when the message_id doesn't exist."""
+    updated = await messages_repo.update_text(str(uuid.uuid4()), "text")
+    assert updated is False
+
+
+# --- PostgresIngestionRepository ---------------------------------------------
+
+
+async def test_ingest_if_new_returns_true_for_new_message(session_factory, clean_db):
+    """ingest_if_new inserts the message and upserts chat state, returns True."""
+    from echo_v2.persistence.postgres_chat import PostgresIngestionRepository
+
+    user_id = await insert_user(session_factory)
+    conn_id = await _seed_connection(session_factory, user_id)
+    repo = PostgresIngestionRepository(session_factory)
+
+    msg = _make_message(user_id, conn_id)
+    now = datetime.now(timezone.utc)
+    due = now + timedelta(minutes=5)
+    inserted = await repo.ingest_if_new(
+        message=msg,
+        direction=MessageDirection.INBOUND,
+        observed_at=now,
+        next_analysis_at=due,
+    )
+    assert inserted is True
+
+    # Chat state should exist.
+    from echo_v2.persistence.postgres_chat import PostgresChatStateRepository
+    chat_repo = PostgresChatStateRepository(session_factory)
+    chat = await chat_repo.get(user_id, msg.chat_id)
+    assert chat is not None
+    assert chat.activity_version == 1
+    assert chat.next_analysis_at == due
+
+
+async def test_ingest_if_new_returns_false_for_duplicate(session_factory, clean_db):
+    """ingest_if_new returns False for a duplicate message without touching chat state."""
+    from echo_v2.persistence.postgres_chat import PostgresIngestionRepository
+
+    user_id = await insert_user(session_factory)
+    conn_id = await _seed_connection(session_factory, user_id)
+    repo = PostgresIngestionRepository(session_factory)
+
+    msg = _make_message(user_id, conn_id)
+    now = datetime.now(timezone.utc)
+    due = now + timedelta(minutes=5)
+
+    first = await repo.ingest_if_new(
+        message=msg,
+        direction=MessageDirection.INBOUND,
+        observed_at=now,
+        next_analysis_at=due,
+    )
+    assert first is True
+
+    # Ingest the same message again — should return False.
+    second = await repo.ingest_if_new(
+        message=msg,
+        direction=MessageDirection.INBOUND,
+        observed_at=now + timedelta(minutes=1),
+        next_analysis_at=now + timedelta(minutes=10),
+    )
+    assert second is False
+
+    # Chat state should still be version 1 (not incremented).
+    from echo_v2.persistence.postgres_chat import PostgresChatStateRepository
+    chat_repo = PostgresChatStateRepository(session_factory)
+    chat = await chat_repo.get(user_id, msg.chat_id)
+    assert chat is not None
+    assert chat.activity_version == 1
+
+
+async def test_ingest_if_new_increments_version_on_second_new_message(
+    session_factory, clean_db,
+):
+    """A second new message increments activity_version to 2."""
+    from echo_v2.persistence.postgres_chat import PostgresIngestionRepository
+
+    user_id = await insert_user(session_factory)
+    conn_id = await _seed_connection(session_factory, user_id)
+    repo = PostgresIngestionRepository(session_factory)
+
+    now = datetime.now(timezone.utc)
+
+    msg1 = _make_message(user_id, conn_id, provider_message_id="msg-a")
+    await repo.ingest_if_new(
+        message=msg1,
+        direction=MessageDirection.INBOUND,
+        observed_at=now,
+        next_analysis_at=now + timedelta(minutes=5),
+    )
+
+    msg2 = _make_message(user_id, conn_id, provider_message_id="msg-b")
+    await repo.ingest_if_new(
+        message=msg2,
+        direction=MessageDirection.INBOUND,
+        observed_at=now + timedelta(minutes=1),
+        next_analysis_at=now + timedelta(minutes=10),
+    )
+
+    from echo_v2.persistence.postgres_chat import PostgresChatStateRepository
+    chat_repo = PostgresChatStateRepository(session_factory)
+    chat = await chat_repo.get(user_id, msg1.chat_id)
+    assert chat is not None
+    assert chat.activity_version == 2
+
+
+async def test_ingest_if_new_with_chat_name(session_factory, clean_db):
+    """ingest_if_new stores chat_name when provided."""
+    from echo_v2.persistence.postgres_chat import PostgresIngestionRepository
+
+    user_id = await insert_user(session_factory)
+    conn_id = await _seed_connection(session_factory, user_id)
+    repo = PostgresIngestionRepository(session_factory)
+
+    msg = _make_message(user_id, conn_id)
+    now = datetime.now(timezone.utc)
+    inserted = await repo.ingest_if_new(
+        message=msg,
+        direction=MessageDirection.INBOUND,
+        observed_at=now,
+        next_analysis_at=now + timedelta(minutes=5),
+        chat_name="John Doe",
+    )
+    assert inserted is True
+
+    from echo_v2.persistence.postgres_chat import PostgresChatStateRepository
+    chat_repo = PostgresChatStateRepository(session_factory)
+    chat = await chat_repo.get(user_id, msg.chat_id)
+    assert chat is not None
+    assert chat.chat_name == "John Doe"
+
+
+async def test_ingest_if_new_rolls_back_on_exception(session_factory, clean_db):
+    """If an exception occurs, the transaction rolls back and re-raises."""
+    from sqlalchemy.exc import DataError
+
+    from echo_v2.persistence.postgres_chat import PostgresIngestionRepository
+
+    user_id = await insert_user(session_factory)
+    conn_id = await _seed_connection(session_factory, user_id)
+    repo = PostgresIngestionRepository(session_factory)
+
+    msg = _make_message(user_id, conn_id)
+    now = datetime.now(timezone.utc)
+
+    # Pass an invalid user_id in the message to trigger a DataError.
+    bad_msg = _make_message(user_id, conn_id)
+    bad_msg = Message(
+        id=bad_msg.id,
+        user_id="not-a-uuid",  # invalid UUID
+        connection_id=conn_id,
+        chat_id=bad_msg.chat_id,
+        provider_message_id=bad_msg.provider_message_id,
+        direction=MessageDirection.INBOUND,
+        sender_id=None,
+        timestamp=now,
+        message_type=MessageKind.TEXT.value,
+        text="hello",
+    )
+
+    with pytest.raises(DataError):
+        await repo.ingest_if_new(
+            message=bad_msg,
+            direction=MessageDirection.INBOUND,
+            observed_at=now,
+            next_analysis_at=now + timedelta(minutes=5),
+        )
+
+    # No chat state should exist for the valid user.
+    from echo_v2.persistence.postgres_chat import PostgresChatStateRepository
+    chat_repo = PostgresChatStateRepository(session_factory)
+    chat = await chat_repo.get(user_id, msg.chat_id)
+    assert chat is None
+
+
+# --- Shared session (UoW mode) coverage --------------------------------------
+
+
+async def test_wfm_result_repo_with_shared_session(session_factory, clean_db):
+    """PostgresWaitingForMeResultRepository works with a shared session (UoW mode)."""
+    from echo_v2.domain.waiting_for_me import (
+        WaitingForMeDecision,
+        WaitingForMeResult,
+    )
+    from echo_v2.persistence.postgres_chat import PostgresWaitingForMeResultRepository
+
+    user_id = await insert_user(session_factory)
+
+    async with session_factory() as shared_session:
+        repo = PostgresWaitingForMeResultRepository(session_factory, session=shared_session)
+        result_id = await repo.save(
+            user_id=user_id,
+            chat_id="chat-1@c.us",
+            result=WaitingForMeResult(
+                decision=WaitingForMeDecision.WAITING_FOR_ME,
+                confidence=0.9,
+                reason="test",
+                target_version=1,
+            ),
+        )
+        await shared_session.commit()
+
+    # Verify the result was persisted.
+    standalone_repo = PostgresWaitingForMeResultRepository(session_factory)
+    fetched = await standalone_repo.get_by_id(result_id)
+    assert fetched is not None
+    assert fetched.decision == WaitingForMeDecision.WAITING_FOR_ME
+
+
+async def test_wfm_active_repo_with_shared_session(session_factory, clean_db):
+    """PostgresWaitingForMeActiveRepository works with a shared session (UoW mode)."""
+    from echo_v2.persistence.postgres_chat import (
+        PostgresWaitingForMeActiveRepository,
+    )
+
+    user_id = await insert_user(session_factory)
+    result_id = await _seed_wfm_result(session_factory, user_id)
+
+    async with session_factory() as shared_session:
+        repo = PostgresWaitingForMeActiveRepository(session_factory, session=shared_session)
+        active_id = await repo.upsert(
+            user_id=user_id,
+            chat_id="chat-1@c.us",
+            target_version=1,
+            result_id=result_id,
+            waiting_since=datetime.now(timezone.utc),
+        )
+        await shared_session.commit()
+
+    # Verify via a standalone repo.
+    standalone_repo = PostgresWaitingForMeActiveRepository(session_factory)
+    row = await standalone_repo.get_by_id(active_id)
+    assert row is not None
+    assert row.chat_id == "chat-1@c.us"
+
+
+# --- commit_if_current exception path ----------------------------------------
+
+
+async def test_commit_if_current_rolls_back_on_exception(commit_repo, session_factory):
+    """If an exception occurs inside commit_if_current, it rolls back and re-raises."""
+    from sqlalchemy.exc import DataError
+
+    from echo_v2.domain.waiting_for_me import (
+        PreparedAnalysis,
+        WaitingForMeDecision,
+        WaitingForMeResult,
+    )
+
+    user_id = await insert_user(session_factory)
+    await _seed_chat_row(session_factory, user_id, version=1)
+
+    # Pass an invalid user_id (not a UUID) to trigger a DataError inside the
+    # transaction — the SELECT ... FOR UPDATE will fail.
+    with pytest.raises(DataError):
+        await commit_repo.commit_if_current(
+            user_id="not-a-uuid",
+            chat_id="chat-1@c.us",
+            target_version=1,
+            analysis=PreparedAnalysis(
+                result=WaitingForMeResult(
+                    decision=WaitingForMeDecision.WAITING_FOR_ME,
+                    confidence=0.9,
+                    reason="test",
+                    target_version=1,
+                ),
+                conversation_snapshot={},
+            ),
+        )

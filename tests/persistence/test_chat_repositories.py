@@ -332,3 +332,238 @@ async def test_mark_processed_fails_for_unknown_chat():
     repo = InMemoryChatStateRepository()
     updated = await repo.mark_processed("unknown", "unknown@c.us", 1)
     assert updated is False
+
+
+# --- MessageRepository.update_text ------------------------------------------
+
+
+async def test_message_update_text_succeeds():
+    """update_text returns True and replaces the text on the stored message."""
+    repo = InMemoryMessageRepository()
+    msg = _make_message(provider_message_id="msg-1")
+    await repo.save(msg)
+    updated = await repo.update_text(msg.id, "transcribed text")
+    assert updated is True
+    stored = repo._messages[(msg.connection_id, msg.provider_message_id)]
+    assert stored.text == "transcribed text"
+
+
+async def test_message_update_text_returns_false_if_not_found():
+    """update_text returns False when the message_id doesn't exist."""
+    repo = InMemoryMessageRepository()
+    updated = await repo.update_text("nonexistent-id", "text")
+    assert updated is False
+
+
+# --- InMemoryWaitingForMeResultRepository.get_by_id -------------------------
+
+
+async def test_wfm_result_get_by_id_returns_result():
+    """get_by_id finds a result by its row id."""
+    from echo_v2.domain.waiting_for_me import (
+        WaitingForMeDecision,
+        WaitingForMeResult,
+    )
+    from echo_v2.persistence.chat_repositories import (
+        InMemoryWaitingForMeResultRepository,
+    )
+
+    repo = InMemoryWaitingForMeResultRepository()
+    result = WaitingForMeResult(
+        decision=WaitingForMeDecision.WAITING_FOR_ME,
+        confidence=0.9,
+        reason="test",
+        target_version=1,
+    )
+    row_id = await repo.save(user_id="user-1", chat_id="chat-1@c.us", result=result)
+    fetched = await repo.get_by_id(row_id)
+    assert fetched is not None
+    assert fetched.decision == WaitingForMeDecision.WAITING_FOR_ME
+
+
+async def test_wfm_result_get_by_id_returns_none_if_not_found():
+    from echo_v2.persistence.chat_repositories import (
+        InMemoryWaitingForMeResultRepository,
+    )
+
+    repo = InMemoryWaitingForMeResultRepository()
+    assert await repo.get_by_id("nonexistent") is None
+
+
+# --- InMemoryWaitingForMeActiveRepository edge cases -----------------------
+
+
+async def test_wfm_active_acknowledge_returns_false_if_not_found():
+    """acknowledge returns False when the chat has no active row."""
+    from echo_v2.persistence.chat_repositories import (
+        InMemoryWaitingForMeActiveRepository,
+    )
+
+    repo = InMemoryWaitingForMeActiveRepository()
+    now = datetime.now(timezone.utc)
+    assert (
+        await repo.acknowledge(
+            user_id="user-1", chat_id="chat-1@c.us", acknowledged_at=now,
+        )
+        is False
+    )
+
+
+async def test_wfm_active_snooze_returns_false_if_not_found():
+    """snooze returns False when the chat has no active row."""
+    from echo_v2.persistence.chat_repositories import (
+        InMemoryWaitingForMeActiveRepository,
+    )
+
+    repo = InMemoryWaitingForMeActiveRepository()
+    now = datetime.now(timezone.utc)
+    assert (
+        await repo.snooze(
+            user_id="user-1", chat_id="chat-1@c.us", snoozed_until=now,
+        )
+        is False
+    )
+
+
+async def test_wfm_active_list_expired_snoozes():
+    """list_expired_snoozes returns rows with past snoozed_until."""
+    from echo_v2.persistence.chat_repositories import (
+        InMemoryWaitingForMeActiveRepository,
+    )
+
+    repo = InMemoryWaitingForMeActiveRepository()
+    now = datetime.now(timezone.utc)
+    past = now - timedelta(minutes=5)
+    future = now + timedelta(hours=1)
+
+    await repo.upsert(
+        user_id="user-1",
+        chat_id="chat-1@c.us",
+        target_version=1,
+        result_id="result-1",
+        waiting_since=now,
+    )
+    await repo.snooze(user_id="user-1", chat_id="chat-1@c.us", snoozed_until=past)
+
+    await repo.upsert(
+        user_id="user-1",
+        chat_id="chat-2@c.us",
+        target_version=1,
+        result_id="result-2",
+        waiting_since=now,
+    )
+    await repo.snooze(user_id="user-1", chat_id="chat-2@c.us", snoozed_until=future)
+
+    expired = await repo.list_expired_snoozes(now=now)
+    assert len(expired) == 1
+    assert expired[0].chat_id == "chat-1@c.us"
+
+
+async def test_wfm_active_list_expired_snoozes_respects_limit():
+    from echo_v2.persistence.chat_repositories import (
+        InMemoryWaitingForMeActiveRepository,
+    )
+
+    repo = InMemoryWaitingForMeActiveRepository()
+    now = datetime.now(timezone.utc)
+    past = now - timedelta(minutes=5)
+
+    for i in range(5):
+        await repo.upsert(
+            user_id="user-1",
+            chat_id=f"chat-{i}@c.us",
+            target_version=1,
+            result_id=f"result-{i}",
+            waiting_since=now,
+        )
+        await repo.snooze(
+            user_id="user-1", chat_id=f"chat-{i}@c.us", snoozed_until=past,
+        )
+
+    expired = await repo.list_expired_snoozes(now=now, limit=3)
+    assert len(expired) == 3
+
+
+async def test_wfm_active_clear_snooze_succeeds():
+    """clear_snooze resets snoozed_until to None and returns True."""
+    from echo_v2.persistence.chat_repositories import (
+        InMemoryWaitingForMeActiveRepository,
+    )
+
+    repo = InMemoryWaitingForMeActiveRepository()
+    now = datetime.now(timezone.utc)
+    past = now - timedelta(minutes=5)
+
+    await repo.upsert(
+        user_id="user-1",
+        chat_id="chat-1@c.us",
+        target_version=1,
+        result_id="result-1",
+        waiting_since=now,
+    )
+    await repo.snooze(user_id="user-1", chat_id="chat-1@c.us", snoozed_until=past)
+
+    cleared = await repo.clear_snooze(user_id="user-1", chat_id="chat-1@c.us")
+    assert cleared is True
+    row = await repo.get(user_id="user-1", chat_id="chat-1@c.us")
+    assert row is not None
+    assert row.snoozed_until is None
+
+
+async def test_wfm_active_clear_snooze_returns_false_if_not_found():
+    """clear_snooze returns False when the chat has no active row."""
+    from echo_v2.persistence.chat_repositories import (
+        InMemoryWaitingForMeActiveRepository,
+    )
+
+    repo = InMemoryWaitingForMeActiveRepository()
+    assert (
+        await repo.clear_snooze(user_id="user-1", chat_id="chat-1@c.us") is False
+    )
+
+
+async def test_wfm_active_apply_if_version_wrong_user_returns_false():
+    """apply_if_version returns False when user_id doesn't match."""
+    from echo_v2.persistence.chat_repositories import (
+        InMemoryWaitingForMeActiveRepository,
+    )
+
+    repo = InMemoryWaitingForMeActiveRepository()
+    now = datetime.now(timezone.utc)
+
+    active_id = await repo.upsert(
+        user_id="user-1",
+        chat_id="chat-1@c.us",
+        target_version=1,
+        result_id="result-1",
+        waiting_since=now,
+    )
+    # Wrong user → False.
+    assert (
+        await repo.apply_if_version(
+            active_id=active_id,
+            user_id="user-2",
+            target_version=1,
+            mutate={"acknowledged_at": now},
+        )
+        is False
+    )
+
+
+async def test_wfm_active_apply_if_version_nonexistent_id_returns_false():
+    """apply_if_version returns False when active_id doesn't exist."""
+    from echo_v2.persistence.chat_repositories import (
+        InMemoryWaitingForMeActiveRepository,
+    )
+
+    repo = InMemoryWaitingForMeActiveRepository()
+    now = datetime.now(timezone.utc)
+    assert (
+        await repo.apply_if_version(
+            active_id="nonexistent",
+            user_id="user-1",
+            target_version=1,
+            mutate={"acknowledged_at": now},
+        )
+        is False
+    )

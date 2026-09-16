@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import date, datetime, timezone
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -30,6 +31,7 @@ class FakeBot:
 
     def __init__(self) -> None:
         self.sent: list[tuple[str, str, str, list[str]]] = []
+        self.url_suffixes: list[str | None] = []
         self.error: Exception | None = None
 
     async def send_text(self, user_phone: str, text: str) -> None:
@@ -48,6 +50,7 @@ class FakeBot:
         if self.error is not None:
             raise self.error
         self.sent.append((user_phone, template_name, language, body_params))
+        self.url_suffixes.append(url_suffix)
         return "fake-msg-id"
 
 
@@ -760,3 +763,334 @@ async def test_digest_no_first_name_uses_fallback():
     assert sent == 1
     _phone, _name, _lang, body_params = bot.sent[0]
     assert body_params[0] == "חבר"
+
+
+# --- send_digest_for_user ---
+
+
+async def test_send_digest_for_user_no_active_items():
+    """No active items → returns False, no template sent."""
+    digest_repo = InMemoryDailyDigestRepository()
+    active_repo = InMemoryWaitingForMeActiveRepository()
+    chat_state_repo = InMemoryChatStateRepository()
+    message_repo = InMemoryMessageRepository()
+    contact_repo = InMemoryContactRepository()
+    bot = FakeBot()
+
+    worker = _make_worker(
+        digest_repo=digest_repo,
+        active_repo=active_repo,
+        chat_state_repo=chat_state_repo,
+        message_repo=message_repo,
+        contact_repo=contact_repo,
+        bot=bot,
+        user_provider=_make_user_provider(
+            [(USER_ID, USER_PHONE, "Asia/Jerusalem", "גדי")]
+        ),
+    )
+    result = await worker.send_digest_for_user(
+        USER_ID, USER_PHONE, "Asia/Jerusalem", "גדי"
+    )
+    assert result is False
+    assert len(bot.sent) == 0
+
+
+async def test_send_digest_for_user_success():
+    """Active items + success → returns True, template sent with correct params."""
+    digest_repo = InMemoryDailyDigestRepository()
+    active_repo = InMemoryWaitingForMeActiveRepository()
+    chat_state_repo = InMemoryChatStateRepository()
+    message_repo = InMemoryMessageRepository()
+    contact_repo = InMemoryContactRepository()
+    bot = FakeBot()
+
+    await _setup_chat_with_active(chat_state_repo, active_repo)
+
+    worker = _make_worker(
+        digest_repo=digest_repo,
+        active_repo=active_repo,
+        chat_state_repo=chat_state_repo,
+        message_repo=message_repo,
+        contact_repo=contact_repo,
+        bot=bot,
+        user_provider=_make_user_provider(
+            [(USER_ID, USER_PHONE, "Asia/Jerusalem", "גדי")]
+        ),
+    )
+    result = await worker.send_digest_for_user(
+        USER_ID, USER_PHONE, "Asia/Jerusalem", "גדי"
+    )
+    assert result is True
+    assert len(bot.sent) == 1
+    _phone, template_name, language, body_params = bot.sent[0]
+    assert template_name == "morning_waiting_digest6"
+    assert language == "he"
+    assert body_params[0] == "גדי"
+    assert body_params[1] == "1"
+
+
+async def test_send_digest_for_user_send_failure():
+    """Active items + send failure → returns False."""
+    digest_repo = InMemoryDailyDigestRepository()
+    active_repo = InMemoryWaitingForMeActiveRepository()
+    chat_state_repo = InMemoryChatStateRepository()
+    message_repo = InMemoryMessageRepository()
+    contact_repo = InMemoryContactRepository()
+    bot = FakeBot()
+    bot.error = RuntimeError("send failed")
+
+    await _setup_chat_with_active(chat_state_repo, active_repo)
+
+    worker = _make_worker(
+        digest_repo=digest_repo,
+        active_repo=active_repo,
+        chat_state_repo=chat_state_repo,
+        message_repo=message_repo,
+        contact_repo=contact_repo,
+        bot=bot,
+        user_provider=_make_user_provider(
+            [(USER_ID, USER_PHONE, "Asia/Jerusalem", "גדי")]
+        ),
+    )
+    result = await worker.send_digest_for_user(
+        USER_ID, USER_PHONE, "Asia/Jerusalem", "גדי"
+    )
+    assert result is False
+
+
+async def test_send_digest_for_user_with_token_service():
+    """With token_service → url_suffix included in send_template call."""
+    from echo_v2.persistence.waiting_list_tokens import (
+        InMemoryWaitingListSessionRepository,
+    )
+    from echo_v2.services.waiting_list_token_service import WaitingListTokenService
+
+    digest_repo = InMemoryDailyDigestRepository()
+    active_repo = InMemoryWaitingForMeActiveRepository()
+    chat_state_repo = InMemoryChatStateRepository()
+    message_repo = InMemoryMessageRepository()
+    contact_repo = InMemoryContactRepository()
+    bot = FakeBot()
+
+    await _setup_chat_with_active(chat_state_repo, active_repo)
+
+    token_service = WaitingListTokenService(InMemoryWaitingListSessionRepository())
+
+    worker = _make_worker(
+        digest_repo=digest_repo,
+        active_repo=active_repo,
+        chat_state_repo=chat_state_repo,
+        message_repo=message_repo,
+        contact_repo=contact_repo,
+        bot=bot,
+        user_provider=_make_user_provider(
+            [(USER_ID, USER_PHONE, "Asia/Jerusalem", "גדי")]
+        ),
+        token_service=token_service,
+    )
+    result = await worker.send_digest_for_user(
+        USER_ID, USER_PHONE, "Asia/Jerusalem", "גדי"
+    )
+    assert result is True
+    assert len(bot.sent) == 1
+    assert bot.url_suffixes[0] is not None
+
+
+async def test_send_digest_for_user_without_token_service():
+    """Without token_service → url_suffix is None."""
+    digest_repo = InMemoryDailyDigestRepository()
+    active_repo = InMemoryWaitingForMeActiveRepository()
+    chat_state_repo = InMemoryChatStateRepository()
+    message_repo = InMemoryMessageRepository()
+    contact_repo = InMemoryContactRepository()
+    bot = FakeBot()
+
+    await _setup_chat_with_active(chat_state_repo, active_repo)
+
+    worker = _make_worker(
+        digest_repo=digest_repo,
+        active_repo=active_repo,
+        chat_state_repo=chat_state_repo,
+        message_repo=message_repo,
+        contact_repo=contact_repo,
+        bot=bot,
+        user_provider=_make_user_provider(
+            [(USER_ID, USER_PHONE, "Asia/Jerusalem", "גדי")]
+        ),
+    )
+    result = await worker.send_digest_for_user(
+        USER_ID, USER_PHONE, "Asia/Jerusalem", "גדי"
+    )
+    assert result is True
+    assert bot.url_suffixes[0] is None
+
+
+async def test_send_digest_for_user_first_name_none():
+    """First name None → uses fallback 'חבר'."""
+    digest_repo = InMemoryDailyDigestRepository()
+    active_repo = InMemoryWaitingForMeActiveRepository()
+    chat_state_repo = InMemoryChatStateRepository()
+    message_repo = InMemoryMessageRepository()
+    contact_repo = InMemoryContactRepository()
+    bot = FakeBot()
+
+    await _setup_chat_with_active(chat_state_repo, active_repo)
+
+    worker = _make_worker(
+        digest_repo=digest_repo,
+        active_repo=active_repo,
+        chat_state_repo=chat_state_repo,
+        message_repo=message_repo,
+        contact_repo=contact_repo,
+        bot=bot,
+        user_provider=_make_user_provider(
+            [(USER_ID, USER_PHONE, "Asia/Jerusalem", None)]
+        ),
+    )
+    result = await worker.send_digest_for_user(
+        USER_ID, USER_PHONE, "Asia/Jerusalem", None
+    )
+    assert result is True
+    _phone, _name, _lang, body_params = bot.sent[0]
+    assert body_params[0] == "חבר"
+
+
+async def test_send_digest_for_user_token_service_raises():
+    """Token service raises → url_suffix is None, digest still sent."""
+    from echo_v2.persistence.waiting_list_tokens import (
+        InMemoryWaitingListSessionRepository,
+    )
+    from echo_v2.services.waiting_list_token_service import WaitingListTokenService
+
+    digest_repo = InMemoryDailyDigestRepository()
+    active_repo = InMemoryWaitingForMeActiveRepository()
+    chat_state_repo = InMemoryChatStateRepository()
+    message_repo = InMemoryMessageRepository()
+    contact_repo = InMemoryContactRepository()
+    bot = FakeBot()
+
+    await _setup_chat_with_active(chat_state_repo, active_repo)
+
+    class BrokenRepo(InMemoryWaitingListSessionRepository):
+        async def create(self, **kwargs):
+            raise RuntimeError("db down")
+
+    token_service = WaitingListTokenService(BrokenRepo())
+
+    worker = _make_worker(
+        digest_repo=digest_repo,
+        active_repo=active_repo,
+        chat_state_repo=chat_state_repo,
+        message_repo=message_repo,
+        contact_repo=contact_repo,
+        bot=bot,
+        user_provider=_make_user_provider(
+            [(USER_ID, USER_PHONE, "Asia/Jerusalem", "גדי")]
+        ),
+        token_service=token_service,
+    )
+    result = await worker.send_digest_for_user(
+        USER_ID, USER_PHONE, "Asia/Jerusalem", "גדי"
+    )
+    assert result is True
+    assert bot.url_suffixes[0] is None
+
+
+# --- run_loop error handling ---
+
+
+@patch.object(DigestWorker, "run_once", new_callable=AsyncMock)
+async def test_run_loop_continues_on_run_once_exception(mock_run_once: AsyncMock) -> None:
+    """When run_once raises an exception, loop continues (sleep then run_once again)."""
+    mock_run_once.side_effect = ValueError("boom")
+
+    worker = _make_worker(
+        digest_repo=InMemoryDailyDigestRepository(),
+        active_repo=InMemoryWaitingForMeActiveRepository(),
+        chat_state_repo=InMemoryChatStateRepository(),
+        message_repo=InMemoryMessageRepository(),
+        contact_repo=InMemoryContactRepository(),
+        bot=FakeBot(),
+        user_provider=_make_user_provider([]),
+        poll_interval_seconds=0.01,
+    )
+    task = asyncio.create_task(worker.run_loop())
+    await asyncio.sleep(0.05)
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    assert mock_run_once.call_count >= 2
+
+
+@patch.object(DigestWorker, "run_once", new_callable=AsyncMock)
+async def test_run_loop_succeeds_then_sleeps(mock_run_once: AsyncMock) -> None:
+    """When run_once succeeds, loop sleeps and continues."""
+    mock_run_once.return_value = 0
+
+    worker = _make_worker(
+        digest_repo=InMemoryDailyDigestRepository(),
+        active_repo=InMemoryWaitingForMeActiveRepository(),
+        chat_state_repo=InMemoryChatStateRepository(),
+        message_repo=InMemoryMessageRepository(),
+        contact_repo=InMemoryContactRepository(),
+        bot=FakeBot(),
+        user_provider=_make_user_provider([]),
+        poll_interval_seconds=0.01,
+    )
+    task = asyncio.create_task(worker.run_loop())
+    await asyncio.sleep(0.05)
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    assert mock_run_once.call_count >= 2
+
+
+@patch("echo_v2.services.digest_worker.asyncio.sleep", new_callable=AsyncMock)
+@patch.object(DigestWorker, "run_once", new_callable=AsyncMock)
+async def test_run_loop_cancelled_during_run_once(
+    mock_run_once: AsyncMock, mock_sleep: AsyncMock
+) -> None:
+    """CancelledError during run_once is re-raised."""
+    mock_run_once.side_effect = asyncio.CancelledError()
+
+    worker = _make_worker(
+        digest_repo=InMemoryDailyDigestRepository(),
+        active_repo=InMemoryWaitingForMeActiveRepository(),
+        chat_state_repo=InMemoryChatStateRepository(),
+        message_repo=InMemoryMessageRepository(),
+        contact_repo=InMemoryContactRepository(),
+        bot=FakeBot(),
+        user_provider=_make_user_provider([]),
+        poll_interval_seconds=0.01,
+    )
+    with pytest.raises(asyncio.CancelledError):
+        await worker.run_loop()
+    mock_sleep.assert_not_called()
+
+
+@patch("echo_v2.services.digest_worker.asyncio.sleep", new_callable=AsyncMock)
+@patch.object(DigestWorker, "run_once", new_callable=AsyncMock)
+async def test_run_loop_cancelled_during_sleep(
+    mock_run_once: AsyncMock, mock_sleep: AsyncMock
+) -> None:
+    """CancelledError during sleep is re-raised."""
+    mock_run_once.return_value = 0
+    mock_sleep.side_effect = asyncio.CancelledError()
+
+    worker = _make_worker(
+        digest_repo=InMemoryDailyDigestRepository(),
+        active_repo=InMemoryWaitingForMeActiveRepository(),
+        chat_state_repo=InMemoryChatStateRepository(),
+        message_repo=InMemoryMessageRepository(),
+        contact_repo=InMemoryContactRepository(),
+        bot=FakeBot(),
+        user_provider=_make_user_provider([]),
+        poll_interval_seconds=0.01,
+    )
+    with pytest.raises(asyncio.CancelledError):
+        await worker.run_loop()
+    assert mock_run_once.call_count == 1
