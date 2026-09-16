@@ -271,8 +271,6 @@ async def test_current_views_returns_one_view():
     assert view.version == 1
     assert view.waiting_since == NOW
     assert view.is_starred is False
-    assert view.color_label is None
-    assert view.tags == []
 
 
 async def test_current_views_includes_contact_name():
@@ -508,32 +506,6 @@ async def test_current_views_oldest_first_within_starred():
     # Older first.
     assert views[0].waiting_since == NOW
     assert views[1].waiting_since == NOW + timedelta(hours=1)
-
-
-async def test_current_views_includes_color_label_and_tags():
-    repos = _make_repos()
-    active_repo, chat_state_repo, message_repo, contact_repo, mute_repo, result_repo = repos
-    query = _make_query_service(
-        active_repo, chat_state_repo, message_repo, contact_repo, mute_repo, result_repo
-    )
-    await _setup_chat_and_active(active_repo, chat_state_repo)
-    await contact_repo.set_label(
-        user_id=USER_ID,
-        phone=phone_from_chat_id(CHAT_ID),
-        color_label="blue",
-        display_name="test",
-    )
-    await contact_repo.set_tags(
-        user_id=USER_ID,
-        phone=phone_from_chat_id(CHAT_ID),
-        tags=["work", "family"],
-        display_name="test",
-    )
-
-    views = await query.current_views(USER_ID, now=NOW)
-    view = views[0]
-    assert view.color_label == "blue"
-    assert view.tags == ["work", "family"]
 
 
 async def test_current_views_raises_without_message_repo():

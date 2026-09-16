@@ -18,7 +18,7 @@ favour of this single helper.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 
 from echo_v2.domain.chat import Message
@@ -56,10 +56,8 @@ class WaitingForMeView:
         waiting_since: When the waiting state originally started.
         version: The ``target_version`` the client should send back in
             action requests for concurrency control.
-        is_starred: Whether the contact (by phone) is starred.
-        color_label: Optional color label from a fixed palette, or
-            ``None``.
-        tags: Free-text tags on the contact. Empty list if none.
+        is_starred: Whether the contact (by phone) is starred. Used as
+            an optional sort signal (starred contacts first).
     """
 
     id: str
@@ -70,8 +68,6 @@ class WaitingForMeView:
     waiting_since: datetime
     version: int
     is_starred: bool = False
-    color_label: str | None = None
-    tags: list[str] = field(default_factory=list)
 
 
 def phone_from_chat_id(chat_id: str) -> str:

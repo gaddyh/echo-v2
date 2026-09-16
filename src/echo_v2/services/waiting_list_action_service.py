@@ -18,7 +18,7 @@ phone`` lives once, in the resolver, not three times here.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Literal
 
@@ -46,10 +46,8 @@ from echo_v2.services.waiting_list_token_service import WaitingListTokenService
 __all__ = [
     "ActionResponse",
     "ContextMessage",
-    "LabelResponse",
     "SendResponse",
     "StarResponse",
-    "TagsResponse",
     "WaitingListActionService",
     "WaitingListItem",
     "WaitingListResponse",
@@ -86,8 +84,6 @@ class WaitingListItem:
     waiting_hours: float
     expected_version: int
     is_starred: bool = False
-    color_label: str | None = None
-    tags: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -179,38 +175,6 @@ class StarResponse:
     is_starred: bool | None = None
 
 
-@dataclass(frozen=True)
-class LabelResponse:
-    """Response for POST /api/waiting/items/{active_id}/label.
-
-    Attributes:
-        outcome: ``"updated"`` if the label was set successfully,
-            ``"not_found"`` if the active item is missing or not owned
-            by the user.
-        color_label: The new ``color_label`` value. ``None`` for
-            ``not_found`` outcomes or when the label was cleared.
-    """
-
-    outcome: Literal["updated", "not_found"]
-    color_label: str | None = None
-
-
-@dataclass(frozen=True)
-class TagsResponse:
-    """Response for POST /api/waiting/items/{active_id}/tags.
-
-    Attributes:
-        outcome: ``"updated"`` if the tags were set successfully,
-            ``"not_found"`` if the active item is missing or not owned
-            by the user.
-        tags: The new normalized tags list. Empty for ``not_found``
-            outcomes.
-    """
-
-    outcome: Literal["updated", "not_found"]
-    tags: list[str] = field(default_factory=list)
-
-
 def _view_to_item(view: WaitingForMeView, *, now: datetime) -> WaitingListItem:
     """Convert a :class:`WaitingForMeView` to a :class:`WaitingListItem`."""
     waiting_hours = (now - view.waiting_since).total_seconds() / 3600.0
@@ -223,8 +187,6 @@ def _view_to_item(view: WaitingForMeView, *, now: datetime) -> WaitingListItem:
         waiting_hours=round(waiting_hours, 1),
         expected_version=view.version,
         is_starred=view.is_starred,
-        color_label=view.color_label,
-        tags=view.tags,
     )
 
 
@@ -577,108 +539,6 @@ class WaitingListActionService:
             display_name=display_name,
         )
         return StarResponse(outcome="updated", is_starred=is_starred)
-
-    async def set_label(
-        self,
-        session_id: str,
-        user_id: str,
-        active_id: str,
-        color_label: str | None,
-    ) -> LabelResponse | None:
-        """Set ``color_label`` on the contact associated with a waiting item.
-
-        Returns ``None`` if the session is invalid/expired/revoked.
-        Returns :class:`LabelResponse` with ``outcome="not_found"`` if the
-        active item is missing or not owned by the user.
-
-        The label is stored on the contact (by phone number), not on the
-        waiting item. If no contact record exists, one is created with
-        the resolved display name.
-        """
-        resolved = await self._token_service.resolve_session(session_id)
-        if resolved is None or resolved.user_id != user_id:
-            return None
-
-        await self._token_service.touch(session_id)
-
-        assert self._active_repo is not None  # required for star/label/tags
-        active = await self._active_repo.get_by_id(active_id)
-        if active is None or active.user_id != user_id:
-            return LabelResponse(outcome="not_found")
-
-        phone = phone_from_chat_id(active.chat_id)
-
-        # Resolve a display name for potential contact creation.
-        display_name = await self._resolver.resolve_name(user_id, active.chat_id)
-        if not display_name:
-            display_name = phone
-
-        await self._contact_repo.set_label(
-            user_id=user_id,
-            phone=phone,
-            color_label=color_label,
-            display_name=display_name,
-        )
-        return LabelResponse(outcome="updated", color_label=color_label)
-
-    async def set_tags(
-        self,
-        session_id: str,
-        user_id: str,
-        active_id: str,
-        tags: list[str],
-    ) -> TagsResponse | None:
-        """Set ``tags`` on the contact associated with a waiting item.
-
-        Returns ``None`` if the session is invalid/expired/revoked.
-        Returns :class:`TagsResponse` with ``outcome="not_found"`` if the
-        active item is missing or not owned by the user.
-
-        Tags are normalized (strip, dedupe case-insensitive, max 40 chars,
-        max 10 tags) before storage. The label is stored on the contact
-        (by phone number), not on the waiting item. If no contact record
-        exists, one is created with the resolved display name.
-        """
-        resolved = await self._token_service.resolve_session(session_id)
-        if resolved is None or resolved.user_id != user_id:
-            return None
-
-        await self._token_service.touch(session_id)
-
-        assert self._active_repo is not None  # required for star/label/tags
-        active = await self._active_repo.get_by_id(active_id)
-        if active is None or active.user_id != user_id:
-            return TagsResponse(outcome="not_found")
-
-        phone = phone_from_chat_id(active.chat_id)
-
-        # Resolve a display name for potential contact creation.
-        display_name = await self._resolver.resolve_name(user_id, active.chat_id)
-        if not display_name:
-            display_name = phone
-
-        record = await self._contact_repo.set_tags(
-            user_id=user_id,
-            phone=phone,
-            tags=tags,
-            display_name=display_name,
-        )
-        return TagsResponse(outcome="updated", tags=list(record.tags))
-
-    async def list_tags(
-        self,
-        session_id: str,
-        user_id: str,
-    ) -> list[str] | None:
-        """Return all distinct tags for the user, sorted alphabetically.
-
-        Returns ``None`` if the session is invalid/expired/revoked.
-        """
-        resolved = await self._token_service.resolve_session(session_id)
-        if resolved is None or resolved.user_id != user_id:
-            return None
-
-        return await self._contact_repo.list_tags(user_id)
 
     async def _build_summary(
         self,

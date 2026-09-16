@@ -240,8 +240,6 @@ class WaitingListQueryService:
                 summary = result.summary
 
         is_starred = contact.is_starred if contact else False
-        color_label = contact.color_label if contact else None
-        tags = list(contact.tags) if contact else []
 
         return WaitingForMeView(
             id=active.id,
@@ -252,6 +250,4 @@ class WaitingListQueryService:
             waiting_since=active.waiting_since,
             version=active.target_version,
             is_starred=is_starred,
-            color_label=color_label,
-            tags=tags,
         )
