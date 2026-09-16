@@ -224,8 +224,7 @@ def create_app() -> FastAPI:
 
     # --- chat ingestion (saves messages + manages analysis queue) ----------
     ingestion_service = ChatIngestionService(
-        message_repo=repos.messages,
-        chat_state_repo=repos.chat_state,
+        repos.ingestion,
         quiet_period_seconds=float(os.environ.get("CHAT_QUIET_PERIOD_SECONDS", "300")),
         private_only=os.environ.get("CHAT_PRIVATE_ONLY", "true").lower()
         in ("1", "true", "yes"),
@@ -479,10 +478,13 @@ def create_app() -> FastAPI:
     # delivery status, connection state changes). Static URL — the instance
     # is resolved from the payload. Message events are deduped via the
     # messages table; status/state events via provider_webhook_events.
+    # State events (ProviderConnectionStateChanged) use the atomic
+    # state_webhook_repo (claim + update_status in one transaction).
     green_router = build_green_router(
         connection_repo=repos.connections,
         dispatcher=chat_dispatcher,
         dedup_store=repos.webhooks,
+        state_webhook_repo=repos.state_webhooks,
     )
     app.include_router(green_router)
 

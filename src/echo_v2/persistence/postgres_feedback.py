@@ -10,12 +10,15 @@ from datetime import datetime, timezone
 
 from sqlalchemy import delete as sa_delete
 from sqlalchemy import select
+from sqlalchemy import update as sa_update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from echo_v2.domain.feedback import (
+    ActionCommandResult,
     ChatMute,
     FeedbackVerdict,
+    HandlingOutcome,
     WaitingForMeAction,
     WaitingForMeActionType,
     WaitingForMeFeedback,
@@ -23,6 +26,7 @@ from echo_v2.domain.feedback import (
 from echo_v2.persistence.orm import (
     ChatMuteRow,
     WaitingForMeActionRow,
+    WaitingForMeActiveRow,
     WaitingForMeFeedbackRow,
 )
 
@@ -209,6 +213,318 @@ class PostgresWaitingForMeActionRepository:
             )
             rows = (await session.execute(stmt)).scalars().all()
             return [self._row_to_domain(r) for r in rows]
+
+    # --- Atomic command methods (record + mutate in one transaction) ---
+
+    async def _record_action(
+        self,
+        session: AsyncSession,
+        *,
+        user_id: str,
+        chat_id: str,
+        action_type: WaitingForMeActionType,
+        active_id: str | None = None,
+        target_version: int | None = None,
+        action_payload: dict | None = None,
+        provider_message_id: str | None = None,
+    ) -> WaitingForMeActionRow | None:
+        """Insert action row. Returns None if duplicate (same provider_message_id)."""
+        stmt = (
+            pg_insert(WaitingForMeActionRow)
+            .values(
+                user_id=user_id,
+                chat_id=chat_id,
+                active_id=active_id,
+                target_version=target_version,
+                action_type=action_type.value,
+                action_payload=action_payload,
+                provider_message_id=provider_message_id,
+            )
+            .on_conflict_do_nothing(
+                index_elements=["user_id", "provider_message_id"],
+            )
+            .returning(WaitingForMeActionRow)
+        )
+        result = await session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def resolve_and_delete_by_version(
+        self,
+        *,
+        user_id: str,
+        active_id: str,
+        target_version: int,
+        provider_message_id: str,
+        action_payload: dict | None = None,
+    ) -> ActionCommandResult:
+        async with self._session_factory() as session:
+            try:
+                row = await self._record_action(
+                    session,
+                    user_id=user_id,
+                    chat_id="",
+                    action_type=WaitingForMeActionType.RESOLVE,
+                    active_id=active_id,
+                    target_version=target_version,
+                    action_payload=action_payload,
+                    provider_message_id=provider_message_id,
+                )
+                if row is None:
+                    await session.rollback()
+                    return ActionCommandResult(outcome=HandlingOutcome.DUPLICATE)
+
+                del_stmt = (
+                    sa_delete(WaitingForMeActiveRow)
+                    .where(
+                        WaitingForMeActiveRow.id == active_id,
+                        WaitingForMeActiveRow.user_id == user_id,
+                        WaitingForMeActiveRow.target_version == target_version,
+                    )
+                    .returning(
+                        WaitingForMeActiveRow.chat_id,
+                        WaitingForMeActiveRow.result_id,
+                    )
+                )
+                result = await session.execute(del_stmt)
+                deleted = result.one_or_none()
+                if deleted is not None:
+                    await session.commit()
+                    return ActionCommandResult(
+                        outcome=HandlingOutcome.APPLIED,
+                        chat_id=deleted.chat_id,
+                        result_id=str(deleted.result_id),
+                    )
+
+                # Not deleted — check if active exists.
+                check = await session.execute(
+                    select(WaitingForMeActiveRow).where(
+                        WaitingForMeActiveRow.id == active_id,
+                    )
+                )
+                exists = check.scalar_one_or_none()
+                await session.rollback()
+                if exists is None:
+                    return ActionCommandResult(outcome=HandlingOutcome.NOT_FOUND)
+                return ActionCommandResult(outcome=HandlingOutcome.STALE)
+            except Exception:
+                await session.rollback()
+                raise
+
+    async def resolve_and_delete_by_chat(
+        self,
+        *,
+        user_id: str,
+        active_id: str,
+        target_version: int,
+        provider_message_id: str,
+        action_payload: dict | None = None,
+    ) -> ActionCommandResult:
+        async with self._session_factory() as session:
+            try:
+                row = await self._record_action(
+                    session,
+                    user_id=user_id,
+                    chat_id="",
+                    action_type=WaitingForMeActionType.RESOLVE,
+                    active_id=active_id,
+                    target_version=target_version,
+                    action_payload=action_payload,
+                    provider_message_id=provider_message_id,
+                )
+                if row is None:
+                    await session.rollback()
+                    return ActionCommandResult(outcome=HandlingOutcome.DUPLICATE)
+
+                # Fetch active to verify ownership + version.
+                sel_stmt = select(WaitingForMeActiveRow).where(
+                    WaitingForMeActiveRow.id == active_id,
+                )
+                active = (
+                    await session.execute(sel_stmt)
+                ).scalar_one_or_none()
+                if active is None:
+                    await session.rollback()
+                    return ActionCommandResult(outcome=HandlingOutcome.NOT_FOUND)
+                if active.user_id != user_id or active.target_version != target_version:
+                    await session.rollback()
+                    return ActionCommandResult(outcome=HandlingOutcome.STALE)
+
+                # Delete by (user_id, chat_id).
+                del_stmt = sa_delete(WaitingForMeActiveRow).where(
+                    WaitingForMeActiveRow.user_id == user_id,
+                    WaitingForMeActiveRow.chat_id == active.chat_id,
+                )
+                await session.execute(del_stmt)
+                await session.commit()
+                return ActionCommandResult(
+                    outcome=HandlingOutcome.APPLIED,
+                    chat_id=active.chat_id,
+                    result_id=str(active.result_id),
+                )
+            except Exception:
+                await session.rollback()
+                raise
+
+    async def snooze_active(
+        self,
+        *,
+        user_id: str,
+        active_id: str,
+        target_version: int,
+        snoozed_until: datetime,
+        provider_message_id: str,
+        action_payload: dict | None = None,
+    ) -> ActionCommandResult:
+        async with self._session_factory() as session:
+            try:
+                row = await self._record_action(
+                    session,
+                    user_id=user_id,
+                    chat_id="",
+                    action_type=WaitingForMeActionType.SNOOZE,
+                    active_id=active_id,
+                    target_version=target_version,
+                    action_payload=action_payload,
+                    provider_message_id=provider_message_id,
+                )
+                if row is None:
+                    await session.rollback()
+                    return ActionCommandResult(outcome=HandlingOutcome.DUPLICATE)
+
+                upd_stmt = (
+                    sa_update(WaitingForMeActiveRow)
+                    .where(
+                        WaitingForMeActiveRow.id == active_id,
+                        WaitingForMeActiveRow.user_id == user_id,
+                        WaitingForMeActiveRow.target_version == target_version,
+                    )
+                    .values(
+                        snoozed_until=snoozed_until,
+                        updated_at=datetime.now(timezone.utc),
+                    )
+                    .returning(WaitingForMeActiveRow.chat_id)
+                )
+                result = await session.execute(upd_stmt)
+                updated = result.one_or_none()
+                if updated is not None:
+                    await session.commit()
+                    return ActionCommandResult(
+                        outcome=HandlingOutcome.APPLIED,
+                        chat_id=updated.chat_id,
+                    )
+
+                # Not updated — check if active exists.
+                check = await session.execute(
+                    select(WaitingForMeActiveRow).where(
+                        WaitingForMeActiveRow.id == active_id,
+                    )
+                )
+                exists = check.scalar_one_or_none()
+                await session.rollback()
+                if exists is None:
+                    return ActionCommandResult(outcome=HandlingOutcome.NOT_FOUND)
+                return ActionCommandResult(outcome=HandlingOutcome.STALE)
+            except Exception:
+                await session.rollback()
+                raise
+
+    async def mute_chat_atomic(
+        self,
+        *,
+        user_id: str,
+        chat_id: str,
+        permanent: bool,
+        muted_until: datetime | None,
+        provider_message_id: str,
+    ) -> ActionCommandResult:
+        async with self._session_factory() as session:
+            try:
+                row = await self._record_action(
+                    session,
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    action_type=WaitingForMeActionType.MUTE_CHAT,
+                    provider_message_id=provider_message_id,
+                )
+                if row is None:
+                    await session.rollback()
+                    return ActionCommandResult(outcome=HandlingOutcome.DUPLICATE)
+
+                now = datetime.now(timezone.utc)
+                if permanent:
+                    mute_stmt = (
+                        pg_insert(ChatMuteRow)
+                        .values(
+                            user_id=user_id,
+                            chat_id=chat_id,
+                            muted_until=None,
+                            permanent=True,
+                        )
+                        .on_conflict_do_update(
+                            index_elements=["user_id", "chat_id"],
+                            set_={
+                                "muted_until": None,
+                                "permanent": True,
+                                "updated_at": now,
+                            },
+                        )
+                    )
+                else:
+                    assert muted_until is not None
+                    mute_stmt = (
+                        pg_insert(ChatMuteRow)
+                        .values(
+                            user_id=user_id,
+                            chat_id=chat_id,
+                            muted_until=muted_until,
+                            permanent=False,
+                        )
+                        .on_conflict_do_update(
+                            index_elements=["user_id", "chat_id"],
+                            set_={
+                                "muted_until": muted_until,
+                                "permanent": False,
+                                "updated_at": now,
+                            },
+                        )
+                    )
+                await session.execute(mute_stmt)
+                await session.commit()
+                return ActionCommandResult(outcome=HandlingOutcome.APPLIED)
+            except Exception:
+                await session.rollback()
+                raise
+
+    async def unmute_chat_atomic(
+        self,
+        *,
+        user_id: str,
+        chat_id: str,
+        provider_message_id: str,
+    ) -> ActionCommandResult:
+        async with self._session_factory() as session:
+            try:
+                row = await self._record_action(
+                    session,
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    action_type=WaitingForMeActionType.UNMUTE_CHAT,
+                    provider_message_id=provider_message_id,
+                )
+                if row is None:
+                    await session.rollback()
+                    return ActionCommandResult(outcome=HandlingOutcome.DUPLICATE)
+
+                del_stmt = sa_delete(ChatMuteRow).where(
+                    ChatMuteRow.user_id == user_id,
+                    ChatMuteRow.chat_id == chat_id,
+                )
+                await session.execute(del_stmt)
+                await session.commit()
+                return ActionCommandResult(outcome=HandlingOutcome.APPLIED)
+            except Exception:
+                await session.rollback()
+                raise
 
 
 # --- PostgresChatMuteRepository --------------------------------------------

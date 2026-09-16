@@ -13,15 +13,22 @@ feedback and actions.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from echo_v2.domain.feedback import (
+    ActionCommandResult,
     ChatMute,
     FeedbackVerdict,
+    HandlingOutcome,
     WaitingForMeAction,
     WaitingForMeActionType,
     WaitingForMeFeedback,
 )
+
+if TYPE_CHECKING:
+    from echo_v2.persistence.chat_repositories import (
+        InMemoryWaitingForMeActiveRepository,
+    )
 
 __all__ = [
     "ChatMuteRepository",
@@ -160,12 +167,130 @@ class WaitingForMeActionRepository(Protocol):
         """
         ...
 
+    # --- Atomic command methods (record + mutate in one transaction) ---
+
+    async def resolve_and_delete_by_version(
+        self,
+        *,
+        user_id: str,
+        active_id: str,
+        target_version: int,
+        provider_message_id: str,
+        action_payload: dict | None = None,
+    ) -> ActionCommandResult:
+        """Record RESOLVE + delete active by version, atomically.
+
+        Records the action (idempotent on ``provider_message_id``), then
+        deletes the active row if ``id + user_id + target_version``
+        match. Both operations run in one transaction — a crash between
+        them can never leave an audit row without a state change (or
+        vice versa).
+
+        Returns:
+            APPLIED with ``chat_id``/``result_id`` if deleted.
+            DUPLICATE if the action was already recorded.
+            STALE if the active item exists but version differs.
+            NOT_FOUND if the active item doesn't exist.
+        """
+        ...
+
+    async def resolve_and_delete_by_chat(
+        self,
+        *,
+        user_id: str,
+        active_id: str,
+        target_version: int,
+        provider_message_id: str,
+        action_payload: dict | None = None,
+    ) -> ActionCommandResult:
+        """Record RESOLVE + delete active by chat_id, atomically.
+
+        Like :meth:`resolve_and_delete_by_version` but the delete is by
+        ``(user_id, chat_id)`` (unconditional on version). The active
+        item is fetched first to verify ``user_id`` and
+        ``target_version`` — returns STALE or NOT_FOUND if they don't
+        match. Used by ``handled`` and ``dismiss_not_waiting`` which
+        need the chat_id for feedback recording.
+        """
+        ...
+
+    async def snooze_active(
+        self,
+        *,
+        user_id: str,
+        active_id: str,
+        target_version: int,
+        snoozed_until: datetime,
+        provider_message_id: str,
+        action_payload: dict | None = None,
+    ) -> ActionCommandResult:
+        """Record SNOOZE + apply snoozed_until, atomically.
+
+        Records the action (idempotent on ``provider_message_id``), then
+        applies ``snoozed_until`` to the active row if ``id + user_id +
+        target_version`` match. Both in one transaction.
+
+        Returns:
+            APPLIED with ``chat_id`` if the snooze was applied.
+            DUPLICATE if the action was already recorded.
+            STALE if the active item exists but version differs.
+            NOT_FOUND if the active item doesn't exist.
+        """
+        ...
+
+    async def mute_chat_atomic(
+        self,
+        *,
+        user_id: str,
+        chat_id: str,
+        permanent: bool,
+        muted_until: datetime | None,
+        provider_message_id: str,
+    ) -> ActionCommandResult:
+        """Record MUTE_CHAT + mute the chat, atomically.
+
+        Records the action (idempotent on ``provider_message_id``), then
+        mutes the chat (permanent or temporary). Both in one transaction.
+
+        Returns APPLIED or DUPLICATE.
+        """
+        ...
+
+    async def unmute_chat_atomic(
+        self,
+        *,
+        user_id: str,
+        chat_id: str,
+        provider_message_id: str,
+    ) -> ActionCommandResult:
+        """Record UNMUTE_CHAT + unmute the chat, atomically.
+
+        Records the action (idempotent on ``provider_message_id``), then
+        unmutes the chat. Both in one transaction.
+
+        Returns APPLIED or DUPLICATE.
+        """
+        ...
+
 
 class InMemoryWaitingForMeActionRepository:
-    """Process-local action repository backed by a list."""
+    """Process-local action repository backed by a list.
 
-    def __init__(self) -> None:
+    The atomic command methods (``resolve_and_delete_by_version`` etc.)
+    require ``active_repo`` and/or ``mute_repo`` to be wired at
+    construction time. The standalone ``record()`` and
+    ``list_by_session()`` methods work without them.
+    """
+
+    def __init__(
+        self,
+        *,
+        active_repo: InMemoryWaitingForMeActiveRepository | None = None,
+        mute_repo: InMemoryChatMuteRepository | None = None,
+    ) -> None:
         self._rows: list[WaitingForMeAction] = []
+        self._active_repo = active_repo
+        self._mute_repo = mute_repo
 
     async def record(
         self,
@@ -214,6 +339,167 @@ class InMemoryWaitingForMeActionRepository:
             and row.action_payload
             and row.action_payload.get("waiting_list_session_id") == session_id
         ]
+
+    async def resolve_and_delete_by_version(
+        self,
+        *,
+        user_id: str,
+        active_id: str,
+        target_version: int,
+        provider_message_id: str,
+        action_payload: dict | None = None,
+    ) -> ActionCommandResult:
+        assert self._active_repo is not None
+        action = await self.record(
+            user_id=user_id,
+            chat_id="",
+            action_type=WaitingForMeActionType.RESOLVE,
+            active_id=active_id,
+            target_version=target_version,
+            action_payload=action_payload,
+            provider_message_id=provider_message_id,
+        )
+        if action is None:
+            return ActionCommandResult(outcome=HandlingOutcome.DUPLICATE)
+
+        deleted = await self._active_repo.delete_if_version(
+            active_id=active_id,
+            user_id=user_id,
+            target_version=target_version,
+        )
+        if deleted is not None:
+            return ActionCommandResult(
+                outcome=HandlingOutcome.APPLIED,
+                chat_id=deleted.chat_id,
+                result_id=deleted.result_id,
+            )
+        active = await self._active_repo.get_by_id(active_id)
+        if active is None:
+            return ActionCommandResult(outcome=HandlingOutcome.NOT_FOUND)
+        return ActionCommandResult(outcome=HandlingOutcome.STALE)
+
+    async def resolve_and_delete_by_chat(
+        self,
+        *,
+        user_id: str,
+        active_id: str,
+        target_version: int,
+        provider_message_id: str,
+        action_payload: dict | None = None,
+    ) -> ActionCommandResult:
+        assert self._active_repo is not None
+        action = await self.record(
+            user_id=user_id,
+            chat_id="",
+            action_type=WaitingForMeActionType.RESOLVE,
+            active_id=active_id,
+            target_version=target_version,
+            action_payload=action_payload,
+            provider_message_id=provider_message_id,
+        )
+        if action is None:
+            return ActionCommandResult(outcome=HandlingOutcome.DUPLICATE)
+
+        active = await self._active_repo.get_by_id(active_id)
+        if active is None:
+            return ActionCommandResult(outcome=HandlingOutcome.NOT_FOUND)
+        if active.user_id != user_id or active.target_version != target_version:
+            return ActionCommandResult(outcome=HandlingOutcome.STALE)
+
+        await self._active_repo.delete(user_id=user_id, chat_id=active.chat_id)
+        return ActionCommandResult(
+            outcome=HandlingOutcome.APPLIED,
+            chat_id=active.chat_id,
+            result_id=active.result_id,
+        )
+
+    async def snooze_active(
+        self,
+        *,
+        user_id: str,
+        active_id: str,
+        target_version: int,
+        snoozed_until: datetime,
+        provider_message_id: str,
+        action_payload: dict | None = None,
+    ) -> ActionCommandResult:
+        assert self._active_repo is not None
+        action = await self.record(
+            user_id=user_id,
+            chat_id="",
+            action_type=WaitingForMeActionType.SNOOZE,
+            active_id=active_id,
+            target_version=target_version,
+            action_payload=action_payload,
+            provider_message_id=provider_message_id,
+        )
+        if action is None:
+            return ActionCommandResult(outcome=HandlingOutcome.DUPLICATE)
+
+        changed = await self._active_repo.apply_if_version(
+            active_id=active_id,
+            user_id=user_id,
+            target_version=target_version,
+            mutate={"snoozed_until": snoozed_until},
+        )
+        if changed:
+            active = await self._active_repo.get_by_id(active_id)
+            return ActionCommandResult(
+                outcome=HandlingOutcome.APPLIED,
+                chat_id=active.chat_id if active else None,
+            )
+        active = await self._active_repo.get_by_id(active_id)
+        if active is None:
+            return ActionCommandResult(outcome=HandlingOutcome.NOT_FOUND)
+        return ActionCommandResult(outcome=HandlingOutcome.STALE)
+
+    async def mute_chat_atomic(
+        self,
+        *,
+        user_id: str,
+        chat_id: str,
+        permanent: bool,
+        muted_until: datetime | None,
+        provider_message_id: str,
+    ) -> ActionCommandResult:
+        assert self._mute_repo is not None
+        action = await self.record(
+            user_id=user_id,
+            chat_id=chat_id,
+            action_type=WaitingForMeActionType.MUTE_CHAT,
+            provider_message_id=provider_message_id,
+        )
+        if action is None:
+            return ActionCommandResult(outcome=HandlingOutcome.DUPLICATE)
+
+        if permanent:
+            await self._mute_repo.mute_permanent(user_id=user_id, chat_id=chat_id)
+        else:
+            assert muted_until is not None
+            await self._mute_repo.mute_temporary(
+                user_id=user_id, chat_id=chat_id, muted_until=muted_until,
+            )
+        return ActionCommandResult(outcome=HandlingOutcome.APPLIED)
+
+    async def unmute_chat_atomic(
+        self,
+        *,
+        user_id: str,
+        chat_id: str,
+        provider_message_id: str,
+    ) -> ActionCommandResult:
+        assert self._mute_repo is not None
+        action = await self.record(
+            user_id=user_id,
+            chat_id=chat_id,
+            action_type=WaitingForMeActionType.UNMUTE_CHAT,
+            provider_message_id=provider_message_id,
+        )
+        if action is None:
+            return ActionCommandResult(outcome=HandlingOutcome.DUPLICATE)
+
+        await self._mute_repo.unmute(user_id=user_id, chat_id=chat_id)
+        return ActionCommandResult(outcome=HandlingOutcome.APPLIED)
 
 
 # --- Chat mute repository ---------------------------------------------------

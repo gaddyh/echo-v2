@@ -25,6 +25,7 @@ from echo_v2.persistence.db import (
 from echo_v2.persistence.postgres_chat import (
     PostgresAnalysisCommitRepository,
     PostgresChatStateRepository,
+    PostgresIngestionRepository,
     PostgresMessageRepository,
     PostgresWaitingForMeActiveRepository,
     PostgresWaitingForMeResultRepository,
@@ -38,6 +39,9 @@ from echo_v2.persistence.postgres_feedback import (
 from echo_v2.persistence.postgres_idempotency import PostgresIdempotencyStore
 from echo_v2.persistence.postgres_scheduled_actions import (
     PostgresScheduledActionRepository,
+)
+from echo_v2.persistence.postgres_state_webhook import (
+    PostgresStateWebhookRepository,
 )
 from echo_v2.persistence.postgres_webhook_dedup import PostgresWebhookDedupStore
 from echo_v2.persistence.postgres_whatsapp_connections import (
@@ -59,11 +63,13 @@ class PostgresRepos:
 
     connections: PostgresWhatsAppConnectionRepository
     webhooks: PostgresWebhookDedupStore
+    state_webhooks: PostgresStateWebhookRepository
     bot_inbox: PostgresWebhookInbox
     idempotency: PostgresIdempotencyStore
     scheduled_actions: PostgresScheduledActionRepository
     messages: PostgresMessageRepository
     chat_state: PostgresChatStateRepository
+    ingestion: PostgresIngestionRepository
     wfm_results: PostgresWaitingForMeResultRepository
     wfm_active: PostgresWaitingForMeActiveRepository
     analysis_commit: PostgresAnalysisCommitRepository
@@ -95,11 +101,13 @@ def build_postgres_repos(settings: DBSettings) -> PostgresRepos:
 
     connections = PostgresWhatsAppConnectionRepository(factory, cipher)
     webhooks = PostgresWebhookDedupStore(factory)
+    state_webhooks = PostgresStateWebhookRepository(factory)
     bot_inbox = PostgresWebhookInbox(factory)
     idempotency = PostgresIdempotencyStore(factory)
     scheduled_actions = PostgresScheduledActionRepository(factory)
     messages = PostgresMessageRepository(factory)
     chat_state = PostgresChatStateRepository(factory)
+    ingestion = PostgresIngestionRepository(factory)
     wfm_results = PostgresWaitingForMeResultRepository(factory)
     wfm_active = PostgresWaitingForMeActiveRepository(factory)
     analysis_commit = PostgresAnalysisCommitRepository(factory)
@@ -118,11 +126,13 @@ def build_postgres_repos(settings: DBSettings) -> PostgresRepos:
     return PostgresRepos(
         connections=connections,
         webhooks=webhooks,
+        state_webhooks=state_webhooks,
         bot_inbox=bot_inbox,
         idempotency=idempotency,
         scheduled_actions=scheduled_actions,
         messages=messages,
         chat_state=chat_state,
+        ingestion=ingestion,
         wfm_results=wfm_results,
         wfm_active=wfm_active,
         analysis_commit=analysis_commit,

@@ -8,6 +8,7 @@ import pytest
 
 from echo_v2.persistence.chat_repositories import (
     InMemoryChatStateRepository,
+    InMemoryIngestionRepository,
     InMemoryMessageRepository,
 )
 from echo_v2.ports.whatsapp import (
@@ -45,12 +46,17 @@ def _make_service(
     quiet_period_seconds: float = 300.0,
     private_only: bool = True,
 ) -> ChatIngestionService:
-    return ChatIngestionService(
-        message_repo=InMemoryMessageRepository(),
-        chat_state_repo=InMemoryChatStateRepository(),
+    message_repo = InMemoryMessageRepository()
+    chat_state_repo = InMemoryChatStateRepository()
+    service = ChatIngestionService(
+        InMemoryIngestionRepository(message_repo, chat_state_repo),
         quiet_period_seconds=quiet_period_seconds,
         private_only=private_only,
     )
+    # Expose underlying repos for test assertions.
+    service._chat_state_repo = chat_state_repo  # type: ignore[attr-defined]
+    service._message_repo = message_repo  # type: ignore[attr-defined]
+    return service
 
 
 # --- New inbound message ---------------------------------------------------
@@ -243,19 +249,18 @@ async def test_duplicate_does_not_change_next_analysis_at():
 async def test_transaction_rollback_on_failure():
     """If the chat state update fails after the message is saved,
     the entire transaction should be a no-op (message not persisted either)."""
-    class _FailingChatStateRepo:
-        async def upsert_on_message(self, **kwargs):
-            raise RuntimeError("chat state failure")
+    class _FailingIngestionRepo:
+        async def ingest_if_new(self, **kwargs):
+            raise RuntimeError("ingestion failure")
 
     service = ChatIngestionService(
-        message_repo=InMemoryMessageRepository(),
-        chat_state_repo=_FailingChatStateRepo(),
+        _FailingIngestionRepo(),
         quiet_period_seconds=300,
         private_only=True,
     )
     event = _make_event()
 
-    with pytest.raises(RuntimeError, match="chat state failure"):
+    with pytest.raises(RuntimeError, match="ingestion failure"):
         await service.ingest_message(
             event, user_id="user-1", connection_id="conn-uuid-1"
         )

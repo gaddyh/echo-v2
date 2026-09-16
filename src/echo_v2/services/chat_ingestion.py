@@ -1,13 +1,16 @@
 """ChatIngestionService — atomic message save + chat state + queue management.
 
 Orchestrates the ingestion of a ``ProviderMessageEvent`` in one atomic
-transaction:
+transaction via :class:`IngestionRepository.ingest_if_new`:
 
 1. ``INSERT message ON CONFLICT DO NOTHING`` — dedup by
    ``(connection_id, provider_message_id)``.
 2. If new: ``upsert_on_message`` — increment ``activity_version``, set
    ``last_message_at``, ``last_direction``, ``next_analysis_at``.
 3. If duplicate: no-op (return ``False``).
+
+Steps 1 and 2 run in a single database transaction, so a crash between
+them can never leave a message without a version bump.
 
 The service owns the business logic:
 
@@ -19,8 +22,8 @@ The service owns the business logic:
   ``True`` — Green ``chat_id`` suffix ``@c.us`` = private, ``@g.us`` =
   group).
 
-The repos are thin persistence layers — they store what the service
-computes.
+The repo is a thin persistence layer — it stores what the service
+computes, atomically.
 """
 
 from __future__ import annotations
@@ -29,11 +32,7 @@ import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from echo_v2.domain.chat import Message
-from echo_v2.persistence.chat_repositories import (
-    ChatStateRepository,
-    MessageRepository,
-)
+from echo_v2.persistence.chat_repositories import IngestionRepository
 from echo_v2.ports.whatsapp import ProviderMessageEvent
 
 __all__ = ["ChatIngestionService"]
@@ -45,8 +44,8 @@ class ChatIngestionService:
     """Atomic message ingestion + chat state + queue management.
 
     Args:
-        message_repo: Stores immutable message records with dedup.
-        chat_state_repo: Manages per-chat state (also the queue).
+        ingestion_repo: The :class:`IngestionRepository` that performs
+            the message insert + chat state upsert in one transaction.
         quiet_period_seconds: How long after the last inbound message
             before the chat is eligible for analysis. Default 5 minutes.
         private_only: If ``True`` (default), skip group chats
@@ -56,14 +55,12 @@ class ChatIngestionService:
 
     def __init__(
         self,
-        message_repo: MessageRepository,
-        chat_state_repo: ChatStateRepository,
+        ingestion_repo: IngestionRepository,
         *,
         quiet_period_seconds: float = 300.0,
         private_only: bool = True,
     ) -> None:
-        self._message_repo = message_repo
-        self._chat_state_repo = chat_state_repo
+        self._ingestion_repo = ingestion_repo
         self._quiet_period = quiet_period_seconds
         self._private_only = private_only
 
@@ -89,6 +86,8 @@ class ChatIngestionService:
         # LLM decides whether the waiting state persists.
         next_analysis_at = now + timedelta(seconds=self._quiet_period)
 
+        from echo_v2.domain.chat import Message
+
         message = Message(
             id=str(uuid.uuid4()),
             user_id=user_id,
@@ -107,16 +106,10 @@ class ChatIngestionService:
             audio_file_name=event.audio_file_name,
         )
 
-        inserted = await self._message_repo.save(message)
-        if not inserted:
-            return False  # duplicate, no-op
-
-        await self._chat_state_repo.upsert_on_message(
-            user_id=user_id,
-            chat_id=event.chat_id,
+        return await self._ingestion_repo.ingest_if_new(
+            message=message,
             direction=event.direction,
             observed_at=now,
             next_analysis_at=next_analysis_at,
             chat_name=event.chat_name,
         )
-        return True

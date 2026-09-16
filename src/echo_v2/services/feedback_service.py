@@ -43,7 +43,6 @@ from langsmith import traceable
 from echo_v2.domain.feedback import (
     FeedbackVerdict,
     HandlingOutcome,
-    WaitingForMeActionType,
 )
 from echo_v2.observability.sanitizers import (
     safe_action_inputs,
@@ -182,39 +181,22 @@ class WaitingForMeActionService:
 
         Returns APPLIED, DUPLICATE, STALE, or NOT_FOUND.
         """
-        # Record the action (idempotent on provider_message_id).
-        action = await self._action_repo.record(
+        result = await self._action_repo.resolve_and_delete_by_chat(
             user_id=user_id,
-            chat_id="",
-            action_type=WaitingForMeActionType.RESOLVE,
             active_id=active_id,
             target_version=target_version,
             provider_message_id=provider_message_id,
         )
-        if action is None:
-            return HandlingOutcome.DUPLICATE
-
-        # Verify the active item exists and version matches.
-        active = await self._active_repo.get_by_id(active_id)
-        if active is None:
-            return HandlingOutcome.NOT_FOUND
-        if active.user_id != user_id or active.target_version != target_version:
-            _logger.warning(
-                "action: handled stale user=%s active_id=%s version=%d",
-                user_id, active_id, target_version,
-            )
-            return HandlingOutcome.STALE
-
-        # Delete the active item.
-        await self._active_repo.delete(user_id=user_id, chat_id=active.chat_id)
+        if result.outcome is not HandlingOutcome.APPLIED:
+            return result.outcome
 
         # Record implicit CORRECT feedback.
-        if self._feedback_repo is not None:
+        if self._feedback_repo is not None and result.chat_id is not None:
             await self._feedback_repo.record(
                 user_id=user_id,
-                chat_id=active.chat_id,
+                chat_id=result.chat_id,
                 verdict=FeedbackVerdict.CORRECT,
-                result_id=active.result_id,
+                result_id=result.result_id,
                 target_version=target_version,
                 provider_message_id=f"implicit:{provider_message_id}",
             )
@@ -295,31 +277,22 @@ class WaitingForMeActionService:
             action_payload["source"] = "waiting_list_web"
             action_payload["waiting_list_session_id"] = session_id
 
-        action = await self._action_repo.record(
+        result = await self._action_repo.snooze_active(
             user_id=user_id,
-            chat_id="",
-            action_type=WaitingForMeActionType.SNOOZE,
             active_id=active_id,
             target_version=target_version,
-            action_payload=action_payload,
+            snoozed_until=snoozed_until,
             provider_message_id=provider_message_id,
+            action_payload=action_payload,
         )
-        if action is None:
-            return HandlingOutcome.DUPLICATE
-
-        changed = await self._active_repo.apply_if_version(
-            active_id=active_id,
-            user_id=user_id,
-            target_version=target_version,
-            mutate={"snoozed_until": snoozed_until},
-        )
-        if not changed:
-            _logger.warning(
-                "action: snooze stale or not found "
-                "user=%s active_id=%s version=%d",
-                user_id, active_id, target_version,
-            )
-            return HandlingOutcome.STALE
+        if result.outcome is not HandlingOutcome.APPLIED:
+            if result.outcome is HandlingOutcome.STALE:
+                _logger.warning(
+                    "action: snooze stale or not found "
+                    "user=%s active_id=%s version=%d",
+                    user_id, active_id, target_version,
+                )
+            return result.outcome
 
         _logger.info(
             "action: snooze user=%s active_id=%s version=%d until=%s",
@@ -327,13 +300,12 @@ class WaitingForMeActionService:
         )
 
         # Schedule a WhatsApp reminder via the existing scheduler infra.
-        active = await self._active_repo.get_by_id(active_id)
-        if active is not None:
+        if result.chat_id is not None:
             await self._schedule_snooze_reminder(
                 user_id=user_id,
                 active_id=active_id,
-                chat_id=active.chat_id,
-                target_version=active.target_version,
+                chat_id=result.chat_id,
+                target_version=target_version,
                 snoozed_until=snoozed_until,
             )
 
@@ -430,38 +402,29 @@ class WaitingForMeActionService:
 
         Returns APPLIED, DUPLICATE, STALE, or NOT_FOUND.
         """
-        action = await self._action_repo.record(
+        result = await self._action_repo.resolve_and_delete_by_chat(
             user_id=user_id,
-            chat_id="",
-            action_type=WaitingForMeActionType.RESOLVE,
             active_id=active_id,
             target_version=target_version,
             action_payload={"dismiss_reason": "not_waiting"},
             provider_message_id=provider_message_id,
         )
-        if action is None:
-            return HandlingOutcome.DUPLICATE
-
-        active = await self._active_repo.get_by_id(active_id)
-        if active is None:
-            return HandlingOutcome.NOT_FOUND
-        if active.user_id != user_id or active.target_version != target_version:
-            _logger.warning(
-                "action: dismiss_not_waiting stale "
-                "user=%s active_id=%s version=%d",
-                user_id, active_id, target_version,
-            )
-            return HandlingOutcome.STALE
-
-        await self._active_repo.delete(user_id=user_id, chat_id=active.chat_id)
+        if result.outcome is not HandlingOutcome.APPLIED:
+            if result.outcome is HandlingOutcome.STALE:
+                _logger.warning(
+                    "action: dismiss_not_waiting stale "
+                    "user=%s active_id=%s version=%d",
+                    user_id, active_id, target_version,
+                )
+            return result.outcome
 
         # Record implicit FALSE_POSITIVE feedback.
-        if self._feedback_repo is not None:
+        if self._feedback_repo is not None and result.chat_id is not None:
             await self._feedback_repo.record(
                 user_id=user_id,
-                chat_id=active.chat_id,
+                chat_id=result.chat_id,
                 verdict=FeedbackVerdict.FALSE_POSITIVE,
-                result_id=active.result_id,
+                result_id=result.result_id,
                 target_version=target_version,
                 provider_message_id=f"implicit:{provider_message_id}",
             )
@@ -493,30 +456,21 @@ class WaitingForMeActionService:
 
         Returns APPLIED, DUPLICATE, STALE, or NOT_FOUND.
         """
-        action = await self._action_repo.record(
+        result = await self._action_repo.resolve_and_delete_by_chat(
             user_id=user_id,
-            chat_id="",
-            action_type=WaitingForMeActionType.RESOLVE,
             active_id=active_id,
             target_version=target_version,
             action_payload={"dismiss_reason": "not_interested"},
             provider_message_id=provider_message_id,
         )
-        if action is None:
-            return HandlingOutcome.DUPLICATE
-
-        active = await self._active_repo.get_by_id(active_id)
-        if active is None:
-            return HandlingOutcome.NOT_FOUND
-        if active.user_id != user_id or active.target_version != target_version:
-            _logger.warning(
-                "action: dismiss_not_interested stale "
-                "user=%s active_id=%s version=%d",
-                user_id, active_id, target_version,
-            )
-            return HandlingOutcome.STALE
-
-        await self._active_repo.delete(user_id=user_id, chat_id=active.chat_id)
+        if result.outcome is not HandlingOutcome.APPLIED:
+            if result.outcome is HandlingOutcome.STALE:
+                _logger.warning(
+                    "action: dismiss_not_interested stale "
+                    "user=%s active_id=%s version=%d",
+                    user_id, active_id, target_version,
+                )
+            return result.outcome
 
         _logger.info(
             "action: dismiss_not_interested user=%s active_id=%s version=%d",
@@ -554,40 +508,25 @@ class WaitingForMeActionService:
         if session_id is not None:
             action_payload["waiting_list_session_id"] = session_id
 
-        action = await self._action_repo.record(
+        result = await self._action_repo.resolve_and_delete_by_version(
             user_id=user_id,
-            chat_id="",
-            action_type=WaitingForMeActionType.RESOLVE,
             active_id=active_id,
             target_version=target_version,
             action_payload=action_payload,
             provider_message_id=provider_message_id,
         )
-        if action is None:
-            return HandlingOutcome.DUPLICATE
-
-        # Atomic version-checked delete.
-        deleted = await self._active_repo.delete_if_version(
-            active_id=active_id,
-            user_id=user_id,
-            target_version=target_version,
-        )
-        if deleted is not None:
+        if result.outcome is HandlingOutcome.APPLIED:
             _logger.info(
                 "action: done user=%s active_id=%s version=%d",
                 user_id, active_id, target_version,
             )
             return HandlingOutcome.APPLIED
-
-        # Delete failed — distinguish stale from not_found.
-        active = await self._active_repo.get_by_id(active_id)
-        if active is None:
-            return HandlingOutcome.NOT_FOUND
-        _logger.warning(
-            "action: done stale user=%s active_id=%s version=%d",
-            user_id, active_id, target_version,
-        )
-        return HandlingOutcome.STALE
+        if result.outcome is HandlingOutcome.STALE:
+            _logger.warning(
+                "action: done stale user=%s active_id=%s version=%d",
+                user_id, active_id, target_version,
+            )
+        return result.outcome
 
     @traceable(
         name="wfm.action.dismiss_with_reason",
@@ -624,43 +563,33 @@ class WaitingForMeActionService:
         if session_id is not None:
             action_payload["waiting_list_session_id"] = session_id
 
-        action = await self._action_repo.record(
+        result = await self._action_repo.resolve_and_delete_by_version(
             user_id=user_id,
-            chat_id="",
-            action_type=WaitingForMeActionType.RESOLVE,
             active_id=active_id,
             target_version=target_version,
             action_payload=action_payload,
             provider_message_id=provider_message_id,
         )
-        if action is None:
-            return HandlingOutcome.DUPLICATE
-
-        # Atomic version-checked delete.
-        deleted = await self._active_repo.delete_if_version(
-            active_id=active_id,
-            user_id=user_id,
-            target_version=target_version,
-        )
-        if deleted is None:
-            # Distinguish stale from not_found.
-            active = await self._active_repo.get_by_id(active_id)
-            if active is None:
-                return HandlingOutcome.NOT_FOUND
-            _logger.warning(
-                "action: dismiss_with_reason stale "
-                "user=%s active_id=%s version=%d reason=%s",
-                user_id, active_id, target_version, reason,
-            )
-            return HandlingOutcome.STALE
+        if result.outcome is not HandlingOutcome.APPLIED:
+            if result.outcome is HandlingOutcome.STALE:
+                _logger.warning(
+                    "action: dismiss_with_reason stale "
+                    "user=%s active_id=%s version=%d reason=%s",
+                    user_id, active_id, target_version, reason,
+                )
+            return result.outcome
 
         # Record FALSE_POSITIVE feedback only for "detected_incorrectly".
-        if reason == "detected_incorrectly" and self._feedback_repo is not None:
+        if (
+            reason == "detected_incorrectly"
+            and self._feedback_repo is not None
+            and result.chat_id is not None
+        ):
             await self._feedback_repo.record(
                 user_id=user_id,
-                chat_id=deleted.chat_id,
+                chat_id=result.chat_id,
                 verdict=FeedbackVerdict.FALSE_POSITIVE,
-                result_id=deleted.result_id,
+                result_id=result.result_id,
                 target_version=target_version,
                 provider_message_id=f"implicit:{provider_message_id}",
             )
@@ -680,23 +609,19 @@ class WaitingForMeActionService:
         provider_message_id: str,
     ) -> HandlingOutcome:
         """Mute a chat (temporary or permanent). This is an action, not feedback."""
-        action = await self._action_repo.record(
+        muted_until = (
+            None if permanent
+            else datetime.now(timezone.utc) + timedelta(hours=48)
+        )
+        result = await self._action_repo.mute_chat_atomic(
             user_id=user_id,
             chat_id=chat_id,
-            action_type=WaitingForMeActionType.MUTE_CHAT,
+            permanent=permanent,
+            muted_until=muted_until,
             provider_message_id=provider_message_id,
         )
-        if action is None:
-            return HandlingOutcome.DUPLICATE
-
-        if permanent:
-            await self._mute_repo.mute_permanent(user_id=user_id, chat_id=chat_id)
-        else:
-            await self._mute_repo.mute_temporary(
-                user_id=user_id,
-                chat_id=chat_id,
-                muted_until=datetime.now(timezone.utc) + timedelta(hours=48),
-            )
+        if result.outcome is not HandlingOutcome.APPLIED:
+            return result.outcome
         _logger.info(
             "action: mute_chat user=%s chat=%s permanent=%s",
             user_id, chat_id, permanent,
@@ -711,16 +636,13 @@ class WaitingForMeActionService:
         provider_message_id: str,
     ) -> HandlingOutcome:
         """Unmute a chat."""
-        action = await self._action_repo.record(
+        result = await self._action_repo.unmute_chat_atomic(
             user_id=user_id,
             chat_id=chat_id,
-            action_type=WaitingForMeActionType.UNMUTE_CHAT,
             provider_message_id=provider_message_id,
         )
-        if action is None:
-            return HandlingOutcome.DUPLICATE
-
-        await self._mute_repo.unmute(user_id=user_id, chat_id=chat_id)
+        if result.outcome is not HandlingOutcome.APPLIED:
+            return result.outcome
         _logger.info("action: unmute_chat user=%s chat=%s", user_id, chat_id)
         return HandlingOutcome.APPLIED
 

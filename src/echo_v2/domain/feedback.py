@@ -20,6 +20,7 @@ from datetime import datetime
 from enum import Enum
 
 __all__ = [
+    "ActionCommandResult",
     "ChatMute",
     "FeedbackVerdict",
     "HandlingOutcome",
@@ -159,3 +160,24 @@ class ChatMute:
     permanent: bool
     created_at: datetime | None = None
     updated_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class ActionCommandResult:
+    """Result of an atomic action command (record + mutate in one tx).
+
+    Returned by :class:`WaitingForMeActionRepository` atomic methods
+    that combine action recording and active-state mutation in a single
+    transaction.
+
+    Attributes:
+        outcome: APPLIED, DUPLICATE, STALE, or NOT_FOUND.
+        chat_id: The ``chat_id`` of the affected active item, if
+            applicable. Used by the service to record feedback.
+        result_id: The ``result_id`` of the affected active item, if
+            applicable. Used by the service to record feedback.
+    """
+
+    outcome: HandlingOutcome
+    chat_id: str | None = None
+    result_id: str | None = None

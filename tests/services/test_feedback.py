@@ -149,7 +149,10 @@ def _make_handler(
     """Build a fully wired FeedbackHandler with in-memory repos."""
     bot = bot or FakeBot()
     active_repo = InMemoryWaitingForMeActiveRepository()
-    action_repo = InMemoryWaitingForMeActionRepository()
+    action_repo = InMemoryWaitingForMeActionRepository(
+        active_repo=active_repo,
+        mute_repo=InMemoryChatMuteRepository(),
+    )
     feedback_repo = InMemoryWaitingForMeFeedbackRepository()
     mute_repo = InMemoryChatMuteRepository()
     chat_state_repo = InMemoryChatStateRepository()

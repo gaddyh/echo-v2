@@ -18,6 +18,7 @@ from echo_v2.app.webhooks.green import (
 )
 from echo_v2.persistence.chat_repositories import (
     InMemoryChatStateRepository,
+    InMemoryIngestionRepository,
     InMemoryMessageRepository,
 )
 from echo_v2.persistence.whatsapp_connections import (
@@ -77,8 +78,10 @@ def _make_app_with_chat_dispatcher(
     asyncio.run(repo.save(conn))
 
     ingestion = ChatIngestionService(
-        message_repo=InMemoryMessageRepository(),
-        chat_state_repo=InMemoryChatStateRepository(),
+        InMemoryIngestionRepository(
+            InMemoryMessageRepository(),
+            InMemoryChatStateRepository(),
+        ),
         quiet_period_seconds=300,
         private_only=True,
     )
@@ -431,8 +434,10 @@ def _make_app_with_onboarding(
     asyncio.run(repo.save(conn))
 
     ingestion = ChatIngestionService(
-        message_repo=InMemoryMessageRepository(),
-        chat_state_repo=InMemoryChatStateRepository(),
+        InMemoryIngestionRepository(
+            InMemoryMessageRepository(),
+            InMemoryChatStateRepository(),
+        ),
         quiet_period_seconds=300,
         private_only=True,
     )

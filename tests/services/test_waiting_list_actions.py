@@ -51,12 +51,16 @@ def _make_service(
     InMemoryWaitingForMeFeedbackRepository,
 ]:
     active_repo = active_repo or InMemoryWaitingForMeActiveRepository()
-    action_repo = action_repo or InMemoryWaitingForMeActionRepository()
+    mute_repo = InMemoryChatMuteRepository()
+    action_repo = action_repo or InMemoryWaitingForMeActionRepository(
+        active_repo=active_repo,
+        mute_repo=mute_repo,
+    )
     feedback_repo = feedback_repo or InMemoryWaitingForMeFeedbackRepository()
     service = WaitingForMeActionService(
         active_repo=active_repo,
         action_repo=action_repo,
-        mute_repo=InMemoryChatMuteRepository(),
+        mute_repo=mute_repo,
         feedback_repo=feedback_repo,
         result_repo=InMemoryWaitingForMeResultRepository(),
         scheduling_service=scheduling_service,

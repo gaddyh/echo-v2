@@ -39,6 +39,7 @@ from echo_v2.ports.whatsapp import MessageDirection
 __all__ = [
     "PostgresAnalysisCommitRepository",
     "PostgresChatStateRepository",
+    "PostgresIngestionRepository",
     "PostgresMessageRepository",
     "PostgresWaitingForMeActiveRepository",
     "PostgresWaitingForMeResultRepository",
@@ -526,6 +527,105 @@ class PostgresWaitingForMeResultRepository:
             prompt_version=row.prompt_version,
             analyzer_version=row.analyzer_version,
         )
+
+
+# --- PostgresIngestionRepository --------------------------------------------
+
+
+class PostgresIngestionRepository:
+    """PostgreSQL implementation of :class:`IngestionRepository`.
+
+    Inserts a message and upserts the chat state in a single transaction.
+    If the message is a duplicate (ON CONFLICT DO NOTHING returns nothing),
+    the chat state is NOT touched and the transaction rolls back with no
+    side effects. If the message is new, the chat state is upserted
+    (``activity_version`` incremented) and both are committed together.
+
+    This eliminates the crash boundary between ``MessageRepository.save``
+    and ``ChatStateRepository.upsert_on_message`` that existed when they
+    were called as separate standalone transactions.
+    """
+
+    def __init__(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+    ) -> None:
+        self._session_factory = session_factory
+
+    async def ingest_if_new(
+        self,
+        *,
+        message: Message,
+        direction: MessageDirection,
+        observed_at: datetime,
+        next_analysis_at: datetime | None,
+        chat_name: str | None = None,
+    ) -> bool:
+        async with self._session_factory() as session:
+            try:
+                # 1. Insert message (ON CONFLICT DO NOTHING).
+                msg_stmt = (
+                    pg_insert(MessageRow)
+                    .values(
+                        id=message.id,
+                        user_id=message.user_id,
+                        connection_id=message.connection_id,
+                        chat_id=message.chat_id,
+                        provider_message_id=message.provider_message_id,
+                        direction=message.direction.value,
+                        sender_id=message.sender_id,
+                        sender_name=message.sender_name,
+                        chat_name=message.chat_name,
+                        timestamp=message.timestamp,
+                        message_type=message.message_type,
+                        text=message.text,
+                        audio_download_url=message.audio_download_url,
+                        audio_mime_type=message.audio_mime_type,
+                        audio_file_name=message.audio_file_name,
+                    )
+                    .on_conflict_do_nothing(
+                        index_elements=["connection_id", "provider_message_id"],
+                    )
+                    .returning(MessageRow.id)
+                )
+                result = await session.execute(msg_stmt)
+                if result.scalar_one_or_none() is None:
+                    # Duplicate message — no chat state update.
+                    await session.rollback()
+                    return False
+
+                # 2. Upsert chat state (increment activity_version).
+                chat_stmt = (
+                    pg_insert(ChatRow)
+                    .values(
+                        user_id=message.user_id,
+                        chat_id=message.chat_id,
+                        activity_version=1,
+                        last_message_at=observed_at,
+                        last_direction=direction.value,
+                        next_analysis_at=next_analysis_at,
+                        last_processed_version=0,
+                        chat_name=chat_name,
+                    )
+                    .on_conflict_do_update(
+                        index_elements=["user_id", "chat_id"],
+                        set_={
+                            "activity_version": ChatRow.activity_version + 1,
+                            "last_message_at": observed_at,
+                            "last_direction": direction.value,
+                            "next_analysis_at": next_analysis_at,
+                            "updated_at": datetime.now(timezone.utc),
+                            **({"chat_name": chat_name} if chat_name else {}),
+                        },
+                    )
+                )
+                await session.execute(chat_stmt)
+
+                await session.commit()
+                return True
+            except Exception:
+                await session.rollback()
+                raise
 
 
 # --- PostgresWaitingForMeActiveRepository -----------------------------------

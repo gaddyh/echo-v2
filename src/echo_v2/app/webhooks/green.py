@@ -54,6 +54,7 @@ from echo_v2.observability.sanitizers import (
     safe_webhook_inputs,
     safe_webhook_output,
 )
+from echo_v2.persistence.state_webhook import StateWebhookRepository
 from echo_v2.persistence.whatsapp_connections import (
     InMemoryWhatsAppConnectionRepository,
     WhatsAppConnectionRepository,
@@ -89,6 +90,15 @@ class EventDispatcher(Protocol):
         connection_id: str,
     ) -> None: ...
 
+    async def dispatch_state_changed(
+        self,
+        event: ProviderConnectionStateChanged,
+        *,
+        user_id: str,
+        connection_id: str,
+        was_connected: bool,
+    ) -> None: ...
+
 
 class RecordingEventDispatcher:
     """Stub dispatcher for Step 0.
@@ -120,6 +130,17 @@ class RecordingEventDispatcher:
                 event.status,
                 event.provider_raw_status,
             )
+
+    async def dispatch_state_changed(
+        self,
+        event: ProviderConnectionStateChanged,
+        *,
+        user_id: str,
+        connection_id: str,
+        was_connected: bool,
+    ) -> None:
+        """State already updated atomically; just record for tests."""
+        self.dispatched.append((event, user_id, connection_id))
 
 
 class ChatEventDispatcher:
@@ -196,6 +217,36 @@ class ChatEventDispatcher:
                 await self._onboarding.handle_disconnect_notification(user_id)
         # ProviderMessageStatusEvent: no action in this milestone
 
+    async def dispatch_state_changed(
+        self,
+        event: ProviderConnectionStateChanged,
+        *,
+        user_id: str,
+        connection_id: str,
+        was_connected: bool,
+    ) -> None:
+        """Onboarding-only dispatch after atomic claim + status update.
+
+        The connection status has already been updated atomically by
+        :class:`StateWebhookRepository.claim_and_update_status`. This
+        method handles the onboarding side effects (welcome message,
+        disconnect notification) using the ``was_connected`` flag
+        captured before the update.
+        """
+        if self._onboarding is None:
+            return
+        if event.status == ConnectionStatus.CONNECTED:
+            conn = await self._connection_repo.get(event.connection)
+            if conn is not None:
+                await self._onboarding.handle_connection_established_by_id(
+                    user_id,
+                )
+        elif (
+            event.status == ConnectionStatus.PAIRING_REQUIRED
+            and was_connected
+        ):
+            await self._onboarding.handle_disconnect_notification(user_id)
+
 
 def _extract_token_from_header(authorization: str | None) -> str | None:
     """Extract the webhook token from a ``Bearer`` or ``Basic`` header.
@@ -234,12 +285,19 @@ def build_router(
     dispatcher: EventDispatcher,
     adapter: GreenEventAdapter | None = None,
     dedup_store: WebhookDedupStore | None = None,
+    state_webhook_repo: StateWebhookRepository | None = None,
 ) -> APIRouter:
     """Build a Green webhook router wired to the given dependencies.
 
     Kept as a factory so tests and the real app can inject fakes/real
     components. A module-level singleton (``green_webhook_router``) is also
     exposed for simple mounting, but the factory is the preferred entry point.
+
+    If ``state_webhook_repo`` is supplied, ``ProviderConnectionStateChanged``
+    events use it to claim + update status atomically, then call
+    ``dispatcher.dispatch_state_changed`` for onboarding side effects only.
+    If not supplied, state events fall back to the legacy path
+    (``store.claim`` + ``dispatcher.dispatch``).
     """
     router = APIRouter()
     parse_adapter = adapter or GreenEventAdapter()
@@ -280,6 +338,7 @@ def build_router(
         ):
             raise HTTPException(status_code=401, detail="unauthorized")
 
+
         event = parse_adapter.parse(payload)
         if event is None:
             return {"status": "ignored"}
@@ -287,7 +346,30 @@ def build_router(
         # Dedup split:
         # - Message events: dedup via messages table INSERT ON CONFLICT
         #   (handled by the dispatcher → ChatIngestionService).
-        # - Status/state events: dedup via provider_webhook_events (store.claim).
+        # - State events (ProviderConnectionStateChanged): dedup + status
+        #   update atomically via state_webhook_repo (if wired), then
+        #   onboarding-only dispatch.
+        # - Status events: dedup via provider_webhook_events (store.claim).
+        if isinstance(event, ProviderConnectionStateChanged) and state_webhook_repo is not None:
+            result = await state_webhook_repo.claim_and_update_status(
+                event_id=event.event_id,
+                provider="green",
+                connection_id=stored.id,
+                event_type=type(event).__name__,
+                connection_ref=event.connection,
+                status=event.status,
+                raw=event.provider_raw_status,
+            )
+            if not result.claimed:
+                return {"status": "duplicate"}
+            await dispatcher.dispatch_state_changed(
+                event,
+                user_id=stored.user_id,
+                connection_id=stored.id,
+                was_connected=result.was_connected,
+            )
+            return {"status": "received"}
+
         if not isinstance(event, ProviderMessageEvent) and not await store.claim(
             event.event_id,
             provider="green",

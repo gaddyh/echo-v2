@@ -38,9 +38,11 @@ __all__ = [
     "ChatStateRepository",
     "InMemoryAnalysisCommitRepository",
     "InMemoryChatStateRepository",
+    "InMemoryIngestionRepository",
     "InMemoryMessageRepository",
     "InMemoryWaitingForMeActiveRepository",
     "InMemoryWaitingForMeResultRepository",
+    "IngestionRepository",
     "MessageRepository",
     "WaitingForMeActiveRepository",
     "WaitingForMeResultRepository",
@@ -252,6 +254,83 @@ class ChatStateRepository(Protocol):
         ``next_analysis_at = NULL``. Returns ``True`` if updated.
         """
         ...
+
+
+# --- IngestionRepository ----------------------------------------------------
+
+
+@runtime_checkable
+class IngestionRepository(Protocol):
+    """Atomic message insertion + chat state update.
+
+    Combines :meth:`MessageRepository.save` and
+    :meth:`ChatStateRepository.upsert_on_message` into a single
+    transaction so a crash between the two can never leave a message
+    without a version bump (which would cause the analysis to miss it).
+
+    Returns ``True`` if the message was new (inserted), ``False`` if it
+    was a duplicate (already existed by ``(connection_id,
+    provider_message_id)``).
+    """
+
+    async def ingest_if_new(
+        self,
+        *,
+        message: Message,
+        direction: MessageDirection,
+        observed_at: datetime,
+        next_analysis_at: datetime | None,
+        chat_name: str | None = None,
+    ) -> bool:
+        """Insert message + upsert chat state atomically.
+
+        If the message is a duplicate (already exists by
+        ``(connection_id, provider_message_id)``), returns ``False``
+        and does NOT touch chat state. If new, inserts the message AND
+        upserts the chat state (incrementing ``activity_version``) in
+        one transaction.
+        """
+        ...
+
+
+class InMemoryIngestionRepository:
+    """In-memory :class:`IngestionRepository` backed by sub-repositories.
+
+    Delegates to :class:`InMemoryMessageRepository` and
+    :class:`InMemoryChatStateRepository`. Since in-memory operations are
+    synchronous and process-local, the "atomicity" is trivial — there's
+    no crash boundary. This implementation exists for test parity.
+    """
+
+    def __init__(
+        self,
+        message_repo: InMemoryMessageRepository,
+        chat_state_repo: InMemoryChatStateRepository,
+    ) -> None:
+        self._message_repo = message_repo
+        self._chat_state_repo = chat_state_repo
+
+    async def ingest_if_new(
+        self,
+        *,
+        message: Message,
+        direction: MessageDirection,
+        observed_at: datetime,
+        next_analysis_at: datetime | None,
+        chat_name: str | None = None,
+    ) -> bool:
+        inserted = await self._message_repo.save(message)
+        if not inserted:
+            return False
+        await self._chat_state_repo.upsert_on_message(
+            user_id=message.user_id,
+            chat_id=message.chat_id,
+            direction=direction,
+            observed_at=observed_at,
+            next_analysis_at=next_analysis_at,
+            chat_name=chat_name,
+        )
+        return True
 
 
 class InMemoryChatStateRepository:

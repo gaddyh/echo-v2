@@ -57,12 +57,15 @@ def _make_app() -> tuple[
     InMemoryWaitingForMeActiveRepository,
 ]:
     active_repo = InMemoryWaitingForMeActiveRepository()
-    action_repo = InMemoryWaitingForMeActionRepository()
+    mute_repo = InMemoryChatMuteRepository()
+    action_repo = InMemoryWaitingForMeActionRepository(
+        active_repo=active_repo,
+        mute_repo=mute_repo,
+    )
     feedback_repo = InMemoryWaitingForMeFeedbackRepository()
     chat_state_repo = InMemoryChatStateRepository()
     message_repo = InMemoryMessageRepository()
     contact_repo = InMemoryContactRepository()
-    mute_repo = InMemoryChatMuteRepository()
     result_repo = InMemoryWaitingForMeResultRepository()
     session_repo = InMemoryWaitingListSessionRepository()
 
