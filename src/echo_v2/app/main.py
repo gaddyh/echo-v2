@@ -490,6 +490,23 @@ def create_app() -> FastAPI:
 
     # 360dialog webhook: receives messages from the Echo Business Bot
     # (user commands, vCards, time replies).
+    # Bot command router: explicit command dispatch replacing the
+    # pre-handler chain. Wire it with the same services the legacy
+    # chain used, plus a flow registry for onboarding/scheduling.
+    from echo_v2.bot import BotCommandRouter
+    from echo_v2.bot.flow_registry import BotFlowRegistry
+
+    flow_registry = BotFlowRegistry(
+        onboarding_service=onboarding_service,
+        scheduling_flow=flow_service,
+    )
+    command_router = BotCommandRouter(
+        user_resolver=flow_service._user_resolver,
+        command_handlers=feedback_handler,
+        onboarding_entry=onboarding_service,
+        fallback_handler=flow_service.handle,
+        flow_registry=flow_registry,
+    )
     dialog360_router = build_dialog360_router(
         flow_service=flow_service,
         webhook_secret=d360_settings.webhook_secret,
@@ -497,6 +514,7 @@ def create_app() -> FastAPI:
         inbox=repos.bot_inbox,
         onboarding_service=onboarding_service,
         feedback_handler=feedback_handler,
+        command_router=command_router,
     )
     app.include_router(dialog360_router)
 

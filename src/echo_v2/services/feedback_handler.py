@@ -189,6 +189,93 @@ class FeedbackHandler:
 
         return False
 
+    # --- Public command methods (called by BotCommandRouter) ----------------
+
+    async def handle_responsibility_done(
+        self, event: BotEvent, active_id: str,
+    ) -> None:
+        """Execute 'טופל' — resolve the active item + CORRECT feedback."""
+        user_info = await self._user_resolver.resolve(event.user_phone)
+        if user_info is None:
+            return
+        user_id = user_info[0]
+        target_version = await self._get_version_for_active(active_id)
+        outcome = await self._action_service.handled(
+            user_id=user_id,
+            active_id=active_id,
+            target_version=target_version,
+            provider_message_id=event.event_id,
+        )
+        await self._send_action_response(event.user_phone, outcome, "handled")
+
+    async def handle_responsibility_snooze(
+        self, event: BotEvent, active_id: str, preset: str | None,
+    ) -> None:
+        """Execute 'להזכיר לי' — snooze the active item."""
+        user_info = await self._user_resolver.resolve(event.user_phone)
+        if user_info is None:
+            return
+        user_id = user_info[0]
+        target_version = await self._get_version_for_active(active_id)
+        outcome = await self._action_service.snooze(
+            user_id=user_id,
+            active_id=active_id,
+            target_version=target_version,
+            provider_message_id=event.event_id,
+            snooze_preset=preset,
+        )
+        await self._send_action_response(event.user_phone, outcome, "snooze")
+
+    async def handle_responsibility_dismiss(
+        self, event: BotEvent, active_id: str, reason: str | None,
+    ) -> None:
+        """Execute 'לא צריד' — open submenu or resolve with a reason."""
+        user_info = await self._user_resolver.resolve(event.user_phone)
+        if user_info is None:
+            return
+        user_id = user_info[0]
+        target_version = await self._get_version_for_active(active_id)
+
+        if reason is None:
+            # Open the dismiss submenu.
+            await self._send_dismiss_menu(event.user_phone, user_id, active_id)
+            return
+
+        if reason == "not_waiting":
+            outcome = await self._action_service.dismiss_not_waiting(
+                user_id=user_id,
+                active_id=active_id,
+                target_version=target_version,
+                provider_message_id=event.event_id,
+            )
+            await self._send_action_response(
+                event.user_phone, outcome, "dismiss_not_waiting",
+            )
+        elif reason == "not_interested":
+            outcome = await self._action_service.dismiss_not_interested(
+                user_id=user_id,
+                active_id=active_id,
+                target_version=target_version,
+                provider_message_id=event.event_id,
+            )
+            await self._send_action_response(
+                event.user_phone, outcome, "dismiss_not_interested",
+            )
+        else:
+            _logger.warning("feedback: unknown dismiss reason %s", reason)
+
+    async def handle_responsibility_list(self, event: BotEvent) -> None:
+        """Send up to 5 waiting-list cards."""
+        await self._handle_view_details(event)
+
+    async def handle_digest_open(self, event: BotEvent) -> None:
+        """Handle 'סיכום חדש' — send the waiting-list link."""
+        await self._handle_digest_request(event)
+
+    async def handle_list_done(self, event: BotEvent) -> None:
+        """Acknowledge 'סיימתי לעבור על רשימת ההמתנה'."""
+        await self._bot.send_text(event.user_phone, _LIST_DONE_REPLY)
+
     async def _handle_view_details(self, event: BotEvent) -> bool:
         """Send up to 5 individual cards, each with 3 buttons."""
         user_info = await self._user_resolver.resolve(event.user_phone)

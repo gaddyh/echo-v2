@@ -50,11 +50,14 @@ def build_router(
     inbox: WebhookInbox | None = None,
     onboarding_service=None,
     feedback_handler=None,
+    command_router=None,
 ) -> APIRouter:
     """Build a 360dialog bot webhook router.
 
     Args:
-        flow_service: The scheduling flow service that processes events.
+        flow_service: The scheduling flow service. Used as the fallback
+            handler when no command and no active flow matched, and as
+            the scheduling flow in the flow registry.
         webhook_secret: The bearer secret expected in the Authorization header.
             Required — the router refuses to build without it.
         adapter: Event adapter (defaults to :class:`Dialog360EventAdapter`).
@@ -64,9 +67,13 @@ def build_router(
         onboarding_service: Optional :class:`OnboardingService`. If set,
             unknown users are routed to onboarding instead of being rejected.
             Also handles the name-collection step after connection.
-        feedback_handler: Optional :class:`FeedbackHandler` pre-handler.
-            Handles the feedback flyloop: template button taps, list item
-            selections, feedback button callbacks, and miss reports.
+        feedback_handler: Optional :class:`FeedbackHandler`. Handles the
+            feedback flyloop: template button taps, list item selections,
+            feedback button callbacks, and miss reports.
+        command_router: Optional :class:`BotCommandRouter`. If set, the
+            webhook uses it for explicit command dispatch instead of the
+            legacy pre-handler chain. The legacy chain is kept as a
+            fallback for backward compatibility.
     """
     if not webhook_secret:
         raise ValueError(
@@ -80,7 +87,13 @@ def build_router(
     secret_hash = hashlib.sha256(webhook_secret.encode("utf-8")).digest()
 
     async def _dispatch(event) -> None:
-        """Route the event to the appropriate handler (pre-handlers + flow)."""
+        """Route the event to the appropriate handler."""
+        # New path: explicit command router.
+        if command_router is not None:
+            await command_router.route(event)
+            return
+
+        # Legacy path: pre-handler chain (kept for backward compatibility).
         # Pre-handler: feedback flyloop (template button, list, feedback buttons).
         if feedback_handler is not None:
             handled = await feedback_handler.handle(event)

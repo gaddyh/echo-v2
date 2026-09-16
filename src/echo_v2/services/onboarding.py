@@ -645,6 +645,20 @@ class OnboardingService:
         _user_id, onboarding_status, _name = existing
         return onboarding_status in ("pending", "connected")
 
+    # --- Public command methods (called by BotCommandRouter) ----------------
+
+    async def handle_onboarding_code(self, phone: str) -> bool:
+        """Handle 'קוד' command — resend OTP for a known user."""
+        return await self.handle_resend_request(phone)
+
+    async def handle_onboarding_start(self, phone: str) -> None:
+        """Handle 'חברו אותי' command — start onboarding."""
+        await self.start_onboarding(phone)
+
+    async def handle_onboarding_info(self, phone: str) -> None:
+        """Handle 'איך זה עובד?' command — send explanation."""
+        await self.send_explanation(phone)
+
     async def _resend_otp(self, user_id: str, phone: str) -> bool:
         """Re-request the OTP for an existing connection.
 
