@@ -396,6 +396,143 @@ def test_state_changed_event_updates_connection_status():
     assert updated.provider_raw_status == "sleepMode"
 
 
+# --- Disconnect notification: transition guard ---------------------------
+
+
+class StubOnboarding:
+    """Stub onboarding service for disconnect notification tests."""
+
+    def __init__(self) -> None:
+        self.disconnect_notifications: list[str] = []
+        self.connection_established: list[str] = []
+
+    async def handle_disconnect_notification(self, user_id: str) -> None:
+        self.disconnect_notifications.append(user_id)
+
+    async def handle_connection_established_by_id(self, user_id: str) -> None:
+        self.connection_established.append(user_id)
+
+
+def _make_app_with_onboarding(
+    *,
+    initial_status: ConnectionStatus = ConnectionStatus.CONNECTED,
+    user_id: str = "u1",
+):
+    """Build an app with ChatEventDispatcher + onboarding stub."""
+    repo = InMemoryWhatsAppConnectionRepository()
+    token_hash = hashlib.sha256(b"webhook-tok").digest()
+    conn = StoredConnection(
+        user_id=user_id,
+        ref=ConnectionRef("green", "123"),
+        credentials=ProviderCredentials(b"api-tok"),
+        webhook_token_hash=token_hash,
+        status=initial_status,
+    )
+    asyncio.run(repo.save(conn))
+
+    ingestion = ChatIngestionService(
+        message_repo=InMemoryMessageRepository(),
+        chat_state_repo=InMemoryChatStateRepository(),
+        quiet_period_seconds=300,
+        private_only=True,
+    )
+    onboarding = StubOnboarding()
+    dispatcher = ChatEventDispatcher(
+        ingestion_service=ingestion,
+        connection_repo=repo,
+        onboarding_service=onboarding,
+    )
+    router = build_router(connection_repo=repo, dispatcher=dispatcher)
+    app = FastAPI()
+    app.include_router(router)
+    return app, onboarding, repo
+
+
+def test_disconnect_notifies_on_connected_to_pairing_required():
+    """CONNECTED → PAIRING_REQUIRED sends one disconnect notification."""
+    app, onboarding, _ = _make_app_with_onboarding(
+        initial_status=ConnectionStatus.CONNECTED
+    )
+    with TestClient(app) as client:
+        resp = client.post(
+            "/webhooks/whatsapp/green",
+            json=_state_payload(state="notAuthorized", timestamp=1700000001),
+            headers=_bearer("webhook-tok"),
+        )
+    assert resp.status_code == 200
+    assert len(onboarding.disconnect_notifications) == 1
+    assert onboarding.disconnect_notifications[0] == "u1"
+
+
+def test_disconnect_no_notification_on_repeated_pairing_required():
+    """PAIRING_REQUIRED → PAIRING_REQUIRED sends no notification."""
+    app, onboarding, _ = _make_app_with_onboarding(
+        initial_status=ConnectionStatus.PAIRING_REQUIRED
+    )
+    with TestClient(app) as client:
+        resp = client.post(
+            "/webhooks/whatsapp/green",
+            json=_state_payload(state="notAuthorized", timestamp=1700000001),
+            headers=_bearer("webhook-tok"),
+        )
+    assert resp.status_code == 200
+    assert len(onboarding.disconnect_notifications) == 0
+
+
+def test_disconnect_no_notification_on_provisioning_to_pairing_required():
+    """PROVISIONING → PAIRING_REQUIRED sends no notification (initial provisioning)."""
+    app, onboarding, _ = _make_app_with_onboarding(
+        initial_status=ConnectionStatus.PROVISIONING
+    )
+    with TestClient(app) as client:
+        resp = client.post(
+            "/webhooks/whatsapp/green",
+            json=_state_payload(state="notAuthorized", timestamp=1700000001),
+            headers=_bearer("webhook-tok"),
+        )
+    assert resp.status_code == 200
+    assert len(onboarding.disconnect_notifications) == 0
+
+
+def test_disconnect_sends_second_notification_after_reconnect():
+    """Reconnect (→CONNECTED) then disconnect (→PAIRING_REQUIRED) sends again."""
+    app, onboarding, _repo = _make_app_with_onboarding(
+        initial_status=ConnectionStatus.CONNECTED
+    )
+    with TestClient(app) as client:
+        # First disconnect.
+        client.post(
+            "/webhooks/whatsapp/green",
+            json=_state_payload(state="notAuthorized", timestamp=1700000001),
+            headers=_bearer("webhook-tok"),
+        )
+        # Reconnect.
+        client.post(
+            "/webhooks/whatsapp/green",
+            json=_state_payload(state="authorized", timestamp=1700000002),
+            headers=_bearer("webhook-tok"),
+        )
+        # Second disconnect.
+        client.post(
+            "/webhooks/whatsapp/green",
+            json=_state_payload(state="notAuthorized", timestamp=1700000003),
+            headers=_bearer("webhook-tok"),
+        )
+    assert len(onboarding.disconnect_notifications) == 2
+
+
+def test_disconnect_notification_not_sent_when_onboarding_none():
+    """No onboarding service → no crash, just no notification."""
+    app, _, _ = _make_app_with_chat_dispatcher()
+    with TestClient(app) as client:
+        resp = client.post(
+            "/webhooks/whatsapp/green",
+            json=_state_payload(state="notAuthorized", timestamp=1700000001),
+            headers=_bearer("webhook-tok"),
+        )
+    assert resp.status_code == 200
+
+
 def test_invalid_json_returns_400():
     app, _, _ = _make_app()
     with TestClient(app) as client:

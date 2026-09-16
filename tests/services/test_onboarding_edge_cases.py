@@ -34,8 +34,11 @@ class FakeBot:
     sent: list[tuple[str, str]] = field(default_factory=list)
     sent_buttons: list[tuple[str, str, list[dict]]] = field(default_factory=list)
     send_buttons_should_fail: bool = False
+    send_text_should_fail: bool = False
 
     async def send_text(self, user_phone: str, text: str) -> None:
+        if self.send_text_should_fail:
+            raise RuntimeError("text boom")
         self.sent.append((user_phone, text))
 
     async def send_template(
@@ -905,6 +908,91 @@ async def test_connection_established_by_id_no_phone_lookup():
     await service.handle_connection_established_by_id("some-user-id")
 
     assert len(bot.sent) == 0
+
+
+# --- handle_disconnect_notification --------------------------------------
+
+
+async def test_disconnect_notification_active_user():
+    """Active user → disconnect notification sent."""
+    service, bot, user_repo, _conn, _green_client = _make_service()
+
+    user_id = await user_repo.create_user(
+        PHONE, onboarding_status="active", first_name="Dana"
+    )
+    await user_repo.update_onboarding_status(user_id, "active")
+
+    await service.handle_disconnect_notification(user_id)
+
+    assert len(bot.sent) == 1
+    _phone, msg = bot.sent[0]
+    assert _phone == PHONE
+    assert "התנתק" in msg
+    assert "קוד" in msg
+
+
+async def test_disconnect_notification_connected_user():
+    """Connected user → disconnect notification sent."""
+    service, bot, user_repo, _conn, _green_client = _make_service()
+
+    user_id = await user_repo.create_user(PHONE, onboarding_status="connected")
+    await user_repo.update_onboarding_status(user_id, "connected")
+
+    await service.handle_disconnect_notification(user_id)
+
+    assert len(bot.sent) == 1
+    assert "התנתק" in bot.sent[0][1]
+
+
+async def test_disconnect_notification_pending_user_suppressed():
+    """Pending user → no notification (poll handles their case)."""
+    service, bot, user_repo, _conn, _green_client = _make_service()
+
+    user_id = await user_repo.create_user(PHONE, onboarding_status="pending")
+
+    await service.handle_disconnect_notification(user_id)
+
+    assert len(bot.sent) == 0
+
+
+async def test_disconnect_notification_failed_user_suppressed():
+    """Failed user → no notification."""
+    service, bot, user_repo, _conn, _green_client = _make_service()
+
+    user_id = await user_repo.create_user(PHONE, onboarding_status="failed")
+    await user_repo.update_onboarding_status(user_id, "failed")
+
+    await service.handle_disconnect_notification(user_id)
+
+    assert len(bot.sent) == 0
+
+
+async def test_disconnect_notification_no_phone_lookup():
+    """User repo without get_phone_by_id → no crash, no send."""
+    user_repo = FakeUserRepoNoPhoneLookup()
+    service, bot, _user_repo, _conn, _green_client = _make_service(
+        user_repo=user_repo
+    )
+
+    await user_repo.create_user(PHONE, onboarding_status="active")
+
+    await service.handle_disconnect_notification("some-user-id")
+
+    assert len(bot.sent) == 0
+
+
+async def test_disconnect_notification_send_failure_logged():
+    """Bot send failure is caught and logged, does not crash."""
+    service, bot, user_repo, _conn, _green_client = _make_service()
+    bot.send_text_should_fail = True
+
+    user_id = await user_repo.create_user(
+        PHONE, onboarding_status="active", first_name="Dana"
+    )
+    await user_repo.update_onboarding_status(user_id, "active")
+
+    # Should not raise.
+    await service.handle_disconnect_notification(user_id)
 
 
 # --- handle_name_response: invalid phone / unknown / empty name -------------

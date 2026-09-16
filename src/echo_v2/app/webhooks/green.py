@@ -160,6 +160,16 @@ class ChatEventDispatcher:
                 connection_id=connection_id,
             )
         elif isinstance(event, ProviderConnectionStateChanged):
+            # Transition guard: capture prior state before updating.
+            # Only notify on a genuine CONNECTED → PAIRING_REQUIRED
+            # transition, not on repeated notAuthorized events or
+            # initial provisioning.
+            conn_before = await self._connection_repo.get(event.connection)
+            was_connected = (
+                conn_before is not None
+                and conn_before.status == ConnectionStatus.CONNECTED
+            )
+
             await self._connection_repo.update_status(
                 event.connection,
                 event.status,
@@ -178,6 +188,12 @@ class ChatEventDispatcher:
                     await self._onboarding.handle_connection_established_by_id(
                         user_id,
                     )
+            elif (
+                self._onboarding is not None
+                and event.status == ConnectionStatus.PAIRING_REQUIRED
+                and was_connected
+            ):
+                await self._onboarding.handle_disconnect_notification(user_id)
         # ProviderMessageStatusEvent: no action in this milestone
 
 

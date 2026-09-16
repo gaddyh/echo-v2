@@ -71,6 +71,11 @@ _ALREADY_ONBOARDING = (
 # Sent when the 5-minute authorization poll times out (user didn't enter OTP).
 _OTP_TIMED_OUT = 'לא התחברת בזמן. שלח "קוד" כדי לקבל קוד חדש.'
 
+_DISCONNECTED = (
+    "החיבור של Echo ל־WhatsApp התנתק.\n"
+    "שלח קוד כדי להתחבר מחדש."
+)
+
 _RESEND_KEYWORD = "קוד"
 
 # --- Consent-first introduction ---------------------------------------------
@@ -559,6 +564,36 @@ class OnboardingService:
             _logger.warning("onboarding: no phone found for user %s", user_id)
             return
         await self.handle_connection_established(user_id, phone)
+
+    async def handle_disconnect_notification(self, user_id: str) -> None:
+        """Notify a user that their WhatsApp connection disconnected.
+
+        Called by the Green webhook dispatcher on a CONNECTED →
+        PAIRING_REQUIRED transition. Only sends if the user is
+        ``connected`` or ``active`` — pending users are still in
+        onboarding (the poll handles their case), and failed users
+        already know.
+        """
+        phone = await self._lookup_phone(user_id)
+        if phone is None:
+            _logger.warning(
+                "onboarding: no phone for disconnect notification %s", user_id
+            )
+            return
+
+        existing = await self._user_repo.get_by_phone(phone)
+        if existing is None:
+            return
+        _uid, onboarding_status, _name = existing
+        if onboarding_status not in ("connected", "active"):
+            return
+
+        try:
+            await self._bot.send_text(phone, _DISCONNECTED)
+        except Exception:
+            _logger.exception(
+                "onboarding: failed to send disconnect notification to %s", phone
+            )
 
     async def _lookup_phone(self, user_id: str) -> str | None:
         """Look up a user's phone by user_id via the user repo."""
