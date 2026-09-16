@@ -2,10 +2,17 @@
 
 Covers error paths, idempotency skips, invalid inputs, polling fallbacks,
 and the ``failed`` retry path that the main test file does not exercise.
+
+Flow (simplified — name collected before provisioning):
+1. start_onboarding → create user (pending) + ask name
+2. handle_name_response → store name + start provisioning
+3. _poll_until_authorized → send OTP once, then complete to active
+4. handle_connection_established → status=active + welcome
 """
 
 from __future__ import annotations
 
+import asyncio
 import secrets
 from dataclasses import dataclass, field
 
@@ -110,11 +117,11 @@ class FakeUserRepo:
         self._users[phone]["onboarding"] = status
 
     async def update_first_name(self, user_id: str, first_name: str) -> None:
+        """Update first_name only — does NOT change onboarding_status."""
         phone = self._by_id.get(user_id)
         if phone is None:
             return
         self._users[phone]["name"] = first_name
-        self._users[phone]["onboarding"] = "active"
 
     async def get_phone_by_id(self, user_id: str) -> str | None:
         return self._by_id.get(user_id)
@@ -160,11 +167,11 @@ class FakeUserRepoNoPhoneLookup:
         self._users[phone]["onboarding"] = status
 
     async def update_first_name(self, user_id: str, first_name: str) -> None:
+        """Update first_name only — does NOT change onboarding_status."""
         phone = self._by_id.get(user_id)
         if phone is None:
             return
         self._users[phone]["name"] = first_name
-        self._users[phone]["onboarding"] = "active"
 
 
 class FakeGreenClient:
@@ -265,20 +272,15 @@ def _make_service(
     return service, bot, user_repo, connection_repo, green_client
 
 
-# --- start_onboarding: connected / failed / create_user failure ----------
+async def _start_and_name(
+    service: OnboardingService, phone: str = PHONE, name: str = "Dana"
+) -> None:
+    """Helper: consent → create user → send name → start provisioning."""
+    await service.start_onboarding(phone)
+    await service.handle_name_response(phone, name)
 
 
-async def test_connected_user_skipped():
-    """Already-connected user → onboarding skipped (no OTP, no message)."""
-    service, bot, user_repo, _conn, green_client = _make_service()
-
-    user_id = await user_repo.create_user(PHONE, onboarding_status="connected")
-    await user_repo.update_onboarding_status(user_id, "connected")
-
-    await service.start_onboarding(PHONE)
-
-    assert len(green_client.otp_calls) == 0
-    assert len(bot.sent) == 0
+# --- start_onboarding: failed / create_user failure -----------------------
 
 
 async def test_failed_user_retries_onboarding():
@@ -292,18 +294,24 @@ async def test_failed_user_retries_onboarding():
     await user_repo.create_user(PHONE, onboarding_status="failed")
     assert (await user_repo.get_by_phone(PHONE))[1] == "failed"
 
+    # start_onboarding for failed user → creates new user (pending), asks name.
     await service.start_onboarding(PHONE)
-    import asyncio
+
+    # User is now pending, name prompt sent.
+    user = await user_repo.get_by_phone(PHONE)
+    assert user[1] == "pending"
+    assert len(bot.sent) == 1  # name prompt
+
+    # Send name → provisioning starts.
+    await service.handle_name_response(PHONE, "Dana")
     await asyncio.sleep(0.2)
 
     # A new instance was provisioned and OTP requested.
     assert len(green_client.otp_calls) == 1
-    # "please wait" + OTP instructions sent.
-    assert len(bot.sent) == 2
 
 
 async def test_create_user_exception_returns():
-    """create_user raising → logged and returns silently (lines 179-181)."""
+    """create_user raising → logged and returns silently."""
     user_repo = FakeUserRepo()
     user_repo.create_should_fail = True
     service, bot, _user_repo, _conn, green_client = _make_service(
@@ -316,7 +324,7 @@ async def test_create_user_exception_returns():
     assert len(bot.sent) == 0
 
 
-# --- _provision_and_send_otp: provisioner / OTP failures ---------------------
+# --- _provision_and_poll: provisioner / OTP failures -----------------------
 
 
 async def test_provisioner_create_connection_fails():
@@ -325,38 +333,39 @@ async def test_provisioner_create_connection_fails():
         provisioner=FailingProvisioner()
     )
 
-    await service.start_onboarding(PHONE)
-    import asyncio
+    await _start_and_name(service)
     await asyncio.sleep(0.2)
 
     user = await user_repo.get_by_phone(PHONE)
     assert user is not None
     assert user[1] == "failed"
     assert len(green_client.otp_calls) == 0
-    # "please wait" + failure message.
-    assert len(bot.sent) == 2
-    _phone, failure_msg = bot.sent[1]
+    # name prompt + name confirm + failure message.
+    assert len(bot.sent) == 3
+    _phone, failure_msg = bot.sent[2]
     assert "מצטער" in failure_msg
 
 
 async def test_get_authorization_code_fails():
-    """getAuthorizationCode raising → status=failed + failure msg (266-273)."""
+    """getAuthorizationCode raising → status=failed + failure msg."""
     green_client = FakeGreenClient(otp_code="87654321")
     green_client.get_auth_should_fail = True
     service, bot, user_repo, _conn, green_client = _make_service(
         green_client=green_client
     )
 
-    await service.start_onboarding(PHONE)
-    import asyncio
+    # State sequence: notAuthorized (triggers OTP attempt which fails).
+    green_client.set_state_sequence(["notAuthorized"])
+
+    await _start_and_name(service)
     await asyncio.sleep(0.2)
 
     user = await user_repo.get_by_phone(PHONE)
     assert user is not None
     assert user[1] == "failed"
-    # "please wait" + OTP failure message.
-    assert len(bot.sent) == 2
-    _phone, failure_msg = bot.sent[1]
+    # name prompt + name confirm + OTP failure message.
+    assert len(bot.sent) == 3
+    _phone, failure_msg = bot.sent[2]
     assert "מצטער" in failure_msg
     assert "קוד האימות" in failure_msg
 
@@ -397,16 +406,17 @@ def _contact_event(phone: str) -> BotEvent:
 
 
 async def test_handle_unknown_event_start_button_triggers_onboarding():
-    """onboarding:start button → start_onboarding (creates user + provisions)."""
+    """onboarding:start button → start_onboarding (creates user, asks name)."""
     service, _bot, user_repo, _conn, _green_client = _make_service()
 
     event = _button_event(PHONE, "onboarding:start")
     await service.handle_unknown_event(event)
 
-    # User was created (start_onboarding ran synchronously up to the background task).
+    # User was created (pending, no name yet, no provisioning).
     user = await user_repo.get_by_phone(PHONE)
     assert user is not None
     assert user[1] == "pending"
+    assert user[2] is None
 
 
 async def test_handle_unknown_event_info_button_sends_explanation():
@@ -540,13 +550,12 @@ async def test_send_introduction_send_failure_does_not_crash():
     await service.send_introduction(PHONE)
 
 
-# --- _poll_for_authorization: authorized / exception / timeout ---------------
+# --- _poll_until_authorized: authorized / exception / timeout ---------------
 
 
 @pytest.fixture
 def no_sleep(monkeypatch):
     """Patch asyncio.sleep to a no-op so polling loops run instantly."""
-    import asyncio
 
     async def _fake_sleep(_seconds):
         return None
@@ -554,30 +563,31 @@ def no_sleep(monkeypatch):
     monkeypatch.setattr(asyncio, "sleep", _fake_sleep)
 
 
-async def test_poll_for_authorization_detects_authorized(no_sleep):
-    """Poll finds 'authorized' → completes onboarding (lines 311-323)."""
+async def test_poll_until_authorized_detects_authorized(no_sleep):
+    """Poll finds 'authorized' → completes onboarding (status=active)."""
     service, bot, user_repo, _conn, green_client = _make_service()
 
     user_id = await user_repo.create_user(PHONE, onboarding_status="pending")
-    await user_repo.update_onboarding_status(user_id, "pending")
+    await user_repo.update_first_name(user_id, "Dana")
 
     green_client.set_state_sequence(["authorized"])
 
-    await service._poll_for_authorization(user_id, PHONE, "inst-1", "token-1")
+    await service._poll_until_authorized(user_id, PHONE, "inst-1", "token-1")
 
-    # handle_connection_established ran → status connected + welcome sent.
+    # handle_connection_established ran → status active + welcome sent.
     user = await user_repo.get_by_phone(PHONE)
-    assert user[1] == "connected"
+    assert user[1] == "active"
     assert len(bot.sent) == 1
     _phone, welcome = bot.sent[0]
     assert "היי" in welcome
 
 
-async def test_poll_for_authorization_exception_then_authorized(no_sleep):
-    """Transient exception during poll is swallowed, polling continues (324-326)."""
+async def test_poll_until_authorized_exception_then_authorized(no_sleep):
+    """Transient exception during poll is swallowed, polling continues."""
     service, _bot, user_repo, _conn, green_client = _make_service()
 
     user_id = await user_repo.create_user(PHONE, onboarding_status="pending")
+    await user_repo.update_first_name(user_id, "Dana")
 
     # First call raises, then succeed with 'authorized'.
     call_count = {"n": 0}
@@ -590,43 +600,48 @@ async def test_poll_for_authorization_exception_then_authorized(no_sleep):
 
     green_client.get_state_instance = _flaky  # type: ignore[assignment]
 
-    await service._poll_for_authorization(user_id, PHONE, "inst-1", "token-1")
+    await service._poll_until_authorized(user_id, PHONE, "inst-1", "token-1")
 
     user = await user_repo.get_by_phone(PHONE)
-    assert user[1] == "connected"
+    assert user[1] == "active"
 
 
-async def test_poll_for_authorization_times_out(no_sleep):
-    """Poll never sees 'authorized' → times out after 30 attempts (328-332).
+async def test_poll_until_authorized_times_out(no_sleep):
+    """Poll never sees 'authorized' → times out, user remains pending.
 
-    On timeout, sends the OTP_TIMED_OUT message telling the user to reply
-    'קוד' for a fresh code. User remains pending so resend still works.
+    If the instance became ready (notAuthorized) and OTP was sent, but the
+    user never authorized, the user remains ``pending`` so they can retry
+    via 'קוד'. The timeout message tells them to reply 'קוד' for a fresh code.
     """
     service, bot, user_repo, _conn, green_client = _make_service()
 
     user_id = await user_repo.create_user(PHONE, onboarding_status="pending")
+    await user_repo.update_first_name(user_id, "Dana")
 
-    # Always returns a non-authorized state.
+    # Always returns notAuthorized (instance ready, OTP sent, but never authorized).
     green_client.set_state_sequence(["notAuthorized"] * 30)
 
-    await service._poll_for_authorization(user_id, PHONE, "inst-1", "token-1")
+    await service._poll_until_authorized(user_id, PHONE, "inst-1", "token-1")
 
     # No welcome sent — onboarding not completed by the poll.
     user = await user_repo.get_by_phone(PHONE)
     assert user[1] == "pending"
-    # Timeout message sent.
-    assert len(bot.sent) == 1
-    _phone, msg = bot.sent[0]
+    # OTP + timeout message sent.
+    assert len(bot.sent) == 2
+    _phone, otp_msg = bot.sent[0]
+    assert "הקוד שלך" in otp_msg
+    _phone, msg = bot.sent[1]
     assert _phone == PHONE
     assert "לא התחברת בזמן" in msg
     assert "קוד" in msg
 
 
 async def test_poll_timeout_user_remains_pending_and_resend_works(no_sleep):
-    """After timeout, user is still pending and replying 'קוד' issues a fresh OTP."""
+    """After timeout (instance ready, OTP sent), user remains pending and 'קוד' works."""
     service, bot, user_repo, conn_repo, green_client = _make_service()
 
     user_id = await user_repo.create_user(PHONE, onboarding_status="pending")
+    await user_repo.update_first_name(user_id, "Dana")
 
     # Store a connection row so _resend_otp can find it.
     from echo_v2.persistence.whatsapp_connections import StoredConnection
@@ -645,11 +660,11 @@ async def test_poll_timeout_user_remains_pending_and_resend_works(no_sleep):
     )
     await conn_repo.save(conn)
 
-    # Poll times out.
+    # Poll times out (instance ready, OTP sent, but user didn't authorize).
     green_client.set_state_sequence(["notAuthorized"] * 30)
-    await service._poll_for_authorization(user_id, PHONE, "inst-1", "token-1")
+    await service._poll_until_authorized(user_id, PHONE, "inst-1", "token-1")
 
-    # User remains pending.
+    # User remains pending (can retry via 'קוד').
     user = await user_repo.get_by_phone(PHONE)
     assert user[1] == "pending"
 
@@ -670,6 +685,7 @@ async def test_poll_timeout_send_failure_does_not_crash(no_sleep):
     service, bot, user_repo, _conn, green_client = _make_service()
 
     user_id = await user_repo.create_user(PHONE, onboarding_status="pending")
+    await user_repo.update_first_name(user_id, "Dana")
 
     green_client.set_state_sequence(["notAuthorized"] * 30)
 
@@ -684,54 +700,66 @@ async def test_poll_timeout_send_failure_does_not_crash(no_sleep):
     bot.send_text = _failing_send  # type: ignore[assignment]
 
     # Should not raise.
-    await service._poll_for_authorization(user_id, PHONE, "inst-1", "token-1")
+    await service._poll_until_authorized(user_id, PHONE, "inst-1", "token-1")
 
     # The timeout send was attempted.
     assert call_count["n"] >= 1
-    # User remains pending.
+    # User remains pending (instance was ready, OTP sent, but not authorized).
     user = await user_repo.get_by_phone(PHONE)
     assert user[1] == "pending"
 
 
-# --- _wait_for_instance_ready: exception branch -----------------------------
+async def test_poll_sends_otp_once_on_not_authorized(no_sleep):
+    """OTP is sent exactly once when state reaches 'notAuthorized'."""
+    service, _bot, _user_repo, _conn, green_client = _make_service()
 
+    user_id = await _ensure_user(service)
 
-async def test_wait_for_instance_ready_handles_exception():
-    """getStateInstance raising during readiness poll is logged (375-377)."""
-    green_client = FakeGreenClient()
-    green_client.get_state_should_fail = True
-    service, _bot, _user_repo, _conn, green_client = _make_service(
-        green_client=green_client
+    # notAuthorized multiple times, then authorized.
+    green_client.set_state_sequence(
+        ["notAuthorized", "notAuthorized", "notAuthorized", "authorized"]
     )
 
-    ready = await service._wait_for_instance_ready("inst-1", "token-1")
-    assert ready is False
+    await service._poll_until_authorized(user_id, PHONE, "inst-1", "token-1")
+
+    # OTP requested exactly once despite multiple notAuthorized states.
+    assert len(green_client.otp_calls) == 1
+
+
+async def _ensure_user(service: OnboardingService) -> str:
+    """Create a pending user with a name for poll tests."""
+    user_repo = service._user_repo  # type: ignore[attr-defined]
+    user_id = await user_repo.create_user(PHONE, first_name="Dana")
+    await user_repo.update_first_name(user_id, "Dana")
+    return user_id
 
 
 # --- handle_resend_request: invalid phone / unknown / not pending -----------
 
 
 async def test_resend_request_invalid_phone():
-    """Invalid phone → returns silently (line 390)."""
+    """Invalid phone → returns silently."""
     service, bot, _user_repo, _conn, green_client = _make_service()
 
-    await service.handle_resend_request("not-a-phone")
+    handled = await service.handle_resend_request("not-a-phone")
 
+    assert handled is False
     assert len(green_client.otp_calls) == 0
     assert len(bot.sent) == 0
 
 
 async def test_resend_request_unknown_user():
-    """Unknown user → returns silently (line 394)."""
+    """Unknown user → returns False."""
     service, bot, _user_repo, _conn, green_client = _make_service()
 
-    await service.handle_resend_request(PHONE)
+    handled = await service.handle_resend_request(PHONE)
 
+    assert handled is False
     assert len(green_client.otp_calls) == 0
     assert len(bot.sent) == 0
 
 
-async def test_resend_request_not_pending_no_connection():
+async def test_resend_request_no_connection():
     """Known user with no connection row → returns False, no OTP."""
     service, bot, user_repo, _conn, green_client = _make_service()
 
@@ -780,8 +808,8 @@ async def test_resend_request_active_user_notAuthorized_issues_otp():
     assert "הקוד שלך" in msg
 
 
-async def test_resend_request_active_user_authorized_no_otp():
-    """Active user, Green says authorized → 'already connected' message, no OTP, DB updated."""
+async def test_resend_request_pending_user_authorized_completes_active():
+    """Stale DB (pending), Green says authorized → 'already connected', DB → active."""
     from echo_v2.persistence.whatsapp_connections import StoredConnection
     from echo_v2.ports.whatsapp import (
         ConnectionRef,
@@ -812,9 +840,9 @@ async def test_resend_request_active_user_authorized_no_otp():
     assert len(bot.sent) == 1
     _phone, msg = bot.sent[0]
     assert "כבר מחובר" in msg
-    # DB updated from pending → connected.
+    # DB updated from pending → active.
     user = await user_repo.get_by_phone(PHONE)
-    assert user[1] == "connected"
+    assert user[1] == "active"
 
 
 async def test_resend_request_failed_user_issues_otp():
@@ -860,26 +888,11 @@ async def test_resend_request_returns_false_for_unknown_user():
     assert len(green_client.otp_calls) == 0
 
 
-# --- handle_connection_established: already connected/active ---------------
-
-
-async def test_connection_established_already_connected_skips_welcome():
-    """Already-connected user → welcome skipped (lines 417-422)."""
-    service, bot, user_repo, _conn, _green_client = _make_service()
-
-    user_id = await user_repo.create_user(PHONE, onboarding_status="connected")
-    await user_repo.update_onboarding_status(user_id, "connected")
-
-    await service.handle_connection_established(user_id, PHONE)
-
-    # No welcome message sent.
-    assert len(bot.sent) == 0
-    user = await user_repo.get_by_phone(PHONE)
-    assert user[1] == "connected"
+# --- handle_connection_established: already active -------------------------
 
 
 async def test_connection_established_already_active_skips_welcome():
-    """Already-active user → welcome skipped (lines 417-422)."""
+    """Already-active user → welcome skipped."""
     service, bot, user_repo, _conn, _green_client = _make_service()
 
     user_id = await user_repo.create_user(
@@ -896,7 +909,7 @@ async def test_connection_established_already_active_skips_welcome():
 
 
 async def test_connection_established_by_id_no_phone_lookup():
-    """User repo without get_phone_by_id → _lookup_phone None → return (439-447)."""
+    """User repo without get_phone_by_id → _lookup_phone None → return."""
     user_repo = FakeUserRepoNoPhoneLookup()
     service, bot, _user_repo, _conn, _green_client = _make_service(
         user_repo=user_repo
@@ -929,19 +942,6 @@ async def test_disconnect_notification_active_user():
     assert _phone == PHONE
     assert "התנתק" in msg
     assert "קוד" in msg
-
-
-async def test_disconnect_notification_connected_user():
-    """Connected user → disconnect notification sent."""
-    service, bot, user_repo, _conn, _green_client = _make_service()
-
-    user_id = await user_repo.create_user(PHONE, onboarding_status="connected")
-    await user_repo.update_onboarding_status(user_id, "connected")
-
-    await service.handle_disconnect_notification(user_id)
-
-    assert len(bot.sent) == 1
-    assert "התנתק" in bot.sent[0][1]
 
 
 async def test_disconnect_notification_pending_user_suppressed():
@@ -995,11 +995,11 @@ async def test_disconnect_notification_send_failure_logged():
     await service.handle_disconnect_notification(user_id)
 
 
-# --- handle_name_response: invalid phone / unknown / empty name -------------
+# --- handle_name_response: invalid phone / unknown / empty name ------------
 
 
 async def test_name_response_invalid_phone():
-    """Invalid phone → returns False (line 459)."""
+    """Invalid phone → returns False."""
     service, _bot, _user_repo, _conn, _green_client = _make_service()
 
     handled = await service.handle_name_response("not-a-phone", "Dana")
@@ -1007,7 +1007,7 @@ async def test_name_response_invalid_phone():
 
 
 async def test_name_response_unknown_user():
-    """Unknown user → returns False (line 463)."""
+    """Unknown user → returns False."""
     service, _bot, _user_repo, _conn, _green_client = _make_service()
 
     handled = await service.handle_name_response(PHONE, "Dana")
@@ -1015,11 +1015,10 @@ async def test_name_response_unknown_user():
 
 
 async def test_name_response_empty_name():
-    """Blank name → returns False (line 470)."""
+    """Blank name → returns False."""
     service, _bot, user_repo, _conn, _green_client = _make_service()
 
-    user_id = await user_repo.create_user(PHONE, onboarding_status="connected")
-    await user_repo.update_onboarding_status(user_id, "connected")
+    await user_repo.create_user(PHONE, onboarding_status="pending")
 
     handled = await service.handle_name_response(PHONE, "   ")
     assert handled is False
@@ -1029,7 +1028,7 @@ async def test_name_response_empty_name():
 
 
 async def test_is_onboarding_invalid_phone():
-    """Invalid phone → returns False (line 486)."""
+    """Invalid phone → returns False."""
     service, _bot, _user_repo, _conn, _green_client = _make_service()
 
     assert await service.is_onboarding("not-a-phone") is False
@@ -1039,29 +1038,29 @@ async def test_is_onboarding_invalid_phone():
 
 
 async def test_resend_otp_no_connection():
-    """Pending user with no stored connection → returns silently (497-498)."""
+    """Pending user with no stored connection → returns False, no OTP."""
     service, bot, user_repo, _conn, green_client = _make_service()
 
     user_id = await user_repo.create_user(PHONE, onboarding_status="pending")
     await user_repo.update_onboarding_status(user_id, "pending")
 
-    await service.handle_resend_request(PHONE)
+    handled = await service.handle_resend_request(PHONE)
 
+    assert handled is False
     assert len(green_client.otp_calls) == 0
     # No OTP message sent because no connection exists.
     assert len(bot.sent) == 0
 
 
 async def test_resend_otp_get_code_fails():
-    """getAuthorizationCode failing during resend → error message (508-514)."""
+    """getAuthorizationCode failing during resend → error message."""
     green_client = FakeGreenClient(otp_code="87654321")
     service, bot, _user_repo, _conn, green_client = _make_service(
         green_client=green_client
     )
 
-    # Start onboarding to create a connection record (succeeds, user pending).
-    await service.start_onboarding(PHONE)
-    import asyncio
+    # Full flow: consent → name → provisioning (OTP sent).
+    await _start_and_name(service)
     await asyncio.sleep(0.2)
     assert len(green_client.otp_calls) == 1
 

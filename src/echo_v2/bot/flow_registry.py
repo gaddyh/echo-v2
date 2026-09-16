@@ -8,8 +8,8 @@ through to the fallback handler.
 Two flows are checked:
 
 1. **Onboarding flow** — if the user is in the onboarding state
-   (pending or connected), the :class:`OnboardingService` handles the
-   event (e.g. name response after connection).
+   (``pending``), the :class:`OnboardingService` handles the event
+   (e.g. name response before provisioning).
 
 2. **Scheduling flow** — if the user has an active scheduling context
    (not IDLE), the :class:`SchedulingFlowService` handles the event

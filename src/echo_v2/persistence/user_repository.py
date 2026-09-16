@@ -116,14 +116,19 @@ class PostgresUserRepository:
         user_id: str,
         first_name: str,
     ) -> None:
-        """Update the user's first_name and set onboarding_status='active'."""
+        """Update the user's first_name. Does NOT change onboarding_status.
+
+        Onboarding status transitions (pending → active) are owned by
+        the OnboardingService, not this method. Previously this method
+        also set onboarding_status='active', but that conflated name
+        collection with authorization completion.
+        """
         async with self._session_factory() as session:
             stmt = (
                 update(UserRow)
                 .where(UserRow.id == user_id)
                 .values(
                     first_name=first_name,
-                    onboarding_status="active",
                     updated_at=datetime.now(timezone.utc),
                 )
             )

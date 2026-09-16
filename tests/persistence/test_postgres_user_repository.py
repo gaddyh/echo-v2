@@ -126,14 +126,22 @@ async def test_update_onboarding_status_updates_status(user_repo):
 # ---------------------------------------------------------------------------
 
 
-async def test_update_first_name_updates_name_and_status(user_repo):
-    """update_first_name sets first_name and onboarding_status='active'."""
+async def test_update_first_name_updates_name_only(user_repo):
+    """update_first_name sets first_name without changing onboarding_status.
+
+    Onboarding status transitions (pending → active) are owned by the
+    OnboardingService, not by update_first_name. Previously this method
+    also set onboarding_status='active', but that conflated name
+    collection with authorization completion.
+    """
     user_id = await user_repo.create_user(PHONE)
+    # Default status is 'pending' after create_user.
     await user_repo.update_first_name(user_id, "Charlie")
     result = await user_repo.get_by_phone(PHONE)
     assert result is not None
     assert result[2] == "Charlie"
-    assert result[1] == "active"
+    # Status unchanged — still 'pending' (not 'active').
+    assert result[1] == "pending"
 
 
 # ---------------------------------------------------------------------------
