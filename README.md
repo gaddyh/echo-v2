@@ -177,6 +177,8 @@ When `LANGSMITH_TRACING=true`:
 
 ## Architecture
 
+For the full system design — subsystem boundaries, data flows, design decisions, and error handling per subsystem — see [ARCHITECTURE.md](ARCHITECTURE.md). The tree below is a quick module map.
+
 ```
 src/echo_v2/
 ├── app/
