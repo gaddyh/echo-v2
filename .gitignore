@@ -28,3 +28,6 @@ htmlcov/
 
 # Evaluation run results (per-run JSON + Markdown)
 tests/evaluation/results/
+
+# Local audio recordings
+*.opus
