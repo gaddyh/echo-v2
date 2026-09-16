@@ -44,6 +44,7 @@ def _make_service(
     scheduling_service=None,
     user_phone_lookup=None,
     chat_name_lookup=None,
+    token_service=None,
 ) -> tuple[
     WaitingForMeActionService,
     InMemoryWaitingForMeActiveRepository,
@@ -66,6 +67,7 @@ def _make_service(
         scheduling_service=scheduling_service,
         user_phone_lookup=user_phone_lookup,
         chat_name_lookup=chat_name_lookup,
+        token_service=token_service,
     )
     return service, active_repo, action_repo, feedback_repo
 
@@ -831,18 +833,47 @@ async def test_snooze_schedules_reminder():
     assert created["type"] is ScheduledActionType.SEND_BOT_MESSAGE
     assert created["execute_at_utc"] == NOW + timedelta(hours=1)
     assert created["payload"]["chat_id"] == "972500000001"
-    assert "תזכורת" in created["payload"]["message"]
-    assert "דנה לוי" in created["payload"]["message"]
-    assert len(created["payload"]["buttons"]) == 3
-    titles = [b["title"] for b in created["payload"]["buttons"]]
-    assert "טופל" in titles
-    assert "נודניק עוד שעה" in titles
-    assert "לא להיום" in titles
+    # Reminder is sent as a pre-approved template (not free-text buttons).
+    template = created["payload"]["template"]
+    assert template["name"] == "snooze_reminder_v1"
+    assert template["language"] == "he"
+    assert template["body_params"] == ["דנה לוי"]
+    # No URL button token when no token_service is wired.
+    assert template["url_suffix"] is None
     # Self-validation fields for the reminder.
     assert created["payload"]["kind"] == "waiting_for_me_reminder"
     assert created["payload"]["active_id"] == active_id
     assert created["payload"]["target_version"] == 1
     assert created["payload"]["expected_snoozed_until"] == (NOW + timedelta(hours=1)).isoformat()
+
+
+async def test_snooze_schedules_reminder_with_token():
+    """When a token_service is wired, the reminder template carries a URL suffix."""
+    sched = FakeSchedulingService()
+
+    class FakeTokenService:
+        async def issue(self, _user_id: str) -> tuple[str, str]:
+            return "session-1", "raw-token-abc"
+
+    service, active_repo, _, _ = _make_service(
+        scheduling_service=sched,
+        user_phone_lookup=_phone_lookup,
+        chat_name_lookup=_chat_name_lookup,
+        token_service=FakeTokenService(),
+    )
+    active_id = await _setup_active(active_repo)
+    outcome = await service.snooze(
+        user_id=USER_ID,
+        active_id=active_id,
+        target_version=1,
+        provider_message_id="web:action-1",
+        snooze_preset="1h",
+        now_utc=NOW,
+    )
+    assert outcome == HandlingOutcome.APPLIED
+    created = sched.created[0]
+    template = created["payload"]["template"]
+    assert template["url_suffix"] == "raw-token-abc"
 
 
 async def test_snooze_without_scheduling_service_does_not_schedule():
@@ -928,7 +959,7 @@ async def test_snooze_scheduling_no_name_lookup_uses_fallback():
     )
     assert outcome == HandlingOutcome.APPLIED
     assert len(sched.created) == 1
-    assert "לקוח" in sched.created[0]["payload"]["message"]
+    assert sched.created[0]["payload"]["template"]["body_params"] == ["לקוח"]
 
 
 async def test_snooze_scheduling_no_name_uses_fallback():
@@ -952,7 +983,7 @@ async def test_snooze_scheduling_no_name_uses_fallback():
     )
     assert outcome == HandlingOutcome.APPLIED
     assert len(sched.created) == 1
-    assert "לקוח" in sched.created[0]["payload"]["message"]
+    assert sched.created[0]["payload"]["template"]["body_params"] == ["לקוח"]
 
 
 # --- snooze reminder self-validation ----------------------------------------

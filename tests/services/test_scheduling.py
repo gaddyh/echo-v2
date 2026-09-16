@@ -346,11 +346,28 @@ class FakeBot:
     def __init__(self, *, fail_with: Exception | None = None) -> None:
         self.fail_with = fail_with
         self.sent: list[tuple[str, str]] = []
+        self.template_sends: list[tuple[str, str, str, list[str], str | None]] = []
 
     async def send_text(self, user_phone: str, text: str) -> None:
         self.sent.append((user_phone, text))
         if self.fail_with is not None:
             raise self.fail_with
+
+    async def send_template(
+        self,
+        user_phone: str,
+        template_name: str,
+        language: str,
+        body_params: list[str],
+        *,
+        url_suffix: str | None = None,
+    ) -> str:
+        self.template_sends.append(
+            (user_phone, template_name, language, body_params, url_suffix)
+        )
+        if self.fail_with is not None:
+            raise self.fail_with
+        return "wamid.TEMPLATE"
 
 
 def _make_bot_service(
@@ -533,6 +550,85 @@ async def test_bot_send_missing_message_fails():
 
     with pytest.raises(PermanentError, match="missing message"):
         await service.execute(action)
+
+
+# --- SEND_BOT_MESSAGE with template (snooze reminders) ---------------------
+
+
+async def test_bot_send_with_template_succeeds():
+    """SEND_BOT_MESSAGE with a template payload sends via send_template."""
+    service, bot = _make_bot_service()
+    action = _make_bot_action(
+        payload={
+            "chat_id": "972500000001",
+            "template": {
+                "name": "snooze_reminder_v1",
+                "language": "he",
+                "body_params": ["דנה לוי"],
+                "url_suffix": "raw-token-abc",
+            },
+        },
+    )
+    await service._action_repo.save(action)
+    result = await service.execute(action)
+
+    assert result == "wamid.TEMPLATE"
+    assert len(bot.template_sends) == 1
+    phone, name, lang, params, url_suffix = bot.template_sends[0]
+    assert phone == "972500000001"
+    assert name == "snooze_reminder_v1"
+    assert lang == "he"
+    assert params == ["דנה לוי"]
+    assert url_suffix == "raw-token-abc"
+
+    fetched = await service._action_repo.get("bot-act-1")
+    assert fetched.status is ScheduledActionStatus.SUCCEEDED
+    assert fetched.result == {"sent": True, "provider_message_id": "wamid.TEMPLATE"}
+
+
+async def test_bot_send_with_template_no_url_suffix_succeeds():
+    """Template send without url_suffix still succeeds."""
+    service, bot = _make_bot_service()
+    action = _make_bot_action(
+        payload={
+            "chat_id": "972500000001",
+            "template": {
+                "name": "snooze_reminder_v1",
+                "language": "he",
+                "body_params": ["דנה לוי"],
+                "url_suffix": None,
+            },
+        },
+    )
+    await service._action_repo.save(action)
+    result = await service.execute(action)
+
+    assert result == "wamid.TEMPLATE"
+    _, _, _, _, url_suffix = bot.template_sends[0]
+    assert url_suffix is None
+
+
+async def test_bot_send_with_template_failure_marks_failed():
+    """If send_template fails, the action is marked indeterminate."""
+    bot = FakeBot(fail_with=RuntimeError("template down"))
+    service, _ = _make_bot_service(bot=bot)
+    action = _make_bot_action(
+        payload={
+            "chat_id": "972500000001",
+            "template": {
+                "name": "snooze_reminder_v1",
+                "language": "he",
+                "body_params": ["דנה לוי"],
+            },
+        },
+    )
+    await service._action_repo.save(action)
+
+    with pytest.raises(IndeterminateError):
+        await service.execute(action)
+
+    fetched = await service._action_repo.get("bot-act-1")
+    assert fetched.status is ScheduledActionStatus.INDETERMINATE
 
 
 # --- SEND_BOT_MESSAGE with send_validator (snooze reminder self-validation) --

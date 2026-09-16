@@ -150,6 +150,8 @@ class WaitingForMeActionService:
         scheduling_service=None,
         user_phone_lookup=None,
         chat_name_lookup=None,
+        token_service=None,
+        reminder_template_name: str = "snooze_reminder_v1",
     ) -> None:
         self._active_repo = active_repo
         self._action_repo = action_repo
@@ -159,6 +161,8 @@ class WaitingForMeActionService:
         self._scheduling_service = scheduling_service
         self._user_phone_lookup = user_phone_lookup
         self._chat_name_lookup = chat_name_lookup
+        self._token_service = token_service
+        self._reminder_template_name = reminder_template_name
 
     @traceable(
         name="wfm.action.handled",
@@ -323,8 +327,14 @@ class WaitingForMeActionService:
         """Schedule a SEND_BOT_MESSAGE for the snooze expiry.
 
         Uses the existing scheduler infrastructure — no separate worker
-        needed. The reminder is a WhatsApp message with inline buttons
-        (טופל / נודניק עוד שעה / לא להיום).
+        needed. The reminder is sent as a pre-approved WhatsApp template
+        (``snooze_reminder_v1``) with a URL button that opens the
+        waiting-list mini-app. Templates can be delivered outside the
+        24-hour session window, unlike free-text interactive buttons.
+
+        The template body carries the contact display name as ``{{1}}``.
+        The URL button carries an opaque waiting-list session token as
+        ``{{1}}`` (issued here, resolved when the user opens the link).
 
         Failures to schedule are logged but do not fail the snooze action.
         """
@@ -346,12 +356,18 @@ class WaitingForMeActionService:
                 name = await self._chat_name_lookup(user_id, chat_id)
             display_name = name or "לקוח"
 
-            body = f"🔔 תזכורת: {display_name} עדיין ממתין למענה."
-            buttons = [
-                {"id": f"action:{active_id}:handled", "title": "טופל"},
-                {"id": f"action:{active_id}:snooze:1h", "title": "נודניק עוד שעה"},
-                {"id": f"action:{active_id}:snooze:tomorrow", "title": "לא להיום"},
-            ]
+            # Issue a waiting-list web session token for the URL button.
+            url_suffix: str | None = None
+            if self._token_service is not None:
+                try:
+                    _session_id, raw_token = await self._token_service.issue(user_id)
+                    url_suffix = raw_token
+                except Exception:
+                    _logger.exception(
+                        "snooze: failed to issue waiting-list token for "
+                        "user %s, sending reminder without URL button",
+                        user_id,
+                    )
 
             from echo_v2.domain.scheduling import ScheduledActionType
 
@@ -366,8 +382,12 @@ class WaitingForMeActionService:
                     "target_version": target_version,
                     "expected_snoozed_until": snoozed_until.isoformat(),
                     "chat_id": phone,
-                    "message": body,
-                    "buttons": buttons,
+                    "template": {
+                        "name": self._reminder_template_name,
+                        "language": "he",
+                        "body_params": [display_name],
+                        "url_suffix": url_suffix,
+                    },
                 },
             )
             _logger.info(

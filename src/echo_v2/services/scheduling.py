@@ -72,11 +72,20 @@ class _SendInput:
 
 @dataclass(frozen=True)
 class _BotSendInput:
-    """Input to a bot-channel send passed through ``runtime.execute``."""
+    """Input to a bot-channel send passed through ``runtime.execute``.
+
+    Two modes:
+    * Free-text interactive send (default): ``message`` + optional
+      ``buttons``.
+    * Template send: ``template`` set to a dict with ``name``, ``language``,
+      ``body_params``, and optional ``url_suffix``. Used by the snooze
+      reminder so it can be delivered outside the 24-hour session window.
+    """
 
     chat_id: str
     message: str
     buttons: list[dict] | None = None
+    template: dict[str, Any] | None = None
 
 
 class SchedulingService:
@@ -285,29 +294,38 @@ class SchedulingService:
             raise PermanentError(error)
 
         chat_id = action.payload.get("chat_id", "")
-        message = action.payload.get("message", "")
-        buttons = action.payload.get("buttons")
-
         if not chat_id:
             error = f"action {action.id} payload missing chat_id"
             await self._action_repo.mark_failed(action.id, error)
             raise PermanentError(error)
 
-        if buttons and not message:
-            error = f"action {action.id} payload missing message for buttons"
-            await self._action_repo.mark_failed(action.id, error)
-            raise PermanentError(error)
+        template = action.payload.get("template")
+        if template is not None:
+            # Template send (e.g. snooze reminder). No free-text validation —
+            # the template is pre-approved by WhatsApp and can be delivered
+            # outside the 24-hour session window.
+            send_input = _BotSendInput(
+                chat_id=chat_id,
+                message="",
+                template=template,
+            )
+        else:
+            message = action.payload.get("message", "")
+            buttons = action.payload.get("buttons")
+            if buttons and not message:
+                error = f"action {action.id} payload missing message for buttons"
+                await self._action_repo.mark_failed(action.id, error)
+                raise PermanentError(error)
+            if not buttons and not message:
+                error = f"action {action.id} payload missing message"
+                await self._action_repo.mark_failed(action.id, error)
+                raise PermanentError(error)
+            send_input = _BotSendInput(
+                chat_id=chat_id,
+                message=message,
+                buttons=buttons,
+            )
 
-        if not buttons and not message:
-            error = f"action {action.id} payload missing message"
-            await self._action_repo.mark_failed(action.id, error)
-            raise PermanentError(error)
-
-        send_input = _BotSendInput(
-            chat_id=chat_id,
-            message=message,
-            buttons=buttons,
-        )
         idempotency_key = f"bot:send:{action.user_id}:{action.id}"
         context = RunContext(operation_name="scheduled_bot_send")
 
@@ -344,7 +362,24 @@ class SchedulingService:
         )
 
     async def _bot_send_operation(self, inp: _BotSendInput) -> str:
-        """The actual bot send, called by ``runtime.execute``."""
+        """The actual bot send, called by ``runtime.execute``.
+
+        Three modes:
+        * ``template`` set → send a pre-approved WhatsApp template (e.g.
+          the snooze reminder). Can be delivered outside the 24-hour
+          session window.
+        * ``buttons`` set → free-text interactive button message.
+        * Neither → plain free-text message.
+        """
+        if inp.template is not None:
+            msg_id = await self._bot_channel.send_template(
+                inp.chat_id,
+                inp.template["name"],
+                inp.template["language"],
+                inp.template["body_params"],
+                url_suffix=inp.template.get("url_suffix"),
+            )
+            return msg_id or "bot_sent"
         if inp.buttons:
             msg_id = await self._bot_channel.send_buttons(
                 inp.chat_id,

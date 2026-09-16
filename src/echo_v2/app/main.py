@@ -359,6 +359,10 @@ def create_app() -> FastAPI:
         scheduling_service=scheduling_service,
         user_phone_lookup=user_phone_lookup,
         chat_name_lookup=chat_name_lookup,
+        token_service=token_service,
+        reminder_template_name=os.environ.get(
+            "SNOOZE_REMINDER_TEMPLATE_NAME", "snooze_reminder_v1"
+        ),
     )
     feedback_service = WaitingForMeFeedbackService(
         feedback_repo=repos.wfm_feedback,
