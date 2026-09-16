@@ -5,6 +5,7 @@ schedule-message action (WaitingListService.schedule_send) so they
 never disagree on preset semantics.
 
 Presets:
+* ``now`` → immediately (now)
 * ``10m`` → 10 minutes from now
 * ``1h`` → 1 hour from now
 * ``3h`` → 3 hours from now
@@ -37,7 +38,9 @@ PRESET_HOURS: dict[str, int] = {
 }
 
 # Relative-time presets (offset from now).
+# "now" is a zero-offset — the message is sent immediately.
 PRESET_RELATIVE: dict[str, timedelta] = {
+    "now": timedelta(0),
     "10m": timedelta(minutes=10),
     "1h": timedelta(hours=1),
     "3h": timedelta(hours=3),

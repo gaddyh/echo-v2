@@ -466,7 +466,7 @@ body {
     <button class="send-template" data-template="תודה, מטפל בזה">תודה, מטפל בזה</button>
   </div>
   <textarea id="send-message" placeholder="מה לשלוח?" maxlength="1000"></textarea>
-  <button class="overlay-option" data-send-preset="10m">עוד 10 דקות</button>
+  <button class="overlay-option" data-send-preset="now">עכשיו</button>
   <button class="overlay-option" data-send-preset="1h">עוד שעה</button>
   <button class="overlay-option" data-send-preset="3h">עוד 3 שעות</button>
   <button class="overlay-option" data-send-preset="tomorrow">מחר בבוקר</button>

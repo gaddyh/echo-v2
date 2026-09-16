@@ -74,7 +74,7 @@ class SendRequest(BaseModel):
     request_id: UUID = Field(..., description="Client-generated UUID for idempotency")
     message: str = Field(..., min_length=1, max_length=1000, description="Message body")
     send_preset: Literal[
-        "10m", "1h", "3h", "morning", "afternoon", "evening", "tomorrow"
+        "now", "10m", "1h", "3h", "morning", "afternoon", "evening", "tomorrow"
     ] | None = Field(None, description="Time preset for scheduling")
     send_at: datetime | None = Field(
         None, description="ISO 8601 offset-aware datetime for custom scheduling"
