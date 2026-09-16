@@ -48,7 +48,6 @@ def build_router(
     webhook_secret: str,
     adapter: BotEventAdapter | None = None,
     inbox: WebhookInbox | None = None,
-    digest_reply_service=None,
     onboarding_service=None,
     feedback_handler=None,
 ) -> APIRouter:
@@ -62,9 +61,6 @@ def build_router(
         inbox: Persistent webhook inbox (defaults to in-memory). Tracks
             processing/processed/failed so a mid-processing crash doesn't
             lose a provider retry.
-        digest_reply_service: Optional :class:`DigestReplyService` pre-handler.
-            If it handles the event (returns ``True``), the flow service is
-            skipped. Used for the "הצג הכול" button reply.
         onboarding_service: Optional :class:`OnboardingService`. If set,
             unknown users are routed to onboarding instead of being rejected.
             Also handles the name-collection step after connection.
@@ -88,12 +84,6 @@ def build_router(
         # Pre-handler: feedback flyloop (template button, list, feedback buttons).
         if feedback_handler is not None:
             handled = await feedback_handler.handle(event)
-            if handled:
-                return
-
-        # Pre-handler: digest reply ("הצג הכול" button).
-        if digest_reply_service is not None:
-            handled = await digest_reply_service.handle(event)
             if handled:
                 return
 

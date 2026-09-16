@@ -340,26 +340,6 @@ def test_feedback_handler_does_not_intercept_when_not_handled():
         assert len(flow.handled) == 1
 
 
-def test_digest_reply_handler_intercepts_dispatch():
-    """When digest_reply_service handles the event, flow service is skipped."""
-    flow = RecordingFlowService()
-    digest_reply = StubHandler(handles=True)
-    app = FastAPI()
-    app.include_router(
-        build_router(
-            flow_service=flow,
-            webhook_secret=WEBHOOK_SECRET,
-            digest_reply_service=digest_reply,
-        )
-    )
-    with TestClient(app) as c:
-        resp = c.post("/webhooks/bot/dialog360", json=_text_payload(), headers=AUTH_HEADER)
-        assert resp.status_code == 200
-        assert resp.json()["status"] == "received"
-        assert len(digest_reply.handled) == 1
-        assert len(flow.handled) == 0
-
-
 def test_onboarding_intercepts_known_onboarding_user():
     """When onboarding_service.is_onboarding returns True, flow is skipped."""
     flow = RecordingFlowService()

@@ -260,13 +260,11 @@ The digest worker sends a daily per-user summary of actionable waiting chats via
 1. **Poll.** `DigestWorker.run_once` gets `now_utc`, calls `user_provider()` to list `(user_id, phone, tz_name, first_name)`.
 2. **Per-user window check.** Convert `now_utc` to the user's local timezone (`ZoneInfo(tz_name or DEFAULT_TZ)`, default `Asia/Jerusalem`). Check `08:00 <= hour < 11:00`.
 3. **Claim-before-query.** `digest = await digest_repo.claim_or_get(user_id, local_date)`. If a row already exists, return `None` and skip (already processed today). If not, a `PROCESSING` row is inserted.
-4. **Query actionable active chats.** `DigestWorker._get_current_active` lists all `WaitingForMeActive` for the user and keeps only those where `target_version == chats.activity_version`, not acknowledged, not snoozed, and not muted.
-5. **Empty digest.** If no active states, update the row to `EMPTY` and stop.
-6. **Build items.** For each active chat, resolve contact name (priority: `chats.chat_name` → `contacts.display_name` → message `chat_name`/`sender_name` → phone from `chat_id`) and get the latest inbound message text.
-7. **Format template params.** `DigestFormatter.format(items, first_name=name)` returns `first_name` and `count` as strings. The template body itself is a WhatsApp business template and contains no conversation content.
-8. **Issue optional waiting-list token.** If a `token_service` is configured, it issues a web session token used as a `url_suffix` for the template button.
-9. **Send.** `bot.send_template(phone, template_name, "he", [params.first_name, params.count], url_suffix=url_suffix)`.
-10. **On-demand digest.** `send_digest_for_user` skips the time window and the daily claim; it queries active items and sends immediately.
+4. **Count actionable items.** `WaitingListQueryService.count_actionable(user_id)` applies the same actionable filter as the mini-app (version-matched, not acknowledged, not snoozed, not muted) but returns only the count.
+5. **Empty digest.** If count is 0, update the row to `EMPTY` and stop.
+6. **Issue optional waiting-list token.** If a `token_service` is configured, it issues a web session token used as a `url_suffix` for the template button.
+7. **Send.** `bot.send_template(phone, template_name, "he", [first_name, str(count)], url_suffix=url_suffix)`.
+8. **On-demand digest.** `send_digest_for_user` skips the time window and the daily claim; it counts active items and sends immediately.
 
 ### Design decisions
 

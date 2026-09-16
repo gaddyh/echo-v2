@@ -208,8 +208,6 @@ src/echo_v2/
 │   ├── transcription.py              # Transcriber protocol + audio download/convert/transcribe pipeline
 │   ├── transcription_factory.py      # Builds Transcriber from env (Modal or None)
 │   ├── digest_worker.py              # Morning digest sender (scheduled + on-demand)
-│   ├── digest_formatter.py           # Formats digest template parameters
-│   ├── digest_reply.py              # "הצג הכול" full-list reply handler
 │   ├── feedback_handler.py           # Feedback flyloop (dismiss, undo, miss report)
 │   ├── feedback_service.py           # Feedback actions, mutes, snooze validation
 │   ├── time_parser.py                # LLM + regex time expression parser
