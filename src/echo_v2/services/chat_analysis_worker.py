@@ -219,7 +219,23 @@ class ChatAnalysisProcessor:
 
         # Lazy audio transcription: if a transcriber is available, transcribe
         # any audio messages that have a download URL but no text yet.
-        if self._transcriber is not None:
+        audio_count = sum(1 for m in messages if m.message_type == "audio")
+        audio_with_url = sum(
+            1 for m in messages
+            if m.message_type == "audio" and m.audio_download_url is not None
+        )
+        _logger.info(
+            "process chat %s/%s version=%d: loaded %d messages, "
+            "transcriber=%s, audio=%d (with_url=%d)",
+            user_id,
+            chat_id,
+            target_version,
+            len(messages),
+            type(self._transcriber).__name__ if self._transcriber else "None",
+            audio_count,
+            audio_with_url,
+        )
+        if self._transcriber is not None and audio_with_url > 0:
             messages = await self._transcribe_audio_messages(messages)
 
         conversation = ConversationInput(
@@ -275,11 +291,25 @@ class ChatAnalysisProcessor:
         """
         result_messages = []
         for msg in messages:
+            if msg.message_type == "audio":
+                _logger.info(
+                    "audio message %s: text=%s download_url=%s file_name=%s mime=%s",
+                    msg.id,
+                    "set" if msg.text else "None",
+                    "set" if msg.audio_download_url else "None",
+                    msg.audio_file_name,
+                    msg.audio_mime_type,
+                )
             if (
                 msg.message_type == "audio"
                 and msg.text is None
                 and msg.audio_download_url is not None
             ):
+                _logger.info(
+                    "starting transcription for message %s url=%s",
+                    msg.id,
+                    msg.audio_download_url,
+                )
                 try:
                     transcript = await handle_direct_audio_download_url(
                         transcriber=self._transcriber,

@@ -253,6 +253,10 @@ def create_app() -> FastAPI:
     from echo_v2.services.waiting_for_me_analyzer import LLMWaitingForMeAnalyzer
 
     transcriber = build_transcriber()
+    _logger.info(
+        "transcriber built: %s",
+        type(transcriber).__name__ if transcriber else "None",
+    )
 
     analyzer = LLMWaitingForMeAnalyzer(
         client=openai_client,
