@@ -282,8 +282,9 @@ class StubOnboarding:
         self.name_responses.append((phone, text))
         return True
 
-    async def handle_resend_request(self, phone: str) -> None:
+    async def handle_resend_request(self, phone: str) -> bool:
         self.resend_requests.append(phone)
+        return True
 
     async def handle_unknown_event(self, event: BotEvent) -> None:
         self.unknown_events.append(event)
@@ -410,17 +411,10 @@ def test_onboarding_routes_unknown_user():
 
 
 def test_onboarding_resend_code_request():
-    """When an onboarding user sends 'קוד', the resend path is triggered."""
+    """When a known user sends 'קוד', the resend path is triggered (before name response)."""
     flow = RecordingFlowService()
     flow._user_resolver = StubUserResolver(user_exists=True)
     onboarding = StubOnboarding(is_onboarding=True)
-    # Make handle_name_response return False so the 'קוד' path is reached.
-    onboarding.handle_name_response = lambda phone, text: False  # type: ignore
-    # Need async wrapper.
-    async def _false_name_response(phone, text):
-        onboarding.name_responses.append((phone, text))
-        return False
-    onboarding.handle_name_response = _false_name_response  # type: ignore
 
     app = FastAPI()
     app.include_router(
@@ -439,6 +433,8 @@ def test_onboarding_resend_code_request():
         assert resp.status_code == 200
         assert resp.json()["status"] == "received"
         assert len(onboarding.resend_requests) == 1
+        # Name response NOT called — קוד is intercepted first.
+        assert len(onboarding.name_responses) == 0
         assert len(flow.handled) == 0
 
 

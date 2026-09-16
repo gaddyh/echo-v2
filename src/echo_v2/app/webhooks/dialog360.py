@@ -100,17 +100,28 @@ def build_router(
         # Onboarding pre-handler: if the user is unknown or in onboarding,
         # route to the onboarding service instead of the flow service.
         if onboarding_service is not None:
+            # Check 'קוד' (exact match) first for ANY known user — before
+            # handle_name_response (which would eat it as a name) and before
+            # the flow service (so active/failed users can re-pair too).
+            if (
+                event.type is BotEventType.TEXT
+                and event.text
+                and event.text.strip() == "קוד"
+            ):
+                handled = await onboarding_service.handle_resend_request(
+                    event.user_phone
+                )
+                if handled:
+                    return
+
             is_onboarding = await onboarding_service.is_onboarding(event.user_phone)
             if is_onboarding:
-                # Handle name response (after connection) or resend request.
+                # Handle name response (after connection).
                 if event.type is BotEventType.TEXT and event.text:
                     handled = await onboarding_service.handle_name_response(
                         event.user_phone, event.text
                     )
                     if handled:
-                        return
-                    if event.text.strip() == "קוד":
-                        await onboarding_service.handle_resend_request(event.user_phone)
                         return
                 return
 

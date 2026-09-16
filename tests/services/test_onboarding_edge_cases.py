@@ -728,17 +728,133 @@ async def test_resend_request_unknown_user():
     assert len(bot.sent) == 0
 
 
-async def test_resend_request_not_pending():
-    """Non-pending user → returns silently (line 397)."""
+async def test_resend_request_not_pending_no_connection():
+    """Known user with no connection row → returns False, no OTP."""
     service, bot, user_repo, _conn, green_client = _make_service()
 
     user_id = await user_repo.create_user(PHONE, onboarding_status="active")
     await user_repo.update_onboarding_status(user_id, "active")
 
-    await service.handle_resend_request(PHONE)
+    handled = await service.handle_resend_request(PHONE)
 
+    assert handled is False
     assert len(green_client.otp_calls) == 0
     assert len(bot.sent) == 0
+
+
+async def test_resend_request_active_user_notAuthorized_issues_otp():
+    """Active user with connection, Green says notAuthorized → fresh OTP issued."""
+    from echo_v2.persistence.whatsapp_connections import StoredConnection
+    from echo_v2.ports.whatsapp import (
+        ConnectionRef,
+        ConnectionStatus,
+        ProviderCredentials,
+    )
+
+    service, bot, user_repo, conn_repo, green_client = _make_service()
+
+    user_id = await user_repo.create_user(PHONE, onboarding_status="active")
+    await user_repo.update_onboarding_status(user_id, "active")
+
+    conn = StoredConnection(
+        user_id=user_id,
+        ref=ConnectionRef(provider="green", provider_connection_id="inst-1"),
+        credentials=ProviderCredentials(data=b"token-1"),
+        webhook_token_hash=b"\x00" * 32,
+        status=ConnectionStatus.CONNECTED,
+    )
+    await conn_repo.save(conn)
+
+    # Green says notAuthorized (instance disconnected, needs re-pair).
+    green_client.set_state_sequence(["notAuthorized"])
+
+    handled = await service.handle_resend_request(PHONE)
+
+    assert handled is True
+    assert len(green_client.otp_calls) == 1
+    assert len(bot.sent) == 1
+    _phone, msg = bot.sent[0]
+    assert "הקוד שלך" in msg
+
+
+async def test_resend_request_active_user_authorized_no_otp():
+    """Active user, Green says authorized → 'already connected' message, no OTP, DB updated."""
+    from echo_v2.persistence.whatsapp_connections import StoredConnection
+    from echo_v2.ports.whatsapp import (
+        ConnectionRef,
+        ConnectionStatus,
+        ProviderCredentials,
+    )
+
+    service, bot, user_repo, conn_repo, green_client = _make_service()
+
+    # Stale DB: pending, but Green says authorized.
+    user_id = await user_repo.create_user(PHONE, onboarding_status="pending")
+
+    conn = StoredConnection(
+        user_id=user_id,
+        ref=ConnectionRef(provider="green", provider_connection_id="inst-1"),
+        credentials=ProviderCredentials(data=b"token-1"),
+        webhook_token_hash=b"\x00" * 32,
+        status=ConnectionStatus.PROVISIONING,
+    )
+    await conn_repo.save(conn)
+
+    green_client.set_state_sequence(["authorized"])
+
+    handled = await service.handle_resend_request(PHONE)
+
+    assert handled is True
+    assert len(green_client.otp_calls) == 0
+    assert len(bot.sent) == 1
+    _phone, msg = bot.sent[0]
+    assert "כבר מחובר" in msg
+    # DB updated from pending → connected.
+    user = await user_repo.get_by_phone(PHONE)
+    assert user[1] == "connected"
+
+
+async def test_resend_request_failed_user_issues_otp():
+    """Failed user with connection → fresh OTP issued (Green is the gate, not DB status)."""
+    from echo_v2.persistence.whatsapp_connections import StoredConnection
+    from echo_v2.ports.whatsapp import (
+        ConnectionRef,
+        ConnectionStatus,
+        ProviderCredentials,
+    )
+
+    service, bot, user_repo, conn_repo, green_client = _make_service()
+
+    user_id = await user_repo.create_user(PHONE, onboarding_status="failed")
+    await user_repo.update_onboarding_status(user_id, "failed")
+
+    conn = StoredConnection(
+        user_id=user_id,
+        ref=ConnectionRef(provider="green", provider_connection_id="inst-1"),
+        credentials=ProviderCredentials(data=b"token-1"),
+        webhook_token_hash=b"\x00" * 32,
+        status=ConnectionStatus.PROVISIONING,
+    )
+    await conn_repo.save(conn)
+
+    green_client.set_state_sequence(["notAuthorized"])
+
+    handled = await service.handle_resend_request(PHONE)
+
+    assert handled is True
+    assert len(green_client.otp_calls) == 1
+    assert len(bot.sent) == 1
+    assert "הקוד שלך" in bot.sent[0][1]
+
+
+async def test_resend_request_returns_false_for_unknown_user():
+    """Unknown user → returns False (so dispatch can fall through to intro)."""
+    service, _bot, _user_repo, _conn, green_client = _make_service()
+
+    handled = await service.handle_resend_request(PHONE)
+
+    assert handled is False
+    assert len(green_client.otp_calls) == 0
 
 
 # --- handle_connection_established: already connected/active ---------------

@@ -497,20 +497,26 @@ class OnboardingService:
 
         return False
 
-    async def handle_resend_request(self, phone: str) -> None:
-        """Handle a user sending 'קוד' to re-request the OTP."""
+    async def handle_resend_request(self, phone: str) -> bool:
+        """Handle a user sending 'קוד' to re-request the OTP.
+
+        Works for any known user — Green API is the source of truth for
+        whether an OTP is needed. If the instance is already authorized,
+        the user is told they're already connected and the DB is updated.
+
+        Returns ``True`` if handled (user known, connection found), ``False``
+        if not (unknown user, no connection row).
+        """
         normalized = self._normalize_phone(phone)
         if normalized is None:
-            return
+            return False
 
         existing = await self._user_repo.get_by_phone(normalized)
         if existing is None:
-            return
-        user_id, onboarding_status, _name = existing
-        if onboarding_status != "pending":
-            return
+            return False
+        user_id, _onboarding_status, _name = existing
 
-        await self._resend_otp(user_id, normalized)
+        return await self._resend_otp(user_id, normalized)
 
     async def handle_connection_established(
         self,
@@ -604,14 +610,51 @@ class OnboardingService:
         _user_id, onboarding_status, _name = existing
         return onboarding_status in ("pending", "connected")
 
-    async def _resend_otp(self, user_id: str, phone: str) -> None:
-        """Re-request the OTP for an existing pending onboarding."""
+    async def _resend_otp(self, user_id: str, phone: str) -> bool:
+        """Re-request the OTP for an existing connection.
+
+        Checks Green API state first: if the instance is already
+        ``authorized``, tells the user they're already connected and
+        updates the DB to ``connected`` (if stale). Otherwise issues a
+        fresh OTP.
+
+        Returns ``True`` if handled, ``False`` if no connection row.
+        """
         conn = await self._connection_repo.get_by_user(user_id)
         if conn is None:
             _logger.warning("onboarding: no connection for user %s", user_id)
-            return
+            return False
 
         api_token = conn.credentials.data.decode("utf-8")
+
+        # Check Green API state — it's the source of truth.
+        try:
+            state = await self._green_client.get_state_instance(
+                conn.ref.provider_connection_id,
+                api_token,
+            )
+        except Exception:
+            _logger.exception("onboarding: failed to check instance state")
+            state = None  # proceed to attempt OTP anyway
+
+        if state == "authorized":
+            _logger.info("onboarding: instance already authorized for %s", phone)
+            # Update DB if stale.
+            existing = await self._user_repo.get_by_phone(phone)
+            if existing is not None:
+                _uid, onboarding_status, _name = existing
+                if onboarding_status not in ("connected", "active"):
+                    await self._user_repo.update_onboarding_status(user_id, "connected")
+                    _logger.info(
+                        "onboarding: updated stale status %s → connected for %s",
+                        onboarding_status, phone,
+                    )
+            await self._bot.send_text(
+                phone,
+                "אתה כבר מחובר 👍 אין צורך בקוד חדש.",
+            )
+            return True
+
         phone_int = int(phone.lstrip("+"))
         try:
             code = await self._green_client.get_authorization_code(
@@ -625,10 +668,11 @@ class OnboardingService:
                 phone,
                 "לא הצלחתי לקבל קוד חדש. ודא שהמכשיר אינו מחובר כבר.",
             )
-            return
+            return True
 
         message = _OTP_INSTRUCTIONS.format(code=code)
         await self._bot.send_text(phone, message)
+        return True
 
     @staticmethod
     def _normalize_phone(phone: str) -> str | None:
