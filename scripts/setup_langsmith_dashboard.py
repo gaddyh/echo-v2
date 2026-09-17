@@ -160,16 +160,17 @@ def build_dashboard(section_id: str) -> None:
         # 2. Bar — analyzer runs by status (success vs error at a glance)
         {
             "title": "Analyzer Run Status",
-            "description": "wfm.analysis runs split by success/error status",
+            "description": "wfm.analysis runs split by success vs error",
             "chart_type": "bar",
             "series": [
-                {
-                    "name": "runs",
-                    "metric_definition": {"type": "count"},
-                    "filter_definition": project_filter(),
-                    "filters": {"filter": 'eq(name, "wfm.analysis")'},
-                    "group_by_definitions": [{"attribute": "status"}],
-                }
+                count_series(
+                    "success",
+                    'and(eq(name, "wfm.analysis"), eq(status, "success"))',
+                ),
+                count_series(
+                    "errors",
+                    'and(eq(name, "wfm.analysis"), eq(status, "error"))',
+                ),
             ],
         },
         # 3. Line — LLM analysis latency p50/p99
