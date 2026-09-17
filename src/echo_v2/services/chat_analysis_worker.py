@@ -276,6 +276,7 @@ class ChatAnalysisProcessor:
         return PreparedAnalysis(
             result=result,
             conversation_snapshot=conversation_snapshot,
+            conversation_input=conversation,
         )
 
     async def _transcribe_audio_messages(self, messages: list[Message]) -> list[Message]:
@@ -361,11 +362,13 @@ class ChatAnalysisWorker:
         commit_repo: AnalysisCommitRepository,
         *,
         poll_interval_seconds: float = 60.0,
+        judge: Any | None = None,
     ) -> None:
         self._chat_state_repo = chat_state_repo
         self._processor = processor
         self._commit_repo = commit_repo
         self._poll_interval = poll_interval_seconds
+        self._judge = judge
 
     async def run_once(self, *, limit: int = 20) -> bool:
         """Process all due chats once.
@@ -457,6 +460,9 @@ class ChatAnalysisWorker:
                 version_being_processed,
                 outcome.result_id,
             )
+            # Run the LLM judge and store score as LangSmith feedback.
+            if self._judge is not None and prepared.conversation_input is not None:
+                await self._run_judge(prepared)
         elif outcome.status == "stale":
             _logger.info(
                 "chat %s/%s version changed during processing (%d), "
@@ -473,3 +479,31 @@ class ChatAnalysisWorker:
             )
 
         return outcome.status
+
+    async def _run_judge(self, prepared: PreparedAnalysis) -> None:
+        """Run the LLM judge and store the score as LangSmith feedback."""
+        if prepared.conversation_input is None:
+            return
+        try:
+            judge_result = await self._judge.judge(  # type: ignore[union-attr]
+                conversation=prepared.conversation_input,
+                result=prepared.result,
+            )
+            # Attach the score as feedback to the current wfm.analysis run.
+            from langsmith.run_helpers import get_current_run_tree
+
+            run_tree = get_current_run_tree()
+            if run_tree is not None:
+                tracing_client.create_feedback(
+                    run_id=str(run_tree.id),
+                    key="judge_correctness",
+                    score=judge_result.score,
+                    comment=judge_result.explanation,
+                )
+            _logger.info(
+                "judge score=%.1f: %s",
+                judge_result.score,
+                judge_result.explanation,
+            )
+        except Exception:
+            _logger.exception("judge evaluation failed")

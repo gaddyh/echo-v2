@@ -96,12 +96,11 @@ def _build_openai_client() -> tuple[Any, AsyncOpenAI]:
         "1", "true", "yes",
     )
     if tracing_enabled:
-        # Enforce privacy: never send raw LLM inputs/outputs to LangSmith.
-        # These may contain message text, phone numbers, or other PII.
-        # The @traceable sanitizers hash IDs, but the LLM call itself
-        # captures the full prompt/completion unless we hide them.
-        os.environ.setdefault("LANGSMITH_HIDE_INPUTS", "true")
-        os.environ.setdefault("LANGSMITH_HIDE_OUTPUTS", "true")
+        # While developing observability, show all inputs/outputs in LangSmith.
+        # The @traceable sanitizers still hash IDs on the service-level traces.
+        # TODO: re-enable hiding once we're confident in what's visible.
+        os.environ.setdefault("LANGSMITH_HIDE_INPUTS", "false")
+        os.environ.setdefault("LANGSMITH_HIDE_OUTPUTS", "false")
 
         from langsmith.wrappers import wrap_openai
 
@@ -263,11 +262,18 @@ def create_app() -> FastAPI:
         max_no_outbound=20,
         transcriber=transcriber,
     )
+    from echo_v2.services.analysis_judge import AnalysisJudge
+
+    judge = AnalysisJudge(
+        client=openai_client,
+        model=os.environ.get("JUDGE_MODEL_NAME", "gpt-4.1-mini"),
+    )
     analysis_worker = ChatAnalysisWorker(
         chat_state_repo=repos.chat_state,
         processor=analysis_processor,
         commit_repo=repos.analysis_commit,
         poll_interval_seconds=float(os.environ.get("CHAT_ANALYSIS_POLL_INTERVAL", "60")),
+        judge=judge,
     )
     chat_analysis_enabled = os.environ.get("CHAT_ANALYSIS_ENABLED", "false").lower() in (
         "1",

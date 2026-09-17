@@ -165,6 +165,7 @@ class PreparedAnalysis:
 
     result: WaitingForMeResult
     conversation_snapshot: dict[str, Any]
+    conversation_input: Any | None = None  # ConversationInput for judge evaluation
 
 
 @dataclass(frozen=True)
