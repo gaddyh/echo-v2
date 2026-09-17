@@ -24,15 +24,14 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from echo_v2.persistence.orm import (
-    MessageRow,
+    ChatRow,
     ScheduledActionRow,
-    WaitingForMeResultRow,
 )
 
 __all__ = ["DEFAULT_ALERT_RULES", "AlertChecker", "AlertRule", "AlertSender"]
@@ -60,18 +59,6 @@ class AlertRule:
     check: str  # name of the check method on AlertChecker
 
 
-async def _count_since(
-    session: AsyncSession, model: type[Any], since: datetime
-) -> int:
-    """Count rows in ``model`` created since ``since``."""
-    result = await session.execute(
-        select(func.count()).select_from(model).where(
-            model.created_at >= since
-        )
-    )
-    return int(result.scalar_one())
-
-
 async def _count_status_since(
     session: AsyncSession, status: str, since: datetime
 ) -> int:
@@ -80,6 +67,28 @@ async def _count_status_since(
         select(func.count()).select_from(ScheduledActionRow).where(
             ScheduledActionRow.status == status,
             ScheduledActionRow.updated_at >= since,
+        )
+    )
+    return int(result.scalar_one())
+
+
+async def _count_overdue_chats(
+    session: AsyncSession, now: datetime, grace_minutes: int = 10
+) -> int:
+    """Count chats that are due for analysis but haven't been processed.
+
+    A chat is "overdue" if:
+    - ``next_analysis_at`` is set and past (due for analysis)
+    - ``activity_version > last_processed_version`` (not caught up)
+    - ``next_analysis_at`` is older than ``grace_minutes`` (not just waiting
+      for the poll cycle)
+    """
+    threshold = now - timedelta(minutes=grace_minutes)
+    result = await session.execute(
+        select(func.count()).select_from(ChatRow).where(
+            ChatRow.next_analysis_at.is_not(None),
+            ChatRow.next_analysis_at <= threshold,
+            ChatRow.activity_version > ChatRow.last_processed_version,
         )
     )
     return int(result.scalar_one())
@@ -109,14 +118,10 @@ async def check_bot_send_indeterminate(
 
 
 async def check_analyzer_stuck(session: AsyncSession, now: datetime) -> str | None:
-    """Messages arriving but no analysis results in the last 30 min."""
-    since = now - timedelta(minutes=30)
-    msg_count = await _count_since(session, MessageRow, since)
-    if msg_count == 0:
-        return None  # no messages — not an alert
-    result_count = await _count_since(session, WaitingForMeResultRow, since)
-    if result_count == 0:
-        return f"🔴 Analyzer stuck ({msg_count} messages, 0 results in last 30min)"
+    """Chats overdue for analysis by more than 10 minutes."""
+    count = await _count_overdue_chats(session, now, grace_minutes=10)
+    if count >= 1:
+        return f"🔴 Analyzer stuck ({count} chats overdue >10min)"
     return None
 
 
