@@ -82,6 +82,10 @@ class LLMTimeParser:
     ) -> None:
         self._client = client
         self._model = model
+        # GPT-5+ reasoning models only support the default temperature (1)
+        # and consume completion tokens for reasoning, so they need a larger
+        # budget than the 100 tokens that suffice for gpt-4.x.
+        self._is_reasoning_model = model.startswith(("gpt-5", "gpt-6", "o"))
 
     async def parse(
         self,
@@ -97,16 +101,22 @@ class LLMTimeParser:
             f"Now (UTC): {now.isoformat()}"
         )
 
+        request_kwargs: dict[str, Any] = {
+            "model": self._model,
+            "messages": [
+                {"role": "system", "content": self.SYSTEM_PROMPT},
+                {"role": "user", "content": user_msg},
+            ],
+        }
+        if self._is_reasoning_model:
+            # Default temperature only; leave room for reasoning tokens.
+            request_kwargs["max_completion_tokens"] = 1000
+        else:
+            request_kwargs["temperature"] = 0
+            request_kwargs["max_completion_tokens"] = 100
+
         try:
-            response = await self._client.chat.completions.create(
-                model=self._model,
-                messages=[
-                    {"role": "system", "content": self.SYSTEM_PROMPT},
-                    {"role": "user", "content": user_msg},
-                ],
-                temperature=0,
-                max_completion_tokens=100,
-            )
+            response = await self._client.chat.completions.create(**request_kwargs)
         except Exception as exc:
             _logger.warning("LLM time parser API error: %s", exc)
             raise TimeParseError(f"LLM time parser request failed: {exc}") from exc
