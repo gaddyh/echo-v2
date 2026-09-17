@@ -192,8 +192,9 @@ def safe_webhook_output(output: dict[str, Any]) -> dict[str, Any]:
 def safe_ingest_green_inputs(inputs: dict[str, Any]) -> dict[str, Any]:
     """Sanitize ChatEventDispatcher.dispatch inputs.
 
-    Shows meaningful message metadata (direction, kind, text length, hashed
-    IDs) without exposing raw message text, phone numbers, or chat IDs.
+    Shows meaningful message metadata (direction, kind, text, phone) for
+    debugging. NOTE: includes raw message text and chat_id (phone number)
+    per current debugging preference — revisit before production.
     """
     event = inputs.get("event")
     user_id = inputs.get("user_id")
@@ -208,12 +209,12 @@ def safe_ingest_green_inputs(inputs: dict[str, Any]) -> dict[str, Any]:
         sanitized["event_type"] = "message"
         sanitized["direction"] = event.direction.value if hasattr(event.direction, "value") else str(event.direction)
         sanitized["kind"] = event.kind.value if hasattr(event.kind, "value") else str(event.kind)
-        if event.text is not None:
-            sanitized["text_length"] = len(event.text)
-        if event.chat_id is not None:
-            sanitized["chat_id_hash"] = _hash_if_present(event.chat_id)
+        sanitized["text"] = event.text
+        sanitized["chat_id"] = event.chat_id
         if event.sender_id is not None:
-            sanitized["sender_id_hash"] = _hash_if_present(event.sender_id)
+            sanitized["sender_id"] = event.sender_id
+        if event.sender_name is not None:
+            sanitized["sender_name"] = event.sender_name
         if event.audio_download_url is not None:
             sanitized["has_audio"] = True
             sanitized["audio_mime_type"] = event.audio_mime_type
