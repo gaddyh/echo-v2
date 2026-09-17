@@ -35,6 +35,7 @@ from echo_v2.observability.sanitizers import (
     safe_webhook_inputs,
     safe_webhook_output,
 )
+from echo_v2.observability.tracing import tracing_client
 from echo_v2.ports.bot import BotEvent, BotEventAdapter, BotEventType
 from echo_v2.services.scheduling_flow import SchedulingFlowService
 
@@ -184,6 +185,7 @@ def build_router(
     @router.post("/webhooks/bot/dialog360")
     @traceable(
         name="wfm.webhook.dialog360",
+        client=tracing_client,
         process_inputs=safe_webhook_inputs,
         process_outputs=safe_webhook_output,
     )
@@ -196,6 +198,7 @@ def build_router(
     @router.post("/webhook/360dialog")
     @traceable(
         name="wfm.webhook.dialog360",
+        client=tracing_client,
         process_inputs=safe_webhook_inputs,
         process_outputs=safe_webhook_output,
     )

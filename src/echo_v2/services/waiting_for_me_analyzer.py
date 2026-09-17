@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 from langsmith import traceable
 
 from echo_v2.domain.waiting_for_me import WaitingForMeDecision, WaitingForMeResult
+from echo_v2.observability.tracing import tracing_client
 from echo_v2.services.waiting_for_me_prompts import (
     DEFAULT_PROMPT_VERSION,
     get_prompt,
@@ -197,6 +198,7 @@ class LLMWaitingForMeAnalyzer:
 
     @traceable(
         name="wfm.llm_analyze",
+        client=tracing_client,
         process_inputs=safe_analysis_inputs,
         process_outputs=safe_analysis_output,
     )

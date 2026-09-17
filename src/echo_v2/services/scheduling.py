@@ -41,6 +41,7 @@ from echo_v2.observability.sanitizers import (
     safe_bot_send_inputs,
     safe_bot_send_output,
 )
+from echo_v2.observability.tracing import tracing_client
 from echo_v2.persistence.scheduled_actions import ScheduledActionRepository
 from echo_v2.persistence.whatsapp_connections import (
     WhatsAppConnectionRepository,
@@ -244,6 +245,7 @@ class SchedulingService:
 
     @traceable(
         name="wfm.scheduling.bot_send",
+        client=tracing_client,
         process_inputs=safe_bot_send_inputs,
         process_outputs=safe_bot_send_output,
     )

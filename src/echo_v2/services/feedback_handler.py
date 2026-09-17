@@ -39,6 +39,7 @@ from echo_v2.observability.sanitizers import (
     safe_feedback_handle_inputs,
     safe_feedback_handle_output,
 )
+from echo_v2.observability.tracing import tracing_client
 from echo_v2.persistence.chat_repositories import (
     ChatStateRepository,
     MessageRepository,
@@ -144,6 +145,7 @@ class FeedbackHandler:
 
     @traceable(
         name="wfm.feedback.handle",
+        client=tracing_client,
         process_inputs=safe_feedback_handle_inputs,
         process_outputs=safe_feedback_handle_output,
     )

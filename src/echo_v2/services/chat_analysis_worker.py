@@ -47,6 +47,7 @@ from echo_v2.domain.waiting_for_me import (
     WaitingForMeDecision,
     WaitingForMeResult,
 )
+from echo_v2.observability.tracing import tracing_client
 from echo_v2.persistence.chat_repositories import (
     AnalysisCommitRepository,
     ChatStateRepository,
@@ -410,6 +411,7 @@ class ChatAnalysisWorker:
 
     @traceable(
         name="wfm.analysis",
+        client=tracing_client,
         process_inputs=safe_process_chat_inputs,
         process_outputs=safe_process_chat_output,
     )
