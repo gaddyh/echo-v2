@@ -50,8 +50,13 @@ You will receive:
 Your job: Was the analyzer's decision correct?
 
 Definitions:
-- "waiting_for_me": There IS an open request, question, or expectation \
-directed at the user. The ball is in the user's court.
+- "waiting_for_me": The next step is expected from the user. The ball is in \
+the user's court. This includes:
+  * A direct request, question, or expectation from "them" that "me" hasn't \
+addressed.
+  * A commitment "me" made ("I'll send it tomorrow", "I'll come soon") that \
+hasn't been fulfilled yet.
+  * Any open obligation where "me" needs to act next.
 - "not_waiting_for_me": No open expectation. The ball is NOT in the user's \
 court. The conversation is closed, or the other person needs to act next.
 - "uncertain": Not enough information to decide confidently.
@@ -59,8 +64,10 @@ court. The conversation is closed, or the other person needs to act next.
 Evaluate based on the full conversation, not just the last message. \
 Consider:
 - Is there an unanswered question from "them"?
-- Did "me" already respond to the last request?
+- Did "me" make a commitment that hasn't been fulfilled or acknowledged?
+- Did "me" already respond to the last request from "them"?
 - Is there a closing acknowledgment ("thanks", "got it") that resolves the thread?
+- If all messages are from "me", is there a self-commitment that's still open?
 - Is the decision consistent with the conversation flow?
 
 Return ONLY a JSON object:
