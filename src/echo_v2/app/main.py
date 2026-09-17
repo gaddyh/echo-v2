@@ -266,7 +266,7 @@ def create_app() -> FastAPI:
 
     judge = AnalysisJudge(
         client=openai_client,
-        model=os.environ.get("JUDGE_MODEL_NAME", "gpt-4.1-mini"),
+        model=os.environ.get("JUDGE_MODEL_NAME", "gpt-5.4"),
     )
     analysis_worker = ChatAnalysisWorker(
         chat_state_repo=repos.chat_state,

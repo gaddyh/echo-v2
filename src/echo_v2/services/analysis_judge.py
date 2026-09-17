@@ -92,7 +92,7 @@ class AnalysisJudge:
     def __init__(
         self,
         client: ChatCompletionClient,
-        model: str = "gpt-4.1-mini",
+        model: str = "gpt-5.4",
     ) -> None:
         self._client = client
         self._model = model
