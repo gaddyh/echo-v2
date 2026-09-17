@@ -160,20 +160,28 @@ def build_dashboard(section_id: str) -> None:
         # 2. Line — analyzer run status per run (1=success, 0=error)
         {
             "title": "Analyzer Run Status",
-            "description": "Per-run status: 1=success, 0=error. Dashes in the line = failures.",
+            "description": "Per-run status: success vs error counts over time",
             "chart_type": "line",
             "series": [
                 {
                     "name": "success",
                     "metric_definition": {"type": "count"},
-                    "filter_definition": project_filter(),
-                    "filters": {"filter": 'and(eq(name, "wfm.analysis"), eq(status, "success"))'},
+                    "filter_definition": {
+                        "source_type": "tracing_project",
+                        "project_ids": [PROJECT_ID],
+                        "run_filter": 'eq(name, "wfm.analysis")',
+                    },
+                    "filters": {"filter": 'eq(status, "success")'},
                 },
                 {
                     "name": "errors",
                     "metric_definition": {"type": "count"},
-                    "filter_definition": project_filter(),
-                    "filters": {"filter": 'and(eq(name, "wfm.analysis"), eq(status, "error"))'},
+                    "filter_definition": {
+                        "source_type": "tracing_project",
+                        "project_ids": [PROJECT_ID],
+                        "run_filter": 'eq(name, "wfm.analysis")',
+                    },
+                    "filters": {"filter": 'eq(status, "error")'},
                 },
             ],
         },
