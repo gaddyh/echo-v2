@@ -1,15 +1,13 @@
 """Evaluation harness for the LLM-as-judge (AnalysisJudge).
 
-Runs the labeled cases in :mod:`tests.evaluation.waiting_for_me_cases`
-through the analyzer, then through the judge, and reports:
+Tests the judge's alignment with our golden labels — NOT the analyzer's
+accuracy. For each eval case:
 
-1. **Analyzer accuracy** — how often the analyzer's decision matches
-   the expected label (same as the analyzer eval).
-2. **Judge agreement** — how often the judge's score (1.0=correct,
-   0.0=wrong) agrees with whether the analyzer was actually correct.
-3. **Judge calibration** — for cases where the analyzer was wrong, did
-   the judge catch it (score=0.0)? For cases where the analyzer was
-   right, did the judge confirm it (score=1.0)?
+1. Build a WaitingForMeResult with the **golden expected decision**.
+2. Ask the judge: "is this decision correct given the conversation?"
+3. Score agreement: 1.0 = judge agrees with golden, 0.0 = judge disagrees.
+
+The analyzer is not involved. We are testing the judge, not the analyzer.
 
 This is NOT part of the normal test suite. It only runs when:
   - ``OPENAI_API_KEY`` is set, AND
@@ -32,18 +30,15 @@ from __future__ import annotations
 import json
 import os
 import time
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
-from echo_v2.domain.waiting_for_me import WaitingForMeDecision
+from echo_v2.domain.waiting_for_me import WaitingForMeDecision, WaitingForMeResult
 from echo_v2.services.analysis_judge import AnalysisJudge
 from echo_v2.services.chat_analysis_worker import ConversationInput
-from echo_v2.services.waiting_for_me_analyzer import (
-    AnalysisError,
-    LLMWaitingForMeAnalyzer,
-)
 from tests.evaluation.waiting_for_me_cases import (
     SANITY_CASES,
     SOC_CASES,
@@ -79,15 +74,13 @@ def _build_conversation(case: EvalCase) -> ConversationInput:
     )
 
 
-@pytest.fixture
-def analyzer():
-    from openai import AsyncOpenAI
-
-    client = AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
-    return LLMWaitingForMeAnalyzer(
-        client=client,
-        model=os.environ.get("LLM_MODEL_NAME", "gpt-4.1"),
-        prompt_version=os.environ.get("WFM_PROMPT_VERSION", "v1"),
+def _golden_result(case: EvalCase) -> WaitingForMeResult:
+    """Build a WaitingForMeResult with the golden expected decision."""
+    return WaitingForMeResult(
+        decision=case.expected,
+        confidence=0.95,
+        reason=f"(golden) {case.notes or case.description}",
+        target_version=1,
     )
 
 
@@ -102,139 +95,95 @@ def judge():
     )
 
 
-async def _run_judge_case(
-    analyzer: LLMWaitingForMeAnalyzer,
-    judge: AnalysisJudge,
-    case: EvalCase,
-) -> JudgeCaseResult:
-    """Run a single case through analyzer + judge, return full result."""
-    conv = _build_conversation(case)
-    t0 = time.perf_counter()
-
-    # Step 1: Run the analyzer.
-    try:
-        result, _raw = await analyzer.analyze_with_raw(conv)
-        analyzer_decision = result.decision
-        analyzer_correct = analyzer_decision == case.expected
-    except AnalysisError as exc:
-        return JudgeCaseResult(
-            case=case,
-            analyzer_decision=None,
-            analyzer_correct=False,
-            analyzer_error=str(exc),
-            judge_score=None,
-            judge_explanation="",
-            judge_error="analyzer failed",
-            latency_ms=(time.perf_counter() - t0) * 1000,
-        )
-
-    # Step 2: Run the judge on the analyzer's output.
-    try:
-        judge_result = await judge.judge(conv, result)
-        judge_score = judge_result.score
-        judge_explanation = judge_result.explanation
-        judge_error = None
-    except Exception as exc:  # noqa: BLE001 - eval harness must not crash
-        judge_score = None
-        judge_explanation = ""
-        judge_error = str(exc)
-
-    latency_ms = (time.perf_counter() - t0) * 1000
-    return JudgeCaseResult(
-        case=case,
-        analyzer_decision=analyzer_decision,
-        analyzer_correct=analyzer_correct,
-        analyzer_error=None,
-        judge_score=judge_score,
-        judge_explanation=judge_explanation,
-        judge_error=judge_error,
-        latency_ms=latency_ms,
-    )
-
-
-from dataclasses import dataclass
-
-
 @dataclass
 class JudgeCaseResult:
-    """Result of running a single case through analyzer + judge."""
+    """Result of running a single case through the judge."""
 
     case: EvalCase
-    analyzer_decision: WaitingForMeDecision | None
-    analyzer_correct: bool
-    analyzer_error: str | None
     judge_score: float | None
     judge_explanation: str
     judge_error: str | None
     latency_ms: float
 
 
-def _judge_agrees(judge_score: float | None, analyzer_correct: bool) -> bool:
-    """Did the judge agree with ground truth?
+def _judge_agrees(judge_score: float | None) -> bool:
+    """Did the judge agree with the golden label?
 
-    - If analyzer was correct, judge should score 1.0.
-    - If analyzer was wrong, judge should score 0.0.
-    - 0.5 is neutral (neither agree nor disagree).
+    - 1.0 = judge agrees the golden decision is correct.
+    - 0.0 = judge disagrees (thinks the golden decision is wrong).
+    - 0.5 = neutral (neither agree nor disagree).
     """
     if judge_score is None:
         return False
-    if analyzer_correct:
-        return judge_score >= 0.75  # 1.0 = agree correct
-    else:
-        return judge_score <= 0.25  # 0.0 = agree wrong
+    return judge_score >= 0.75
 
 
 def _print_judge_report(
     results: list[JudgeCaseResult],
     label: str,
-    analyzer_accuracy: float,
     judge_agreement: float,
 ) -> None:
-    """Print a rich report for the judge eval."""
+    """Print a rich report for the judge eval.
+
+    Mismatches (judge disagrees with golden) are shown first.
+    """
     total = len(results)
-    analyzer_correct = sum(1 for r in results if r.analyzer_correct)
-    judge_agree = sum(1 for r in results if _judge_agrees(r.judge_score, r.analyzer_correct))
+    judge_agree = sum(1 for r in results if _judge_agrees(r.judge_score))
     judge_errors = sum(1 for r in results if r.judge_error)
+    disagreements = [r for r in results if r.judge_score is not None and r.judge_score <= 0.25]
+    neutral = [r for r in results if r.judge_score is not None and 0.25 < r.judge_score < 0.75]
 
-    # Judge calibration: how many wrong analyzer decisions did the judge catch?
-    wrong_cases = [r for r in results if not r.analyzer_correct]
-    caught = sum(1 for r in wrong_cases if r.judge_score is not None and r.judge_score <= 0.25)
-
-    # False alarms: judge said wrong when analyzer was actually correct.
-    right_cases = [r for r in results if r.analyzer_correct]
-    false_alarms = sum(1 for r in right_cases if r.judge_score is not None and r.judge_score <= 0.25)
-
-    print("\n" + "=" * 70)
+    print("\n" + "=" * 140)
     print(f"  Judge Evaluation Report — {label}")
-    print("=" * 70)
+    print("=" * 140)
     print(f"\n  Total cases:          {total}")
-    print(f"  Analyzer accuracy:    {analyzer_correct}/{total} ({analyzer_accuracy:.1%})")
     print(f"  Judge agreement:      {judge_agree}/{total} ({judge_agreement:.1%})")
     print(f"  Judge errors:         {judge_errors}")
-    print()
-    print(f"  Calibration (analyzer wrong → judge caught):  {caught}/{len(wrong_cases)}")
-    print(f"  False alarms (analyzer right → judge said wrong): {false_alarms}/{len(right_cases)}")
+    print(f"  Disagreements (0.0):  {len(disagreements)}")
+    print(f"  Neutral (0.5):        {len(neutral)}")
     print()
 
-    # Per-case table
-    print("  " + "-" * 100)
-    print(f"  {'ID':<12} {'Expected':<6} {'Actual':<6} {'Correct':<8} {'Score':<6} {'Agree':<6} {'Explanation'}")
-    print("  " + "-" * 100)
-    for r in results:
-        expected = _SHORT.get(r.case.expected, "?")
-        actual = _SHORT.get(r.analyzer_decision, "ERR")
-        correct = "Y" if r.analyzer_correct else "N"
-        score = f"{r.judge_score:.1f}" if r.judge_score is not None else "ERR"
-        agree = "Y" if _judge_agrees(r.judge_score, r.analyzer_correct) else "N"
-        expl = (r.judge_explanation or r.judge_error or "")[:50]
-        print(f"  {r.case.id:<12} {expected:<6} {actual:<6} {correct:<8} {score:<6} {agree:<6} {expl}")
-    print("  " + "-" * 100)
+    # Split: mismatches first, then matches.
+    mismatches = [r for r in results if not _judge_agrees(r.judge_score)]
+    matches = [r for r in results if _judge_agrees(r.judge_score)]
+
+    # Per-case table — mismatches first.
+    col_widths = [10, 8, 30, 6, 40]
+    headers = ["ID", "Golden", "Description", "Score", "Judge Reason"]
+    total_width = sum(col_widths) + len(col_widths) * 3 + 1
+
+    def _print_section(title: str, rows: list[JudgeCaseResult]) -> None:
+        if not rows:
+            return
+        print(f"\n  {title} ({len(rows)})")
+        print("  " + "-" * total_width)
+        cells = []
+        for h, w in zip(headers, col_widths):
+            cells.append(f" {h:<{w}} ")
+        print("  |" + "|".join(cells) + "|")
+        print("  " + "-" * total_width)
+        for r in rows:
+            golden = _SHORT.get(r.case.expected, "?")
+            score = f"{r.judge_score:.1f}" if r.judge_score is not None else "ERR"
+            desc = r.case.description[:col_widths[2]]
+            j_reason = (r.judge_explanation or r.judge_error or "")[:col_widths[4]]
+            cells = [
+                f" {r.case.id:<{col_widths[0]}} ",
+                f" {golden:<{col_widths[1]}} ",
+                f" {desc:<{col_widths[2]}} ",
+                f" {score:<{col_widths[3]}} ",
+                f" {j_reason:<{col_widths[4]}} ",
+            ]
+            print("  |" + "|".join(cells) + "|")
+        print("  " + "-" * total_width)
+
+    _print_section("MISMATCHES (judge disagrees or neutral)", mismatches)
+    _print_section("MATCHES (judge agrees with golden)", matches)
     print()
 
 
 def _save_judge_run(
     label: str,
-    analyzer_model: str,
     judge_model: str,
     results: list[JudgeCaseResult],
 ) -> str:
@@ -246,42 +195,32 @@ def _save_judge_run(
     run_dir.mkdir(parents=True, exist_ok=True)
 
     total = len(results)
-    analyzer_correct = sum(1 for r in results if r.analyzer_correct)
-    judge_agree = sum(1 for r in results if _judge_agrees(r.judge_score, r.analyzer_correct))
-    wrong_cases = [r for r in results if not r.analyzer_correct]
-    caught = sum(1 for r in wrong_cases if r.judge_score is not None and r.judge_score <= 0.25)
-    right_cases = [r for r in results if r.analyzer_correct]
-    false_alarms = sum(1 for r in right_cases if r.judge_score is not None and r.judge_score <= 0.25)
+    judge_agree = sum(1 for r in results if _judge_agrees(r.judge_score))
+    disagreements = [r for r in results if r.judge_score is not None and r.judge_score <= 0.25]
+    neutral = [r for r in results if r.judge_score is not None and 0.25 < r.judge_score < 0.75]
 
     json_output = {
         "run_id": run_id,
         "type": "judge_eval",
         "label": label,
-        "analyzer_model": analyzer_model,
         "judge_model": judge_model,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "summary": {
             "total": total,
-            "analyzer_correct": analyzer_correct,
-            "analyzer_accuracy": round(analyzer_correct / total, 4) if total else 0.0,
             "judge_agreement": judge_agree,
             "judge_agreement_rate": round(judge_agree / total, 4) if total else 0.0,
-            "wrong_cases": len(wrong_cases),
-            "caught_wrong": caught,
-            "false_alarms": false_alarms,
+            "disagreements": len(disagreements),
+            "neutral": len(neutral),
         },
         "cases": [
             {
                 "id": r.case.id,
                 "description": r.case.description,
-                "expected": r.case.expected.value,
-                "actual": r.analyzer_decision.value if r.analyzer_decision else None,
-                "analyzer_correct": r.analyzer_correct,
-                "analyzer_error": r.analyzer_error,
+                "golden": r.case.expected.value,
                 "judge_score": r.judge_score,
                 "judge_explanation": r.judge_explanation,
                 "judge_error": r.judge_error,
-                "judge_agrees": _judge_agrees(r.judge_score, r.analyzer_correct),
+                "judge_agrees": _judge_agrees(r.judge_score),
                 "latency_ms": r.latency_ms,
                 "messages": [
                     {"direction": d, "text": t} for d, t in r.case.messages
@@ -298,48 +237,58 @@ def _save_judge_run(
     )
 
     # Markdown report
+    mismatches = [r for r in results if not _judge_agrees(r.judge_score)]
+    matches = [r for r in results if _judge_agrees(r.judge_score)]
+
     md_lines = [
         f"# Judge Evaluation Report — {label}",
         "",
         f"- **Run ID:** `{run_id}`",
-        f"- **Analyzer model:** `{analyzer_model}`",
         f"- **Judge model:** `{judge_model}`",
         f"- **Timestamp:** {datetime.now(timezone.utc).isoformat()}",
         f"- **Total cases:** {total}",
-        f"- **Analyzer accuracy:** {analyzer_correct}/{total} ({analyzer_correct/total:.1%})" if total else "- **Analyzer accuracy:** N/A",
         f"- **Judge agreement:** {judge_agree}/{total} ({judge_agree/total:.1%})" if total else "- **Judge agreement:** N/A",
-        f"- **Wrong cases caught by judge:** {caught}/{len(wrong_cases)}",
-        f"- **False alarms:** {false_alarms}/{len(right_cases)}",
+        f"- **Disagreements:** {len(disagreements)}",
+        f"- **Neutral:** {len(neutral)}",
         "",
-        "## Per-Case Results",
-        "",
-        "| ID | Expected | Actual | Correct | Score | Agree | Explanation |",
-        "|----|----------|--------|---------|-------|-------|-------------|",
     ]
-    for r in results:
-        expected = _SHORT.get(r.case.expected, "?")
-        actual = _SHORT.get(r.analyzer_decision, "ERR")
-        correct = "Y" if r.analyzer_correct else "N"
-        score = f"{r.judge_score:.1f}" if r.judge_score is not None else "ERR"
-        agree = "Y" if _judge_agrees(r.judge_score, r.analyzer_correct) else "N"
-        expl = (r.judge_explanation or r.judge_error or "").replace("|", "\\|")
-        md_lines.append(f"| {r.case.id} | {expected} | {actual} | {correct} | {score} | {agree} | {expl} |")
 
-    md_lines += [
-        "",
-        "## Disagreements (judge disagreed with ground truth)",
-        "",
-    ]
-    disagreements = [r for r in results if not _judge_agrees(r.judge_score, r.analyzer_correct)]
+    def _case_table_md(cases: list[JudgeCaseResult]) -> list[str]:
+        lines = [
+            "| ID | Golden | Description | Score | Judge Reason |",
+            "|----|--------|-------------|-------|--------------|",
+        ]
+        for r in cases:
+            golden = _SHORT.get(r.case.expected, "?")
+            score = f"{r.judge_score:.1f}" if r.judge_score is not None else "ERR"
+            desc = r.case.description.replace("|", "\\|")
+            j_reason = (r.judge_explanation or r.judge_error or "").replace("|", "\\|")
+            lines.append(f"| {r.case.id} | {golden} | {desc} | {score} | {j_reason} |")
+        return lines
+
+    md_lines += ["## Mismatches (judge disagrees or neutral)", ""]
+    if mismatches:
+        md_lines += _case_table_md(mismatches)
+    else:
+        md_lines.append("No mismatches — judge agreed with all golden labels.")
+    md_lines.append("")
+
+    md_lines += ["## Matches (judge agrees with golden)", ""]
+    if matches:
+        md_lines += _case_table_md(matches)
+    else:
+        md_lines.append("No matches.")
+    md_lines.append("")
+
+    # Detailed disagreements with full messages.
+    md_lines += ["## Disagreements Detail", ""]
     if not disagreements:
-        md_lines.append("No disagreements — judge agreed with all ground truth labels.")
+        md_lines.append("No disagreements — judge agreed with all golden labels.")
     else:
         for r in disagreements:
             md_lines += [
                 f"### {r.case.id} — {r.case.description}",
-                f"- Expected: {_SHORT.get(r.case.expected, '?')}",
-                f"- Analyzer said: {_SHORT.get(r.analyzer_decision, 'ERR')}",
-                f"- Analyzer correct: {r.analyzer_correct}",
+                f"- Golden: {_SHORT.get(r.case.expected, '?')}",
                 f"- Judge score: {r.judge_score}",
                 f"- Judge explanation: {r.judge_explanation}",
                 "",
@@ -356,29 +305,43 @@ def _save_judge_run(
 
 
 async def _run_judge_suite(
-    analyzer: LLMWaitingForMeAnalyzer,
     judge: AnalysisJudge,
     cases: list[EvalCase],
     label: str,
     min_agreement: float,
 ) -> None:
-    """Run analyzer + judge on all cases, report, save, and assert."""
+    """Run judge on all cases with golden labels, report, save, and assert."""
     results: list[JudgeCaseResult] = []
     for case in cases:
-        r = await _run_judge_case(analyzer, judge, case)
-        results.append(r)
+        conv = _build_conversation(case)
+        golden = _golden_result(case)
+        t0 = time.perf_counter()
+        try:
+            jr = await judge.judge(conv, golden)
+            judge_score = jr.score
+            judge_explanation = jr.explanation
+            judge_error = None
+        except Exception as exc:  # noqa: BLE001 - eval harness must not crash
+            judge_score = None
+            judge_explanation = ""
+            judge_error = str(exc)
+        latency_ms = (time.perf_counter() - t0) * 1000
+        results.append(JudgeCaseResult(
+            case=case,
+            judge_score=judge_score,
+            judge_explanation=judge_explanation,
+            judge_error=judge_error,
+            latency_ms=latency_ms,
+        ))
 
     total = len(results)
-    analyzer_correct = sum(1 for r in results if r.analyzer_correct)
-    judge_agree = sum(1 for r in results if _judge_agrees(r.judge_score, r.analyzer_correct))
-    analyzer_accuracy = analyzer_correct / total if total > 0 else 0.0
+    judge_agree = sum(1 for r in results if _judge_agrees(r.judge_score))
     judge_agreement = judge_agree / total if total > 0 else 0.0
 
-    _print_judge_report(results, label, analyzer_accuracy, judge_agreement)
+    _print_judge_report(results, label, judge_agreement)
 
-    analyzer_model = os.environ.get("LLM_MODEL_NAME", "gpt-4.1")
     judge_model = os.environ.get("JUDGE_MODEL_NAME", "gpt-5.4")
-    run_id = _save_judge_run(label, analyzer_model, judge_model, results)
+    run_id = _save_judge_run(label, judge_model, results)
     print(f"\n  Results saved: run_id={run_id}")
     print(f"  → tests/evaluation/results/{run_id}_judge_{label.lower().replace(' ', '_')}/")
 
@@ -388,30 +351,30 @@ async def _run_judge_suite(
 
 
 @pytest.mark.eval
-async def test_judge_sanity_eval(analyzer, judge):
-    """Run the sanity cases through analyzer + judge.
+async def test_judge_sanity_eval(judge):
+    """Run the sanity cases through the judge with golden labels.
 
-    Measures how well the judge agrees with ground truth on the
+    Measures how well the judge agrees with our golden labels on the
     baseline cases. Threshold: 70% (default).
     Override with ``EVAL_JUDGE_MIN_AGREEMENT``.
     """
     min_agreement = float(os.environ.get("EVAL_JUDGE_MIN_AGREEMENT", "0.7"))
-    await _run_judge_suite(analyzer, judge, SANITY_CASES, "Sanity", min_agreement)
+    await _run_judge_suite(judge, SANITY_CASES, "Sanity", min_agreement)
 
 
 @pytest.mark.eval
-async def test_judge_soc_eval(analyzer, judge):
-    """Run the SOC cases through analyzer + judge.
+async def test_judge_soc_eval(judge):
+    """Run the SOC cases through the judge with golden labels.
 
     These are the harder state-transition cases. Threshold: 70%.
     """
     min_agreement = float(os.environ.get("EVAL_JUDGE_SOC_MIN_AGREEMENT", "0.7"))
-    await _run_judge_suite(analyzer, judge, SOC_CASES, "SOC", min_agreement)
+    await _run_judge_suite(judge, SOC_CASES, "SOC", min_agreement)
 
 
 @pytest.mark.eval
-async def test_judge_all_eval(analyzer, judge):
-    """Run all cases through analyzer + judge (sanity + SOC)."""
+async def test_judge_all_eval(judge):
+    """Run all cases through the judge with golden labels (sanity + SOC)."""
     min_agreement = float(os.environ.get("EVAL_JUDGE_MIN_AGREEMENT", "0.7"))
     all_cases = SANITY_CASES + SOC_CASES
-    await _run_judge_suite(analyzer, judge, all_cases, "All", min_agreement)
+    await _run_judge_suite(judge, all_cases, "All", min_agreement)
