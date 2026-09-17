@@ -13,7 +13,7 @@ feedback and actions.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from echo_v2.domain.feedback import (
     ActionCommandResult,
@@ -57,7 +57,7 @@ class WaitingForMeFeedbackRepository(Protocol):
         verdict: FeedbackVerdict,
         result_id: str | None = None,
         target_version: int | None = None,
-        conversation_snapshot: dict | None = None,
+        conversation_snapshot: dict[str, Any] | None = None,
         provider_message_id: str | None = None,
         expires_at: datetime | None = None,
     ) -> WaitingForMeFeedback | None:
@@ -91,7 +91,7 @@ class InMemoryWaitingForMeFeedbackRepository:
         verdict: FeedbackVerdict,
         result_id: str | None = None,
         target_version: int | None = None,
-        conversation_snapshot: dict | None = None,
+        conversation_snapshot: dict[str, Any] | None = None,
         provider_message_id: str | None = None,
         expires_at: datetime | None = None,
     ) -> WaitingForMeFeedback | None:
@@ -150,7 +150,7 @@ class WaitingForMeActionRepository(Protocol):
         action_type: WaitingForMeActionType,
         active_id: str | None = None,
         target_version: int | None = None,
-        action_payload: dict | None = None,
+        action_payload: dict[str, Any] | None = None,
         provider_message_id: str | None = None,
     ) -> WaitingForMeAction | None:
         """Record an action. Returns ``None`` if duplicate
@@ -179,7 +179,7 @@ class WaitingForMeActionRepository(Protocol):
         active_id: str,
         target_version: int,
         provider_message_id: str,
-        action_payload: dict | None = None,
+        action_payload: dict[str, Any] | None = None,
     ) -> ActionCommandResult:
         """Record RESOLVE + delete active by version, atomically.
 
@@ -204,7 +204,7 @@ class WaitingForMeActionRepository(Protocol):
         active_id: str,
         target_version: int,
         provider_message_id: str,
-        action_payload: dict | None = None,
+        action_payload: dict[str, Any] | None = None,
     ) -> ActionCommandResult:
         """Record RESOLVE + delete active by chat_id, atomically.
 
@@ -225,7 +225,7 @@ class WaitingForMeActionRepository(Protocol):
         target_version: int,
         snoozed_until: datetime,
         provider_message_id: str,
-        action_payload: dict | None = None,
+        action_payload: dict[str, Any] | None = None,
     ) -> ActionCommandResult:
         """Record SNOOZE + apply snoozed_until, atomically.
 
@@ -303,7 +303,7 @@ class InMemoryWaitingForMeActionRepository:
         action_type: WaitingForMeActionType,
         active_id: str | None = None,
         target_version: int | None = None,
-        action_payload: dict | None = None,
+        action_payload: dict[str, Any] | None = None,
         provider_message_id: str | None = None,
     ) -> WaitingForMeAction | None:
         # Idempotency: check for duplicate provider_message_id.
@@ -350,7 +350,7 @@ class InMemoryWaitingForMeActionRepository:
         active_id: str,
         target_version: int,
         provider_message_id: str,
-        action_payload: dict | None = None,
+        action_payload: dict[str, Any] | None = None,
     ) -> ActionCommandResult:
         assert self._active_repo is not None
         action = await self.record(
@@ -388,7 +388,7 @@ class InMemoryWaitingForMeActionRepository:
         active_id: str,
         target_version: int,
         provider_message_id: str,
-        action_payload: dict | None = None,
+        action_payload: dict[str, Any] | None = None,
     ) -> ActionCommandResult:
         assert self._active_repo is not None
         action = await self.record(
@@ -424,7 +424,7 @@ class InMemoryWaitingForMeActionRepository:
         target_version: int,
         snoozed_until: datetime,
         provider_message_id: str,
-        action_payload: dict | None = None,
+        action_payload: dict[str, Any] | None = None,
     ) -> ActionCommandResult:
         assert self._active_repo is not None
         action = await self.record(

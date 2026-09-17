@@ -27,7 +27,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
-from typing import Literal
+from typing import Any, Literal
 
 __all__ = [
     "AnalysisCommitOutcome",
@@ -109,7 +109,7 @@ class WaitingForMeResult:
     reason: str | None = None
     summary: str | None = None
     target_version: int = 0
-    conversation_snapshot: dict | None = None
+    conversation_snapshot: dict[str, Any] | None = None
     model: str | None = None
     prompt_version: str | None = None
     analyzer_version: str | None = None
@@ -164,7 +164,7 @@ class PreparedAnalysis:
     """
 
     result: WaitingForMeResult
-    conversation_snapshot: dict
+    conversation_snapshot: dict[str, Any]
 
 
 @dataclass(frozen=True)

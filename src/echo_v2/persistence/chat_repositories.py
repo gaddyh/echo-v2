@@ -20,8 +20,8 @@ The repos are thin persistence layers.
 
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Protocol, runtime_checkable
+from datetime import datetime, timezone
+from typing import Any, Protocol, runtime_checkable
 
 from echo_v2.domain.chat import ChatState, Message
 from echo_v2.domain.waiting_for_me import (
@@ -387,7 +387,7 @@ class InMemoryChatStateRepository:
             and chat.next_analysis_at <= now
             and chat.activity_version > chat.last_processed_version
         ]
-        due.sort(key=lambda c: c.next_analysis_at)  # type: ignore[arg-type]
+        due.sort(key=lambda c: c.next_analysis_at or datetime.min.replace(tzinfo=timezone.utc))
         return due[:limit]
 
     async def mark_processed(
@@ -415,8 +415,8 @@ class InMemoryChatStateRepository:
 
 
 # Structural checks: in-memory impls satisfy the protocols.
-_msg_repo: MessageRepository = InMemoryMessageRepository()  # type: ignore[assignment]
-_chat_repo: ChatStateRepository = InMemoryChatStateRepository()  # type: ignore[assignment]
+_msg_repo: MessageRepository = InMemoryMessageRepository()
+_chat_repo: ChatStateRepository = InMemoryChatStateRepository()
 
 
 # --- WaitingForMeResultRepository -------------------------------------------
@@ -490,7 +490,7 @@ class InMemoryWaitingForMeResultRepository:
         return list(reversed(matching))[:limit]
 
 
-_wfm_repo: WaitingForMeResultRepository = InMemoryWaitingForMeResultRepository()  # type: ignore[assignment]
+_wfm_repo: WaitingForMeResultRepository = InMemoryWaitingForMeResultRepository()
 
 
 # --- WaitingForMeActiveRepository -------------------------------------------
@@ -612,7 +612,7 @@ class WaitingForMeActiveRepository(Protocol):
         active_id: str,
         user_id: str,
         target_version: int,
-        mutate: dict[str, datetime],
+        mutate: dict[str, Any],
     ) -> bool:
         """Conditionally apply a mutation only if the row matches the
         given ``user_id`` and ``target_version``.
@@ -834,7 +834,7 @@ class InMemoryWaitingForMeActiveRepository:
         active_id: str,
         user_id: str,
         target_version: int,
-        mutate: dict[str, datetime],
+        mutate: dict[str, Any],
     ) -> bool:
         """Atomically apply a mutation if version matches."""
         key = self._by_id.get(active_id)
@@ -848,12 +848,11 @@ class InMemoryWaitingForMeActiveRepository:
         # Apply mutation by rebuilding the dataclass.
         from dataclasses import replace
 
-        updates = {k: v for k, v in mutate.items()}
-        self._rows[key] = replace(existing, **updates)
+        self._rows[key] = replace(existing, **mutate)
         return True
 
 
-_wfm_active_repo: WaitingForMeActiveRepository = InMemoryWaitingForMeActiveRepository()  # type: ignore[assignment]
+_wfm_active_repo: WaitingForMeActiveRepository = InMemoryWaitingForMeActiveRepository()
 
 
 # --- AnalysisCommitRepository -----------------------------------------------
@@ -961,7 +960,7 @@ class InMemoryAnalysisCommitRepository:
         return AnalysisCommitOutcome(status="committed", result_id=result_id)
 
 
-_commit_repo: AnalysisCommitRepository = InMemoryAnalysisCommitRepository(  # type: ignore[assignment]
+_commit_repo: AnalysisCommitRepository = InMemoryAnalysisCommitRepository(
     InMemoryChatStateRepository(),
     InMemoryWaitingForMeResultRepository(),
     InMemoryWaitingForMeActiveRepository(),

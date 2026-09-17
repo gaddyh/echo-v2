@@ -7,9 +7,10 @@ All three use ``INSERT ... ON CONFLICT DO NOTHING`` for idempotency on
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import Any, cast
 
+from sqlalchemy import CursorResult, select
 from sqlalchemy import delete as sa_delete
-from sqlalchemy import select
 from sqlalchemy import update as sa_update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -84,7 +85,7 @@ class PostgresWaitingForMeFeedbackRepository:
         verdict: FeedbackVerdict,
         result_id: str | None = None,
         target_version: int | None = None,
-        conversation_snapshot: dict | None = None,
+        conversation_snapshot: dict[str, Any] | None = None,
         provider_message_id: str | None = None,
         expires_at: datetime | None = None,
     ) -> WaitingForMeFeedback | None:
@@ -116,7 +117,7 @@ class PostgresWaitingForMeFeedbackRepository:
                 WaitingForMeFeedbackRow.expires_at.is_not(None),
                 WaitingForMeFeedbackRow.expires_at <= now,
             )
-            result = await session.execute(stmt)
+            result = cast(CursorResult[Any], await session.execute(stmt))
             return result.rowcount
 
     @staticmethod
@@ -162,7 +163,7 @@ class PostgresWaitingForMeActionRepository:
         action_type: WaitingForMeActionType,
         active_id: str | None = None,
         target_version: int | None = None,
-        action_payload: dict | None = None,
+        action_payload: dict[str, Any] | None = None,
         provider_message_id: str | None = None,
     ) -> WaitingForMeAction | None:
         async with self._session() as session:
@@ -228,7 +229,7 @@ class PostgresWaitingForMeActionRepository:
         action_type: WaitingForMeActionType,
         active_id: str | None = None,
         target_version: int | None = None,
-        action_payload: dict | None = None,
+        action_payload: dict[str, Any] | None = None,
         provider_message_id: str | None = None,
     ) -> WaitingForMeActionRow | None:
         """Insert action row. Returns None if duplicate (same provider_message_id)."""
@@ -258,7 +259,7 @@ class PostgresWaitingForMeActionRepository:
         active_id: str,
         target_version: int,
         provider_message_id: str,
-        action_payload: dict | None = None,
+        action_payload: dict[str, Any] | None = None,
     ) -> ActionCommandResult:
         async with self._session_factory() as session:
             try:
@@ -320,7 +321,7 @@ class PostgresWaitingForMeActionRepository:
         active_id: str,
         target_version: int,
         provider_message_id: str,
-        action_payload: dict | None = None,
+        action_payload: dict[str, Any] | None = None,
     ) -> ActionCommandResult:
         async with self._session_factory() as session:
             try:
@@ -376,7 +377,7 @@ class PostgresWaitingForMeActionRepository:
         target_version: int,
         snoozed_until: datetime,
         provider_message_id: str,
-        action_payload: dict | None = None,
+        action_payload: dict[str, Any] | None = None,
     ) -> ActionCommandResult:
         async with self._session_factory() as session:
             try:
@@ -646,7 +647,7 @@ class PostgresChatMuteRepository:
                 ChatMuteRow.user_id == user_id,
                 ChatMuteRow.chat_id == chat_id,
             )
-            result = await session.execute(stmt)
+            result = cast(CursorResult[Any], await session.execute(stmt))
             return result.rowcount > 0
 
     async def get(

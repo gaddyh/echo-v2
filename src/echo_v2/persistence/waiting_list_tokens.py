@@ -16,10 +16,10 @@ import hashlib
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, cast, runtime_checkable
 
+from sqlalchemy import CursorResult, select
 from sqlalchemy import delete as sa_delete
-from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -102,7 +102,7 @@ class InMemoryWaitingListSessionRepository:
     """In-memory implementation for tests."""
 
     def __init__(self) -> None:
-        self._sessions: dict[str, dict] = {}  # session_id -> row dict
+        self._sessions: dict[str, dict[str, Any]] = {}  # session_id -> row dict
 
     async def create(
         self,
@@ -318,5 +318,5 @@ class PostgresWaitingListSessionRepository:
             stmt = sa_delete(WaitingListSessionRow).where(
                 WaitingListSessionRow.id.in_(select(ids_to_delete.c.id))
             )
-            result = await session.execute(stmt)
+            result = cast(CursorResult[Any], await session.execute(stmt))
             return result.rowcount

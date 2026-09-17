@@ -79,5 +79,5 @@ class IdentityCredentialCipher:
 
 
 # Structural check: both concrete ciphers satisfy the protocol.
-_: CredentialCipher = LocalKeyCredentialCipher(Fernet.generate_key())  # type: ignore[assignment]
-__: CredentialCipher = IdentityCredentialCipher()  # type: ignore[assignment]
+_: CredentialCipher = LocalKeyCredentialCipher(Fernet.generate_key())
+__: CredentialCipher = IdentityCredentialCipher()

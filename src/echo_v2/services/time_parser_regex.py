@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 __all__ = ["TimeParseError", "parse_time_expression"]
@@ -302,7 +302,7 @@ def _try_explicit_datetime(
 # --- helpers ---------------------------------------------------------------
 
 
-def _hm_to_time(hour: int, minute: int):
+def _hm_to_time(hour: int, minute: int) -> time:
     from datetime import time as dt_time
     return dt_time(hour=hour, minute=minute)
 

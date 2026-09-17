@@ -27,6 +27,8 @@ transaction UoW is the right size for MVP and doesn't preclude it.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import TracebackType
+from typing import Any
 
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
@@ -69,7 +71,7 @@ class UnitOfWorkRepos:
 
     connections: PostgresWhatsAppConnectionRepository
     webhooks: PostgresWebhookDedupStore
-    idempotency: PostgresIdempotencyStore
+    idempotency: PostgresIdempotencyStore[Any]
     messages: PostgresMessageRepository
     chat_state: PostgresChatStateRepository
     wfm_results: PostgresWaitingForMeResultRepository
@@ -158,7 +160,12 @@ class PostgresUnitOfWork:
         )
         return self
 
-    async def __aexit__(self, exc_type, exc, tb) -> None:
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
         assert self._session is not None
         try:
             if exc_type is None:
@@ -182,7 +189,7 @@ class PostgresUnitOfWork:
         return self.repos.webhooks
 
     @property
-    def idempotency(self) -> PostgresIdempotencyStore:
+    def idempotency(self) -> PostgresIdempotencyStore[Any]:
         assert self.repos is not None, "UnitOfWork not entered"
         return self.repos.idempotency
 

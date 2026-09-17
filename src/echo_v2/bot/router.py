@@ -21,7 +21,7 @@ router does not know what AWAITING_NAME or AWAITING_MESSAGE means.
 from __future__ import annotations
 
 import logging
-from typing import Protocol
+from typing import Any, Protocol
 
 from echo_v2.bot.commands import (
     BotCommand,
@@ -140,10 +140,10 @@ class BotCommandRouter:
     def __init__(
         self,
         *,
-        user_resolver,  # UserResolver: phone → (user_id, ...) | None
+        user_resolver: Any,  # UserResolver: phone → (user_id, ...) | None
         command_handlers: CommandHandlers,
         onboarding_entry: OnboardingEntry,
-        fallback_handler,  # callable(event) -> None
+        fallback_handler: Any,  # callable(event) -> None
         flow_registry: FlowRegistry | None = None,
         command_parser: BotCommandParser | None = None,
     ) -> None:

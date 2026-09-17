@@ -36,7 +36,7 @@ import asyncio
 import uuid
 from dataclasses import dataclass
 from enum import Enum
-from typing import Generic, Protocol, TypeVar, runtime_checkable
+from typing import Any, Generic, Protocol, TypeVar, runtime_checkable
 
 from echo_v2.runtime.errors import RetryableError
 
@@ -380,4 +380,4 @@ class InMemoryIdempotencyStore(Generic[TOutput]):
 
 
 # Structural check: InMemoryIdempotencyStore satisfies the protocol.
-_: IdempotencyStore = InMemoryIdempotencyStore()  # type: ignore[assignment]
+_: IdempotencyStore[Any] = InMemoryIdempotencyStore[Any]()

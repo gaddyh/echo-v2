@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import logging
 
+import httpx
+
 from echo_v2.integrations.modal.client import (
     ModalTranscriptionClient,
     ModalTranscriptionTransportError,
@@ -36,7 +38,7 @@ class ModalWhisperTranscriber:
         self,
         settings: ModalTranscriptionSettings,
         *,
-        http_client=None,
+        http_client: httpx.AsyncClient | None = None,
     ) -> None:
         self._client = ModalTranscriptionClient(
             settings,

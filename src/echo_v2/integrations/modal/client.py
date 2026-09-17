@@ -18,7 +18,7 @@ import asyncio
 import logging
 import random
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -138,7 +138,7 @@ class ModalTranscriptionClient:
                 )
 
             try:
-                return response.json()
+                return cast(dict[str, Any], response.json())
             except ValueError as exc:
                 raise ModalTranscriptionTransportError(
                     "Modal returned invalid JSON"

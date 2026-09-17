@@ -126,14 +126,14 @@ class ChatCompletionClient(Protocol):
     chat: Any
 
 
-class WaitingForMeAnalyzer:
+class WaitingForMeAnalyzer(Protocol):
     """Protocol for WaitingForMe analyzers."""
 
     async def analyze(self, conversation: ConversationInput) -> WaitingForMeResult:
-        ...
+        raise NotImplementedError
 
 
-def safe_analysis_inputs(inputs: dict) -> dict:
+def safe_analysis_inputs(inputs: dict[str, Any]) -> dict[str, Any]:
     """Sanitize analyzer inputs for LangSmith trace metadata.
 
     Removes ``self`` and the full conversation. Keeps only safe correlation
@@ -153,7 +153,7 @@ def safe_analysis_inputs(inputs: dict) -> dict:
     }
 
 
-def safe_analysis_output(output: WaitingForMeResult) -> dict:
+def safe_analysis_output(output: WaitingForMeResult) -> dict[str, Any]:
     """Sanitize analyzer output for LangSmith trace metadata.
 
     The analyzer does not yet know ``result_id`` — that ID only exists

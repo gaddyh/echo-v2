@@ -25,7 +25,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, cast
 
 import httpx
 import websockets
@@ -108,7 +108,7 @@ class GreenClient:
     async def create_instance(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Partner ``createInstance``. Irreversible write."""
         url = f"{self._settings.partner_api_url}/partner/createInstance/{self._settings.partner_token}"
-        return await self._request_json(
+        data = await self._request_json(
             "POST",
             url,
             operation="create_instance",
@@ -116,6 +116,8 @@ class GreenClient:
             is_write=True,
             json_body=payload,
         )
+        assert isinstance(data, dict), "createInstance must return a JSON object"
+        return data
 
     async def get_instances(self) -> list[dict[str, Any]]:
         """Partner ``getInstances``. Read."""
@@ -305,7 +307,7 @@ class GreenClient:
         import asyncio
 
         try:
-            async with self._ws_connector(ws_url, open_timeout=10) as ws:
+            async with cast(Any, self._ws_connector)(ws_url, open_timeout=10) as ws:
                 try:
                     raw = await asyncio.wait_for(ws.recv(), timeout=timeout)
                 except TimeoutError:

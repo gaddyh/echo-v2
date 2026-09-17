@@ -26,6 +26,7 @@ plaintext :class:`ProviderCredentials.data` never touches the column.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from types import TracebackType
 
 from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -112,11 +113,9 @@ class PostgresWhatsAppConnectionRepository(WhatsAppConnectionRepository):
                 .returning(WhatsAppConnectionRow.id)
             )
             result = await session.execute(stmt)
-            row_id = result.scalar_one()
-            # Keep the row's created_at; we only changed updated_at.
-            if session.info is None:
-                session.info = {}
-            session.info["last_saved_id"] = str(row_id)
+            # row_id is the upserted connection's UUID; not currently
+            # exposed to callers (no consumer needs it yet).
+            _ = result.scalar_one()
 
     async def get(self, ref: ConnectionRef) -> StoredConnection | None:
         async with self._session() as session:
@@ -215,7 +214,12 @@ class _SessionContext:
     async def __aenter__(self) -> AsyncSession:
         return self._session
 
-    async def __aexit__(self, exc_type, exc, tb) -> None:
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
         if not self._owns:
             return
         try:

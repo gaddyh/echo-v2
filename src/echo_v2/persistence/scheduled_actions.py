@@ -49,11 +49,13 @@ class ScheduledActionRepository:
         (e.g. waiting-list message scheduling) where a retry must not
         overwrite an already-created action's status or payload.
         """
+        raise NotImplementedError
 
     async def get(self, action_id: str) -> ScheduledAction | None: ...
 
     async def list_pending(self, user_id: str) -> list[ScheduledAction]:
         """Return all PENDING actions for a user, ordered by ``execute_at_utc``."""
+        raise NotImplementedError
 
     async def claim_due(
         self,
@@ -85,6 +87,7 @@ class ScheduledActionRepository:
     async def cancel(self, action_id: str, user_id: str) -> bool:
         """Cancel a PENDING action. Returns ``True`` if cancelled, ``False``
         if not found, not owned by ``user_id``, or not in PENDING status."""
+        raise NotImplementedError
 
     async def recover_stale(
         self,
@@ -97,6 +100,7 @@ class ScheduledActionRepository:
         ``now - lease_seconds``. Returns the count of recovered actions.
         Called on scheduler startup to recover from crashes.
         """
+        raise NotImplementedError
 
 
 class InMemoryScheduledActionRepository(ScheduledActionRepository):

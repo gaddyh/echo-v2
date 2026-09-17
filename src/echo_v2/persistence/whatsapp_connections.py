@@ -18,6 +18,7 @@ provider during provisioning, and stores ``sha256(token)`` here for later
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 
@@ -101,6 +102,8 @@ class InMemoryWhatsAppConnectionRepository(WhatsAppConnectionRepository):
         self._by_provider_id: dict[tuple[str, str], tuple[str, str]] = {}
 
     async def save(self, conn: StoredConnection) -> None:
+        if conn.id is None:
+            conn = replace(conn, id=str(uuid.uuid4()))
         key = (conn.ref.provider, conn.ref.provider_connection_id)
         self._by_ref[key] = conn
         self._by_user[conn.user_id] = key
@@ -144,4 +147,4 @@ class InMemoryWhatsAppConnectionRepository(WhatsAppConnectionRepository):
 
 
 # Structural check: InMemoryWhatsAppConnectionRepository is a CredentialResolver.
-_: CredentialResolver = InMemoryWhatsAppConnectionRepository()  # type: ignore[assignment]
+_: CredentialResolver = InMemoryWhatsAppConnectionRepository()

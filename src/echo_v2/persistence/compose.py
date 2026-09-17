@@ -9,8 +9,9 @@ singleton stays in-memory so tests without Docker keep working.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
-from sqlalchemy.ext.asyncio import async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from echo_v2.app.webhooks.inbox import PostgresWebhookInbox
 from echo_v2.persistence.credential_cipher import (
@@ -66,7 +67,7 @@ class PostgresRepos:
     webhooks: PostgresWebhookDedupStore
     state_webhooks: PostgresStateWebhookRepository
     bot_inbox: PostgresWebhookInbox
-    idempotency: PostgresIdempotencyStore
+    idempotency: PostgresIdempotencyStore[Any]
     scheduled_actions: PostgresScheduledActionRepository
     messages: PostgresMessageRepository
     chat_state: PostgresChatStateRepository
@@ -81,7 +82,7 @@ class PostgresRepos:
     daily_digests: PostgresDailyDigestRepository
     waiting_list_sessions: PostgresWaitingListSessionRepository
     waitlist: PostgresWaitlistRepository
-    session_factory: async_sessionmaker
+    session_factory: async_sessionmaker[AsyncSession]
     unit_of_work: type[PostgresUnitOfWork]
 
 
@@ -105,7 +106,7 @@ def build_postgres_repos(settings: DBSettings) -> PostgresRepos:
     webhooks = PostgresWebhookDedupStore(factory)
     state_webhooks = PostgresStateWebhookRepository(factory)
     bot_inbox = PostgresWebhookInbox(factory)
-    idempotency = PostgresIdempotencyStore(factory)
+    idempotency: PostgresIdempotencyStore[Any] = PostgresIdempotencyStore(factory)
     scheduled_actions = PostgresScheduledActionRepository(factory)
     messages = PostgresMessageRepository(factory)
     chat_state = PostgresChatStateRepository(factory)

@@ -43,7 +43,7 @@ import base64
 import hashlib
 import hmac
 import logging
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from fastapi import APIRouter, Header, HTTPException, Request
 from langsmith import traceable
@@ -161,7 +161,7 @@ class ChatEventDispatcher:
         self,
         ingestion_service: ChatIngestionService,
         connection_repo: WhatsAppConnectionRepository,
-        onboarding_service=None,
+        onboarding_service: Any | None = None,
     ) -> None:
         self._ingestion = ingestion_service
         self._connection_repo = connection_repo
@@ -338,6 +338,11 @@ def build_router(
         ):
             raise HTTPException(status_code=401, detail="unauthorized")
 
+        # stored.id is the DB UUID; required for dispatch/dedup. In-memory
+        # repos may not assign one, but a real webhook always comes from a
+        # persisted connection.
+        if stored.id is None:
+            raise HTTPException(status_code=500, detail="connection has no id")
 
         event = parse_adapter.parse(payload)
         if event is None:

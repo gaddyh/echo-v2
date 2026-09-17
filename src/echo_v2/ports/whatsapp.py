@@ -32,7 +32,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 __all__ = [
     "ConnectionConfig",
@@ -391,7 +391,7 @@ class WhatsAppEventAdapter(Protocol):
     Pure and synchronous: no I/O, no user lookup, no raw payload on output.
     """
 
-    def parse(self, payload: dict) -> ProviderEvent | None:
+    def parse(self, payload: dict[str, Any]) -> ProviderEvent | None:
         """Normalize a provider webhook payload.
 
         Returns ``None`` for payloads the adapter deliberately ignores

@@ -104,7 +104,9 @@ class BotChannel(Protocol):
     implementation normalizes it to the provider's required format.
     """
 
-    async def send_text(self, user_phone: str, text: str) -> None: ...
+    async def send_text(self, user_phone: str, text: str) -> str:
+        """Send a text message. Returns the provider message ID."""
+        ...
 
     async def send_image(
         self,

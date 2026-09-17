@@ -12,8 +12,10 @@ mode where the enclosing unit of work owns the transaction boundary.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from types import TracebackType
+from typing import Any, cast
 
-from sqlalchemy import desc, func, select, update
+from sqlalchemy import CursorResult, desc, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
@@ -60,7 +62,12 @@ class _SessionContext:
     async def __aenter__(self) -> AsyncSession:
         return self._session
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
         try:
             if self._owns:
                 if exc_type is None:
@@ -138,7 +145,7 @@ class PostgresMessageRepository:
                 .where(MessageRow.id == message_id)
                 .values(text=text)
             )
-            result = await session.execute(stmt)
+            result = cast(CursorResult[Any], await session.execute(stmt))
             await session.commit()
             return result.rowcount > 0
 
@@ -412,7 +419,7 @@ class PostgresChatStateRepository:
                     updated_at=datetime.now(timezone.utc),
                 )
             )
-            result = await session.execute(stmt)
+            result = cast(CursorResult[Any], await session.execute(stmt))
             return result.rowcount > 0
 
     @staticmethod
@@ -696,7 +703,7 @@ class PostgresWaitingForMeActiveRepository:
                 WaitingForMeActiveRow.user_id == user_id,
                 WaitingForMeActiveRow.chat_id == chat_id,
             )
-            result = await session.execute(stmt)
+            result = cast(CursorResult[Any], await session.execute(stmt))
             return result.rowcount > 0
 
     async def delete_if_version(
@@ -797,7 +804,7 @@ class PostgresWaitingForMeActiveRepository:
                     updated_at=datetime.now(timezone.utc),
                 )
             )
-            result = await session.execute(stmt)
+            result = cast(CursorResult[Any], await session.execute(stmt))
             return result.rowcount > 0
 
     async def snooze(
@@ -821,7 +828,7 @@ class PostgresWaitingForMeActiveRepository:
                     updated_at=datetime.now(timezone.utc),
                 )
             )
-            result = await session.execute(stmt)
+            result = cast(CursorResult[Any], await session.execute(stmt))
             return result.rowcount > 0
 
     async def list_expired_snoozes(
@@ -864,7 +871,7 @@ class PostgresWaitingForMeActiveRepository:
                     updated_at=datetime.now(timezone.utc),
                 )
             )
-            result = await session.execute(stmt)
+            result = cast(CursorResult[Any], await session.execute(stmt))
             return result.rowcount > 0
 
     async def apply_if_version(
@@ -891,7 +898,7 @@ class PostgresWaitingForMeActiveRepository:
                     updated_at=datetime.now(timezone.utc),
                 )
             )
-            result = await session.execute(stmt)
+            result = cast(CursorResult[Any], await session.execute(stmt))
             return result.rowcount > 0
 
     @staticmethod

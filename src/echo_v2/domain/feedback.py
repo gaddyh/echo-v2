@@ -18,6 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
+from typing import Any
 
 __all__ = [
     "ActionCommandResult",
@@ -110,7 +111,7 @@ class WaitingForMeFeedback:
     result_id: str | None
     target_version: int | None
     verdict: FeedbackVerdict
-    conversation_snapshot: dict | None = None
+    conversation_snapshot: dict[str, Any] | None = None
     provider_message_id: str | None = None
     created_at: datetime | None = None
     expires_at: datetime | None = None
@@ -136,7 +137,7 @@ class WaitingForMeAction:
     active_id: str | None
     target_version: int | None
     action_type: WaitingForMeActionType
-    action_payload: dict | None = None
+    action_payload: dict[str, Any] | None = None
     provider_message_id: str | None = None
     created_at: datetime | None = None
 

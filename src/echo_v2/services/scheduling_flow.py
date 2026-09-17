@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import logging
 from typing import Protocol, runtime_checkable
+from zoneinfo import ZoneInfo
 
 from echo_v2.domain.conversation import SchedulingFlowContext, SchedulingFlowState
 from echo_v2.domain.scheduling import ScheduledActionType
@@ -304,6 +305,6 @@ def _phone_to_chat_id(phone: str) -> str:
     return cleaned
 
 
-def _tz(name: str):
+def _tz(name: str) -> ZoneInfo:
     from zoneinfo import ZoneInfo
     return ZoneInfo(name)

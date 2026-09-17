@@ -121,4 +121,4 @@ class InMemoryDailyDigestRepository:
         return self._rows.get((user_id, local_date))
 
 
-_dig_repo: DailyDigestRepository = InMemoryDailyDigestRepository()  # type: ignore[assignment]
+_dig_repo: DailyDigestRepository = InMemoryDailyDigestRepository()

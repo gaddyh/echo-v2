@@ -20,6 +20,8 @@ shared session in UoW mode (so ``claim`` + ``update_status`` can be atomic).
 
 from __future__ import annotations
 
+from types import TracebackType
+
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
@@ -100,7 +102,12 @@ class _SessionContext:
     async def __aenter__(self) -> AsyncSession:
         return self._session
 
-    async def __aexit__(self, exc_type, exc, tb) -> None:
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
         if not self._owns:
             return
         try:

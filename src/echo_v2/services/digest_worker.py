@@ -73,7 +73,7 @@ class DigestWorker:
         digest_repo: DailyDigestRepository,
         query_service: WaitingListQueryService,
         bot: BotChannel,
-        user_provider: Callable[[], Awaitable[list[tuple[str, str, str, str | None]]]],
+        user_provider: Callable[[], Awaitable[list[tuple[str, str, str | None, str | None]]]],
         token_service: WaitingListTokenService | None = None,
         poll_interval_seconds: float = 300.0,
         template_name: str = "morning_waiting_digest6",

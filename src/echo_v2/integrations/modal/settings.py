@@ -35,10 +35,15 @@ def load_settings(
     ``MODAL_TRANSCRIPTION_SECRET``, and ``MODAL_TRANSCRIPTION_TIMEOUT_SECONDS``.
     Missing values default to empty strings (use :meth:`is_configured` to check).
     """
+    resolved_endpoint = (
+        endpoint_url if endpoint_url is not None else os.getenv("MODAL_TRANSCRIPTION_URL", "")
+    )
+    resolved_key = key if key is not None else os.getenv("MODAL_TRANSCRIPTION_KEY", "")
+    resolved_secret = secret if secret is not None else os.getenv("MODAL_TRANSCRIPTION_SECRET", "")
     return ModalTranscriptionSettings(
-        endpoint_url=(endpoint_url or os.getenv("MODAL_TRANSCRIPTION_URL", "")).strip(),
-        key=(key or os.getenv("MODAL_TRANSCRIPTION_KEY", "")).strip(),
-        secret=(secret or os.getenv("MODAL_TRANSCRIPTION_SECRET", "")).strip(),
+        endpoint_url=resolved_endpoint.strip(),
+        key=resolved_key.strip(),
+        secret=resolved_secret.strip(),
         timeout_seconds=float(
             timeout_seconds
             if timeout_seconds is not None

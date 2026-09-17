@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from sqlalchemy import create_engine
+from sqlalchemy import Engine, create_engine
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -88,7 +88,7 @@ def run_migrations(database_url: str) -> None:
     command.upgrade(cfg, "head")
 
 
-def create_sync_engine_for_migrations(database_url: str):
+def create_sync_engine_for_migrations(database_url: str) -> Engine:
     """Build a sync engine for Alembic / admin scripts.
 
     Exposed for tests that need to inspect schema on a sync connection. The

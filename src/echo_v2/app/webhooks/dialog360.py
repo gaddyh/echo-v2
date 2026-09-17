@@ -24,6 +24,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import logging
+from typing import Any
 
 from fastapi import APIRouter, Header, HTTPException, Request
 from langsmith import traceable
@@ -34,7 +35,7 @@ from echo_v2.observability.sanitizers import (
     safe_webhook_inputs,
     safe_webhook_output,
 )
-from echo_v2.ports.bot import BotEventAdapter, BotEventType
+from echo_v2.ports.bot import BotEvent, BotEventAdapter, BotEventType
 from echo_v2.services.scheduling_flow import SchedulingFlowService
 
 __all__ = ["build_router"]
@@ -48,9 +49,9 @@ def build_router(
     webhook_secret: str,
     adapter: BotEventAdapter | None = None,
     inbox: WebhookInbox | None = None,
-    onboarding_service=None,
-    feedback_handler=None,
-    command_router=None,
+    onboarding_service: Any | None = None,
+    feedback_handler: Any | None = None,
+    command_router: Any | None = None,
 ) -> APIRouter:
     """Build a 360dialog bot webhook router.
 
@@ -86,7 +87,7 @@ def build_router(
     inbox_store = inbox or InMemoryWebhookInbox()
     secret_hash = hashlib.sha256(webhook_secret.encode("utf-8")).digest()
 
-    async def _dispatch(event) -> None:
+    async def _dispatch(event: BotEvent) -> None:
         """Route the event to the appropriate handler."""
         # New path: explicit command router.
         if command_router is not None:

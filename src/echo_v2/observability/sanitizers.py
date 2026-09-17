@@ -40,7 +40,7 @@ def _hash_if_present(value: str | None) -> str | None:
     return correlation_id(value)
 
 
-def safe_action_inputs(inputs: dict) -> dict:
+def safe_action_inputs(inputs: dict[str, Any]) -> dict[str, Any]:
     """Sanitize WaitingForMeActionService method inputs.
 
     Strips ``self`` and all raw IDs. Keeps hashed ``user_id``, ``active_id``,
@@ -59,12 +59,12 @@ def safe_action_inputs(inputs: dict) -> dict:
     return sanitized
 
 
-def safe_action_output(output: HandlingOutcome) -> dict:
+def safe_action_output(output: HandlingOutcome) -> dict[str, Any]:
     """Sanitize action method output — just the outcome name."""
     return {"outcome": output.value if hasattr(output, "value") else str(output)}
 
 
-def safe_feedback_handle_inputs(inputs: dict) -> dict:
+def safe_feedback_handle_inputs(inputs: dict[str, Any]) -> dict[str, Any]:
     """Sanitize FeedbackHandler.handle inputs.
 
     Strips ``self`` and the full ``BotEvent``. The event contains phone
@@ -73,12 +73,12 @@ def safe_feedback_handle_inputs(inputs: dict) -> dict:
     return {"event_type": "bot_event"}
 
 
-def safe_feedback_handle_output(output: bool) -> dict:
+def safe_feedback_handle_output(output: bool) -> dict[str, Any]:
     """Sanitize FeedbackHandler.handle output."""
     return {"handled": output}
 
 
-def safe_scheduling_execute_inputs(inputs: dict) -> dict:
+def safe_scheduling_execute_inputs(inputs: dict[str, Any]) -> dict[str, Any]:
     """Sanitize SchedulingService.execute inputs.
 
     Strips ``self`` and the full ``ScheduledAction`` (which contains
@@ -95,12 +95,12 @@ def safe_scheduling_execute_inputs(inputs: dict) -> dict:
     }
 
 
-def safe_scheduling_execute_output(output: str) -> dict:
+def safe_scheduling_execute_output(output: str) -> dict[str, Any]:
     """Sanitize SchedulingService.execute output — the provider message ID."""
     return {"result": output}
 
 
-def safe_bot_send_inputs(inputs: dict) -> dict:
+def safe_bot_send_inputs(inputs: dict[str, Any]) -> dict[str, Any]:
     """Sanitize _execute_bot_send inputs.
 
     Strips ``self`` and the full ``ScheduledAction``. Keeps action type
@@ -120,12 +120,12 @@ def safe_bot_send_inputs(inputs: dict) -> dict:
     return sanitized
 
 
-def safe_bot_send_output(output: str) -> dict:
+def safe_bot_send_output(output: str) -> dict[str, Any]:
     """Sanitize _execute_bot_send output."""
     return {"result": output}
 
 
-def safe_dialog360_http_inputs(inputs: dict) -> dict:
+def safe_dialog360_http_inputs(inputs: dict[str, Any]) -> dict[str, Any]:
     """Sanitize Dialog360._post_json inputs.
 
     Strips ``self``, URL, headers, and payload (which contains phone
@@ -140,13 +140,13 @@ def safe_dialog360_http_inputs(inputs: dict) -> dict:
     }
 
 
-def safe_dialog360_http_output(output: dict) -> dict:
+def safe_dialog360_http_output(output: dict[str, Any]) -> dict[str, Any]:
     """Sanitize Dialog360._post_json output — just whether it succeeded."""
     # The output is the parsed JSON body; we only report that it returned.
     return {"status": "ok"}
 
 
-def safe_green_http_inputs(inputs: dict) -> dict:
+def safe_green_http_inputs(inputs: dict[str, Any]) -> dict[str, Any]:
     """Sanitize Green._request_json inputs.
 
     Strips ``self``, URL, method, headers, json_body, and connection_id.
@@ -166,12 +166,12 @@ def safe_green_http_inputs(inputs: dict) -> dict:
     return sanitized
 
 
-def safe_green_http_output(output: dict) -> dict:
+def safe_green_http_output(output: dict[str, Any]) -> dict[str, Any]:
     """Sanitize Green._request_json output — just whether it returned."""
     return {"status": "ok"}
 
 
-def safe_webhook_inputs(inputs: dict) -> dict:
+def safe_webhook_inputs(inputs: dict[str, Any]) -> dict[str, Any]:
     """Sanitize webhook entry-point inputs.
 
     Strips ``request``, ``authorization`` header, and the raw payload.
@@ -180,7 +180,7 @@ def safe_webhook_inputs(inputs: dict) -> dict:
     return {"provider": "webhook"}
 
 
-def safe_webhook_output(output: dict) -> dict:
+def safe_webhook_output(output: dict[str, Any]) -> dict[str, Any]:
     """Sanitize webhook output — just the status string."""
     if isinstance(output, dict):
         return {"status": output.get("status", "unknown")}

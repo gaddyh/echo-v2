@@ -18,9 +18,10 @@ A stale ``processing`` entry past the lease timeout is reclaimable by
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Protocol, runtime_checkable
+from types import TracebackType
+from typing import Any, Protocol, cast, runtime_checkable
 
-from sqlalchemy import text
+from sqlalchemy import CursorResult, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -157,7 +158,7 @@ class PostgresWebhookInbox:
                 )
                 .bindparams(key=key)
             )
-            result = await session.execute(update_stmt)
+            result = cast(CursorResult[Any], await session.execute(update_stmt))
             return result.rowcount > 0
 
     async def succeed(self, key: str) -> None:
@@ -196,7 +197,7 @@ class PostgresWebhookInbox:
                 )
                 .bindparams(cutoff=cutoff)
             )
-            result = await session.execute(stmt)
+            result = cast(CursorResult[Any], await session.execute(stmt))
             return result.rowcount
 
 
@@ -212,7 +213,12 @@ class _SessionContext:
     async def __aenter__(self) -> AsyncSession:
         return self._session
 
-    async def __aexit__(self, exc_type, exc, tb) -> None:
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
         if not self._owns:
             return
         try:
@@ -225,4 +231,4 @@ class _SessionContext:
 
 
 # Structural check: InMemoryWebhookInbox satisfies the protocol.
-_: WebhookInbox = InMemoryWebhookInbox()  # type: ignore[assignment]
+_: WebhookInbox = InMemoryWebhookInbox()

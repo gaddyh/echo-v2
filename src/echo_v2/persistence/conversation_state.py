@@ -16,7 +16,8 @@ __all__ = ["ConversationStateRepository", "InMemoryConversationStateRepository"]
 class ConversationStateRepository:
     """Protocol-style base class for conversation state repositories."""
 
-    async def get(self, user_id: str) -> SchedulingFlowContext: ...
+    async def get(self, user_id: str) -> SchedulingFlowContext:
+        raise NotImplementedError
 
     async def save(self, context: SchedulingFlowContext) -> None: ...
 

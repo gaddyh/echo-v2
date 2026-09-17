@@ -3,7 +3,7 @@ import inspect
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from time import perf_counter
-from typing import Generic, TypeVar
+from typing import Any, Generic, TypeVar, cast
 
 from echo_v2.runtime.context import RunContext
 from echo_v2.runtime.errors import (
@@ -47,7 +47,7 @@ def emit_failed(
     duration_ms: float,
     idempotency_key: str | None = None,
 ) -> None:
-    attributes: dict = {
+    attributes: dict[str, Any] = {
         "operation_name": context.operation_name,
         "attempts": attempts,
         "duration_ms": duration_ms,
@@ -70,11 +70,11 @@ async def _run_operation(
     input_: TInput,
 ) -> TOutput:
     if inspect.iscoroutinefunction(operation):
-        return await operation(input_)
+        return cast("TOutput", await operation(input_))
 
     result = await asyncio.to_thread(operation, input_)
     if inspect.isawaitable(result):
-        return await result
+        return cast("TOutput", await result)
     return result
 
 
@@ -95,7 +95,7 @@ async def _run_with_retries(
     """
     start = perf_counter()
 
-    started_attributes: dict = {
+    started_attributes: dict[str, Any] = {
         "operation_name": context.operation_name,
     }
     if idempotency_key is not None:
@@ -118,7 +118,7 @@ async def _run_with_retries(
 
             duration_ms = (perf_counter() - start) * 1000
 
-            succeeded_attributes: dict = {
+            succeeded_attributes: dict[str, Any] = {
                 "operation_name": context.operation_name,
                 "attempts": attempt,
                 "duration_ms": duration_ms,
@@ -141,7 +141,7 @@ async def _run_with_retries(
             )
 
         except asyncio.TimeoutError as exc:
-            wrapped = TimeoutError(f"Operation timed out during run {context.run_id}")
+            wrapped: TimeoutError | IndeterminateError | PermanentError = TimeoutError(f"Operation timed out during run {context.run_id}")
 
             # An irreversible write that times out may have already produced
             # its side effect. Do NOT retry — propagate so execute() can store
@@ -299,7 +299,7 @@ def _emit_retrying(
     policy: ExecutionPolicy,
     idempotency_key: str | None,
 ) -> None:
-    attributes: dict = {
+    attributes: dict[str, Any] = {
         "operation_name": context.operation_name,
         "attempt": attempt,
         "next_attempt": attempt + 1,
@@ -352,7 +352,7 @@ def _emit_indeterminate(
     effect may have happened (timeout, cancellation, or unexpected error on
     an irreversible write).
     """
-    attributes: dict = {
+    attributes: dict[str, Any] = {
         "operation_name": context.operation_name,
         "duration_ms": duration_ms,
         "error_type": type(error).__name__,

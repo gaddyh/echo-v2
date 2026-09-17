@@ -34,7 +34,7 @@ import hashlib
 import logging
 import secrets
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from echo_v2.integrations.green.provisioner import GreenProvisioner
 from echo_v2.persistence.identity import PhoneParseError, normalize_phone_e164
@@ -50,6 +50,9 @@ from echo_v2.ports.whatsapp import (
     PairingOutcome,
     WhatsAppEventSubscription,
 )
+
+if TYPE_CHECKING:
+    from echo_v2.integrations.green.client import GreenClient
 
 __all__ = ["OnboardingContext", "OnboardingService", "UserRepository"]
 
@@ -217,7 +220,7 @@ class OnboardingService:
         user_repo: UserRepository,
         connection_repo: WhatsAppConnectionRepository,
         provisioner: GreenProvisioner,
-        green_client,  # GreenClient — avoid circular import
+        green_client: GreenClient,  # GreenClient — avoid circular import
         webhook_base_url: str,
         poll_interval: float = 5.0,
         poll_max_attempts: int = 60,

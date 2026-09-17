@@ -84,7 +84,7 @@ class _BotSendInput:
 
     chat_id: str
     message: str
-    buttons: list[dict] | None = None
+    buttons: list[dict[str, Any]] | None = None
     template: dict[str, Any] | None = None
 
 
@@ -99,7 +99,7 @@ class SchedulingService:
         idempotency_store: IdempotencyStore[str],
         event_sink: EventSink | None = None,
         bot_channel: BotChannel | None = None,
-        send_validator=None,
+        send_validator: Any | None = None,
     ) -> None:
         self._action_repo = action_repo
         self._connection_repo = connection_repo
@@ -371,8 +371,11 @@ class SchedulingService:
         * ``buttons`` set → free-text interactive button message.
         * Neither → plain free-text message.
         """
+        bot = self._bot_channel
+        if bot is None:
+            return "bot_sent"
         if inp.template is not None:
-            msg_id = await self._bot_channel.send_template(
+            msg_id = await bot.send_template(
                 inp.chat_id,
                 inp.template["name"],
                 inp.template["language"],
@@ -381,11 +384,11 @@ class SchedulingService:
             )
             return msg_id or "bot_sent"
         if inp.buttons:
-            msg_id = await self._bot_channel.send_buttons(
+            msg_id = await bot.send_buttons(
                 inp.chat_id,
                 body_text=inp.message,
                 buttons=inp.buttons,
             )
             return msg_id or "bot_sent"
-        await self._bot_channel.send_text(inp.chat_id, inp.message)
+        await bot.send_text(inp.chat_id, inp.message)
         return "bot_sent"

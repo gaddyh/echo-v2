@@ -23,9 +23,14 @@ responsibility.
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 from echo_v2.domain.conversation import SchedulingFlowState
 from echo_v2.ports.bot import BotEvent, BotEventType
+
+if TYPE_CHECKING:
+    from echo_v2.services.onboarding import OnboardingService
+    from echo_v2.services.scheduling_flow import SchedulingFlowService
 
 __all__ = ["BotFlowRegistry"]
 
@@ -48,8 +53,8 @@ class BotFlowRegistry:
     def __init__(
         self,
         *,
-        onboarding_service,
-        scheduling_flow,
+        onboarding_service: OnboardingService,
+        scheduling_flow: SchedulingFlowService,
     ) -> None:
         self._onboarding = onboarding_service
         self._scheduling_flow = scheduling_flow

@@ -36,7 +36,11 @@ def load_settings(
     deployment/configuration error, not a runtime error.
     """
 
-    url = partner_api_url or os.getenv("GREEN_API_PARTNER_URL", _DEFAULT_PARTNER_URL)
+    url = (
+        partner_api_url
+        if partner_api_url is not None
+        else os.getenv("GREEN_API_PARTNER_URL", _DEFAULT_PARTNER_URL)
+    )
     token = partner_token or os.getenv("GREEN_API_PARTNER_TOKEN")
     if not token:
         raise ValueError(

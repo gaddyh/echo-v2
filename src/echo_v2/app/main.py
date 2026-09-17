@@ -27,9 +27,16 @@ import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
+from typing import TYPE_CHECKING, Any
 
 from dotenv import load_dotenv
 from fastapi import FastAPI
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
+    from openai import AsyncOpenAI
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from echo_v2.app.webhooks.dialog360 import build_router as build_dialog360_router
 from echo_v2.app.webhooks.green import (
@@ -65,7 +72,7 @@ _logger = logging.getLogger("echo_v2.app")
 logging.basicConfig(level=logging.INFO)
 
 
-def _build_openai_client():
+def _build_openai_client() -> tuple[Any, AsyncOpenAI]:
     """Build a single shared OpenAI client, optionally LangSmith-wrapped.
 
     When ``LANGSMITH_TRACING=true``, the client is wrapped with
@@ -113,7 +120,7 @@ class _SessionUserResolver:
     a long-lived session.
     """
 
-    def __init__(self, session_factory) -> None:
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
 
     async def resolve(self, phone: str) -> tuple[str, str] | None:
@@ -298,7 +305,7 @@ def create_app() -> FastAPI:
         result_repo=repos.wfm_results,
     )
 
-    async def user_provider():
+    async def user_provider() -> list[tuple[str, str, str | None, str | None]]:
         """Return all active users as (user_id, phone, timezone, first_name)."""
         from sqlalchemy import select
 
@@ -410,13 +417,13 @@ def create_app() -> FastAPI:
     )
 
     # --- FastAPI app with lifespan (scheduler + worker start/stop with app) --
-    scheduler_task: asyncio.Task | None = None
-    analysis_worker_task: asyncio.Task | None = None
-    digest_worker_task: asyncio.Task | None = None
-    snooze_worker_task: asyncio.Task | None = None
+    scheduler_task: asyncio.Task[None] | None = None
+    analysis_worker_task: asyncio.Task[None] | None = None
+    digest_worker_task: asyncio.Task[None] | None = None
+    snooze_worker_task: asyncio.Task[None] | None = None
 
     @asynccontextmanager
-    async def lifespan(app: FastAPI):
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         nonlocal scheduler_task, analysis_worker_task, digest_worker_task
         nonlocal snooze_worker_task
         # Startup: recover stale actions + start scheduler loop.
@@ -561,7 +568,7 @@ def _get_app() -> FastAPI:
     return create_app()
 
 
-app = None  # type: ignore[assignment]
+app = None
 
 # When uvicorn imports this module, it expects `app` to be a FastAPI instance.
 # We create it only if DATABASE_URL is set (production). For local dev without

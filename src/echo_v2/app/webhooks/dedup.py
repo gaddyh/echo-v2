@@ -73,4 +73,4 @@ class InMemoryWebhookDedupStore:
 
 
 # Structural check: InMemoryWebhookDedupStore satisfies the protocol.
-_: WebhookDedupStore = InMemoryWebhookDedupStore()  # type: ignore[assignment]
+_: WebhookDedupStore = InMemoryWebhookDedupStore()

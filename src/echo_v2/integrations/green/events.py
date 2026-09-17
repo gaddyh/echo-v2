@@ -303,4 +303,4 @@ def _timestamp(raw: Any) -> datetime:
 
 
 # Structural check: GreenEventAdapter is a WhatsAppEventAdapter.
-_: WhatsAppEventAdapter = GreenEventAdapter()  # type: ignore[assignment]
+_: WhatsAppEventAdapter = GreenEventAdapter()

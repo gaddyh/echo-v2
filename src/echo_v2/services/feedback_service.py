@@ -35,7 +35,9 @@ Atomicity (actions):
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from langsmith import traceable
@@ -101,7 +103,9 @@ def _next_digest_at(
 _MAX_SNOOZE_DAYS = 7
 
 
-def make_snooze_reminder_validator(active_repo):
+def make_snooze_reminder_validator(
+    active_repo: WaitingForMeActiveRepository,
+) -> Callable[[dict[str, Any]], Awaitable[bool]]:
     """Build a send_validator for SchedulingService that suppresses stale snooze reminders.
 
     Before sending a snooze reminder, checks that the active item still
@@ -114,7 +118,7 @@ def make_snooze_reminder_validator(active_repo):
     * Re-snooze to a different time (snoozed_until mismatch).
     """
 
-    async def _validate(payload: dict) -> bool:
+    async def _validate(payload: dict[str, Any]) -> bool:
         active_id = payload.get("active_id")
         target_version = payload.get("target_version")
         expected_snoozed_until = payload.get("expected_snoozed_until")
@@ -127,7 +131,7 @@ def make_snooze_reminder_validator(active_repo):
             return False  # version changed (new message)
         if active.snoozed_until is None:
             return False  # no longer snoozed
-        return active.snoozed_until.isoformat() == expected_snoozed_until
+        return bool(active.snoozed_until.isoformat() == expected_snoozed_until)
 
     return _validate
 
@@ -157,10 +161,10 @@ class WaitingForMeActionService:
         mute_repo: ChatMuteRepository,
         feedback_repo: WaitingForMeFeedbackRepository | None = None,
         result_repo: WaitingForMeResultRepository | None = None,
-        scheduling_service=None,
-        user_phone_lookup=None,
-        chat_name_lookup=None,
-        token_service=None,
+        scheduling_service: Any | None = None,
+        user_phone_lookup: Any | None = None,
+        chat_name_lookup: Any | None = None,
+        token_service: Any | None = None,
         reminder_template_name: str = "snooze_reminder_v1",
         click_repo: ChatNotInterestedClickRepository | None = None,
     ) -> None:
@@ -349,7 +353,7 @@ class WaitingForMeActionService:
             # Default: 1 hour from now.
             snoozed_until = now + timedelta(hours=1)
 
-        action_payload: dict = {"snoozed_until": snoozed_until.isoformat()}
+        action_payload: dict[str, Any] = {"snoozed_until": snoozed_until.isoformat()}
         if snooze_preset is not None:
             action_payload["snooze_preset"] = snooze_preset
         if snooze_until is not None:
@@ -607,7 +611,7 @@ class WaitingForMeActionService:
 
         Returns APPLIED, DUPLICATE, STALE, or NOT_FOUND.
         """
-        action_payload: dict = {"source": "waiting_list_web"}
+        action_payload: dict[str, Any] = {"source": "waiting_list_web"}
         if session_id is not None:
             action_payload["waiting_list_session_id"] = session_id
 
@@ -664,7 +668,7 @@ class WaitingForMeActionService:
 
         Returns APPLIED, DUPLICATE, STALE, or NOT_FOUND.
         """
-        action_payload: dict = {
+        action_payload: dict[str, Any] = {
             "source": "waiting_list_web",
             "dismiss_reason": reason,
         }

@@ -33,9 +33,10 @@ from __future__ import annotations
 import asyncio
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any, Generic, TypeVar
+from types import TracebackType
+from typing import Any, Generic, TypeVar, cast
 
-from sqlalchemy import select, text, update
+from sqlalchemy import CursorResult, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
@@ -208,9 +209,9 @@ class PostgresIdempotencyStore(IdempotencyStore[TOutput], Generic[TOutput]):
                 "DELETE FROM idempotency_operations "
                 "WHERE key = :key AND owner_token = :token AND state = 'IN_PROGRESS'"
             )
-            result = await session.execute(
+            result = cast(CursorResult[Any], await session.execute(
                 stmt, {"key": key, "token": str(owner_token)}
-            )
+            ))
             if result.rowcount == 0:
                 raise LostOwnershipError(
                     f"release() for key {key!r} affected 0 rows; ownership lost."
@@ -228,7 +229,7 @@ class PostgresIdempotencyStore(IdempotencyStore[TOutput], Generic[TOutput]):
                 )
                 .values(lease_expires_at=new_expiry, updated_at=datetime.now(timezone.utc))
             )
-            result = await session.execute(stmt)
+            result = cast(CursorResult[Any], await session.execute(stmt))
             return result.rowcount > 0
 
     # --- wait -------------------------------------------------------------
@@ -296,7 +297,7 @@ class PostgresIdempotencyStore(IdempotencyStore[TOutput], Generic[TOutput]):
                 )
                 .values(**values)
             )
-            result = await session.execute(stmt)
+            result = cast(CursorResult[Any], await session.execute(stmt))
             if result.rowcount == 0:
                 raise LostOwnershipError(
                     f"Terminal write for key {key!r} affected 0 rows; "
@@ -403,7 +404,12 @@ class _SessionContext:
     async def __aenter__(self) -> AsyncSession:
         return self._session
 
-    async def __aexit__(self, exc_type, exc, tb) -> None:
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
         if not self._owns:
             return
         try:

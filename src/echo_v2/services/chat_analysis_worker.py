@@ -37,11 +37,11 @@ import dataclasses
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Literal, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
 
 from langsmith import traceable
 
-from echo_v2.domain.chat import ChatState
+from echo_v2.domain.chat import ChatState, Message
 from echo_v2.domain.waiting_for_me import (
     PreparedAnalysis,
     WaitingForMeDecision,
@@ -66,7 +66,7 @@ __all__ = [
 _logger = logging.getLogger("echo_v2.services.chat_analysis_worker")
 
 
-def safe_process_chat_inputs(inputs: dict) -> dict:
+def safe_process_chat_inputs(inputs: dict[str, Any]) -> dict[str, Any]:
     """Sanitize _process_chat inputs for LangSmith trace metadata.
 
     Removes ``self`` and the full ``ChatState``. Keeps only safe
@@ -84,7 +84,7 @@ def safe_process_chat_inputs(inputs: dict) -> dict:
     }
 
 
-def safe_process_chat_output(output: str) -> dict:
+def safe_process_chat_output(output: str) -> dict[str, Any]:
     """Sanitize _process_chat output for LangSmith trace metadata."""
     return {"status": output}
 
@@ -277,7 +277,7 @@ class ChatAnalysisProcessor:
             conversation_snapshot=conversation_snapshot,
         )
 
-    async def _transcribe_audio_messages(self, messages: list) -> list:
+    async def _transcribe_audio_messages(self, messages: list[Message]) -> list[Message]:
         """Transcribe audio messages that have a download URL but no text.
 
         For each message with ``message_type == "audio"``, ``text is None``,
@@ -311,19 +311,25 @@ class ChatAnalysisProcessor:
                     msg.audio_download_url,
                 )
                 try:
-                    transcript = await handle_direct_audio_download_url(
-                        transcriber=self._transcriber,
-                        download_url=msg.audio_download_url,
-                        file_name=msg.audio_file_name or "voice-message",
-                        mime_type=msg.audio_mime_type or "",
-                    )
-                    await self._messages.update_text(msg.id, transcript)
-                    _logger.info(
-                        "transcribed audio message %s: %s",
-                        msg.id,
-                        transcript[:100],
-                    )
-                    msg = dataclasses.replace(msg, text=transcript)
+                    if self._transcriber is None:
+                        _logger.warning(
+                            "audio message %s has download URL but no transcriber configured",
+                            msg.id,
+                        )
+                    else:
+                        transcript = await handle_direct_audio_download_url(
+                            transcriber=self._transcriber,
+                            download_url=msg.audio_download_url,
+                            file_name=msg.audio_file_name or "voice-message",
+                            mime_type=msg.audio_mime_type or "",
+                        )
+                        await self._messages.update_text(msg.id, transcript)
+                        _logger.info(
+                            "transcribed audio message %s: %s",
+                            msg.id,
+                            transcript[:100],
+                        )
+                        msg = dataclasses.replace(msg, text=transcript)
                 except Exception:
                     _logger.exception(
                         "audio transcription failed for message %s; "

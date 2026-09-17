@@ -10,6 +10,7 @@ id from the cookie.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 
 from echo_v2.persistence.waiting_list_tokens import WaitingListSessionRepository
 
@@ -90,6 +91,6 @@ class WaitingListTokenService:
         """Revoke a session."""
         await self._repo.revoke(session_id)
 
-    async def cleanup_expired(self, *, now, batch_size: int = 100) -> int:
+    async def cleanup_expired(self, *, now: datetime, batch_size: int = 100) -> int:
         """Delete expired sessions. Returns count deleted."""
         return await self._repo.cleanup_expired(now=now, batch_size=batch_size)

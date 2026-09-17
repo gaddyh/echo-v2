@@ -43,7 +43,10 @@ async def test_save_and_get_by_ref():
     conn = _stored()
     await repo.save(conn)
     fetched = await repo.get(conn.ref)
-    assert fetched is conn
+    assert fetched is not None
+    assert fetched.user_id == conn.user_id
+    assert fetched.ref == conn.ref
+    assert fetched.id is not None
 
 
 async def test_get_by_user():
@@ -51,7 +54,10 @@ async def test_get_by_user():
     conn = _stored()
     await repo.save(conn)
     fetched = await repo.get_by_user("u1")
-    assert fetched is conn
+    assert fetched is not None
+    assert fetched.user_id == conn.user_id
+    assert fetched.ref == conn.ref
+    assert fetched.id is not None
 
 
 async def test_get_by_provider_id():
@@ -59,7 +65,10 @@ async def test_get_by_provider_id():
     conn = _stored()
     await repo.save(conn)
     fetched = await repo.get_by_provider_id("green", "123")
-    assert fetched is conn
+    assert fetched is not None
+    assert fetched.user_id == conn.user_id
+    assert fetched.ref == conn.ref
+    assert fetched.id is not None
 
 
 async def test_get_returns_none_when_absent():
