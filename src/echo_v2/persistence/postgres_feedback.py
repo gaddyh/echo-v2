@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from echo_v2.domain.feedback import (
     ActionCommandResult,
     ChatMute,
+    ChatNotInterestedClicks,
     FeedbackVerdict,
     HandlingOutcome,
     WaitingForMeAction,
@@ -25,6 +26,7 @@ from echo_v2.domain.feedback import (
 )
 from echo_v2.persistence.orm import (
     ChatMuteRow,
+    ChatNotInterestedClickRow,
     WaitingForMeActionRow,
     WaitingForMeActiveRow,
     WaitingForMeFeedbackRow,
@@ -32,6 +34,7 @@ from echo_v2.persistence.orm import (
 
 __all__ = [
     "PostgresChatMuteRepository",
+    "PostgresChatNotInterestedClickRepository",
     "PostgresWaitingForMeActionRepository",
     "PostgresWaitingForMeFeedbackRepository",
 ]
@@ -669,6 +672,98 @@ class PostgresChatMuteRepository:
             chat_id=row.chat_id,
             muted_until=row.muted_until,
             permanent=row.permanent,
+            created_at=row.created_at,
+            updated_at=row.updated_at,
+        )
+
+
+# --- PostgresChatNotInterestedClickRepository --------------------------------
+
+
+class PostgresChatNotInterestedClickRepository:
+    """PostgreSQL implementation of :class:`ChatNotInterestedClickRepository`."""
+
+    def __init__(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        *,
+        session: AsyncSession | None = None,
+    ) -> None:
+        self._session_factory = session_factory
+        self._shared_session = session
+
+    def _session(self) -> _SessionContext:
+        if self._shared_session is not None:
+            return _SessionContext(self._shared_session, owns=False)
+        return _SessionContext(self._session_factory(), owns=True)
+
+    async def increment(
+        self,
+        *,
+        user_id: str,
+        chat_id: str,
+        now: datetime,
+    ) -> int:
+        async with self._session() as session:
+            stmt = (
+                pg_insert(ChatNotInterestedClickRow)
+                .values(
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    click_count=1,
+                    last_click_at=now,
+                    created_at=now,
+                    updated_at=now,
+                )
+                .on_conflict_do_update(
+                    index_elements=["user_id", "chat_id"],
+                    set_={
+                        "click_count": ChatNotInterestedClickRow.click_count + 1,
+                        "last_click_at": now,
+                        "updated_at": now,
+                    },
+                )
+                .returning(ChatNotInterestedClickRow.click_count)
+            )
+            result = await session.execute(stmt)
+            return int(result.scalar_one())
+
+    async def reset(
+        self,
+        *,
+        user_id: str,
+        chat_id: str,
+    ) -> None:
+        async with self._session() as session:
+            stmt = sa_delete(ChatNotInterestedClickRow).where(
+                ChatNotInterestedClickRow.user_id == user_id,
+                ChatNotInterestedClickRow.chat_id == chat_id,
+            )
+            await session.execute(stmt)
+
+    async def get(
+        self,
+        *,
+        user_id: str,
+        chat_id: str,
+    ) -> ChatNotInterestedClicks | None:
+        async with self._session() as session:
+            stmt = select(ChatNotInterestedClickRow).where(
+                ChatNotInterestedClickRow.user_id == user_id,
+                ChatNotInterestedClickRow.chat_id == chat_id,
+            )
+            row = (await session.execute(stmt)).scalar_one_or_none()
+            if row is None:
+                return None
+            return self._row_to_domain(row)
+
+    @staticmethod
+    def _row_to_domain(row: ChatNotInterestedClickRow) -> ChatNotInterestedClicks:
+        return ChatNotInterestedClicks(
+            user_id=str(row.user_id),
+            chat_id=row.chat_id,
+            click_count=int(row.click_count),
+            last_click_at=row.last_click_at,
             created_at=row.created_at,
             updated_at=row.updated_at,
         )

@@ -54,6 +54,7 @@ from echo_v2.persistence.chat_repositories import (
 )
 from echo_v2.persistence.feedback_repositories import (
     ChatMuteRepository,
+    ChatNotInterestedClickRepository,
     WaitingForMeActionRepository,
     WaitingForMeFeedbackRepository,
 )
@@ -69,6 +70,12 @@ SNAPSHOT_RETENTION_DAYS = 90
 # Default digest hour (08:00 local time).
 DEFAULT_DIGEST_HOUR = 8
 DEFAULT_TZ = "Asia/Jerusalem"
+
+# Escalating chat snooze on "לא מעניין, שיחכו" — click count → mute duration.
+# Click 1 → 24h, 2 → 48h, 3 → 1 week, 4+ → permanent mute.
+_NOT_INTERESTED_SNOOZE_HOURS = 24
+_NOT_INTERESTED_SNOOZE_DAYS_WEEK = 7
+_NOT_INTERESTED_PERMANENT_THRESHOLD = 4
 
 
 def _next_digest_at(
@@ -137,6 +144,9 @@ class WaitingForMeActionService:
         mute_repo: The :class:`ChatMuteRepository`.
         feedback_repo: Optional :class:`WaitingForMeFeedbackRepository`
             for recording implicit feedback on "handled" and "dismiss".
+        click_repo: Optional :class:`ChatNotInterestedClickRepository`
+            for the escalating "לא מעניין, שיחכו" chat snooze. When
+            ``None``, the counter is not tracked and no mute is applied.
     """
 
     def __init__(
@@ -152,6 +162,7 @@ class WaitingForMeActionService:
         chat_name_lookup=None,
         token_service=None,
         reminder_template_name: str = "snooze_reminder_v1",
+        click_repo: ChatNotInterestedClickRepository | None = None,
     ) -> None:
         self._active_repo = active_repo
         self._action_repo = action_repo
@@ -163,6 +174,66 @@ class WaitingForMeActionService:
         self._chat_name_lookup = chat_name_lookup
         self._token_service = token_service
         self._reminder_template_name = reminder_template_name
+        self._click_repo = click_repo
+
+    async def _apply_not_interested_snooze(
+        self,
+        *,
+        user_id: str,
+        chat_id: str,
+        now: datetime | None = None,
+    ) -> None:
+        """Increment the per-chat not-interested counter and apply an
+        escalating mute: 24h → 48h → 1 week → permanent.
+
+        No-op when ``click_repo`` is not configured.
+        """
+        if self._click_repo is None:
+            return
+        now = now or datetime.now(timezone.utc)
+        count = await self._click_repo.increment(
+            user_id=user_id, chat_id=chat_id, now=now,
+        )
+        if count >= _NOT_INTERESTED_PERMANENT_THRESHOLD:
+            await self._mute_repo.mute_permanent(
+                user_id=user_id, chat_id=chat_id,
+            )
+        elif count == 3:
+            await self._mute_repo.mute_temporary(
+                user_id=user_id,
+                chat_id=chat_id,
+                muted_until=now + timedelta(days=_NOT_INTERESTED_SNOOZE_DAYS_WEEK),
+            )
+        elif count == 2:
+            await self._mute_repo.mute_temporary(
+                user_id=user_id,
+                chat_id=chat_id,
+                muted_until=now + timedelta(hours=_NOT_INTERESTED_SNOOZE_HOURS * 2),
+            )
+        else:  # count == 1
+            await self._mute_repo.mute_temporary(
+                user_id=user_id,
+                chat_id=chat_id,
+                muted_until=now + timedelta(hours=_NOT_INTERESTED_SNOOZE_HOURS),
+            )
+        _logger.info(
+            "action: not_interested snooze user=%s chat=%s click_count=%d",
+            user_id, chat_id, count,
+        )
+
+    async def _reset_not_interested_clicks(
+        self,
+        *,
+        user_id: str,
+        chat_id: str,
+    ) -> None:
+        """Reset the per-chat not-interested counter (user re-engaged).
+
+        No-op when ``click_repo`` is not configured.
+        """
+        if self._click_repo is None:
+            return
+        await self._click_repo.reset(user_id=user_id, chat_id=chat_id)
 
     @traceable(
         name="wfm.action.handled",
@@ -203,6 +274,12 @@ class WaitingForMeActionService:
                 result_id=result.result_id,
                 target_version=target_version,
                 provider_message_id=f"implicit:{provider_message_id}",
+            )
+
+        # User re-engaged — reset the not-interested click counter.
+        if result.chat_id is not None:
+            await self._reset_not_interested_clicks(
+                user_id=user_id, chat_id=result.chat_id,
             )
 
         _logger.info(
@@ -492,6 +569,12 @@ class WaitingForMeActionService:
                 )
             return result.outcome
 
+        # Apply the escalating chat snooze (24h → 48h → 1 week → permanent).
+        if result.chat_id is not None:
+            await self._apply_not_interested_snooze(
+                user_id=user_id, chat_id=result.chat_id,
+            )
+
         _logger.info(
             "action: dismiss_not_interested user=%s active_id=%s version=%d",
             user_id, active_id, target_version,
@@ -536,6 +619,11 @@ class WaitingForMeActionService:
             provider_message_id=provider_message_id,
         )
         if result.outcome is HandlingOutcome.APPLIED:
+            # User re-engaged — reset the not-interested click counter.
+            if result.chat_id is not None:
+                await self._reset_not_interested_clicks(
+                    user_id=user_id, chat_id=result.chat_id,
+                )
             _logger.info(
                 "action: done user=%s active_id=%s version=%d",
                 user_id, active_id, target_version,
@@ -612,6 +700,12 @@ class WaitingForMeActionService:
                 result_id=result.result_id,
                 target_version=target_version,
                 provider_message_id=f"implicit:{provider_message_id}",
+            )
+
+        # Escalating chat snooze for "לא מעניין, שיחכו" (web path).
+        if reason == "no_response_required" and result.chat_id is not None:
+            await self._apply_not_interested_snooze(
+                user_id=user_id, chat_id=result.chat_id,
             )
 
         _logger.info(

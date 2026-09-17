@@ -31,6 +31,7 @@ from echo_v2.persistence.chat_repositories import (
 from echo_v2.persistence.contacts import ContactRecord, InMemoryContactRepository
 from echo_v2.persistence.feedback_repositories import (
     InMemoryChatMuteRepository,
+    InMemoryChatNotInterestedClickRepository,
     InMemoryWaitingForMeActionRepository,
     InMemoryWaitingForMeFeedbackRepository,
 )
@@ -149,12 +150,13 @@ def _make_handler(
     """Build a fully wired FeedbackHandler with in-memory repos."""
     bot = bot or FakeBot()
     active_repo = InMemoryWaitingForMeActiveRepository()
+    mute_repo = InMemoryChatMuteRepository()
+    click_repo = InMemoryChatNotInterestedClickRepository()
     action_repo = InMemoryWaitingForMeActionRepository(
         active_repo=active_repo,
-        mute_repo=InMemoryChatMuteRepository(),
+        mute_repo=mute_repo,
     )
     feedback_repo = InMemoryWaitingForMeFeedbackRepository()
-    mute_repo = InMemoryChatMuteRepository()
     chat_state_repo = InMemoryChatStateRepository()
     message_repo = InMemoryMessageRepository()
     contact_repo = InMemoryContactRepository()
@@ -166,6 +168,7 @@ def _make_handler(
         mute_repo=mute_repo,
         feedback_repo=feedback_repo,
         result_repo=result_repo,
+        click_repo=click_repo,
     )
     feedback_service = WaitingForMeFeedbackService(
         feedback_repo=feedback_repo,
@@ -663,7 +666,7 @@ async def test_dismiss_not_waiting_duplicate():
 
 
 async def test_dismiss_not_interested_applied():
-    """לא מעניין (שיחכו) → APPLIED, deletes active, no feedback."""
+    """לא מעניין (שיחכו) → APPLIED, deletes active, no feedback, 24h mute."""
     bot = FakeBot()
     handler, _, _, active_repo, feedback_repo = _make_handler(bot=bot)
     await _setup_chat_state(handler, CHAT_ID, version=1)
@@ -686,9 +689,9 @@ async def test_dismiss_not_interested_applied():
 
 
 async def test_dismiss_not_interested_duplicate():
-    """Duplicate dismiss_not_interested → DUPLICATE."""
+    """Duplicate dismiss_not_interested → DUPLICATE, no double mute."""
     bot = FakeBot()
-    handler, _, _, active_repo, _ = _make_handler(bot=bot)
+    handler, action_service, _, active_repo, _ = _make_handler(bot=bot)
     await _setup_chat_state(handler, CHAT_ID, version=1)
     active_id = await _setup_active(active_repo)
 
@@ -705,6 +708,167 @@ async def test_dismiss_not_interested_duplicate():
     )
     await handler.handle(event2)
     assert len(bot.texts) == 1
+
+    # Duplicate click did not increment the counter twice.
+    clicks = await action_service._click_repo.get(
+        user_id=USER_ID, chat_id=CHAT_ID,
+    )
+    assert clicks is not None
+    assert clicks.click_count == 1
+
+
+# --- Dismiss: not_interested escalation (24h → 48h → 1 week → permanent) -----
+
+
+async def _click_not_interested(
+    handler: FeedbackHandler,
+    active_repo: InMemoryWaitingForMeActiveRepository,
+    *,
+    event_id: str,
+) -> None:
+    """Helper: re-create an active item and click לא מעניין (שיחכו)."""
+    active_id = await _setup_active(active_repo)
+    event = _make_event(
+        event_id=event_id,
+        button_id=f"dismiss:{active_id}:not_interested",
+    )
+    await handler.handle(event)
+
+
+async def test_dismiss_not_interested_escalation():
+    """4 clicks → 24h → 48h → 1 week → permanent mute."""
+    bot = FakeBot()
+    handler, action_service, _, active_repo, _ = _make_handler(bot=bot)
+    await _setup_chat_state(handler, CHAT_ID, version=1)
+
+    # Click 1 → 24h temporary mute.
+    before = datetime.now(timezone.utc)
+    await _click_not_interested(handler, active_repo, event_id="ni-1")
+    mute = await action_service._mute_repo.get(user_id=USER_ID, chat_id=CHAT_ID)
+    assert mute is not None
+    assert mute.permanent is False
+    assert mute.muted_until is not None
+    delta1 = mute.muted_until - before
+    assert timedelta(hours=23, minutes=58) < delta1 < timedelta(hours=24, minutes=2)
+
+    # Click 2 → 48h temporary mute.
+    before = datetime.now(timezone.utc)
+    await _click_not_interested(handler, active_repo, event_id="ni-2")
+    mute = await action_service._mute_repo.get(user_id=USER_ID, chat_id=CHAT_ID)
+    assert mute is not None
+    assert mute.permanent is False
+    delta2 = mute.muted_until - before  # type: ignore[operator]
+    assert timedelta(hours=47, minutes=58) < delta2 < timedelta(hours=48, minutes=2)
+
+    # Click 3 → 1 week temporary mute.
+    before = datetime.now(timezone.utc)
+    await _click_not_interested(handler, active_repo, event_id="ni-3")
+    mute = await action_service._mute_repo.get(user_id=USER_ID, chat_id=CHAT_ID)
+    assert mute is not None
+    assert mute.permanent is False
+    delta3 = mute.muted_until - before  # type: ignore[operator]
+    assert timedelta(days=6, hours=23, minutes=58) < delta3 < timedelta(days=7, minutes=2)
+
+    # Click 4 → permanent mute.
+    await _click_not_interested(handler, active_repo, event_id="ni-4")
+    mute = await action_service._mute_repo.get(user_id=USER_ID, chat_id=CHAT_ID)
+    assert mute is not None
+    assert mute.permanent is True
+    assert mute.muted_until is None
+
+
+async def test_dismiss_not_interested_resets_on_handled():
+    """handled resets the counter — next click is back to 24h."""
+    bot = FakeBot()
+    handler, action_service, _, active_repo, _ = _make_handler(bot=bot)
+    await _setup_chat_state(handler, CHAT_ID, version=1)
+
+    # Two clicks → 48h mute + counter at 2.
+    await _click_not_interested(handler, active_repo, event_id="ni-1")
+    await _click_not_interested(handler, active_repo, event_id="ni-2")
+    clicks = await action_service._click_repo.get(user_id=USER_ID, chat_id=CHAT_ID)
+    assert clicks is not None
+    assert clicks.click_count == 2
+
+    # handled → counter reset.
+    active_id = await _setup_active(active_repo)
+    event = _make_event(event_id="evt-handled", button_id=f"action:{active_id}:handled")
+    await handler.handle(event)
+    clicks = await action_service._click_repo.get(user_id=USER_ID, chat_id=CHAT_ID)
+    assert clicks is None
+
+    # Next not-interested click → back to 24h (count == 1).
+    before = datetime.now(timezone.utc)
+    await _click_not_interested(handler, active_repo, event_id="ni-after")
+    mute = await action_service._mute_repo.get(user_id=USER_ID, chat_id=CHAT_ID)
+    assert mute is not None
+    assert mute.permanent is False
+    delta = mute.muted_until - before  # type: ignore[operator]
+    assert timedelta(hours=23, minutes=58) < delta < timedelta(hours=24, minutes=2)
+
+
+async def test_done_resets_clicks():
+    """done (web) resets the not-interested counter."""
+    _, action_service, _, active_repo, _ = _make_handler()
+    await action_service._click_repo.increment(
+        user_id=USER_ID, chat_id=CHAT_ID, now=NOW,
+    )
+    await action_service._click_repo.increment(
+        user_id=USER_ID, chat_id=CHAT_ID, now=NOW,
+    )
+    clicks = await action_service._click_repo.get(user_id=USER_ID, chat_id=CHAT_ID)
+    assert clicks is not None
+    assert clicks.click_count == 2
+
+    active_id = await _setup_active(active_repo)
+    outcome = await action_service.done(
+        user_id=USER_ID,
+        active_id=active_id,
+        target_version=1,
+        provider_message_id="evt-done",
+    )
+    assert outcome == HandlingOutcome.APPLIED
+    clicks = await action_service._click_repo.get(user_id=USER_ID, chat_id=CHAT_ID)
+    assert clicks is None
+
+
+async def test_dismiss_with_reason_no_response_required_snoozes():
+    """Web path: dismiss_with_reason(no_response_required) → 24h mute."""
+    _, action_service, _, active_repo, _ = _make_handler()
+    active_id = await _setup_active(active_repo)
+
+    outcome = await action_service.dismiss_with_reason(
+        user_id=USER_ID,
+        active_id=active_id,
+        target_version=1,
+        provider_message_id="evt-nrr",
+        reason="no_response_required",
+    )
+    assert outcome == HandlingOutcome.APPLIED
+
+    mute = await action_service._mute_repo.get(user_id=USER_ID, chat_id=CHAT_ID)
+    assert mute is not None
+    assert mute.permanent is False
+    delta = mute.muted_until - datetime.now(timezone.utc)  # type: ignore[operator]
+    assert timedelta(hours=23, minutes=58) < delta < timedelta(hours=24, minutes=2)
+
+
+async def test_dismiss_with_reason_detected_incorrectly_does_not_snooze():
+    """detected_incorrectly does NOT trigger the escalating snooze."""
+    _, action_service, _, active_repo, _ = _make_handler()
+    active_id = await _setup_active(active_repo)
+
+    outcome = await action_service.dismiss_with_reason(
+        user_id=USER_ID,
+        active_id=active_id,
+        target_version=1,
+        provider_message_id="evt-di",
+        reason="detected_incorrectly",
+    )
+    assert outcome == HandlingOutcome.APPLIED
+
+    mute = await action_service._mute_repo.get(user_id=USER_ID, chat_id=CHAT_ID)
+    assert mute is None
 
 
 # --- Unknown/malformed callbacks --------------------------------------------

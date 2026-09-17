@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Protocol
 from echo_v2.domain.feedback import (
     ActionCommandResult,
     ChatMute,
+    ChatNotInterestedClicks,
     FeedbackVerdict,
     HandlingOutcome,
     WaitingForMeAction,
@@ -32,7 +33,9 @@ if TYPE_CHECKING:
 
 __all__ = [
     "ChatMuteRepository",
+    "ChatNotInterestedClickRepository",
     "InMemoryChatMuteRepository",
+    "InMemoryChatNotInterestedClickRepository",
     "InMemoryWaitingForMeActionRepository",
     "InMemoryWaitingForMeFeedbackRepository",
     "WaitingForMeActionRepository",
@@ -631,4 +634,87 @@ class InMemoryChatMuteRepository:
         user_id: str,
         chat_id: str,
     ) -> ChatMute | None:
+        return self._rows.get((user_id, chat_id))
+
+
+# --- Chat not-interested click counter --------------------------------------
+
+
+class ChatNotInterestedClickRepository(Protocol):
+    """Per-user, per-chat counter for "לא מעניין, שיחכו" clicks.
+
+    Drives the escalating chat snooze (24h → 48h → 1 week → permanent).
+    Reset (row deleted) when the user engages with the chat.
+    """
+
+    async def increment(
+        self,
+        *,
+        user_id: str,
+        chat_id: str,
+        now: datetime,
+    ) -> int:
+        """Increment the click counter and return the new count."""
+        ...
+
+    async def reset(
+        self,
+        *,
+        user_id: str,
+        chat_id: str,
+    ) -> None:
+        """Reset the counter (delete the row)."""
+        ...
+
+    async def get(
+        self,
+        *,
+        user_id: str,
+        chat_id: str,
+    ) -> ChatNotInterestedClicks | None:
+        """Get the current click record, or ``None``."""
+        ...
+
+
+class InMemoryChatNotInterestedClickRepository:
+    """Process-local click counter backed by a dict."""
+
+    def __init__(self) -> None:
+        self._rows: dict[tuple[str, str], ChatNotInterestedClicks] = {}
+
+    async def increment(
+        self,
+        *,
+        user_id: str,
+        chat_id: str,
+        now: datetime,
+    ) -> int:
+        key = (user_id, chat_id)
+        existing = self._rows.get(key)
+        new_count = (existing.click_count + 1) if existing else 1
+        row = ChatNotInterestedClicks(
+            user_id=user_id,
+            chat_id=chat_id,
+            click_count=new_count,
+            last_click_at=now,
+            created_at=existing.created_at if existing else now,
+            updated_at=now,
+        )
+        self._rows[key] = row
+        return new_count
+
+    async def reset(
+        self,
+        *,
+        user_id: str,
+        chat_id: str,
+    ) -> None:
+        self._rows.pop((user_id, chat_id), None)
+
+    async def get(
+        self,
+        *,
+        user_id: str,
+        chat_id: str,
+    ) -> ChatNotInterestedClicks | None:
         return self._rows.get((user_id, chat_id))

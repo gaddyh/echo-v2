@@ -33,6 +33,7 @@ from echo_v2.persistence.postgres_chat import (
 from echo_v2.persistence.postgres_digest import PostgresDailyDigestRepository
 from echo_v2.persistence.postgres_feedback import (
     PostgresChatMuteRepository,
+    PostgresChatNotInterestedClickRepository,
     PostgresWaitingForMeActionRepository,
     PostgresWaitingForMeFeedbackRepository,
 )
@@ -76,6 +77,7 @@ class PostgresRepos:
     wfm_feedback: PostgresWaitingForMeFeedbackRepository
     wfm_actions: PostgresWaitingForMeActionRepository
     chat_mutes: PostgresChatMuteRepository
+    chat_not_interested_clicks: PostgresChatNotInterestedClickRepository
     daily_digests: PostgresDailyDigestRepository
     waiting_list_sessions: PostgresWaitingListSessionRepository
     waitlist: PostgresWaitlistRepository
@@ -114,6 +116,7 @@ def build_postgres_repos(settings: DBSettings) -> PostgresRepos:
     wfm_feedback = PostgresWaitingForMeFeedbackRepository(factory)
     wfm_actions = PostgresWaitingForMeActionRepository(factory)
     chat_mutes = PostgresChatMuteRepository(factory)
+    chat_not_interested_clicks = PostgresChatNotInterestedClickRepository(factory)
     daily_digests = PostgresDailyDigestRepository(factory)
     waiting_list_sessions = PostgresWaitingListSessionRepository(factory)
     waitlist = PostgresWaitlistRepository(factory)
@@ -139,6 +142,7 @@ def build_postgres_repos(settings: DBSettings) -> PostgresRepos:
         wfm_feedback=wfm_feedback,
         wfm_actions=wfm_actions,
         chat_mutes=chat_mutes,
+        chat_not_interested_clicks=chat_not_interested_clicks,
         daily_digests=daily_digests,
         waiting_list_sessions=waiting_list_sessions,
         waitlist=waitlist,

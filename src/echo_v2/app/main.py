@@ -363,6 +363,7 @@ def create_app() -> FastAPI:
         reminder_template_name=os.environ.get(
             "SNOOZE_REMINDER_TEMPLATE_NAME", "snooze_reminder_v1"
         ),
+        click_repo=repos.chat_not_interested_clicks,
     )
     feedback_service = WaitingForMeFeedbackService(
         feedback_repo=repos.wfm_feedback,

@@ -45,6 +45,7 @@ from echo_v2.persistence.postgres_chat import (
 )
 from echo_v2.persistence.postgres_feedback import (
     PostgresChatMuteRepository,
+    PostgresChatNotInterestedClickRepository,
     PostgresWaitingForMeActionRepository,
     PostgresWaitingForMeFeedbackRepository,
 )
@@ -76,6 +77,7 @@ class UnitOfWorkRepos:
     wfm_feedback: PostgresWaitingForMeFeedbackRepository
     wfm_actions: PostgresWaitingForMeActionRepository
     chat_mutes: PostgresChatMuteRepository
+    chat_not_interested_clicks: PostgresChatNotInterestedClickRepository
 
 
 class PostgresUnitOfWork:
@@ -149,6 +151,10 @@ class PostgresUnitOfWork:
                 self._session_factory,
                 session=self._session,
             ),
+            chat_not_interested_clicks=PostgresChatNotInterestedClickRepository(
+                self._session_factory,
+                session=self._session,
+            ),
         )
         return self
 
@@ -214,3 +220,8 @@ class PostgresUnitOfWork:
     def chat_mutes(self) -> PostgresChatMuteRepository:
         assert self.repos is not None, "UnitOfWork not entered"
         return self.repos.chat_mutes
+
+    @property
+    def chat_not_interested_clicks(self) -> PostgresChatNotInterestedClickRepository:
+        assert self.repos is not None, "UnitOfWork not entered"
+        return self.repos.chat_not_interested_clicks

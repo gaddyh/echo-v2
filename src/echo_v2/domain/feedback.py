@@ -163,6 +163,30 @@ class ChatMute:
 
 
 @dataclass(frozen=True)
+class ChatNotInterestedClicks:
+    """Per-user, per-chat counter for "לא מעניין, שיחכו" clicks.
+
+    Drives the escalating chat snooze (24h → 48h → 1 week → permanent).
+    Reset (deleted) when the user engages with the chat via "טופל" / "בוצע".
+
+    Attributes:
+        user_id: The user who clicked.
+        chat_id: The chat that was dismissed.
+        click_count: Number of consecutive not-interested clicks.
+        last_click_at: When the most recent click happened.
+        created_at: When the row was first created.
+        updated_at: When the row was last updated.
+    """
+
+    user_id: str
+    chat_id: str
+    click_count: int
+    last_click_at: datetime
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+@dataclass(frozen=True)
 class ActionCommandResult:
     """Result of an atomic action command (record + mutate in one tx).
 

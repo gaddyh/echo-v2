@@ -49,6 +49,7 @@ __all__ = [
     "Base",
     "BotWebhookEventRow",
     "ChatMuteRow",
+    "ChatNotInterestedClickRow",
     "ChatRow",
     "ContactRow",
     "IdempotencyOperationRow",
@@ -825,6 +826,35 @@ class ChatMuteRow(Base):
             "OR (permanent = false AND muted_until IS NOT NULL)",
             name="chat_mutes_consistency_check",
         ),
+    )
+
+
+class ChatNotInterestedClickRow(Base):
+    """Per-user, per-chat counter for "לא מעניין, שיחכו" clicks.
+
+    Drives the escalating chat snooze (24h → 48h → 1 week → permanent).
+    The counter is reset (row deleted) when the user engages with the
+    chat via "טופל" / "בוצע".
+    """
+
+    __tablename__ = "chat_not_interested_clicks"
+
+    user_id: Mapped[str] = mapped_column(
+        Uuid,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+        nullable=False,
+    )
+    chat_id: Mapped[str] = mapped_column(Text, primary_key=True, nullable=False)
+    click_count: Mapped[int] = mapped_column(nullable=False, server_default=text("0"))
+    last_click_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
     )
 
 
