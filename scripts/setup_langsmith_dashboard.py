@@ -157,7 +157,22 @@ def build_dashboard(section_id: str) -> None:
             "chart_type": "kpi",
             "series": [count_series("runs", 'eq(name, "wfm.llm_analyze")')],
         },
-        # 2. Line — LLM analysis latency p50/p99
+        # 2. Bar — analyzer runs by status (success vs error at a glance)
+        {
+            "title": "Analyzer Run Status",
+            "description": "wfm.analysis runs split by success/error status",
+            "chart_type": "bar",
+            "series": [
+                {
+                    "name": "runs",
+                    "metric_definition": {"type": "count"},
+                    "filter_definition": project_filter(),
+                    "filters": {"filter": 'eq(name, "wfm.analysis")'},
+                    "group_by_definitions": [{"attribute": "status"}],
+                }
+            ],
+        },
+        # 3. Line — LLM analysis latency p50/p99
         {
             "title": "LLM Analysis Latency",
             "description": "p50 and p99 latency for wfm.llm_analyze",
