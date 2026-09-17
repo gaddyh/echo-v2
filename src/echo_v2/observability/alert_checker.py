@@ -52,6 +52,8 @@ class AlertRule:
     - ``"absence"``: count all runs matching ``filter`` in the last
       ``window_minutes``. Fire if count < ``threshold`` (i.e. expected
       at least ``threshold`` runs but found fewer).
+      If ``depends_on`` is set, only fire if the dependency filter HAS
+      runs (e.g. messages arriving but no analysis).
     - ``"error_rate"``: compute error rate for runs matching ``filter``
       in the last ``window_minutes``. Fire if rate > ``threshold``
       (threshold is a fraction 0-1).
@@ -62,6 +64,7 @@ class AlertRule:
     window_minutes: int
     mode: str  # "errors", "absence", "error_rate"
     threshold: float = 1
+    depends_on: str | None = None  # for "absence" mode: only fire if this filter has runs
 
 
 DEFAULT_ALERT_RULES: list[AlertRule] = [
@@ -94,11 +97,12 @@ DEFAULT_ALERT_RULES: list[AlertRule] = [
         threshold=1,
     ),
     AlertRule(
-        name="No analyzer runs (worker may be stuck)",
+        name="Analyzer stuck (messages arriving but no analysis)",
         filter='eq(name, "wfm.analysis")',
         window_minutes=30,
         mode="absence",
         threshold=1,
+        depends_on='eq(name, "wfm.ingest.green")',
     ),
     AlertRule(
         name="High error rate",
@@ -185,6 +189,11 @@ class AlertChecker:
                 return f"🔴 {rule.name} ({count} in last {rule.window_minutes}min)"
         elif rule.mode == "absence":
             if count < rule.threshold:
+                # If depends_on is set, only fire if the dependency has runs.
+                if rule.depends_on:
+                    dep_runs = await self._query_runs(rule.depends_on, since, now, limit=1)
+                    if len(dep_runs) == 0:
+                        return None  # dependency has no runs either — not an alert
                 return f"🔴 {rule.name} (only {count} in last {rule.window_minutes}min)"
         elif rule.mode == "error_rate":
             # Query all runs (no status filter) for the denominator
