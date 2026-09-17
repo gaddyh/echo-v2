@@ -164,10 +164,38 @@ claim → processing → processed (terminal success)
 
 When `LANGSMITH_TRACING=true`:
 
-- `LANGSMITH_HIDE_INPUTS=true` and `LANGSMITH_HIDE_OUTPUTS=true` are enforced in code — raw LLM prompts/completions (which may contain message text) are never sent to LangSmith.
+- Service-level traces (`wfm.analysis`, `wfm.llm_analyze`, `wfm.judge`, `wfm.ingest.green`, etc.) use a separate `tracing_client` with `LANGSMITH_HIDE_INPUTS=false` — the `@traceable` sanitizers hash IDs and strip PII at the application level.
+- LLM call traces (via `wrap_openai`) use the default client. During development, `LANGSMITH_HIDE_INPUTS=false` and `LANGSMITH_HIDE_OUTPUTS=false` show full prompts/completions. Re-enable hiding for production privacy.
 - `OBSERVABILITY_HASH_KEY` is required (startup fails without it).
 - All user/chat IDs in trace metadata are HMAC-hashed via `correlation_id()` — not reversible, not enumerable.
-- `@traceable` sanitizers strip PII from every traced method's inputs/outputs.
+
+### LangSmith dashboards
+
+Two dashboards created via `scripts/setup_langsmith_dashboard.py`:
+
+- **echo v2 overview** — days/weeks view: analysis runs, decisions, latency, error rates
+- **echo v2 realtime** — 1-5 hour view: recent runs, judge scores, ingestion events
+
+### Alert checker
+
+A background task (`observability/alert_checker.py`) polls the database every 5 minutes and sends WhatsApp alert summaries to `ECHO_OWNER_PHONE` when it detects:
+
+- **Bot send failures** — `scheduled_actions` with `status='failed'` in the last 60 min
+- **Bot send indeterminate** — `scheduled_actions` with `status='indeterminate'` in the last 60 min
+- **Analyzer stuck** — chats where `next_analysis_at` is overdue by >10 min AND `activity_version > last_processed_version`
+- **High error rate** — failed/(succeeded+failed) > 20% in `scheduled_actions` over 60 min
+
+Rate-limited to max 1 alert summary per hour.
+
+### LLM-as-judge
+
+After each analysis run, an LLM judge (`services/analysis_judge.py`) evaluates whether the decision was correct given the conversation. The judge runs as a `wfm.judge` child trace under `wfm.analysis` and stores its score as LangSmith feedback (`judge_correctness` key):
+
+- **1.0** = decision is correct
+- **0.5** = debatable / ambiguous
+- **0.0** = decision is wrong
+
+The judge uses a different model (`JUDGE_MODEL_NAME`, default `gpt-5.4`) from the analyzer (`gpt-5.6-luna`) to reduce same-model bias. Judge scores are visible in the LangSmith dashboard as feedback on each `wfm.analysis` run.
 
 ### Logging
 
@@ -205,6 +233,7 @@ src/echo_v2/
 │   ├── chat_ingestion.py             # Message persistence + chat state
 │   ├── chat_analysis_worker.py       # Polls for due chats, runs LLM analysis, commits
 │   ├── waiting_for_me_analyzer.py    # LLM analysis (WaitingForMe classification)
+│   ├── analysis_judge.py             # LLM-as-judge: evaluates analysis correctness
 │   ├── transcription.py              # Transcriber protocol + audio download/convert/transcribe pipeline
 │   ├── transcription_factory.py      # Builds Transcriber from env (Modal or None)
 │   ├── digest_worker.py              # Morning digest sender (scheduled + on-demand)
@@ -265,6 +294,9 @@ src/echo_v2/
 └── observability/
     ├── privacy.py                    # HMAC-hashing of IDs, startup key validation
     ├── sanitizers.py                 # LangSmith @traceable input/output sanitizers
+    ├── tracing.py                    # Separate LangSmith client for sanitized traces
+    ├── alert_checker.py              # Background alert checker (WhatsApp alerts)
+    ├── alerts.py                     # Alert formatting + 360dialog bot send
     └── sinks.py                      # LoggingEventSink (prod), InMemoryEventSink (tests)
 ```
 
@@ -351,6 +383,7 @@ ruff check src tests scripts
 pytest                              # unit + integration (testcontainers Postgres)
 pytest --cov                        # with coverage (gate: 95%)
 pytest -m eval_soc -v -s           # LLM eval harness (real API calls)
+pytest -m eval -k judge -v -s      # Judge eval harness (real API calls)
 ```
 
 ## Environment variables
@@ -384,12 +417,17 @@ pytest -m eval_soc -v -s           # LLM eval harness (real API calls)
 | `DIGEST_TEMPLATE_NAME` | No | `morning_waiting_digest6` | WhatsApp template name for the morning digest |
 | `ECHO_WAITING_LIST_TOKEN_TTL_HOURS` | No | `48` | Waiting-list session token TTL |
 | `LANGSMITH_TRACING` | No | `false` | Enable LangSmith LLM tracing |
-| `LANGSMITH_HIDE_INPUTS` | No | `true` | Hide raw LLM inputs from LangSmith (enforced in code) |
-| `LANGSMITH_HIDE_OUTPUTS` | No | `true` | Hide raw LLM outputs from LangSmith (enforced in code) |
+| `LANGSMITH_HIDE_INPUTS` | No | `false` | Hide raw LLM inputs from LangSmith (set `true` for production privacy) |
+| `LANGSMITH_HIDE_OUTPUTS` | No | `false` | Hide raw LLM outputs from LangSmith (set `true` for production privacy) |
 | `LANGSMITH_API_KEY` | No | — | LangSmith API key (read by LangSmith SDK) |
 | `LANGSMITH_PROJECT` | No | `echo-v2-local` | LangSmith project name |
+| `LANGSMITH_PROJECT_ID` | No | — | LangSmith project UUID |
 | `LANGSMITH_WORKSPACE_ID` | No | — | LangSmith workspace ID |
 | `OBSERVABILITY_HASH_KEY` | If tracing | — | HMAC key for hashing IDs in trace metadata (required when `LANGSMITH_TRACING=true`) |
+| `JUDGE_MODEL_NAME` | No | `gpt-5.4` | LLM model for the judge (different from analyzer to reduce bias) |
+| `ECHO_OWNER_PHONE` | No | — | Phone number for WhatsApp alert summaries |
+| `ALERT_CHECKER_ENABLED` | No | `false` | Start the alert checker background task |
+| `ALERT_CHECKER_POLL_INTERVAL` | No | `300` | Alert checker poll interval (seconds) |
 
 ## Webhooks
 
@@ -436,10 +474,22 @@ The waiting-for-me classifier is evaluated against real LLM API calls using thre
 | SOC families (`eval_soc`) | 80 | 19 obligation-state phenomena as contrast pairs: acknowledgement ≠ fulfillment, conditional activation, cancellation/supersession, ball handoffs, implicit completion. Train/dev/test splits with leakage validation |
 | SOC-2508 realistic (`eval_soc`) | 40 | Grounded in the [SOC-2508 dataset](https://huggingface.co/datasets/marcodsn/SOC-2508): long noisy windows, buried obligations, base-rate banter negatives, UNCERTAIN labels, time decay via `<delay/>`, wrong-chat retractions |
 
+### Judge evaluation
+
+The LLM-as-judge is evaluated against golden labels (not analyzer output) to measure alignment with our ground truth:
+
+| Suite | Cases | What it tests |
+|-------|-------|---------------|
+| Judge sanity (`eval` marker, `-k judge`) | 40 | Does the judge agree with our golden labels on baseline cases? |
+| Judge SOC (`eval` marker, `-k judge`) | 9 | Does the judge agree on harder state-transition cases? |
+
+Baseline (gpt-5.4 judge): sanity 39/40 (97.5%), SOC 9/9 (100%).
+
 ```bash
 pytest -m eval_soc -v -s                 # SOC families + SOC-2508 realistic
 pytest -m eval_soc -v -s -k soc2508      # realistic suite only
 pytest -m eval -v -s                     # sanity suite
+pytest -m eval -k judge -v -s            # judge eval (sanity + SOC)
 ```
 
 Latest results (gpt-5.6-luna, prompt v1): SOC dev 39/40, SOC test 39/40, SOC-2508 dev 21/21, SOC-2508 test 18/19. Remaining failures are all in the conservative direction (predicting `WAITING_FOR_ME` on ambiguous negatives).

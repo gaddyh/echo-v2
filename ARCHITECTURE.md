@@ -20,6 +20,10 @@ For onboarding, configuration, environment variables, and operations, see [READM
 - [Persistence](#persistence)
 - [Webhook security and reliability](#webhook-security-and-reliability)
 - [Observability and privacy](#observability-and-privacy)
+  - [LangSmith tracing](#langsmith-tracing)
+  - [LangSmith dashboards](#langsmith-dashboards)
+  - [Alert checker](#alert-checker)
+  - [LLM-as-judge](#llm-as-judge)
 - [Deployment and worker lifecycle](#deployment-and-worker-lifecycle)
 
 ## System overview
@@ -534,10 +538,39 @@ claim → processing → processed (terminal success)
 ### LangSmith tracing
 
 When `LANGSMITH_TRACING=true`:
-- `LANGSMITH_HIDE_INPUTS=true` and `LANGSMITH_HIDE_OUTPUTS=true` are enforced in code — raw LLM prompts/completions (which may contain message text) are never sent to LangSmith.
+- Service-level traces (`wfm.analysis`, `wfm.llm_analyze`, `wfm.judge`, `wfm.ingest.green`, etc.) use a separate `tracing_client` (`observability/tracing.py`) with `LANGSMITH_HIDE_INPUTS=false` — the `@traceable` sanitizers hash IDs and strip PII at the application level, so hiding is redundant and harmful for these traces.
+- LLM call traces (via `wrap_openai`) use the default client. During development, `LANGSMITH_HIDE_INPUTS=false` and `LANGSMITH_HIDE_OUTPUTS=false` show full prompts/completions. Set to `true` for production privacy.
 - `OBSERVABILITY_HASH_KEY` is required (startup fails without it).
 - All user/chat IDs in trace metadata are HMAC-hashed via `correlation_id()` — not reversible, not enumerable.
 - `@traceable` sanitizers strip PII from every traced method's inputs/outputs.
+
+### LangSmith dashboards
+
+Two dashboards created via `scripts/setup_langsmith_dashboard.py`:
+
+- **echo v2 overview** (days/weeks) — analysis runs, decisions, latency, error rates
+- **echo v2 realtime** (1-5h) — recent runs, judge scores, ingestion events
+
+### Alert checker
+
+A background task (`observability/alert_checker.py`) polls the database every 5 minutes and sends WhatsApp alert summaries to `ECHO_OWNER_PHONE` via the 360dialog bot. Alerts are rate-limited to 1 per hour.
+
+| Alert | Trigger |
+|-------|---------|
+| Bot send failures | `scheduled_actions` with `status='failed'` in last 60 min |
+| Bot send indeterminate | `scheduled_actions` with `status='indeterminate'` in last 60 min |
+| Analyzer stuck | Chats where `next_analysis_at` is overdue by >10 min AND `activity_version > last_processed_version` |
+| High error rate | failed/(succeeded+failed) > 20% in `scheduled_actions` over 60 min |
+
+### LLM-as-judge
+
+After each analysis run, an LLM judge (`services/analysis_judge.py`) evaluates whether the decision was correct given the conversation:
+
+- Runs as a `wfm.judge` child trace under `wfm.analysis`
+- Stores score as LangSmith feedback (`judge_correctness` key): 1.0=correct, 0.5=debatable, 0.0=wrong
+- Uses a different model (`JUDGE_MODEL_NAME`, default `gpt-5.4`) from the analyzer to reduce same-model bias
+- Judge scores visible in the LangSmith dashboard as feedback on each `wfm.analysis` run
+- Evaluated against golden labels via `tests/evaluation/test_judge_eval.py` (baseline: 97.9% agreement)
 
 ### Logging
 
@@ -567,5 +600,6 @@ Background workers start in the FastAPI lifespan:
 - **Scheduler** — always starts; polls for due scheduled actions.
 - **Analysis worker** — gated by `CHAT_ANALYSIS_ENABLED` (default `false` in production).
 - **Digest worker** — gated by `DIGEST_ENABLED` (default `false`).
+- **Alert checker** — gated by `ALERT_CHECKER_ENABLED` (default `false`); polls database for failures and sends WhatsApp summaries.
 
 The scheduler uses `FOR UPDATE SKIP LOCKED` semantics for safe multi-worker claiming, but the analysis worker is designed for a single process. The atomic version-fenced commit handles the race if a message arrives while analyzing.
