@@ -50,6 +50,11 @@ from langsmith import traceable
 
 from echo_v2.app.webhooks.dedup import InMemoryWebhookDedupStore, WebhookDedupStore
 from echo_v2.integrations.green.events import GreenEventAdapter
+from echo_v2.observability.sanitizers import (
+    safe_ingest_green_inputs,
+    safe_ingest_green_output,
+)
+from echo_v2.observability.tracing import tracing_client
 from echo_v2.persistence.state_webhook import StateWebhookRepository
 from echo_v2.persistence.whatsapp_connections import (
     InMemoryWhatsAppConnectionRepository,
@@ -163,7 +168,12 @@ class ChatEventDispatcher:
         self._connection_repo = connection_repo
         self._onboarding = onboarding_service
 
-    @traceable(name="wfm.ingest.green")
+    @traceable(
+        name="wfm.ingest.green",
+        client=tracing_client,
+        process_inputs=safe_ingest_green_inputs,
+        process_outputs=safe_ingest_green_output,
+    )
     async def dispatch(
         self,
         event: ProviderEvent,

@@ -27,6 +27,8 @@ __all__ = [
     "safe_feedback_handle_output",
     "safe_green_http_inputs",
     "safe_green_http_output",
+    "safe_ingest_green_inputs",
+    "safe_ingest_green_output",
     "safe_scheduling_execute_inputs",
     "safe_scheduling_execute_output",
     "safe_webhook_inputs",
@@ -185,3 +187,50 @@ def safe_webhook_output(output: dict[str, Any]) -> dict[str, Any]:
     if isinstance(output, dict):
         return {"status": output.get("status", "unknown")}
     return {"status": str(output)}
+
+
+def safe_ingest_green_inputs(inputs: dict[str, Any]) -> dict[str, Any]:
+    """Sanitize ChatEventDispatcher.dispatch inputs.
+
+    Shows meaningful message metadata (direction, kind, text length, hashed
+    IDs) without exposing raw message text, phone numbers, or chat IDs.
+    """
+    event = inputs.get("event")
+    user_id = inputs.get("user_id")
+    sanitized: dict[str, Any] = {}
+    if user_id is not None:
+        sanitized["user_id_hash"] = _hash_if_present(user_id)
+    if event is None:
+        sanitized["event_type"] = "unknown"
+        return sanitized
+    # ProviderMessageEvent
+    if hasattr(event, "direction"):
+        sanitized["event_type"] = "message"
+        sanitized["direction"] = event.direction.value if hasattr(event.direction, "value") else str(event.direction)
+        sanitized["kind"] = event.kind.value if hasattr(event.kind, "value") else str(event.kind)
+        if event.text is not None:
+            sanitized["text_length"] = len(event.text)
+        if event.chat_id is not None:
+            sanitized["chat_id_hash"] = _hash_if_present(event.chat_id)
+        if event.sender_id is not None:
+            sanitized["sender_id_hash"] = _hash_if_present(event.sender_id)
+        if event.audio_download_url is not None:
+            sanitized["has_audio"] = True
+            sanitized["audio_mime_type"] = event.audio_mime_type
+        return sanitized
+    # ProviderMessageStatusEvent
+    if hasattr(event, "status"):
+        sanitized["event_type"] = "status"
+        sanitized["status"] = event.status
+        return sanitized
+    # ProviderConnectionStateChanged
+    if hasattr(event, "provider_raw_status"):
+        sanitized["event_type"] = "connection_state"
+        return sanitized
+    sanitized["event_type"] = type(event).__name__
+    return sanitized
+
+
+def safe_ingest_green_output(output: Any) -> dict[str, Any]:
+    """Sanitize ChatEventDispatcher.dispatch output."""
+    return {"dispatched": True}
