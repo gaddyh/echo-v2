@@ -310,3 +310,105 @@ async def test_normalize_phone():
     assert _normalize_phone("+972 50-000-0001") == "972500000001"
     assert _normalize_phone("972500000001@c.us") == "972500000001"
     assert _normalize_phone("  972500000001  ") == "972500000001"
+
+
+# --- send_image (upload + image message) ---
+
+
+async def test_send_image_success():
+    """send_image uploads to /media then posts an image message."""
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/media":
+            assert request.headers["D360-API-KEY"] == "test-key"
+            ctype = request.headers.get("content-type", "")
+            assert "multipart/form-data" in ctype
+            body = request.content
+            assert b"messaging_product" in body
+            assert b"whatsapp" in body
+            assert b"fake-png-bytes" in body
+            assert b"image/png" in body
+            return httpx.Response(200, json={"id": "media-123"})
+        if request.url.path == "/messages":
+            import json
+
+            body = json.loads(request.content)
+            assert body["messaging_product"] == "whatsapp"
+            assert body["to"] == "972500000001"
+            assert body["type"] == "image"
+            assert body["image"]["id"] == "media-123"
+            assert body["image"]["caption"] == "Scan this QR"
+            return httpx.Response(200, json={"messages": [{"id": "wamid.IMG1"}]})
+        return httpx.Response(404)
+
+    client = _make_client(handler)
+    msg_id = await client.send_image(
+        "972500000001",
+        image_bytes=b"\x89PNG\r\n\x1a\nfake-png-bytes",
+        mime_type="image/png",
+        caption="Scan this QR",
+    )
+    assert msg_id == "wamid.IMG1"
+    # Two requests: upload + message.
+    assert len(requests) == 2
+    assert requests[0].url.path == "/media"
+    assert requests[1].url.path == "/messages"
+    await client.aclose()
+
+
+async def test_send_image_without_caption():
+    """send_image without caption omits the caption field."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/media":
+            return httpx.Response(200, json={"id": "media-456"})
+        import json
+
+        body = json.loads(request.content)
+        image = body.get("image", {})
+        assert image.get("id") == "media-456"
+        assert "caption" not in image
+        return httpx.Response(200, json={"messages": [{"id": "wamid.IMG2"}]})
+
+    client = _make_client(handler)
+    msg_id = await client.send_image(
+        "972500000001",
+        image_bytes=b"fake-bytes",
+        mime_type="image/png",
+    )
+    assert msg_id == "wamid.IMG2"
+    await client.aclose()
+
+
+async def test_send_image_upload_missing_id_raises_permanent():
+    """If /media returns no id, send_image raises PermanentError."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={})
+
+    client = _make_client(handler)
+    with pytest.raises(PermanentError):
+        await client.send_image(
+            "972500000001",
+            image_bytes=b"bytes",
+            mime_type="image/png",
+        )
+    await client.aclose()
+
+
+async def test_send_image_upload_5xx_is_indeterminate():
+    """If /media returns 5xx, send_image raises IndeterminateError."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, json={"error": "unavailable"})
+
+    client = _make_client(handler)
+    with pytest.raises(IndeterminateError):
+        await client.send_image(
+            "972500000001",
+            image_bytes=b"bytes",
+            mime_type="image/png",
+        )
+    await client.aclose()

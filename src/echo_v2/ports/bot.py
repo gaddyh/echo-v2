@@ -106,6 +106,24 @@ class BotChannel(Protocol):
 
     async def send_text(self, user_phone: str, text: str) -> None: ...
 
+    async def send_image(
+        self,
+        user_phone: str,
+        *,
+        image_bytes: bytes,
+        mime_type: str,
+        caption: str | None = None,
+    ) -> str:
+        """Send an image message to a user. Returns the provider message ID.
+
+        Args:
+            user_phone: The recipient's phone number.
+            image_bytes: Raw image bytes to upload and send.
+            mime_type: MIME type of the image (e.g. ``image/png``).
+            caption: Optional caption shown below the image.
+        """
+        ...
+
     async def send_template(
         self,
         user_phone: str,

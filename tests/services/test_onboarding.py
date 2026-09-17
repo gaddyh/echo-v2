@@ -13,6 +13,7 @@ Flow (simplified — name collected before provisioning):
 from __future__ import annotations
 
 import asyncio
+import base64
 import secrets
 from dataclasses import dataclass, field
 
@@ -35,9 +36,24 @@ class FakeBot:
     """Records sent messages for assertion."""
 
     sent: list[tuple[str, str]] = field(default_factory=list)
+    sent_images: list[tuple[str, bytes, str | None]] = field(default_factory=list)
+    send_image_should_fail: bool = False
 
     async def send_text(self, user_phone: str, text: str) -> None:
         self.sent.append((user_phone, text))
+
+    async def send_image(
+        self,
+        user_phone: str,
+        *,
+        image_bytes: bytes,
+        mime_type: str,
+        caption: str | None = None,
+    ) -> str:
+        if self.send_image_should_fail:
+            raise RuntimeError("image boom")
+        self.sent_images.append((user_phone, image_bytes, caption))
+        return "fake-image-msg-id"
 
     async def send_template(
         self,
@@ -115,6 +131,11 @@ class FakeGreenClient:
         self._otp_code = otp_code
         self.otp_calls: list[tuple[str, str, int]] = []
         self._state_sequence: list[str | None] = []
+        self.qr_response: dict = {
+            "type": "qrCode",
+            "message": base64.b64encode(b"fake-qr-png").decode("utf-8"),
+        }
+        self.qr_should_fail: bool = False
 
     def set_state_sequence(self, states: list[str | None]) -> None:
         """Set the sequence of states returned by get_state_instance."""
@@ -149,7 +170,9 @@ class FakeGreenClient:
         return "notAuthorized"
 
     async def get_qr_ws(self, id_instance: str, api_token: str, **kwargs) -> dict:
-        return {"type": "qrCode", "message": "base64data"}
+        if self.qr_should_fail:
+            raise RuntimeError("QR fetch boom")
+        return self.qr_response
 
     async def logout(self, id_instance: str, api_token: str) -> None:
         pass
@@ -210,10 +233,10 @@ async def test_unknown_user_starts_onboarding(fakes):
 
 
 async def test_name_response_starts_provisioning(fakes):
-    """After sending name, provisioning starts and OTP is sent."""
+    """After sending name, provisioning starts and QR is sent (default path)."""
     service, bot, user_repo, _conn_repo, green_client = fakes
 
-    # Instance becomes ready (notAuthorized → OTP sent) then authorized.
+    # Instance becomes ready (notAuthorized → QR sent) then authorized.
     green_client.set_state_sequence(["notAuthorized", "authorized"])
 
     await service.start_onboarding("+972546610653")
@@ -231,19 +254,21 @@ async def test_name_response_starts_provisioning(fakes):
     assert onboarding == "active"
     assert name == "Dana"
 
-    # OTP was requested.
-    assert len(green_client.otp_calls) == 1
-    _id_instance, _token, phone_int = green_client.otp_calls[0]
-    assert phone_int == 972546610653
+    # No OTP requested (QR is the default path).
+    assert len(green_client.otp_calls) == 0
 
-    # Bot sent: 1) name prompt 2) name confirmation 3) OTP instructions 4) welcome.
-    assert len(bot.sent) == 4
+    # QR image was sent.
+    assert len(bot.sent_images) == 1
+    _phone, image_bytes, caption = bot.sent_images[0]
+    assert len(image_bytes) > 0
+    assert caption is not None
+    assert "QR" in caption or "סרוק" in caption
+
+    # Bot sent text: 1) name prompt 2) name confirmation 3) welcome.
+    assert len(bot.sent) == 3
     _phone, confirm = bot.sent[1]
     assert "Dana" in confirm
-    _phone, message = bot.sent[2]
-    assert "87654321" in message
-    assert "הקוד שלך" in message
-    _phone, welcome = bot.sent[3]
+    _phone, welcome = bot.sent[2]
     assert "היי" in welcome
     assert "Dana" in welcome
 
@@ -378,23 +403,46 @@ async def test_is_onboarding_false_for_unknown(fakes):
 
 
 async def test_resend_request_sends_new_otp(fakes):
-    """User sends 'קוד' while pending with a connection → re-sends OTP."""
+    """User sends 'קוד' while pending with a connection → re-sends OTP (fallback)."""
     service, bot, _user_repo, _conn_repo, green_client = fakes
 
-    # Full flow: consent → name → provisioning (OTP sent).
+    # Full flow: consent → name → provisioning (QR sent by default).
     await service.start_onboarding("+972546610653")
     await service.handle_name_response("+972546610653", "Dana")
     await asyncio.sleep(0.1)
-    assert len(green_client.otp_calls) == 1
+    # Default path sends QR, not OTP.
+    assert len(green_client.otp_calls) == 0
+    assert len(bot.sent_images) == 1
 
-    # Resend.
+    # Resend OTP via 'קוד' command.
     await service.handle_resend_request("+972546610653")
     await asyncio.sleep(0.1)
-    assert len(green_client.otp_calls) == 2
+    assert len(green_client.otp_calls) == 1
 
-    # Last message is the re-sent OTP.
+    # Last text message is the re-sent OTP.
     _phone, message = bot.sent[-1]
     assert "87654321" in message
+
+
+async def test_handle_onboarding_qr_resends_qr(fakes):
+    """User sends 'qr' while pending with a connection → re-sends QR image."""
+    service, bot, _user_repo, _conn_repo, green_client = fakes
+
+    # Full flow: consent → name → provisioning (QR sent by default).
+    await service.start_onboarding("+972546610653")
+    await service.handle_name_response("+972546610653", "Dana")
+    await asyncio.sleep(0.1)
+    assert len(bot.sent_images) == 1
+
+    # Re-send QR via 'qr' command.
+    handled = await service.handle_onboarding_qr("+972546610653")
+    assert handled is True
+    await asyncio.sleep(0.1)
+
+    # Second QR image sent.
+    assert len(bot.sent_images) == 2
+    # No OTP requested (QR path).
+    assert len(green_client.otp_calls) == 0
 
 
 async def test_connection_established_by_id(fakes):
@@ -445,23 +493,23 @@ async def test_instance_not_ready_sends_failure(fakes):
 
 
 async def test_instance_starting_then_not_authorized(fakes):
-    """Instance goes through 'starting' before 'notAuthorized' — OTP sent."""
+    """Instance goes through 'starting' before 'notAuthorized' — QR sent."""
     service, bot, _user_repo, _conn_repo, green_client = fakes
 
-    # Simulate: starting → notAuthorized (ready for OTP), then times out.
+    # Simulate: starting → notAuthorized (ready for QR), then times out.
     green_client.set_state_sequence(["starting", "notAuthorized"])
 
     await service.start_onboarding("+972546610653")
     await service.handle_name_response("+972546610653", "Dana")
     await asyncio.sleep(0.5)
 
-    # OTP was requested after reaching notAuthorized.
-    assert len(green_client.otp_calls) == 1
-    # Bot sent: 1) name prompt 2) name confirm 3) OTP instructions 4) timeout.
-    assert len(bot.sent) == 4
-    _phone, message = bot.sent[2]
-    assert "87654321" in message
-    _phone, timeout = bot.sent[3]
+    # No OTP requested (QR is the default path).
+    assert len(green_client.otp_calls) == 0
+    # QR image sent after reaching notAuthorized.
+    assert len(bot.sent_images) == 1
+    # Bot sent text: 1) name prompt 2) name confirm 3) timeout.
+    assert len(bot.sent) == 3
+    _phone, timeout = bot.sent[2]
     assert "לא התחברת בזמן" in timeout
 
 
@@ -486,26 +534,25 @@ async def test_poll_until_authorized_completes_onboarding(fakes):
 async def test_poll_until_authorized_times_out(fakes):
     """Poll sees notAuthorized but never 'authorized' → times out, user stays pending.
 
-    If the instance became ready (OTP sent) but the user never authorized,
-    the user remains ``pending`` so they can retry via 'קוד'.
+    If the instance became ready (QR sent) but the user never authorized,
+    the user remains ``pending`` so they can retry via 'qr' or 'קוד'.
     """
     service, bot, user_repo, _conn_repo, green_client = fakes
 
     user_id = await user_repo.create_user("+972546610653", first_name="Dana")
 
-    # Always returns notAuthorized (instance ready, OTP sent, but never authorized).
+    # Always returns notAuthorized (instance ready, QR sent, but never authorized).
     green_client.set_state_sequence(["notAuthorized"] * 30)
 
     await service._poll_until_authorized(user_id, "+972546610653", "inst-1", "token-1")
 
-    # User remains pending (can retry via 'קוד').
+    # User remains pending (can retry via 'qr' or 'קוד').
     user = await user_repo.get_by_phone("+972546610653")
     assert user[1] == "pending"
-    # OTP + timeout message sent.
-    assert len(bot.sent) == 2
-    _phone, otp_msg = bot.sent[0]
-    assert "הקוד שלך" in otp_msg
-    _phone, msg = bot.sent[1]
+    # QR image sent + timeout text message.
+    assert len(bot.sent_images) == 1
+    assert len(bot.sent) == 1
+    _phone, msg = bot.sent[0]
     assert "לא התחברת בזמן" in msg
     assert "קוד" in msg
 
@@ -531,3 +578,74 @@ async def test_resolve_context_returns_typed_context(fakes):
     assert ctx.onboarding_status == "pending"
     assert ctx.first_name == "Dana"
     assert ctx.connection is None
+
+
+async def test_qr_fetch_failure_falls_back_to_otp(fakes):
+    """If QR fetch fails, onboarding falls back to OTP."""
+    service, bot, _user_repo, _conn_repo, green_client = fakes
+
+    # QR fetch will fail.
+    green_client.qr_should_fail = True
+    # Instance becomes ready then authorized.
+    green_client.set_state_sequence(["notAuthorized", "authorized"])
+
+    await service.start_onboarding("+972546610653")
+    await service.handle_name_response("+972546610653", "Dana")
+    await asyncio.sleep(0.1)
+
+    # No QR image sent (fetch failed).
+    assert len(bot.sent_images) == 0
+    # OTP fallback was used.
+    assert len(green_client.otp_calls) == 1
+    # OTP instructions + fallback notice sent.
+    _phone, fallback_notice = bot.sent[2]
+    assert "קוד טלפון" in fallback_notice or "QR" in fallback_notice
+    _phone, otp_msg = bot.sent[3]
+    assert "87654321" in otp_msg
+    assert "הקוד שלך" in otp_msg
+
+
+async def test_qr_send_image_failure_falls_back_to_otp(fakes):
+    """If bot.send_image fails, onboarding falls back to OTP."""
+    service, bot, _user_repo, _conn_repo, green_client = fakes
+
+    # send_image will fail.
+    bot.send_image_should_fail = True
+    # Instance becomes ready then authorized.
+    green_client.set_state_sequence(["notAuthorized", "authorized"])
+
+    await service.start_onboarding("+972546610653")
+    await service.handle_name_response("+972546610653", "Dana")
+    await asyncio.sleep(0.1)
+
+    # No QR image sent (send failed).
+    assert len(bot.sent_images) == 0
+    # OTP fallback was used.
+    assert len(green_client.otp_calls) == 1
+    # OTP instructions sent (before the welcome).
+    otp_msgs = [msg for _p, msg in bot.sent if "87654321" in msg]
+    assert len(otp_msgs) == 1
+    assert "הקוד שלך" in otp_msgs[0]
+
+
+async def test_qr_already_authorized_completes_onboarding(fakes):
+    """If QR returns ALREADY_AUTHORIZED, onboarding completes immediately."""
+    service, bot, user_repo, _conn_repo, green_client = fakes
+
+    # QR returns alreadyLogged → ALREADY_AUTHORIZED.
+    green_client.qr_response = {"type": "alreadyLogged"}
+    # Instance is notAuthorized (triggers QR fetch) then authorized.
+    green_client.set_state_sequence(["notAuthorized", "authorized"])
+
+    user_id = await user_repo.create_user("+972546610653", first_name="Dana")
+    await user_repo.update_first_name(user_id, "Dana")
+
+    await service._poll_until_authorized(user_id, "+972546610653", "inst-1", "token-1")
+
+    # No QR image sent, no OTP requested.
+    assert len(bot.sent_images) == 0
+    assert len(green_client.otp_calls) == 0
+    # Welcome sent (onboarding completed via ALREADY_AUTHORIZED).
+    assert len(bot.sent) >= 1
+    _phone, welcome = bot.sent[0]
+    assert "היי" in welcome

@@ -227,6 +227,102 @@ class Dialog360Client:
         )
         return _extract_msg_id(data, "send_buttons")
 
+    async def send_image(
+        self,
+        recipient: str,
+        *,
+        image_bytes: bytes,
+        mime_type: str,
+        caption: str | None = None,
+    ) -> str:
+        """Send an image message by uploading it to 360dialog first.
+
+        Uploads the raw image bytes to the 360dialog ``/media`` endpoint,
+        then sends an ``image`` message referencing the returned media ID.
+        A timeout or 5xx on either call is :class:`IndeterminateError` —
+        the upload may have succeeded (media may be stored) so the caller
+        must not blindly retry.
+
+        Args:
+            recipient: Phone number (E.164 or raw).
+            image_bytes: Raw image bytes to upload and send.
+            mime_type: MIME type of the image (e.g. ``image/png``).
+            caption: Optional caption shown below the image.
+
+        Returns the message ID assigned by 360dialog.
+        """
+        media_id = await self._upload_media(image_bytes, mime_type)
+        phone = _normalize_phone(recipient)
+        image: dict[str, Any] = {"id": media_id}
+        if caption:
+            image["caption"] = caption
+        payload: dict[str, Any] = {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": phone,
+            "type": "image",
+            "image": image,
+        }
+        data = await self._post_json(
+            f"{self._settings.api_base_url}/messages",
+            payload,
+            operation="send_image",
+        )
+        return _extract_msg_id(data, "send_image")
+
+    async def _upload_media(
+        self,
+        image_bytes: bytes,
+        mime_type: str,
+    ) -> str:
+        """Upload media to 360dialog and return the media ID.
+
+        Uses ``multipart/form-data`` with ``messaging_product=whatsapp`` and
+        a ``file`` field. The filename is derived from the MIME type.
+        """
+        url = f"{self._settings.api_base_url}/media"
+        ext = _mime_extension(mime_type)
+        files: list[tuple[str, tuple[str | None, bytes, str | None]]] = [
+            ("messaging_product", (None, b"whatsapp", None)),
+            ("file", (f"upload.{ext}", image_bytes, mime_type)),
+        ]
+        headers = {"D360-API-KEY": self._settings.api_key}
+        try:
+            response = await self._client.post(url, files=files, headers=headers)
+        except httpx.ConnectError as exc:
+            _logger.info("provider=dialog360 operation=upload_media status=connect_error")
+            raise RetryableError("connect error during upload_media") from exc
+        except httpx.ReadTimeout as exc:
+            _logger.info("provider=dialog360 operation=upload_media status=read_timeout")
+            raise IndeterminateError("read timeout during upload_media") from exc
+        except httpx.HTTPError as exc:
+            _logger.info(
+                "provider=dialog360 operation=upload_media status=transport_error error_type=%s",
+                type(exc).__name__,
+            )
+            raise IndeterminateError(
+                f"transport error during upload_media: {type(exc).__name__}"
+            ) from exc
+
+        status = response.status_code
+        _logger.info(
+            "provider=dialog360 operation=upload_media status_code=%s", status,
+        )
+
+        if status == 429:
+            raise RetryableError("rate limited during upload_media")
+        if 500 <= status < 600:
+            raise IndeterminateError(f"dialog360 upload_media returned HTTP {status}")
+        if 400 <= status < 500:
+            raise PermanentError(f"dialog360 upload_media returned HTTP {status}")
+
+        body = _safe_json(response)
+        media_id = body.get("id") if isinstance(body, dict) else None
+        if not media_id:
+            raise PermanentError("360dialog upload_media response missing id")
+        return str(media_id)
+
+
     @traceable(
         name="wfm.http.dialog360",
         process_inputs=safe_dialog360_http_inputs,
@@ -304,3 +400,17 @@ def _normalize_phone(recipient: str) -> str:
         .replace("-", "")
         .strip()
     )
+
+
+_MIME_EXTENSIONS = {
+    "image/png": "png",
+    "image/jpeg": "jpg",
+    "image/jpg": "jpg",
+    "image/webp": "webp",
+    "image/gif": "gif",
+}
+
+
+def _mime_extension(mime_type: str) -> str:
+    """Return a file extension for a MIME type (defaults to ``bin``)."""
+    return _MIME_EXTENSIONS.get(mime_type.lower(), "bin")

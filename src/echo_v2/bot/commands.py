@@ -37,6 +37,7 @@ __all__ = [
     "ListDone",
     "OnboardingCode",
     "OnboardingInfo",
+    "OnboardingQr",
     "OnboardingStart",
     "ResponsibilityDismiss",
     "ResponsibilityDone",
@@ -102,6 +103,11 @@ class OnboardingCode:
 
 
 @dataclass(frozen=True)
+class OnboardingQr:
+    """Known user sent 'qr' — resend QR image."""
+
+
+@dataclass(frozen=True)
 class Cancel:
     """User sent a cancel keyword — cancel the active flow."""
 
@@ -116,6 +122,7 @@ BotCommand = (
     | OnboardingStart
     | OnboardingInfo
     | OnboardingCode
+    | OnboardingQr
     | Cancel
 )
 
@@ -124,6 +131,7 @@ BotCommand = (
 
 _CONSENT_PHRASE = "חברו אותי"
 _CODE_KEYWORD = "קוד"
+_QR_KEYWORD = "qr"
 _DIGEST_KEYWORD = "סיכום חדש"
 _VIEW_DETAILS_BUTTON = "צפה בשיחות"
 _LIST_DONE_TEXT = "סיימתי לעבור על רשימת ההמתנה"
@@ -140,7 +148,7 @@ class BotCommandParser:
     * Button callbacks: ``action:{id}:handled``, ``action:{id}:snooze``,
       ``action:{id}:snooze:{preset}``, ``action:{id}:dismiss``,
       ``dismiss:{id}:{reason}``, ``onboarding:start``, ``onboarding:info``
-    * Text keywords: ``קוד``, ``סיכום חדש``, ``צפה בשיחות``,
+    * Text keywords: ``קוד``, ``qr``, ``סיכום חדש``, ``צפה בשיחות``,
       ``סיימתי לעבור על רשימת ההמתנה``, ``חברו אותי``, cancel words.
 
     Returns ``None`` if the event doesn't match any command — the
@@ -201,6 +209,8 @@ class BotCommandParser:
 
         if stripped == _CODE_KEYWORD:
             return OnboardingCode()
+        if stripped.lower() == _QR_KEYWORD:
+            return OnboardingQr()
         if _DIGEST_KEYWORD in stripped:
             return DigestOpen()
         if stripped.strip("[]") == _VIEW_DETAILS_BUTTON:

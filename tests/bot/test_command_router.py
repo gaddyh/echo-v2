@@ -18,6 +18,7 @@ from echo_v2.bot import (
     ListDone,
     OnboardingCode,
     OnboardingInfo,
+    OnboardingQr,
     OnboardingStart,
     ResponsibilityDismiss,
     ResponsibilityDone,
@@ -122,6 +123,12 @@ def test_parse_text_code():
     parser = BotCommandParser()
     cmd = parser.parse(_text_event("קוד"))
     assert isinstance(cmd, OnboardingCode)
+
+
+def test_parse_text_qr():
+    parser = BotCommandParser()
+    cmd = parser.parse(_text_event("qr"))
+    assert isinstance(cmd, OnboardingQr)
 
 
 def test_parse_text_digest():
@@ -232,6 +239,10 @@ class _FakeHandlers:
 
     async def handle_onboarding_code(self, phone: str) -> bool:
         self.calls.append(f"code:{phone}")
+        return True
+
+    async def handle_onboarding_qr(self, phone: str) -> bool:
+        self.calls.append(f"qr:{phone}")
         return True
 
     async def handle_onboarding_start(self, phone: str) -> None:
@@ -516,8 +527,24 @@ async def test_router_dispatches_onboarding_code():
     assert fallback.events == []
 
 
+async def test_router_dispatches_onboarding_qr():
+    """Known user sending 'qr' re-sends the QR image via handle_onboarding_qr."""
+    handlers = _FakeHandlers()
+    onboarding = _FakeOnboardingEntry()
+    fallback = _FakeFallback()
+    router = BotCommandRouter(
+        user_resolver=_FakeUserResolver(),
+        command_handlers=handlers,
+        onboarding_entry=onboarding,
+        fallback_handler=fallback,
+    )
+    await router.route(_text_event("qr"))
+    assert handlers.calls == ["qr:972501234567"]
+    assert fallback.events == []
+
+
 async def test_router_dispatches_onboarding_start_known_user():
-    """Known user tapping onboarding:start re-sends OTP via handle_onboarding_code."""
+    """Known user tapping onboarding:start re-sends QR via handle_onboarding_qr."""
     handlers = _FakeHandlers()
     onboarding = _FakeOnboardingEntry()
     fallback = _FakeFallback()
@@ -528,7 +555,7 @@ async def test_router_dispatches_onboarding_start_known_user():
         fallback_handler=fallback,
     )
     await router.route(_button_event("onboarding:start"))
-    assert handlers.calls == ["code:972501234567"]
+    assert handlers.calls == ["qr:972501234567"]
     assert fallback.events == []
 
 

@@ -1,4 +1,4 @@
-"""OnboardingService — OTP-based WhatsApp onboarding flow.
+"""OnboardingService — WhatsApp onboarding flow (QR-first, OTP fallback).
 
 Simplified flow (name collected before provisioning):
 
@@ -6,8 +6,9 @@ Simplified flow (name collected before provisioning):
 2. User consents ("חברו אותי") → create user row (pending), ask for name.
 3. User sends name (or skips) → store name, start provisioning.
 4. Background: create Green instance, single lifecycle poll.
-5. Poll reaches ``notAuthorized`` → send OTP + instructions (once).
-6. User enters the 8-digit code in WhatsApp.
+5. Poll reaches ``notAuthorized`` → send QR image + instructions (once).
+   If QR fetch fails → fall back to OTP code.
+6. User scans the QR (or enters the 8-digit code if OTP fallback).
 7. Poll reaches ``authorized`` → user becomes ``active``, send welcome.
 8. Timeout/failure → user remains ``pending`` or becomes ``failed``.
 
@@ -17,13 +18,18 @@ The ``connected`` state is gone — connection status is owned by the
 
 Idempotency:
 - If onboarding is already ``pending``, don't create a second instance.
-  Re-send the OTP if the user asks.
+  Re-send the QR (or OTP) if the user asks.
 - If onboarding is ``active``, skip.
+
+Commands:
+- 'qr' → re-send the QR image (default pairing method).
+- 'קוד' → re-send the OTP code (fallback pairing method).
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import logging
 import secrets
@@ -39,7 +45,9 @@ from echo_v2.persistence.whatsapp_connections import (
 from echo_v2.ports.bot import BotChannel, BotEvent, BotEventType
 from echo_v2.ports.whatsapp import (
     ConnectionConfig,
+    ConnectionRef,
     ConnectionStatus,
+    PairingOutcome,
     WhatsAppEventSubscription,
 )
 
@@ -56,10 +64,10 @@ _NAME_PROMPT = "איך אפנה אליך? (שלח את השם שלך)"
 # Name confirmation sent after name is stored, before provisioning starts.
 _NAME_CONFIRMATION = (
     "נחמד להכיר אותך, {name}! 🎉\n\n"
-    "מחבר אותך ל-Echo... זה יכול לקחת דקה-שתיים. רגע ותקבל את הקוד. ⏳"
+    "מחבר אותך ל-Echo... זה יכול לקחת דקה-שתיים. רגע ותקבל קוד QR לסריקה. ⏳"
 )
 
-# Onboarding instructions sent to the user.
+# Onboarding instructions sent to the user (OTP fallback path).
 _OTP_INSTRUCTIONS = (
     "הקוד שלך: {code}\n\n"
     "כדי לחבר את WhatsApp:\n"
@@ -68,6 +76,20 @@ _OTP_INSTRUCTIONS = (
     "3. בחר 'קשר עם מספר טלפון'\n"
     "4. הזן את הקוד: {code}\n\n"
     "הקוד בתוקף למשך כ-2.5 דקות."
+)
+
+# Caption sent with the QR image (default pairing path).
+_QR_CAPTION = (
+    "סרוק את ה-QR כדי לחבר את WhatsApp:\n"
+    "1. פתח את WhatsApp בטלפון\n"
+    "2. הגדרות ← מכשירים מקושרים ← קשר מכשיר\n"
+    "3. סרוק את ה-QR הזה\n\n"
+    "לא מצליח לסרוק? שלח 'קוד' כדי לקבל קוד טלפון."
+)
+
+# Sent when QR fetch fails and we fall back to OTP.
+_QR_FAILED_FALLBACK = (
+    "לא הצלחתי לשלוח את ה-QR. שולח קוד טלפון במקום — הזן אותו ב-WhatsApp."
 )
 
 # Welcome message sent after authorization (name already collected).
@@ -176,14 +198,15 @@ class UserRepository(Protocol):
 
 
 class OnboardingService:
-    """Orchestrates the OTP-based WhatsApp onboarding flow.
+    """Orchestrates the WhatsApp onboarding flow (QR-first, OTP fallback).
 
     Dependencies:
-    * ``bot`` — sends messages to the user.
+    * ``bot`` — sends messages (text + image) to the user.
     * ``user_repo`` — creates and updates users.
     * ``connection_repo`` — stores the Green API connection.
-    * ``provisioner`` — creates Green instances and configures webhooks.
-    * ``green_client`` — calls ``getAuthorizationCode`` for the OTP.
+    * ``provisioner`` — creates Green instances, configures webhooks, and
+      fetches pairing QRs (``get_pairing_qr``).
+    * ``green_client`` — calls ``getAuthorizationCode`` for the OTP fallback.
     * ``webhook_base_url`` — the public URL Green should send webhooks to.
     """
 
@@ -319,8 +342,8 @@ class OnboardingService:
                     # Consented but hasn't sent name yet — re-ask.
                     await self._bot.send_text(normalized, _NAME_PROMPT)
                 else:
-                    # Already provisioning — re-send OTP if connection exists.
-                    await self._resend_otp(user_id, normalized)
+                    # Already provisioning — re-send QR if connection exists.
+                    await self._resend_qr(user_id, normalized)
                 return
             if onboarding_status == "active":
                 return
@@ -457,19 +480,20 @@ class OnboardingService:
 
         States:
         - ``None`` / ``starting`` → instance still being created, keep polling
-        - ``notAuthorized`` → ready for pairing, send OTP once, keep polling
+        - ``notAuthorized`` → ready for pairing, send QR once, keep polling
         - ``authorized`` → user paired, complete onboarding, stop
         - timeout → depends on whether the instance ever became ready:
           - if we never saw ``notAuthorized``/``authorized`` (instance stuck
             in ``starting``/``None``) → user becomes ``failed`` (provisioning
             itself failed)
-          - if we saw ``notAuthorized`` (OTP was sent) but never reached
+          - if we saw ``notAuthorized`` (QR/OTP was sent) but never reached
             ``authorized`` → user remains ``pending`` (user just needs to
-            enter the code; can retry via 'קוד')
+            scan/enter the code; can retry via 'qr' or 'קוד')
 
-        The OTP is sent exactly once, the first time we see ``notAuthorized``.
+        The QR is sent exactly once, the first time we see ``notAuthorized``.
+        If the QR fetch fails, we fall back to OTP.
         """
-        otp_sent = False
+        pairing_sent = False
         saw_ready = False  # saw notAuthorized or authorized at least once
 
         for attempt in range(self._poll_max_attempts):
@@ -506,29 +530,22 @@ class OnboardingService:
 
                 if state == "notAuthorized":
                     saw_ready = True
-                    if not otp_sent:
-                        # Instance is ready for pairing — send OTP.
-                        phone_int = int(phone.lstrip("+"))
-                        try:
-                            code = await self._green_client.get_authorization_code(
-                                id_instance,
-                                api_token,
-                                phone_int,
-                            )
-                        except Exception:
-                            _logger.exception("onboarding: failed to get OTP")
-                            await self._user_repo.update_onboarding_status(
-                                user_id, "failed"
-                            )
-                            await self._bot.send_text(
-                                phone,
-                                "מצטער, לא הצלחתי לקבל את קוד האימות. נסה שוב מאוחר יותר.",
-                            )
+                    if not pairing_sent:
+                        # Instance is ready for pairing — send QR (default).
+                        conn_ref = ConnectionRef(
+                            provider="green",
+                            provider_connection_id=id_instance,
+                        )
+                        sent = await self._send_pairing_qr(
+                            user_id, phone, conn_ref, api_token,
+                        )
+                        pairing_sent = True
+                        if not sent:
+                            # QR failed and OTP fallback also failed.
                             return
-                        message = _OTP_INSTRUCTIONS.format(code=code)
-                        await self._bot.send_text(phone, message)
-                        otp_sent = True
-                        _logger.info("onboarding: OTP sent (attempt=%d)", attempt + 1)
+                        _logger.info(
+                            "onboarding: pairing sent (attempt=%d)", attempt + 1,
+                        )
 
             except Exception as exc:  # noqa: BLE001
                 # 401 can happen transiently during creation — keep polling.
@@ -548,8 +565,8 @@ class OnboardingService:
             saw_ready,
         )
         if saw_ready:
-            # Instance became ready (OTP was sent) but user didn't authorize.
-            # Keep them pending so they can retry via 'קוד'.
+            # Instance became ready (QR/OTP was sent) but user didn't authorize.
+            # Keep them pending so they can retry via 'qr' or 'קוד'.
             try:
                 await self._bot.send_text(phone, _OTP_TIMED_OUT)
             except Exception:
@@ -676,6 +693,13 @@ class OnboardingService:
         """Handle 'קוד' command — resend OTP for a known user."""
         return await self.handle_resend_request(phone)
 
+    async def handle_onboarding_qr(self, phone: str) -> bool:
+        """Handle 'qr' command — resend QR image for a known user."""
+        ctx = await self.resolve_context(phone)
+        if ctx is None:
+            return False
+        return await self._resend_qr(ctx.user_id, ctx.phone)
+
     async def handle_onboarding_start(self, phone: str) -> None:
         """Handle 'חברו אותי' command — start onboarding."""
         await self.start_onboarding(phone)
@@ -750,6 +774,147 @@ class OnboardingService:
         await self._bot.send_text(phone, message)
         return True
 
+    async def _send_pairing_qr(
+        self,
+        user_id: str,
+        phone: str,
+        conn_ref: ConnectionRef,
+        api_token: str,
+    ) -> bool:
+        """Fetch a pairing QR from Green and send it as an image.
+
+        Falls back to OTP if the QR fetch fails, returns a non-QR outcome
+        (e.g. ``PASSKEY_REQUIRED`` / ``TIMEOUT``), or the bot can't send
+        the image. Returns ``True`` if a pairing artifact (QR or OTP) was
+        sent, ``False`` if everything failed (onboarding is marked failed
+        by the caller).
+        """
+        try:
+            raw = await self._green_client.get_qr_ws(
+                conn_ref.provider_connection_id,
+                api_token,
+            )
+        except Exception:
+            _logger.exception("onboarding: failed to fetch QR")
+            return await self._fallback_to_otp(user_id, phone, conn_ref, api_token)
+
+        outcome = _qr_outcome(raw)
+
+        if outcome is PairingOutcome.QR_READY:
+            image_b64 = raw.get("message") or ""
+            try:
+                image_bytes = base64.b64decode(image_b64)
+            except Exception:
+                _logger.exception("onboarding: failed to decode QR image")
+                return await self._fallback_to_otp(user_id, phone, conn_ref, api_token)
+            try:
+                await self._bot.send_image(
+                    phone,
+                    image_bytes=image_bytes,
+                    mime_type="image/png",
+                    caption=_QR_CAPTION,
+                )
+            except Exception:
+                _logger.exception("onboarding: failed to send QR image")
+                return await self._fallback_to_otp(user_id, phone, conn_ref, api_token)
+            _logger.info("onboarding: QR sent to %s", phone)
+            return True
+
+        if outcome is PairingOutcome.ALREADY_AUTHORIZED:
+            _logger.info("onboarding: QR already authorized for %s", phone)
+            await self.handle_connection_established(user_id, phone)
+            return True
+
+        # PASSKEY_REQUIRED / TIMEOUT / error → fall back to OTP.
+        _logger.info(
+            "onboarding: QR outcome %s, falling back to OTP for %s",
+            outcome, phone,
+        )
+        return await self._fallback_to_otp(user_id, phone, conn_ref, api_token)
+
+    async def _fallback_to_otp(
+        self,
+        user_id: str,
+        phone: str,
+        conn_ref: ConnectionRef,
+        api_token: str,
+    ) -> bool:
+        """Send an OTP as a fallback when QR is unavailable.
+
+        Returns ``True`` if the OTP was sent, ``False`` if it failed (the
+        caller marks the user ``failed``).
+        """
+        phone_int = int(phone.lstrip("+"))
+        try:
+            code = await self._green_client.get_authorization_code(
+                conn_ref.provider_connection_id,
+                api_token,
+                phone_int,
+            )
+        except Exception:
+            _logger.exception("onboarding: OTP fallback failed for %s", phone)
+            await self._user_repo.update_onboarding_status(user_id, "failed")
+            await self._bot.send_text(
+                phone,
+                "מצטער, לא הצלחתי לקבל את קוד האימות. נסה שוב מאוחר יותר.",
+            )
+            return False
+        try:
+            await self._bot.send_text(phone, _QR_FAILED_FALLBACK)
+        except Exception:
+            _logger.exception("onboarding: failed to send QR-failed notice")
+        message = _OTP_INSTRUCTIONS.format(code=code)
+        await self._bot.send_text(phone, message)
+        _logger.info("onboarding: OTP fallback sent to %s", phone)
+        return True
+
+    async def _resend_qr(self, user_id: str, phone: str) -> bool:
+        """Re-request the QR for an existing connection.
+
+        Checks Green API state first: if the instance is already
+        ``authorized``, tells the user they're already connected and
+        updates the DB to ``active`` (if stale). Otherwise fetches a
+        fresh QR and sends it. Falls back to OTP if the QR fetch fails.
+
+        Returns ``True`` if handled, ``False`` if no connection row.
+        """
+        conn = await self._connection_repo.get_by_user(user_id)
+        if conn is None:
+            _logger.warning("onboarding: no connection for user %s", user_id)
+            return False
+
+        api_token = conn.credentials.data.decode("utf-8")
+
+        # Check Green API state — it's the source of truth.
+        try:
+            state = await self._green_client.get_state_instance(
+                conn.ref.provider_connection_id,
+                api_token,
+            )
+        except Exception:
+            _logger.exception("onboarding: failed to check instance state")
+            state = None  # proceed to attempt QR anyway
+
+        if state == "authorized":
+            _logger.info("onboarding: instance already authorized for %s", phone)
+            # Update DB if stale.
+            existing = await self._user_repo.get_by_phone(phone)
+            if existing is not None:
+                _uid, onboarding_status, _name = existing
+                if onboarding_status != "active":
+                    await self._user_repo.update_onboarding_status(user_id, "active")
+                    _logger.info(
+                        "onboarding: updated stale status %s → active for %s",
+                        onboarding_status, phone,
+                    )
+            await self._bot.send_text(
+                phone,
+                "אתה כבר מחובר 👍 אין צורך ב-QR חדש.",
+            )
+            return True
+
+        return await self._send_pairing_qr(user_id, phone, conn.ref, api_token)
+
     async def _lookup_phone(self, user_id: str) -> str | None:
         """Look up a user's phone by user_id via the user repo."""
         if hasattr(self._user_repo, "get_phone_by_id"):
@@ -763,3 +928,15 @@ class OnboardingService:
             return normalize_phone_e164(phone)
         except PhoneParseError:
             return None
+
+
+def _qr_outcome(raw: dict[str, object]) -> PairingOutcome:
+    """Map a raw Green QR WebSocket event to a PairingOutcome."""
+    etype = raw.get("type")
+    if etype == "qrCode":
+        return PairingOutcome.QR_READY
+    if etype == "alreadyLogged":
+        return PairingOutcome.ALREADY_AUTHORIZED
+    if etype == "passkeyRequired":
+        return PairingOutcome.PASSKEY_REQUIRED
+    return PairingOutcome.TIMEOUT

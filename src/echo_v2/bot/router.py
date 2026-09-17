@@ -31,6 +31,7 @@ from echo_v2.bot.commands import (
     ListDone,
     OnboardingCode,
     OnboardingInfo,
+    OnboardingQr,
     OnboardingStart,
     ResponsibilityDismiss,
     ResponsibilityDone,
@@ -71,6 +72,8 @@ class CommandHandlers(Protocol):
     async def handle_list_done(self, event: BotEvent) -> None: ...
 
     async def handle_onboarding_code(self, phone: str) -> bool: ...
+
+    async def handle_onboarding_qr(self, phone: str) -> bool: ...
 
     async def handle_onboarding_start(self, phone: str) -> None: ...
 
@@ -198,9 +201,11 @@ class BotCommandRouter:
                 await self._handlers.handle_list_done(event)
             case OnboardingCode():
                 await self._handlers.handle_onboarding_code(event.user_phone)
+            case OnboardingQr():
+                await self._handlers.handle_onboarding_qr(event.user_phone)
             case OnboardingStart():
-                # Known user tapping onboarding:start — re-send OTP.
-                await self._handlers.handle_onboarding_code(event.user_phone)
+                # Known user tapping onboarding:start — re-send QR (default).
+                await self._handlers.handle_onboarding_qr(event.user_phone)
             case OnboardingInfo():
                 await self._handlers.handle_onboarding_info(event.user_phone)
             case Cancel():
