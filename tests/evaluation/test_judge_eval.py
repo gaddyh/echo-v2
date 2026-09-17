@@ -44,6 +44,10 @@ from tests.evaluation.waiting_for_me_cases import (
     SOC_CASES,
     EvalCase,
 )
+from tests.evaluation.waiting_for_me_soc2508_cases import (
+    SOC2508_DEV_CASES,
+    SOC2508_TEST_CASES,
+)
 
 pytestmark = [
     pytest.mark.eval,
@@ -378,3 +382,29 @@ async def test_judge_all_eval(judge):
     min_agreement = float(os.environ.get("EVAL_JUDGE_MIN_AGREEMENT", "0.7"))
     all_cases = SANITY_CASES + SOC_CASES
     await _run_judge_suite(judge, all_cases, "All", min_agreement)
+
+
+@pytest.mark.eval
+async def test_judge_soc2508_dev_eval(judge):
+    """Run the SOC-2508 dev cases through the judge with golden labels.
+
+    Grounded in the SOC-2508 dataset: long noisy windows, buried
+    obligations, base-rate banter negatives, UNCERTAIN labels.
+    """
+    min_agreement = float(os.environ.get("EVAL_JUDGE_SOC2508_MIN_AGREEMENT", "0.7"))
+    await _run_judge_suite(judge, SOC2508_DEV_CASES, "SOC2508-dev", min_agreement)
+
+
+@pytest.mark.eval
+async def test_judge_soc2508_test_eval(judge):
+    """Run the SOC-2508 test cases through the judge with golden labels."""
+    min_agreement = float(os.environ.get("EVAL_JUDGE_SOC2508_MIN_AGREEMENT", "0.7"))
+    await _run_judge_suite(judge, SOC2508_TEST_CASES, "SOC2508-test", min_agreement)
+
+
+@pytest.mark.eval
+async def test_judge_soc2508_all_eval(judge):
+    """Run all SOC-2508 cases (dev + test) through the judge."""
+    min_agreement = float(os.environ.get("EVAL_JUDGE_SOC2508_MIN_AGREEMENT", "0.7"))
+    all_cases = SOC2508_DEV_CASES + SOC2508_TEST_CASES
+    await _run_judge_suite(judge, all_cases, "SOC2508-all", min_agreement)

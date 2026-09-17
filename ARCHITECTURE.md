@@ -570,7 +570,7 @@ After each analysis run, an LLM judge (`services/analysis_judge.py`) evaluates w
 - Stores score as LangSmith feedback (`judge_correctness` key): 1.0=correct, 0.5=debatable, 0.0=wrong
 - Uses a different model (`JUDGE_MODEL_NAME`, default `gpt-5.4`) from the analyzer to reduce same-model bias
 - Judge scores visible in the LangSmith dashboard as feedback on each `wfm.analysis` run
-- Evaluated against golden labels via `tests/evaluation/test_judge_eval.py` (baseline: 97.9% agreement)
+- Evaluated against golden labels via `tests/evaluation/test_judge_eval.py` (baseline: 97.9% agreement on sanity, 100% on SOC, 100% on SOC-2508)
 
 ### Logging
 

@@ -482,8 +482,9 @@ The LLM-as-judge is evaluated against golden labels (not analyzer output) to mea
 |-------|-------|---------------|
 | Judge sanity (`eval` marker, `-k judge`) | 40 | Does the judge agree with our golden labels on baseline cases? |
 | Judge SOC (`eval` marker, `-k judge`) | 9 | Does the judge agree on harder state-transition cases? |
+| Judge SOC-2508 (`eval` marker, `-k judge`) | 40 | Does the judge agree on realistic long/noisy cases (dev + test)? |
 
-Baseline (gpt-5.4 judge): sanity 39/40 (97.5%), SOC 9/9 (100%).
+Baseline (gpt-5.4 judge): sanity 39/40 (97.5%), SOC 9/9 (100%), SOC-2508 40/40 (100%).
 
 ```bash
 pytest -m eval_soc -v -s                 # SOC families + SOC-2508 realistic
