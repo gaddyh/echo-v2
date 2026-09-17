@@ -237,6 +237,15 @@ class _FakeHandlers:
     async def handle_list_done(self, event: BotEvent) -> None:
         self.calls.append("list_done")
 
+
+class _FakeOnboardingEntry:
+    def __init__(self) -> None:
+        self.unknown_events: list[BotEvent] = []
+        self.calls: list[str] = []
+
+    async def handle_unknown_event(self, event: BotEvent) -> None:
+        self.unknown_events.append(event)
+
     async def handle_onboarding_code(self, phone: str) -> bool:
         self.calls.append(f"code:{phone}")
         return True
@@ -250,14 +259,6 @@ class _FakeHandlers:
 
     async def handle_onboarding_info(self, phone: str) -> None:
         self.calls.append(f"info:{phone}")
-
-
-class _FakeOnboardingEntry:
-    def __init__(self) -> None:
-        self.unknown_events: list[BotEvent] = []
-
-    async def handle_unknown_event(self, event: BotEvent) -> None:
-        self.unknown_events.append(event)
 
 
 class _FakeFlowRegistry:
@@ -513,6 +514,7 @@ async def test_router_dispatches_list_done():
 
 
 async def test_router_dispatches_onboarding_code():
+    """Known user sending 'קוד' re-sends OTP via onboarding.handle_onboarding_code."""
     handlers = _FakeHandlers()
     onboarding = _FakeOnboardingEntry()
     fallback = _FakeFallback()
@@ -523,12 +525,13 @@ async def test_router_dispatches_onboarding_code():
         fallback_handler=fallback,
     )
     await router.route(_text_event("קוד"))
-    assert handlers.calls == ["code:972501234567"]
+    assert onboarding.calls == ["code:972501234567"]
+    assert handlers.calls == []
     assert fallback.events == []
 
 
 async def test_router_dispatches_onboarding_qr():
-    """Known user sending 'qr' re-sends the QR image via handle_onboarding_qr."""
+    """Known user sending 'qr' re-sends the QR image via onboarding.handle_onboarding_qr."""
     handlers = _FakeHandlers()
     onboarding = _FakeOnboardingEntry()
     fallback = _FakeFallback()
@@ -539,12 +542,13 @@ async def test_router_dispatches_onboarding_qr():
         fallback_handler=fallback,
     )
     await router.route(_text_event("qr"))
-    assert handlers.calls == ["qr:972501234567"]
+    assert onboarding.calls == ["qr:972501234567"]
+    assert handlers.calls == []
     assert fallback.events == []
 
 
 async def test_router_dispatches_onboarding_start_known_user():
-    """Known user tapping onboarding:start re-sends QR via handle_onboarding_qr."""
+    """Known user tapping onboarding:start re-enters via onboarding.handle_onboarding_start."""
     handlers = _FakeHandlers()
     onboarding = _FakeOnboardingEntry()
     fallback = _FakeFallback()
@@ -555,7 +559,8 @@ async def test_router_dispatches_onboarding_start_known_user():
         fallback_handler=fallback,
     )
     await router.route(_button_event("onboarding:start"))
-    assert handlers.calls == ["qr:972501234567"]
+    assert onboarding.calls == ["start:972501234567"]
+    assert handlers.calls == []
     assert fallback.events == []
 
 
@@ -570,5 +575,6 @@ async def test_router_dispatches_onboarding_info():
         fallback_handler=fallback,
     )
     await router.route(_button_event("onboarding:info"))
-    assert handlers.calls == ["info:972501234567"]
+    assert onboarding.calls == ["info:972501234567"]
+    assert handlers.calls == []
     assert fallback.events == []

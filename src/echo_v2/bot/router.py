@@ -40,7 +40,7 @@ from echo_v2.bot.commands import (
 )
 from echo_v2.ports.bot import BotEvent
 
-__all__ = ["BotCommandRouter", "CommandHandlers", "FlowRegistry"]
+__all__ = ["BotCommandRouter", "CommandHandlers", "FlowRegistry", "OnboardingEntry"]
 
 _logger = logging.getLogger("echo_v2.bot.router")
 
@@ -49,8 +49,8 @@ class CommandHandlers(Protocol):
     """Service methods invoked by the router for each command type.
 
     Implemented by :class:`FeedbackHandler` (responsibility commands,
-    digest, list) and :class:`OnboardingService` (onboarding commands).
-    The router dispatches to these methods based on the parsed command.
+    digest, list). Onboarding commands are dispatched to
+    :class:`OnboardingService` via :attr:`BotCommandRouter._onboarding`.
     """
 
     async def handle_responsibility_done(
@@ -70,6 +70,18 @@ class CommandHandlers(Protocol):
     async def handle_digest_open(self, event: BotEvent) -> None: ...
 
     async def handle_list_done(self, event: BotEvent) -> None: ...
+
+
+class OnboardingEntry(Protocol):
+    """Onboarding service methods invoked by the router.
+
+    Implemented by :class:`OnboardingService`. The router dispatches
+    onboarding commands (``OnboardingCode``, ``OnboardingQr``,
+    ``OnboardingStart``, ``OnboardingInfo``) here, and routes unknown
+    users to ``handle_unknown_event``.
+    """
+
+    async def handle_unknown_event(self, event: BotEvent) -> None: ...
 
     async def handle_onboarding_code(self, phone: str) -> bool: ...
 
@@ -130,7 +142,7 @@ class BotCommandRouter:
         *,
         user_resolver,  # UserResolver: phone → (user_id, ...) | None
         command_handlers: CommandHandlers,
-        onboarding_entry,  # OnboardingService
+        onboarding_entry: OnboardingEntry,
         fallback_handler,  # callable(event) -> None
         flow_registry: FlowRegistry | None = None,
         command_parser: BotCommandParser | None = None,
@@ -200,14 +212,15 @@ class BotCommandRouter:
             case ListDone():
                 await self._handlers.handle_list_done(event)
             case OnboardingCode():
-                await self._handlers.handle_onboarding_code(event.user_phone)
+                await self._onboarding.handle_onboarding_code(event.user_phone)
             case OnboardingQr():
-                await self._handlers.handle_onboarding_qr(event.user_phone)
+                await self._onboarding.handle_onboarding_qr(event.user_phone)
             case OnboardingStart():
-                # Known user tapping onboarding:start — re-send QR (default).
-                await self._handlers.handle_onboarding_qr(event.user_phone)
+                # Known user tapping onboarding:start — idempotent re-entry
+                # (re-send QR if pending, re-ask name if needed, skip if active).
+                await self._onboarding.handle_onboarding_start(event.user_phone)
             case OnboardingInfo():
-                await self._handlers.handle_onboarding_info(event.user_phone)
+                await self._onboarding.handle_onboarding_info(event.user_phone)
             case Cancel():
                 # Cancel is a global command — pass to the fallback
                 # (scheduling flow handles cancel internally).
