@@ -37,6 +37,28 @@ API_BASE = "https://api.smith.langchain.com"
 COOLDOWN_SECONDS = 3600  # at most one alert per hour
 
 
+def _parse_run_time(value: str | None) -> datetime | None:
+    """Parse a LangSmith run start_time string to a timezone-aware datetime."""
+    if not value:
+        return None
+    try:
+        # LangSmith returns ISO 8601 with microseconds and timezone.
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+
+
+def _is_within_window(run: dict[str, Any], since: datetime, until: datetime) -> bool:
+    """Check if a run's start_time falls within the [since, until] window."""
+    start = _parse_run_time(run.get("start_time"))
+    if start is None:
+        return False
+    # Normalize to UTC for comparison.
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=timezone.utc)
+    return since <= start <= until
+
+
 @runtime_checkable
 class AlertSender(Protocol):
     async def send_text(self, recipient: str, text: str) -> str: ...
@@ -216,13 +238,15 @@ class AlertChecker:
         until: datetime,
         limit: int = 100,
     ) -> list[dict[str, Any]]:
-        """Query LangSmith runs API for runs matching the filter."""
+        """Query LangSmith runs API for runs matching the filter.
+
+        The API doesn't accept start_time/end_time reliably, so we query
+        with limit + order=desc and filter by time in Python.
+        """
         payload: dict[str, Any] = {
             "session": [self._project_id],
             "limit": limit,
             "order": "desc",
-            "start_time": since.isoformat(),
-            "end_time": until.isoformat(),
         }
         if run_filter:
             payload["filter"] = run_filter
@@ -234,7 +258,13 @@ class AlertChecker:
                 json=payload,
             )
             resp.raise_for_status()
-            return list(resp.json().get("runs", []))
+            runs = list(resp.json().get("runs", []))
+            # Filter by time in Python since the API doesn't support
+            # start_time/end_time reliably.
+            return [
+                r for r in runs
+                if _is_within_window(r, since, until)
+            ]
 
     async def run_loop(self) -> None:
         """Poll forever, sending summaries when alerts fire.
