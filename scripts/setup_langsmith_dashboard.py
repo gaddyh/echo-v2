@@ -148,7 +148,8 @@ def create_chart(section_id: str, chart: dict, index: int) -> None:
 # --- dashboard definition --------------------------------------------------
 
 
-def build_dashboard(section_id: str) -> None:
+def build_overview_dashboard(section_id: str) -> None:
+    """High-level dashboard — trends by days/weeks."""
     charts: list[dict] = [
         # 1. KPI — total analyzer runs
         {
@@ -157,35 +158,7 @@ def build_dashboard(section_id: str) -> None:
             "chart_type": "kpi",
             "series": [count_series("runs", 'eq(name, "wfm.llm_analyze")')],
         },
-        # 2. Line — analyzer run status per run (1=success, 0=error)
-        {
-            "title": "Analyzer Run Status",
-            "description": "Per-run status: success vs error counts over time",
-            "chart_type": "line",
-            "series": [
-                {
-                    "name": "success",
-                    "metric_definition": {"type": "count"},
-                    "filter_definition": {
-                        "source_type": "tracing_project",
-                        "project_ids": [PROJECT_ID],
-                        "run_filter": 'eq(name, "wfm.analysis")',
-                    },
-                    "filters": {"filter": 'eq(status, "success")'},
-                },
-                {
-                    "name": "errors",
-                    "metric_definition": {"type": "count"},
-                    "filter_definition": {
-                        "source_type": "tracing_project",
-                        "project_ids": [PROJECT_ID],
-                        "run_filter": 'eq(name, "wfm.analysis")',
-                    },
-                    "filters": {"filter": 'eq(status, "error")'},
-                },
-            ],
-        },
-        # 3. Line — LLM analysis latency p50/p99
+        # 2. Line — LLM analysis latency p50/p99
         {
             "title": "LLM Analysis Latency",
             "description": "p50 and p99 latency for wfm.llm_analyze",
@@ -270,24 +243,90 @@ def build_dashboard(section_id: str) -> None:
         create_chart(section_id, chart, i)
 
 
+def build_realtime_dashboard(section_id: str) -> None:
+    """Real-time dashboard — last 1-5 hours operational health."""
+    charts: list[dict] = [
+        # 1. Line — recent analyzer runs (is the analyzer working?)
+        {
+            "title": "Recent Analyzer Runs",
+            "description": "wfm.analysis runs — should show activity every ~5 min",
+            "chart_type": "line",
+            "series": [
+                count_series("analysis", 'eq(name, "wfm.analysis")'),
+            ],
+        },
+        # 2. Line — recent inbound messages (are messages flowing?)
+        {
+            "title": "Recent Inbound Messages",
+            "description": "wfm.ingest.green runs — messages arriving from Green API",
+            "chart_type": "line",
+            "series": [
+                count_series("green arrivals", 'eq(name, "wfm.ingest.green")'),
+            ],
+        },
+        # 3. Line — recent errors (any failures right now?)
+        {
+            "title": "Recent Errors",
+            "description": "Error count across all traced runs — spikes indicate problems",
+            "chart_type": "line",
+            "series": [
+                {
+                    "name": "errors",
+                    "metric_definition": {"type": "count"},
+                    "filter_definition": project_filter(),
+                    "filters": {"filter": 'eq(status, "error")'},
+                },
+            ],
+        },
+        # 4. Line — recent bot sends (are we sending messages?)
+        {
+            "title": "Recent Bot Sends",
+            "description": "wfm.scheduling.bot_send runs — outbound messages to users",
+            "chart_type": "line",
+            "series": [
+                count_series("bot sends", 'eq(name, "wfm.scheduling.bot_send")'),
+            ],
+        },
+        # 5. Line — recent feedback handles (user interactions)
+        {
+            "title": "Recent Feedback Handles",
+            "description": "wfm.feedback.handle runs — users clicking feedback buttons",
+            "chart_type": "line",
+            "series": [
+                count_series("feedback", 'eq(name, "wfm.feedback.handle")'),
+            ],
+        },
+    ]
+
+    for i, chart in enumerate(charts):
+        create_chart(section_id, chart, i)
+
+
 # --- main ------------------------------------------------------------------
 
 
 def main() -> None:
     global PROJECT_ID
-    title = sys.argv[1] if len(sys.argv) > 1 else SECTION_TITLE
-    project_id = sys.argv[2] if len(sys.argv) > 2 else PROJECT_ID
-    org_id = sys.argv[3] if len(sys.argv) > 3 else "default"
+    project_id = sys.argv[1] if len(sys.argv) > 1 else PROJECT_ID
+    org_id = sys.argv[2] if len(sys.argv) > 2 else "default"
     # Override the module-level PROJECT_ID used by project_filter()
     PROJECT_ID = project_id
-    print(f"Building LangSmith dashboard: {title}")
+    print(f"Building LangSmith dashboards")
     print(f"  Project ID: {PROJECT_ID}")
     print(f"  Org ID: {org_id}")
     print(f"  API: {API_BASE}")
-    section_id = get_or_create_section(title)
-    build_dashboard(section_id)
-    print("Done. View at:")
-    print(f"  https://smith.langchain.com/o/{org_id}/monitor/dashboards/{section_id}")
+
+    # Overview dashboard (days/weeks)
+    overview_title = "echo v2 overview"
+    overview_id = get_or_create_section(overview_title)
+    build_overview_dashboard(overview_id)
+    print(f"Overview dashboard: https://smith.langchain.com/o/{org_id}/monitor/dashboards/{overview_id}")
+
+    # Real-time dashboard (1-5 hours)
+    realtime_title = "echo v2 realtime"
+    realtime_id = get_or_create_section(realtime_title)
+    build_realtime_dashboard(realtime_id)
+    print(f"Realtime dashboard: https://smith.langchain.com/o/{org_id}/monitor/dashboards/{realtime_id}")
     print("  (Monitoring tab in the left sidebar -> Dashboards)")
 
 
