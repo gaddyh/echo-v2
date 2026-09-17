@@ -1,6 +1,6 @@
-"""Periodic alert checker — queries LangSmith and sends WhatsApp summaries.
+"""Periodic alert checker — queries PostgreSQL and sends WhatsApp summaries.
 
-A background task that polls LangSmith every ``poll_interval`` seconds,
+A background task that polls the database every ``poll_interval`` seconds,
 checks configured alert rules, and sends a WhatsApp summary to
 ``ECHO_OWNER_PHONE`` via the 360dialog bot when any rules fire.
 Rate-limited to at most one message per hour.
@@ -13,8 +13,7 @@ Usage::
     checker = AlertChecker(
         bot=d360_client,
         owner_phone="+972...",
-        project_id="7e3d5b21-...",
-        api_key="lsv2_pt_...",
+        session_factory=repos.session_factory,
     )
     await checker.run_loop()  # or checker.check_once()
 """
@@ -27,36 +26,20 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol, runtime_checkable
 
-import httpx
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from echo_v2.persistence.orm import (
+    MessageRow,
+    ScheduledActionRow,
+    WaitingForMeResultRow,
+)
 
 __all__ = ["DEFAULT_ALERT_RULES", "AlertChecker", "AlertRule", "AlertSender"]
 
 _logger = logging.getLogger("echo_v2.observability.alert_checker")
 
-API_BASE = "https://api.smith.langchain.com"
 COOLDOWN_SECONDS = 3600  # at most one alert per hour
-
-
-def _parse_run_time(value: str | None) -> datetime | None:
-    """Parse a LangSmith run start_time string to a timezone-aware datetime."""
-    if not value:
-        return None
-    try:
-        # LangSmith returns ISO 8601 with microseconds and timezone.
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except (ValueError, TypeError):
-        return None
-
-
-def _is_within_window(run: dict[str, Any], since: datetime, until: datetime) -> bool:
-    """Check if a run's start_time falls within the [since, until] window."""
-    start = _parse_run_time(run.get("start_time"))
-    if start is None:
-        return False
-    # Normalize to UTC for comparison.
-    if start.tzinfo is None:
-        start = start.replace(tzinfo=timezone.utc)
-    return since <= start <= until
 
 
 @runtime_checkable
@@ -66,84 +49,115 @@ class AlertSender(Protocol):
 
 @dataclass(frozen=True)
 class AlertRule:
-    """A single alert condition.
+    """A single alert condition checked against the local database.
 
-    Modes:
-    - ``"errors"``: count runs matching ``filter`` with ``status=error``
-      in the last ``window_minutes``. Fire if count >= ``threshold``.
-    - ``"absence"``: count all runs matching ``filter`` in the last
-      ``window_minutes``. Fire if count < ``threshold`` (i.e. expected
-      at least ``threshold`` runs but found fewer).
-      If ``depends_on`` is set, only fire if the dependency filter HAS
-      runs (e.g. messages arriving but no analysis).
-    - ``"error_rate"``: compute error rate for runs matching ``filter``
-      in the last ``window_minutes``. Fire if rate > ``threshold``
-      (threshold is a fraction 0-1).
+    Each rule has a ``check`` coroutine that receives the session and
+    the current time, and returns a message string if triggered or
+    ``None`` otherwise.
     """
 
     name: str
-    filter: str
-    window_minutes: int
-    mode: str  # "errors", "absence", "error_rate"
-    threshold: float = 1
-    depends_on: str | None = None  # for "absence" mode: only fire if this filter has runs
+    check: str  # name of the check method on AlertChecker
+
+
+async def _count_since(
+    session: AsyncSession, model: type[Any], since: datetime
+) -> int:
+    """Count rows in ``model`` created since ``since``."""
+    result = await session.execute(
+        select(func.count()).select_from(model).where(
+            model.created_at >= since
+        )
+    )
+    return int(result.scalar_one())
+
+
+async def _count_status_since(
+    session: AsyncSession, status: str, since: datetime
+) -> int:
+    """Count scheduled_actions with given status updated since ``since``."""
+    result = await session.execute(
+        select(func.count()).select_from(ScheduledActionRow).where(
+            ScheduledActionRow.status == status,
+            ScheduledActionRow.updated_at >= since,
+        )
+    )
+    return int(result.scalar_one())
+
+
+# --- check functions (referenced by AlertRule.check) -----------------------
+
+
+async def check_bot_send_errors(session: AsyncSession, now: datetime) -> str | None:
+    """Failed scheduled actions (bot sends) in the last 60 min."""
+    since = now - timedelta(minutes=60)
+    count = await _count_status_since(session, "failed", since)
+    if count >= 1:
+        return f"🔴 Bot send failures ({count} in last 60min)"
+    return None
+
+
+async def check_bot_send_indeterminate(
+    session: AsyncSession, now: datetime
+) -> str | None:
+    """Indeterminate scheduled actions (send outcome unknown) in last 60 min."""
+    since = now - timedelta(minutes=60)
+    count = await _count_status_since(session, "indeterminate", since)
+    if count >= 1:
+        return f"🔴 Bot send indeterminate ({count} in last 60min)"
+    return None
+
+
+async def check_analyzer_stuck(session: AsyncSession, now: datetime) -> str | None:
+    """Messages arriving but no analysis results in the last 30 min."""
+    since = now - timedelta(minutes=30)
+    msg_count = await _count_since(session, MessageRow, since)
+    if msg_count == 0:
+        return None  # no messages — not an alert
+    result_count = await _count_since(session, WaitingForMeResultRow, since)
+    if result_count == 0:
+        return f"🔴 Analyzer stuck ({msg_count} messages, 0 results in last 30min)"
+    return None
+
+
+async def check_high_error_rate(session: AsyncSession, now: datetime) -> str | None:
+    """Scheduled action failure rate > 20% in the last 60 min."""
+    since = now - timedelta(minutes=60)
+    succeeded = await _count_status_since(session, "succeeded", since)
+    failed = await _count_status_since(session, "failed", since)
+    total = succeeded + failed
+    if total == 0:
+        return None
+    rate = failed / total
+    if rate > 0.2:
+        pct = int(rate * 100)
+        return f"🔴 High error rate ({pct}% in last 60min, {failed}/{total} failed)"
+    return None
+
+
+CHECKS = {
+    "bot_send_errors": check_bot_send_errors,
+    "bot_send_indeterminate": check_bot_send_indeterminate,
+    "analyzer_stuck": check_analyzer_stuck,
+    "high_error_rate": check_high_error_rate,
+}
 
 
 DEFAULT_ALERT_RULES: list[AlertRule] = [
-    AlertRule(
-        name="Analyzer errors",
-        filter='eq(name, "wfm.analysis")',
-        window_minutes=60,
-        mode="errors",
-        threshold=1,
-    ),
-    AlertRule(
-        name="LLM analysis errors",
-        filter='eq(name, "wfm.llm_analyze")',
-        window_minutes=60,
-        mode="errors",
-        threshold=1,
-    ),
-    AlertRule(
-        name="Bot send errors",
-        filter='eq(name, "wfm.scheduling.bot_send")',
-        window_minutes=60,
-        mode="errors",
-        threshold=1,
-    ),
-    AlertRule(
-        name="Ingest errors",
-        filter='eq(name, "wfm.ingest.green")',
-        window_minutes=60,
-        mode="errors",
-        threshold=1,
-    ),
-    AlertRule(
-        name="Analyzer stuck (messages arriving but no analysis)",
-        filter='eq(name, "wfm.analysis")',
-        window_minutes=30,
-        mode="absence",
-        threshold=1,
-        depends_on='eq(name, "wfm.ingest.green")',
-    ),
-    AlertRule(
-        name="High error rate",
-        filter="",  # all runs
-        window_minutes=60,
-        mode="error_rate",
-        threshold=0.2,
-    ),
+    AlertRule(name="Bot send errors", check="bot_send_errors"),
+    AlertRule(name="Bot send indeterminate", check="bot_send_indeterminate"),
+    AlertRule(name="Analyzer stuck", check="analyzer_stuck"),
+    AlertRule(name="High error rate", check="high_error_rate"),
 ]
 
 
 class AlertChecker:
-    """Polls LangSmith and sends WhatsApp alert summaries.
+    """Polls the database and sends WhatsApp alert summaries.
 
     Args:
         bot: A ``send_text(recipient, text)`` capable client (Dialog360Client).
         owner_phone: Phone number to send alerts to.
-        project_id: LangSmith tracing project UUID.
-        api_key: LangSmith API key.
+        session_factory: SQLAlchemy async session factory.
         rules: Alert rules to check. Defaults to :data:`DEFAULT_ALERT_RULES`.
         poll_interval_seconds: How often to run checks. Default 300 (5 min).
         cooldown_seconds: Min seconds between alert messages. Default 3600 (1h).
@@ -154,117 +168,38 @@ class AlertChecker:
         *,
         bot: AlertSender,
         owner_phone: str,
-        project_id: str,
-        api_key: str,
+        session_factory: async_sessionmaker[AsyncSession],
         rules: list[AlertRule] | None = None,
         poll_interval_seconds: float = 300.0,
         cooldown_seconds: int = COOLDOWN_SECONDS,
-        api_base: str = API_BASE,
     ) -> None:
         self._bot = bot
         self._owner_phone = owner_phone
-        self._project_id = project_id
-        self._api_key = api_key
-        self._api_base = api_base
+        self._session_factory = session_factory
         self._rules = rules or DEFAULT_ALERT_RULES
         self._poll_interval = poll_interval_seconds
         self._cooldown = cooldown_seconds
         self._last_sent: datetime | None = None
-        self._headers = {"x-api-key": api_key, "Content-Type": "application/json"}
 
     async def check_once(self) -> list[str]:
-        """Run all alert rules once. Returns list of triggered alert messages.
-
-        Does NOT send a WhatsApp message — caller decides what to do with
-        the results. :meth:`run_loop` uses this internally and sends summaries.
-        """
+        """Run all alert rules once. Returns list of triggered alert messages."""
         now = datetime.now(timezone.utc)
         triggered: list[str] = []
 
-        for rule in self._rules:
-            try:
-                msg = await self._check_rule(rule, now)
-                if msg:
-                    triggered.append(msg)
-            except Exception:
-                _logger.exception("error checking alert rule: %s", rule.name)
+        async with self._session_factory() as session:
+            for rule in self._rules:
+                check_fn = CHECKS.get(rule.check)
+                if check_fn is None:
+                    _logger.warning("unknown check: %s", rule.check)
+                    continue
+                try:
+                    msg = await check_fn(session, now)
+                    if msg:
+                        triggered.append(msg)
+                except Exception:
+                    _logger.exception("error checking alert rule: %s", rule.name)
 
         return triggered
-
-    async def _check_rule(self, rule: AlertRule, now: datetime) -> str | None:
-        """Check a single rule. Returns a message if triggered, None otherwise."""
-        since = now - timedelta(minutes=rule.window_minutes)
-        # Query runs matching the filter in the window
-        run_filter = rule.filter
-        if rule.mode == "errors":
-            # Add status=error to the filter
-            if run_filter:
-                run_filter = f'and({run_filter}, eq(status, "error"))'
-            else:
-                run_filter = 'eq(status, "error")'
-
-        runs = await self._query_runs(run_filter, since, now, limit=100)
-        count = len(runs)
-
-        if rule.mode == "errors":
-            if count >= rule.threshold:
-                return f"🔴 {rule.name} ({count} in last {rule.window_minutes}min)"
-        elif rule.mode == "absence":
-            if count < rule.threshold:
-                # If depends_on is set, only fire if the dependency has runs.
-                if rule.depends_on:
-                    dep_runs = await self._query_runs(rule.depends_on, since, now, limit=1)
-                    if len(dep_runs) == 0:
-                        return None  # dependency has no runs either — not an alert
-                return f"🔴 {rule.name} (only {count} in last {rule.window_minutes}min)"
-        elif rule.mode == "error_rate":
-            # Query all runs (no status filter) for the denominator
-            all_runs = await self._query_runs(rule.filter, since, now, limit=500)
-            total = len(all_runs)
-            if total == 0:
-                return None
-            error_count = sum(1 for r in all_runs if r.get("status") == "error")
-            rate = error_count / total
-            if rate > rule.threshold:
-                pct = int(rate * 100)
-                return f"🔴 {rule.name} ({pct}% in last {rule.window_minutes}min, threshold {int(rule.threshold * 100)}%)"
-
-        return None
-
-    async def _query_runs(
-        self,
-        run_filter: str,
-        since: datetime,
-        until: datetime,
-        limit: int = 100,
-    ) -> list[dict[str, Any]]:
-        """Query LangSmith runs API for runs matching the filter.
-
-        The API doesn't accept start_time/end_time reliably, so we query
-        with limit + order=desc and filter by time in Python.
-        """
-        payload: dict[str, Any] = {
-            "session": [self._project_id],
-            "limit": limit,
-            "order": "desc",
-        }
-        if run_filter:
-            payload["filter"] = run_filter
-
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(
-                f"{self._api_base}/api/v1/runs/query",
-                headers=self._headers,
-                json=payload,
-            )
-            resp.raise_for_status()
-            runs = list(resp.json().get("runs", []))
-            # Filter by time in Python since the API doesn't support
-            # start_time/end_time reliably.
-            return [
-                r for r in runs
-                if _is_within_window(r, since, until)
-            ]
 
     async def run_loop(self) -> None:
         """Poll forever, sending summaries when alerts fire.

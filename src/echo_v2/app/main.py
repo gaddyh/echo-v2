@@ -334,26 +334,21 @@ def create_app() -> FastAPI:
         "yes",
     )
 
-    # --- alert checker (LangSmith error monitoring → WhatsApp) -------------
+    # --- alert checker (DB error monitoring → WhatsApp) ---------------------
     from echo_v2.observability.alert_checker import AlertChecker
 
     owner_phone = os.environ.get("ECHO_OWNER_PHONE", "")
-    langsmith_api_key = os.environ.get("LANGSMITH_API_KEY", "")
-    langsmith_project_id = os.environ.get("LANGSMITH_PROJECT_ID", "")
     alert_checker: AlertChecker | None = None
-    if owner_phone and langsmith_api_key and langsmith_project_id:
+    if owner_phone:
         alert_checker = AlertChecker(
             bot=d360_client,
             owner_phone=owner_phone,
-            project_id=langsmith_project_id,
-            api_key=langsmith_api_key,
+            session_factory=repos.session_factory,
             poll_interval_seconds=float(os.environ.get("ALERT_POLL_INTERVAL", "300")),
         )
         _logger.info("alert checker enabled for %s", owner_phone)
     else:
-        _logger.warning(
-            "alert checker disabled (need ECHO_OWNER_PHONE, LANGSMITH_API_KEY, LANGSMITH_PROJECT_ID)"
-        )
+        _logger.warning("alert checker disabled (need ECHO_OWNER_PHONE)")
 
     # --- feedback flyloop (actions + feedback on waiting items) -------------
     from echo_v2.services.feedback_handler import FeedbackHandler
