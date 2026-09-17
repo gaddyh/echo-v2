@@ -334,6 +334,27 @@ def create_app() -> FastAPI:
         "yes",
     )
 
+    # --- alert checker (LangSmith error monitoring → WhatsApp) -------------
+    from echo_v2.observability.alert_checker import AlertChecker
+
+    owner_phone = os.environ.get("ECHO_OWNER_PHONE", "")
+    langsmith_api_key = os.environ.get("LANGSMITH_API_KEY", "")
+    langsmith_project_id = os.environ.get("LANGSMITH_PROJECT_ID", "")
+    alert_checker: AlertChecker | None = None
+    if owner_phone and langsmith_api_key and langsmith_project_id:
+        alert_checker = AlertChecker(
+            bot=d360_client,
+            owner_phone=owner_phone,
+            project_id=langsmith_project_id,
+            api_key=langsmith_api_key,
+            poll_interval_seconds=float(os.environ.get("ALERT_POLL_INTERVAL", "300")),
+        )
+        _logger.info("alert checker enabled for %s", owner_phone)
+    else:
+        _logger.warning(
+            "alert checker disabled (need ECHO_OWNER_PHONE, LANGSMITH_API_KEY, LANGSMITH_PROJECT_ID)"
+        )
+
     # --- feedback flyloop (actions + feedback on waiting items) -------------
     from echo_v2.services.feedback_handler import FeedbackHandler
     from echo_v2.services.feedback_service import (
@@ -428,11 +449,12 @@ def create_app() -> FastAPI:
     analysis_worker_task: asyncio.Task[None] | None = None
     digest_worker_task: asyncio.Task[None] | None = None
     snooze_worker_task: asyncio.Task[None] | None = None
+    alert_checker_task: asyncio.Task[None] | None = None
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         nonlocal scheduler_task, analysis_worker_task, digest_worker_task
-        nonlocal snooze_worker_task
+        nonlocal snooze_worker_task, alert_checker_task
         # Startup: recover stale actions + start scheduler loop.
         try:
             recovered = await scheduler.recover()
@@ -453,9 +475,21 @@ def create_app() -> FastAPI:
             digest_worker_task = asyncio.create_task(digest_worker.run_loop())
             _logger.info("digest worker loop started")
 
+        # Start alert checker if enabled.
+        if alert_checker is not None:
+            alert_checker_task = asyncio.create_task(alert_checker.run_loop())
+            _logger.info("alert checker loop started")
+
         yield
 
         # Shutdown: cancel the loops.
+        if alert_checker_task is not None:
+            alert_checker_task.cancel()
+            try:
+                await alert_checker_task
+            except asyncio.CancelledError:
+                pass
+            _logger.info("alert checker loop stopped")
         if digest_worker_task is not None:
             digest_worker_task.cancel()
             try:
@@ -544,7 +578,6 @@ def create_app() -> FastAPI:
     from echo_v2.app.landing_routes import build_landing_router
     from echo_v2.services.waitlist_notifier import Dialog360WaitlistNotifier
 
-    owner_phone = os.environ.get("ECHO_OWNER_PHONE", "")
     notifier: Dialog360WaitlistNotifier | None = None
     if owner_phone:
         notifier = Dialog360WaitlistNotifier(
