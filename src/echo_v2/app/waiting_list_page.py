@@ -373,6 +373,25 @@ body {
   font-size: 0.9rem;
   text-align: center;
 }
+/* --- floating confirmation toast (matches landing-page demo) --- */
+.toast-bubble {
+  position: fixed;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%) translateY(-8px);
+  background: var(--text);
+  color: white;
+  padding: 8px 18px;
+  border-radius: 20px;
+  font-size: 0.85rem;
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity 0.3s, transform 0.3s;
+  z-index: 100;
+  pointer-events: none;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.18);
+}
+.toast-bubble.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 .loading { text-align: center; padding: 40px; color: var(--text-secondary); }
 .error-page { text-align: center; padding: 40px 20px; }
 .error-page h2 { font-size: 1.2rem; margin-bottom: 12px; }
@@ -445,6 +464,9 @@ body {
 <div class="container" id="app">
   <div class="loading">טוען...</div>
 </div>
+
+<!-- Floating confirmation toast -->
+<div class="toast-bubble" id="toast-bubble"></div>
 
 <!-- Snooze overlay (זמן אחר) -->
 <div class="overlay" id="snooze-overlay">
@@ -821,19 +843,19 @@ async function handleAction(card, activeId, expectedVersion, action) {
     return;
   }
   if (action === "snooze") {
-    await sendAction(card, activeId, expectedVersion, "snooze", {snooze_preset: "1h"});
+    await sendAction(card, activeId, expectedVersion, "snooze", {snooze_preset: "1h"}, "⏰ אזכיר בעוד שעה");
     return;
   }
   if (action === "tomorrow") {
-    await sendAction(card, activeId, expectedVersion, "snooze", {snooze_preset: "tomorrow"});
+    await sendAction(card, activeId, expectedVersion, "snooze", {snooze_preset: "tomorrow"}, "⏰ אזכיר מחר בבוקר");
     return;
   }
   if (action === "not_needed") {
-    await sendAction(card, activeId, expectedVersion, "dismiss", {dismiss_reason: "no_response_required"});
+    await sendAction(card, activeId, expectedVersion, "dismiss", {dismiss_reason: "no_response_required"}, "👌 יישאר בהמתנה");
     return;
   }
   if (action === "false_positive") {
-    await sendAction(card, activeId, expectedVersion, "dismiss", {dismiss_reason: "detected_incorrectly"});
+    await sendAction(card, activeId, expectedVersion, "dismiss", {dismiss_reason: "detected_incorrectly"}, "🧠 Echo לומד מהפידבק");
     return;
   }
   if (action === "snooze_other") {
@@ -856,10 +878,10 @@ async function handleAction(card, activeId, expectedVersion, action) {
     return;
   }
   // done
-  await sendAction(card, activeId, expectedVersion, "done");
+  await sendAction(card, activeId, expectedVersion, "done", null, "✓ טופל");
 }
 
-async function sendAction(card, activeId, expectedVersion, action, extra) {
+async function sendAction(card, activeId, expectedVersion, action, extra, successToast) {
   const buttons = card.querySelectorAll("button");
   buttons.forEach(b => b.disabled = true);
   const actionId = crypto.randomUUID();
@@ -873,6 +895,7 @@ async function sendAction(card, activeId, expectedVersion, action, extra) {
     });
     if (!resp) return;
     if (resp.outcome === "applied" || resp.outcome === "duplicate" || resp.outcome === "not_found") {
+      if (successToast) showToast(successToast);
       removeFromQueue(activeId, actionStatType(action));
     } else if (resp.outcome === "stale") {
       if (resp.item) {
@@ -924,6 +947,16 @@ function showRetry(card, msg) {
   }
   retry.textContent = msg;
   retry.onclick = () => { retry.remove(); };
+}
+
+let _toastTimer = null;
+function showToast(text) {
+  const el = document.getElementById("toast-bubble");
+  if (!el) return;
+  el.textContent = text;
+  el.classList.add("show");
+  if (_toastTimer) clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(() => el.classList.remove("show"), 1600);
 }
 
 function renderEmptyFiltered() {
@@ -984,11 +1017,19 @@ document.querySelectorAll("#snooze-overlay .overlay-option[data-preset]").forEac
     const preset = btn.dataset.preset;
     closeSnooze();
     if (pendingAction) {
-      sendAction(pendingAction.card, pendingAction.activeId, pendingAction.expectedVersion, "snooze", {snooze_preset: preset});
+      sendAction(pendingAction.card, pendingAction.activeId, pendingAction.expectedVersion, "snooze", {snooze_preset: preset}, snoozePresetToast(preset));
       pendingAction = null;
     }
   });
 });
+
+function snoozePresetToast(preset) {
+  if (preset === "10m") return "⏰ אזכיר בעוד 10 דקות";
+  if (preset === "1h") return "⏰ אזכיר בעוד שעה";
+  if (preset === "3h") return "⏰ אזכיר בעוד 3 שעות";
+  if (preset === "tomorrow") return "⏰ אזכיר מחר בבוקר";
+  return "⏰ נקבע תזכורת";
+}
 
 function closeSnooze() { document.getElementById("snooze-overlay").classList.remove("active"); }
 function closeSend() {
@@ -1010,10 +1051,18 @@ document.querySelectorAll("#send-overlay .overlay-option[data-send-preset]").for
   btn.addEventListener("click", () => {
     const preset = btn.dataset.sendPreset;
     if (pendingAction) {
-      submitSendWith({send_preset: preset});
+      submitSendWith({send_preset: preset}, sendPresetToast(preset));
     }
   });
 });
+
+function sendPresetToast(preset) {
+  if (preset === "now") return "📤 ההודעה נשלחה";
+  if (preset === "1h") return "📤 ההודעה תישלח בעוד שעה";
+  if (preset === "3h") return "📤 ההודעה תישלח בעוד 3 שעות";
+  if (preset === "tomorrow") return "📤 ההודעה תישלח מחר בבוקר";
+  return "📤 ההודעה תוזמנה";
+}
 
 async function submitSend() {
   const msg = document.getElementById("send-message").value;
@@ -1028,10 +1077,10 @@ async function submitSend() {
   }
   // Convert datetime-local (naive) to offset-aware ISO via Date.
   const sendAt = new Date(at).toISOString();
-  await submitSendWith({send_at: sendAt});
+  await submitSendWith({send_at: sendAt}, "📤 ההודעה תוזמנה");
 }
 
-async function submitSendWith(extra) {
+async function submitSendWith(extra, successToast) {
   if (!pendingAction) return;
   const msg = document.getElementById("send-message").value;
   if (!msg.trim()) {
@@ -1058,6 +1107,7 @@ async function submitSendWith(extra) {
     if (resp.outcome === "scheduled" || resp.outcome === "duplicate") {
       const activeId = pendingAction.activeId;
       closeSend();
+      if (successToast) showToast(successToast);
       removeFromQueue(activeId, "scheduled");
     } else if (resp.outcome === "not_found") {
       showSendError("הפריט לא נמצא או שייך למשתמש אחר.");
