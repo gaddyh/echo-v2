@@ -400,6 +400,36 @@ async def test_list_due_orders_oldest_first(chat_state_repo, session_factory):
     assert due[2].chat_id == "chat-1@c.us"  # now-1min
 
 
+async def test_list_all_for_user_returns_all_chats(chat_state_repo, session_factory):
+    user_id = await insert_user(session_factory)
+    now = datetime.now(timezone.utc)
+
+    # Create 3 chats with different last_message_at times.
+    for i, mins_ago in enumerate([10, 1, 5]):
+        await chat_state_repo.upsert_on_message(
+            user_id=user_id,
+            chat_id=f"chat-{i}@c.us",
+            direction=MessageDirection.INBOUND,
+            observed_at=now - timedelta(minutes=mins_ago),
+            next_analysis_at=None,
+            chat_name=f"chat-{i}",
+        )
+
+    chats = await chat_state_repo.list_all_for_user(user_id=user_id)
+    assert len(chats) == 3
+    # Ordered by last_message_at desc (newest first).
+    assert chats[0].chat_id == "chat-1@c.us"  # 1 min ago
+    assert chats[1].chat_id == "chat-2@c.us"  # 5 min ago
+    assert chats[2].chat_id == "chat-0@c.us"  # 10 min ago
+    assert chats[0].chat_name == "chat-1"
+
+
+async def test_list_all_for_user_empty(chat_state_repo, session_factory):
+    user_id = await insert_user(session_factory)
+    chats = await chat_state_repo.list_all_for_user(user_id=user_id)
+    assert chats == []
+
+
 # --- Transaction rollback (PostgreSQL) --------------------------------------
 
 
@@ -748,6 +778,71 @@ async def test_wfm_list_recent_empty(wfm_repo, session_factory):
     user_id = await insert_user(session_factory)
     results = await wfm_repo.list_recent(user_id=user_id, chat_id="chat-1@c.us")
     assert results == []
+
+
+async def test_wfm_list_all_for_user(wfm_repo, session_factory):
+    from echo_v2.domain.waiting_for_me import WaitingForMeDecision, WaitingForMeResult
+
+    user_id = await insert_user(session_factory)
+    await wfm_repo.save(
+        user_id=user_id,
+        chat_id="chat-1@c.us",
+        result=WaitingForMeResult(
+            decision=WaitingForMeDecision.WAITING_FOR_ME,
+            target_version=1,
+        ),
+    )
+    await wfm_repo.save(
+        user_id=user_id,
+        chat_id="chat-2@c.us",
+        result=WaitingForMeResult(
+            decision=WaitingForMeDecision.NOT_WAITING_FOR_ME,
+            target_version=1,
+        ),
+    )
+    await wfm_repo.save(
+        user_id=user_id,
+        chat_id="chat-1@c.us",
+        result=WaitingForMeResult(
+            decision=WaitingForMeDecision.UNCERTAIN,
+            target_version=2,
+        ),
+    )
+
+    entries = await wfm_repo.list_all_for_user(user_id=user_id)
+    assert len(entries) == 3
+    # Newest first (by created_at desc).
+    assert entries[0].chat_id == "chat-1@c.us"
+    assert entries[0].result.decision == WaitingForMeDecision.UNCERTAIN
+    assert entries[1].chat_id == "chat-2@c.us"
+    assert entries[2].chat_id == "chat-1@c.us"
+    assert entries[2].result.decision == WaitingForMeDecision.WAITING_FOR_ME
+    # Each entry has id, chat_id, created_at, and result.
+    assert entries[0].id
+    assert entries[0].created_at
+
+
+async def test_wfm_list_all_for_user_empty(wfm_repo, session_factory):
+    user_id = await insert_user(session_factory)
+    entries = await wfm_repo.list_all_for_user(user_id=user_id)
+    assert entries == []
+
+
+async def test_wfm_list_all_for_user_respects_limit(wfm_repo, session_factory):
+    from echo_v2.domain.waiting_for_me import WaitingForMeDecision, WaitingForMeResult
+
+    user_id = await insert_user(session_factory)
+    for i in range(10):
+        await wfm_repo.save(
+            user_id=user_id,
+            chat_id=f"chat-{i}@c.us",
+            result=WaitingForMeResult(
+                decision=WaitingForMeDecision.WAITING_FOR_ME,
+                target_version=1,
+            ),
+        )
+    entries = await wfm_repo.list_all_for_user(user_id=user_id, limit=3)
+    assert len(entries) == 3
 
 
 # --- PostgresWaitingForMeActiveRepository -----------------------------------

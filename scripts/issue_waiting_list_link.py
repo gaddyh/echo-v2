@@ -72,6 +72,9 @@ async def main(raw_phone: str) -> None:
         link = f"{BASE_URL}/q/{raw_token}"
         print(f"Waiting-list link for {phone} (expires in {LINK_TTL_HOURS}h):")
         print(link)
+        print()
+        print("Debug analysis view (same session, open after the link above):")
+        print(f"{BASE_URL}/debug")
 
     await engine.dispose()
 

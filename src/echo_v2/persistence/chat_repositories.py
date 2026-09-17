@@ -20,6 +20,7 @@ The repos are thin persistence layers.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Protocol, runtime_checkable
 
@@ -45,6 +46,7 @@ __all__ = [
     "IngestionRepository",
     "MessageRepository",
     "WaitingForMeActiveRepository",
+    "WaitingForMeResultEntry",
     "WaitingForMeResultRepository",
 ]
 
@@ -240,6 +242,13 @@ class ChatStateRepository(Protocol):
         """
         ...
 
+    async def list_all_for_user(self, *, user_id: str) -> list[ChatState]:
+        """Return all chats for a user, ordered by ``last_message_at`` desc.
+
+        Used by the debug analysis view to list every analyzed chat.
+        """
+        ...
+
     async def mark_processed(
         self,
         user_id: str,
@@ -390,6 +399,11 @@ class InMemoryChatStateRepository:
         due.sort(key=lambda c: c.next_analysis_at or datetime.min.replace(tzinfo=timezone.utc))
         return due[:limit]
 
+    async def list_all_for_user(self, *, user_id: str) -> list[ChatState]:
+        chats = [chat for chat in self._chats.values() if chat.user_id == user_id]
+        chats.sort(key=lambda c: c.last_message_at, reverse=True)
+        return chats
+
     async def mark_processed(
         self,
         user_id: str,
@@ -422,6 +436,21 @@ _chat_repo: ChatStateRepository = InMemoryChatStateRepository()
 # --- WaitingForMeResultRepository -------------------------------------------
 
 
+@dataclass(frozen=True)
+class WaitingForMeResultEntry:
+    """A result row with DB metadata — used by the debug analysis view.
+
+    Wraps :class:`WaitingForMeResult` with the fields the domain model
+    strips (row id, chat_id, created_at) so the debug view can display
+    all results across all chats for a user.
+    """
+
+    id: str
+    chat_id: str
+    created_at: datetime
+    result: WaitingForMeResult
+
+
 @runtime_checkable
 class WaitingForMeResultRepository(Protocol):
     """Store immutable WaitingForMe analysis results."""
@@ -450,12 +479,24 @@ class WaitingForMeResultRepository(Protocol):
         """Return recent results for a chat, newest first."""
         ...
 
+    async def list_all_for_user(
+        self,
+        *,
+        user_id: str,
+        limit: int = 500,
+    ) -> list[WaitingForMeResultEntry]:
+        """Return all results for a user across all chats, newest first.
+
+        Used by the debug analysis view to show every LLM analysis result.
+        """
+        ...
+
 
 class InMemoryWaitingForMeResultRepository:
     """Process-local result repository backed by a list."""
 
     def __init__(self) -> None:
-        self._results: list[tuple[str, str, str, WaitingForMeResult]] = []
+        self._results: list[tuple[str, str, str, datetime, WaitingForMeResult]] = []
 
     async def save(
         self,
@@ -467,11 +508,11 @@ class InMemoryWaitingForMeResultRepository:
         import uuid
 
         row_id = str(uuid.uuid4())
-        self._results.append((user_id, chat_id, row_id, result))
+        self._results.append((user_id, chat_id, row_id, datetime.now(timezone.utc), result))
         return row_id
 
     async def get_by_id(self, result_id: str) -> WaitingForMeResult | None:
-        for _uid, _cid, rid, result in self._results:
+        for _uid, _cid, rid, _ts, result in self._results:
             if rid == result_id:
                 return result
         return None
@@ -484,10 +525,24 @@ class InMemoryWaitingForMeResultRepository:
         limit: int = 10,
     ) -> list[WaitingForMeResult]:
         matching = [
-            r for (uid, cid, _rid, r) in self._results
+            r for (uid, cid, _rid, _ts, r) in self._results
             if uid == user_id and cid == chat_id
         ]
         return list(reversed(matching))[:limit]
+
+    async def list_all_for_user(
+        self,
+        *,
+        user_id: str,
+        limit: int = 500,
+    ) -> list[WaitingForMeResultEntry]:
+        matching = [
+            WaitingForMeResultEntry(id=rid, chat_id=cid, created_at=ts, result=r)
+            for (uid, cid, rid, ts, r) in self._results
+            if uid == user_id
+        ]
+        matching.sort(key=lambda e: e.created_at, reverse=True)
+        return matching[:limit]
 
 
 _wfm_repo: WaitingForMeResultRepository = InMemoryWaitingForMeResultRepository()

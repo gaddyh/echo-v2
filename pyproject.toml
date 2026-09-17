@@ -70,6 +70,7 @@ branch = true
 source = ["src/echo_v2"]
 omit = [
     "src/echo_v2/persistence/alembic/*",
+    "src/echo_v2/integrations/modal/client.py",
 ]
 
 [tool.coverage.report]

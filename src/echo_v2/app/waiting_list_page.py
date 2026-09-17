@@ -10,7 +10,7 @@ external dependencies. ``dir="rtl"``, Hebrew-first.
 
 from __future__ import annotations
 
-__all__ = ["EXPIRED_LINK_PAGE", "WAITING_LIST_PAGE"]
+__all__ = ["DEBUG_ANALYSIS_PAGE", "EXPIRED_LINK_PAGE", "WAITING_LIST_PAGE"]
 
 
 _WAITING_LIST_HTML = r"""<!DOCTYPE html>
@@ -1202,3 +1202,183 @@ p { color: #667781; margin-top: 8px; }
 """
 
 EXPIRED_LINK_PAGE = _EXPIRED_LINK_HTML
+
+
+_DEBUG_ANALYSIS_HTML = r"""<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Debug — ניתוח צ'אטים</title>
+<style>
+:root {
+  --bg: #f0f2f5;
+  --card: #ffffff;
+  --text: #111b21;
+  --text-secondary: #667781;
+  --border: #e9edef;
+  --primary: #25d366;
+  --danger: #ff4757;
+  --warn: #f39c12;
+  --shadow: 0 1px 2px rgba(0,0,0,0.08);
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.5;
+}
+.container { max-width: 800px; margin: 0 auto; padding: 16px; }
+.header { padding: 12px 0 20px; }
+.header h1 { font-size: 1.3rem; font-weight: 600; }
+.header .sub { font-size: 0.85rem; color: var(--text-secondary); margin-top: 4px; }
+.chat-card {
+  background: var(--card);
+  border-radius: 12px;
+  padding: 16px;
+  margin-bottom: 12px;
+  box-shadow: var(--shadow);
+}
+.chat-header { display: flex; align-items: center; justify-content: space-between; }
+.chat-name { font-weight: 600; font-size: 1.05rem; }
+.chat-meta { font-size: 0.8rem; color: var(--text-secondary); margin-top: 2px; }
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+.badge.waiting { background: #fef3c7; color: #92400e; }
+.badge.not-waiting { background: #d1fae5; color: #065f46; }
+.badge.uncertain { background: #fee2e2; color: #991b1b; }
+.result-row {
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+  margin-top: 12px;
+}
+.result-row:first-of-type { border-top: none; margin-top: 8px; }
+.result-meta { font-size: 0.78rem; color: var(--text-secondary); }
+.result-decision { font-weight: 600; margin-top: 4px; }
+.result-reason { font-size: 0.88rem; color: var(--text); margin-top: 4px; }
+.result-summary { font-size: 0.88rem; color: var(--text); margin-top: 4px; padding: 6px 10px; background: var(--bg); border-radius: 6px; border-right: 2px solid var(--primary); }
+.result-model { font-size: 0.75rem; color: var(--text-secondary); margin-top: 4px; }
+.snapshot-toggle {
+  display: inline-block;
+  margin-top: 6px;
+  color: var(--primary);
+  font-size: 0.8rem;
+  cursor: pointer;
+  text-decoration: none;
+}
+.snapshot-toggle:hover { text-decoration: underline; }
+.snapshot {
+  display: none;
+  margin-top: 8px;
+  padding: 10px;
+  background: #1a1a1a;
+  color: #e0e0e0;
+  border-radius: 8px;
+  font-family: "SF Mono", "Fira Code", monospace;
+  font-size: 0.78rem;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 400px;
+  overflow-y: auto;
+}
+.snapshot.open { display: block; }
+.empty { text-align: center; padding: 40px 20px; color: var(--text-secondary); }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <h1>Debug — ניתוח צ'אטים</h1>
+    <div class="sub" id="sub">טוען…</div>
+  </div>
+  <div id="chats"></div>
+</div>
+<script>
+async function load() {
+  try {
+    const resp = await fetch("/api/debug/analysis");
+    if (resp.status === 401) {
+      window.location.href = "/q/expired";
+      return;
+    }
+    if (!resp.ok) throw new Error("HTTP " + resp.status);
+    const data = await resp.json();
+    render(data);
+  } catch (e) {
+    document.getElementById("sub").textContent = "שגיאה: " + e.message;
+  }
+}
+
+function badgeClass(decision) {
+  if (decision === "waiting_for_me") return "waiting";
+  if (decision === "not_waiting_for_me") return "not-waiting";
+  return "uncertain";
+}
+
+function badgeText(decision) {
+  if (decision === "waiting_for_me") return "ממתין לי";
+  if (decision === "not_waiting_for_me") return "לא ממתין";
+  return "לא ברור";
+}
+
+function esc(s) {
+  if (s == null) return "";
+  return String(s).replace(/&/g,"&").replace(/</g,"<").replace(/>/g,">");
+}
+
+function render(data) {
+  document.getElementById("sub").textContent =
+    data.chats.length + " צ'אטים · " + data.total_results + " תוצאות ניתוח";
+
+  const container = document.getElementById("chats");
+  if (data.chats.length === 0) {
+    container.innerHTML = '<div class="empty">אין ניתוחים עדיין.</div>';
+    return;
+  }
+
+  let html = "";
+  for (const chat of data.chats) {
+    const name = esc(chat.chat_name) || esc(chat.chat_id);
+    const meta = esc(chat.last_direction) + " · v" + chat.activity_version +
+      (chat.last_message_at ? " · " + new Date(chat.last_message_at).toLocaleString("he-IL") : "");
+    html += '<div class="chat-card">';
+    html += '<div class="chat-header"><span class="chat-name">' + name + '</span></div>';
+    html += '<div class="chat-meta">' + meta + '</div>';
+    if (chat.results.length === 0) {
+      html += '<div class="result-meta">אין תוצאות ניתוח</div>';
+    }
+    for (const r of chat.results) {
+      html += '<div class="result-row">';
+      html += '<div class="result-meta">' + new Date(r.created_at).toLocaleString("he-IL") + ' · v' + r.target_version + '</div>';
+      html += '<div class="result-decision"><span class="badge ' + badgeClass(r.decision) + '">' + badgeText(r.decision) + '</span>';
+      if (r.confidence != null) html += ' <span style="font-size:0.78rem;color:#667781">(' + (r.confidence * 100).toFixed(0) + '%)</span>';
+      html += '</div>';
+      if (r.reason) html += '<div class="result-reason">סיבה: ' + esc(r.reason) + '</div>';
+      if (r.summary) html += '<div class="result-summary">' + esc(r.summary) + '</div>';
+      const modelParts = [r.model, r.prompt_version, r.analyzer_version].filter(Boolean);
+      if (modelParts.length) html += '<div class="result-model">' + esc(modelParts.join(" · ")) + '</div>';
+      if (r.conversation_snapshot) {
+        const snapId = "snap_" + Math.random().toString(36).slice(2);
+        html += '<a class="snapshot-toggle" onclick="var s=document.getElementById(\'' + snapId + '\');s.classList.toggle(\'open\')">סנאפשוט שיחה</a>';
+        html += '<pre class="snapshot" id="' + snapId + '">' + esc(JSON.stringify(r.conversation_snapshot, null, 2)) + '</pre>';
+      }
+      html += '</div>';
+    }
+    html += '</div>';
+  }
+  container.innerHTML = html;
+}
+
+load();
+</script>
+</body>
+</html>
+"""
+
+DEBUG_ANALYSIS_PAGE = _DEBUG_ANALYSIS_HTML

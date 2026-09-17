@@ -394,6 +394,7 @@ def create_app() -> FastAPI:
 
     # --- waiting-list mini web app (service + router) -----------------------
     from echo_v2.app.waiting_list_routes import build_waiting_list_router
+    from echo_v2.services.debug_analysis_service import DebugAnalysisService
     from echo_v2.services.waiting_list_action_service import WaitingListActionService
 
     bot_phone = os.environ.get("ECHO_BOT_PHONE", "972559937256")
@@ -410,10 +411,16 @@ def create_app() -> FastAPI:
         scheduling_service=scheduling_service,
         active_repo=repos.wfm_active,
     )
+    debug_service = DebugAnalysisService(
+        token_service=token_service,
+        chat_state_repo=repos.chat_state,
+        result_repo=repos.wfm_results,
+    )
     waiting_list_router = build_waiting_list_router(
         token_service=token_service,
         waiting_list_service=waiting_list_service,
         bot_phone=bot_phone,
+        debug_service=debug_service,
     )
 
     # --- FastAPI app with lifespan (scheduler + worker start/stop with app) --

@@ -29,7 +29,12 @@ from fastapi import APIRouter, Cookie, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from echo_v2.app.waiting_list_page import EXPIRED_LINK_PAGE, WAITING_LIST_PAGE
+from echo_v2.app.waiting_list_page import (
+    DEBUG_ANALYSIS_PAGE,
+    EXPIRED_LINK_PAGE,
+    WAITING_LIST_PAGE,
+)
+from echo_v2.services.debug_analysis_service import DebugAnalysisService
 from echo_v2.services.waiting_list_action_service import WaitingListActionService
 from echo_v2.services.waiting_list_token_service import WaitingListTokenService
 
@@ -109,6 +114,7 @@ def build_waiting_list_router(
     token_service: WaitingListTokenService,
     waiting_list_service: WaitingListActionService,
     bot_phone: str,
+    debug_service: DebugAnalysisService | None = None,
 ) -> APIRouter:
     """Build the waiting-list mini web app router.
 
@@ -119,6 +125,9 @@ def build_waiting_list_router(
             listing items and executing actions.
         bot_phone: The Echo bot's WhatsApp phone number (for the
             "back to WhatsApp" link).
+        debug_service: Optional :class:`DebugAnalysisService` for the
+            debug analysis view. When provided, ``GET /debug`` and
+            ``GET /api/debug/analysis`` endpoints are registered.
     """
     router = APIRouter()
 
@@ -175,7 +184,7 @@ def build_waiting_list_router(
             httponly=True,
             secure=True,
             samesite="lax",
-            path="/api/waiting",
+            path="/api",
         )
         return response
 
@@ -440,6 +449,60 @@ def build_waiting_list_router(
             },
             headers=_security_headers(),
         )
+
+    # --- GET /debug — debug analysis HTML page ---
+
+    if debug_service is not None:
+        @router.get("/debug", response_class=HTMLResponse)
+        async def debug_analysis_page() -> HTMLResponse:
+            return HTMLResponse(content=DEBUG_ANALYSIS_PAGE, headers=_security_headers())
+
+        # --- GET /api/debug/analysis — all chats + LLM results ---
+
+        @router.get("/api/debug/analysis")
+        async def debug_analysis(
+            wls: str | None = Cookie(default=None, alias=_SESSION_COOKIE),
+        ) -> JSONResponse:
+            if wls is None:
+                raise HTTPException(status_code=401, detail="no session")
+
+            result = await debug_service.list_analysis(session_id=wls)
+            if result is None:
+                raise HTTPException(status_code=401, detail="session expired")
+
+            return JSONResponse(
+                content={
+                    "user_id": result.user_id,
+                    "chats": [
+                        {
+                            "chat_id": c.chat_id,
+                            "chat_name": c.chat_name,
+                            "last_message_at": c.last_message_at,
+                            "last_direction": c.last_direction,
+                            "activity_version": c.activity_version,
+                            "results": [
+                                {
+                                    "id": r.id,
+                                    "created_at": r.created_at,
+                                    "target_version": r.target_version,
+                                    "decision": r.decision,
+                                    "confidence": r.confidence,
+                                    "reason": r.reason,
+                                    "summary": r.summary,
+                                    "model": r.model,
+                                    "prompt_version": r.prompt_version,
+                                    "analyzer_version": r.analyzer_version,
+                                    "conversation_snapshot": r.conversation_snapshot,
+                                }
+                                for r in c.results
+                            ],
+                        }
+                        for c in result.chats
+                    ],
+                    "total_results": result.total_results,
+                },
+                headers=_security_headers(),
+            )
 
     return router
 

@@ -30,6 +30,7 @@ from echo_v2.domain.waiting_for_me import (
     WaitingForMeDecision,
     WaitingForMeResult,
 )
+from echo_v2.persistence.chat_repositories import WaitingForMeResultEntry
 from echo_v2.persistence.orm import (
     ChatRow,
     MessageRow,
@@ -399,6 +400,16 @@ class PostgresChatStateRepository:
             rows = (await session.execute(stmt)).scalars().all()
             return [self._row_to_domain(r) for r in rows]
 
+    async def list_all_for_user(self, *, user_id: str) -> list[ChatState]:
+        async with self._session() as session:
+            stmt = (
+                select(ChatRow)
+                .where(ChatRow.user_id == user_id)
+                .order_by(ChatRow.last_message_at.desc())
+            )
+            rows = (await session.execute(stmt)).scalars().all()
+            return [self._row_to_domain(r) for r in rows]
+
     async def mark_processed(
         self,
         user_id: str,
@@ -520,6 +531,30 @@ class PostgresWaitingForMeResultRepository:
             )
             rows = (await session.execute(stmt)).scalars().all()
             return [self._row_to_domain(r) for r in rows]
+
+    async def list_all_for_user(
+        self,
+        *,
+        user_id: str,
+        limit: int = 500,
+    ) -> list[WaitingForMeResultEntry]:
+        async with self._session() as session:
+            stmt = (
+                select(WaitingForMeResultRow)
+                .where(WaitingForMeResultRow.user_id == user_id)
+                .order_by(desc(WaitingForMeResultRow.created_at))
+                .limit(limit)
+            )
+            rows = (await session.execute(stmt)).scalars().all()
+            return [
+                WaitingForMeResultEntry(
+                    id=str(r.id),
+                    chat_id=r.chat_id,
+                    created_at=r.created_at,
+                    result=self._row_to_domain(r),
+                )
+                for r in rows
+            ]
 
     @staticmethod
     def _row_to_domain(row: WaitingForMeResultRow) -> WaitingForMeResult:
