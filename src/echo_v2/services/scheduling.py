@@ -40,8 +40,6 @@ from echo_v2.domain.scheduling import (
 from echo_v2.observability.sanitizers import (
     safe_bot_send_inputs,
     safe_bot_send_output,
-    safe_scheduling_execute_inputs,
-    safe_scheduling_execute_output,
 )
 from echo_v2.persistence.scheduled_actions import ScheduledActionRepository
 from echo_v2.persistence.whatsapp_connections import (
@@ -177,11 +175,7 @@ class SchedulingService:
         """Cancel a PENDING action."""
         return await self._action_repo.cancel(action_id, user_id)
 
-    @traceable(
-        name="wfm.scheduling.execute",
-        process_inputs=safe_scheduling_execute_inputs,
-        process_outputs=safe_scheduling_execute_output,
-    )
+    @traceable(name="wfm.scheduling.execute")
     async def execute(self, action: ScheduledAction) -> str:
         """Execute a scheduled action.
 

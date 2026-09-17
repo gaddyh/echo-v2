@@ -32,10 +32,6 @@ import websockets
 from langsmith import traceable
 
 from echo_v2.integrations.green.settings import GreenSettings
-from echo_v2.observability.sanitizers import (
-    safe_green_http_inputs,
-    safe_green_http_output,
-)
 from echo_v2.runtime.errors import (
     IndeterminateError,
     PermanentError,
@@ -338,11 +334,7 @@ class GreenClient:
 
     # -- shared request helper --------------------------------------------
 
-    @traceable(
-        name="wfm.http.green",
-        process_inputs=safe_green_http_inputs,
-        process_outputs=safe_green_http_output,
-    )
+    @traceable(name="wfm.http.green")
     async def _request_json(
         self,
         method: str,

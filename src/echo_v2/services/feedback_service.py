@@ -46,10 +46,6 @@ from echo_v2.domain.feedback import (
     FeedbackVerdict,
     HandlingOutcome,
 )
-from echo_v2.observability.sanitizers import (
-    safe_action_inputs,
-    safe_action_output,
-)
 from echo_v2.persistence.chat_repositories import (
     WaitingForMeActiveRepository,
     WaitingForMeResultRepository,
@@ -239,11 +235,7 @@ class WaitingForMeActionService:
             return
         await self._click_repo.reset(user_id=user_id, chat_id=chat_id)
 
-    @traceable(
-        name="wfm.action.handled",
-        process_inputs=safe_action_inputs,
-        process_outputs=safe_action_output,
-    )
+    @traceable(name="wfm.action.handled")
     async def handled(
         self,
         *,
@@ -292,11 +284,7 @@ class WaitingForMeActionService:
         )
         return HandlingOutcome.APPLIED
 
-    @traceable(
-        name="wfm.action.snooze",
-        process_inputs=safe_action_inputs,
-        process_outputs=safe_action_output,
-    )
+    @traceable(name="wfm.action.snooze")
     async def snooze(
         self,
         *,
@@ -483,11 +471,7 @@ class WaitingForMeActionService:
                 user_id,
             )
 
-    @traceable(
-        name="wfm.action.dismiss_not_waiting",
-        process_inputs=safe_action_inputs,
-        process_outputs=safe_action_output,
-    )
+    @traceable(name="wfm.action.dismiss_not_waiting")
     async def dismiss_not_waiting(
         self,
         *,
@@ -536,11 +520,7 @@ class WaitingForMeActionService:
         )
         return HandlingOutcome.APPLIED
 
-    @traceable(
-        name="wfm.action.dismiss_not_interested",
-        process_inputs=safe_action_inputs,
-        process_outputs=safe_action_output,
-    )
+    @traceable(name="wfm.action.dismiss_not_interested")
     async def dismiss_not_interested(
         self,
         *,
@@ -585,11 +565,7 @@ class WaitingForMeActionService:
         )
         return HandlingOutcome.APPLIED
 
-    @traceable(
-        name="wfm.action.done",
-        process_inputs=safe_action_inputs,
-        process_outputs=safe_action_output,
-    )
+    @traceable(name="wfm.action.done")
     async def done(
         self,
         *,
@@ -640,11 +616,7 @@ class WaitingForMeActionService:
             )
         return result.outcome
 
-    @traceable(
-        name="wfm.action.dismiss_with_reason",
-        process_inputs=safe_action_inputs,
-        process_outputs=safe_action_output,
-    )
+    @traceable(name="wfm.action.dismiss_with_reason")
     async def dismiss_with_reason(
         self,
         *,

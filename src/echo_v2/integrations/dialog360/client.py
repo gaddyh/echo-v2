@@ -20,10 +20,6 @@ import httpx
 from langsmith import traceable
 
 from echo_v2.integrations.dialog360.settings import Dialog360Settings
-from echo_v2.observability.sanitizers import (
-    safe_dialog360_http_inputs,
-    safe_dialog360_http_output,
-)
 from echo_v2.runtime.errors import (
     IndeterminateError,
     PermanentError,
@@ -323,11 +319,7 @@ class Dialog360Client:
         return str(media_id)
 
 
-    @traceable(
-        name="wfm.http.dialog360",
-        process_inputs=safe_dialog360_http_inputs,
-        process_outputs=safe_dialog360_http_output,
-    )
+    @traceable(name="wfm.http.dialog360")
     async def _post_json(
         self,
         url: str,
