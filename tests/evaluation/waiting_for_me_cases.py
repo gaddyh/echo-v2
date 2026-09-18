@@ -68,8 +68,14 @@ SANITY_CASES: list[EvalCase] = [
     ),
     EvalCase(
         id="wfm-02",
-        description="Direct yes/no question in English",
-        messages=[("inbound", "Are you free on Thursday?")],
+        description="Scheduling question with concrete task context",
+        messages=[
+            ("inbound", "היי, אני צריכה שתעבור על החוזה לפני שאני שולחת ללקוח."),
+            ("outbound", "בטח, אני יכול להסתכל היום."),
+            ("inbound", "תודה. זה דחוף קצת, אני צריכה לשלוח עד סוף השבוע."),
+            ("outbound", "אני אעבור על זה."),
+            ("inbound", "Are you free on Thursday?"),
+        ],
         expected=WaitingForMeDecision.WAITING_FOR_ME,
     ),
     EvalCase(
@@ -86,8 +92,14 @@ SANITY_CASES: list[EvalCase] = [
     ),
     EvalCase(
         id="wfm-05",
-        description="Request for decision",
-        messages=[("inbound", "מה החלטת?")],
+        description="Decision follow-up with pending price quote context",
+        messages=[
+            ("inbound", "שלחתי לך את הצעת המחיר לפני יומיים."),
+            ("outbound", "קיבלתי, אני בודק."),
+            ("inbound", "סבבה, אין לחץ."),
+            ("outbound", "אני אחזור אליך עם תשובה."),
+            ("inbound", "מה החלטת?"),
+        ],
         expected=WaitingForMeDecision.WAITING_FOR_ME,
     ),
     EvalCase(
@@ -194,31 +206,61 @@ SANITY_CASES: list[EvalCase] = [
         expected=WaitingForMeDecision.NOT_WAITING_FOR_ME,
     ),
 
-    # --- UNCERTAIN: ambiguous, media, missing context ---------------------
+    # --- NOT_WAITING_FOR_ME: ambiguous replies where the other person must clarify ---
+    # The product question is "is it me or not?" — if the other person's reply
+    # is vague, media-only, or doesn't answer the user's question, the next
+    # step belongs to them, not the user. These were previously labeled UNC
+    # but under the me-or-not framing they are NWM: the user isn't the one
+    # who owes the next step.
     EvalCase(
         id="unc-01",
-        description="Empty text (media-only message)",
-        messages=[("inbound", "")],
-        expected=WaitingForMeDecision.UNCERTAIN,
+        description="Media-only reply to a direct question — other person must clarify",
+        messages=[
+            ("outbound", "היי, יש לי שאלה לגבי הפגישה מחר."),
+            ("inbound", "בטח, תשאל."),
+            ("outbound", "אני צריך לדעת אם להביא את המצגת או שאתה שולח אותה."),
+            ("inbound", ""),
+        ],
+        expected=WaitingForMeDecision.NOT_WAITING_FOR_ME,
+        notes="Media-only reply to a direct question. The user asked; the reply doesn't clearly answer. The other person must clarify, not the user.",
     ),
     EvalCase(
         id="unc-02",
-        description="Very vague single word",
-        messages=[("inbound", "אולי")],
-        expected=WaitingForMeDecision.UNCERTAIN,
+        description="Vague 'maybe' response — other person must clarify",
+        messages=[
+            ("outbound", "היי, מה קורה?"),
+            ("outbound", "לא שמעתי ממך הרבה זמן."),
+            ("inbound", "היי, סליחה, הייתי עסוק."),
+            ("outbound", "הכל בסדר? יש עדכון לגבי העניין שדיברנו עליו?"),
+            ("inbound", "אולי"),
+        ],
+        expected=WaitingForMeDecision.NOT_WAITING_FOR_ME,
+        notes="'אולי' doesn't answer 'any update?' — the other person needs to clarify, not the user.",
     ),
     EvalCase(
         id="unc-03",
-        description="Single emoji",
-        messages=[("inbound", "👍")],
-        expected=WaitingForMeDecision.UNCERTAIN,
+        description="Single emoji in response to a scheduling question — other person must clarify",
+        messages=[
+            ("outbound", "אני חושב שכדאי לנו להיפגש שוב."),
+            ("outbound", "יש כמה דברים שאני רוצה להראות לך."),
+            ("outbound", "מתי מתאים לך?"),
+            ("inbound", "👍"),
+        ],
+        expected=WaitingForMeDecision.NOT_WAITING_FOR_ME,
+        notes="Thumbs-up to 'when works for you?' doesn't answer the question. The other person must clarify when, not the user.",
     ),
     EvalCase(
         id="unc-04",
-        description="Ambiguous without context",
-        messages=[("inbound", "נשמע טוב")],
-        expected=WaitingForMeDecision.UNCERTAIN,
-        notes="Could be a closing or a response to a proposal — needs context.",
+        description="'Sounds good' without picking a day — other person must clarify",
+        messages=[
+            ("outbound", "היי, אני צריך לקבוע איתך פגישה."),
+            ("inbound", "בטח, על מה?"),
+            ("outbound", "על הפרויקט החדש. יש לי כמה שאלות."),
+            ("outbound", "אפשר שלישי או חמישי?"),
+            ("inbound", "נשמע טוב"),
+        ],
+        expected=WaitingForMeDecision.NOT_WAITING_FOR_ME,
+        notes="'Sounds good' to 'Tuesday or Thursday?' doesn't pick a day. The other person must clarify, not the user.",
     ),
 
     # --- Mixed: conversation with context ---------------------------------

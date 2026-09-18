@@ -62,8 +62,9 @@ asyncio_mode = "auto"
 markers = [
     "eval: evaluation harness — runs real LLM API calls, not part of normal suite",
     "eval_soc: SOC family evaluation harness — runs real LLM API calls, not part of normal suite",
+    "eval_casual: casual-question evaluation harness — runs real LLM API calls, not part of normal suite",
 ]
-addopts = "-m 'not eval and not eval_soc'"
+addopts = "-m 'not eval and not eval_soc and not eval_casual'"
 
 [tool.coverage.run]
 branch = true
