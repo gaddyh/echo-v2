@@ -83,6 +83,7 @@ class GreenInstancePool:
         target_size: int = 1,
         ready_poll_interval: float = 2.0,
         ready_max_attempts: int = 90,
+        create_backoff_seconds: float = 30.0,
     ) -> None:
         self._provisioner = provisioner
         self._green_client = green_client
@@ -92,6 +93,7 @@ class GreenInstancePool:
         self._target_size = target_size
         self._ready_poll_interval = ready_poll_interval
         self._ready_max_attempts = ready_max_attempts
+        self._create_backoff_seconds = create_backoff_seconds
         self._refill_task: asyncio.Task[None] | None = None
 
     # --- public API -------------------------------------------------------
@@ -279,7 +281,13 @@ class GreenInstancePool:
             row_id = await self._repo.reserve_creation_slot(self._target_size)
             if row_id is None:
                 return
-            await self._create_one(row_id)
+            success = await self._create_one(row_id)
+            if not success:
+                # createInstance failed (e.g. Green 500). Back off before
+                # the next attempt to avoid hammering Green's API in a
+                # tight retry loop. The row was already deleted, so the
+                # next iteration will reserve a fresh slot.
+                await asyncio.sleep(self._create_backoff_seconds)
 
     # --- creation ---------------------------------------------------------
 
@@ -290,14 +298,19 @@ class GreenInstancePool:
         except Exception:
             _logger.exception("pool: refill task failed")
 
-    async def _create_one(self, row_id: str) -> None:
+    async def _create_one(self, row_id: str) -> bool:
         """Create a Green instance for a reserved ``creating`` row.
+
+        Returns ``True`` if the instance was created and marked available
+        (or marked failed after a ready-timeout). Returns ``False`` if
+        ``createInstance`` itself failed (e.g. Green 500) — the caller
+        should back off before retrying.
 
         Steps:
         1. Row is already ``creating`` (reserved by ``reserve_creation_slot``).
         2. Generate webhook token + config.
         3. Call ``provisioner.create_connection`` (Green ``createInstance``).
-        4. On failure → ``mark_failed``.
+        4. On failure → delete row, return ``False``.
         5. Persist credentials via ``mark_created`` (still ``creating``).
         6. Poll until ``notAuthorized`` (``_wait_until_ready``).
         7. On success → ``mark_available``.
@@ -320,7 +333,7 @@ class GreenInstancePool:
             # constraint (state='failed' requires a non-null id). Delete
             # the row instead — the pool will refill on the next cycle.
             await self._repo.delete_row(row_id)
-            return
+            return False
 
         token_hash = _sha256(webhook_token)
         await self._repo.mark_created(
@@ -348,6 +361,7 @@ class GreenInstancePool:
             )
             await self._best_effort_delete_green(created.ref.provider_connection_id)
             await self._repo.mark_failed(row_id)
+        return True
 
     async def _wait_until_ready(
         self, id_instance: str, api_token: str,

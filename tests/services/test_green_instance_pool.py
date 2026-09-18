@@ -66,11 +66,15 @@ class FakeProvisioner:
         self.delete_calls: list[ConnectionRef] = []
         self._next_id = 0
         self.should_fail: bool = False
+        self.fail_count: int = 0  # fail this many calls, then succeed
 
     async def create_connection(self, config) -> CreatedConnection:
         from echo_v2.ports.whatsapp import ConnectionRef, ProviderCredentials
         self.create_calls.append(config)
-        if self.should_fail:
+        if self.should_fail and self.fail_count <= 0:
+            raise RuntimeError("createInstance boom")
+        if self.fail_count > 0:
+            self.fail_count -= 1
             raise RuntimeError("createInstance boom")
         self._next_id += 1
         return CreatedConnection(
@@ -282,14 +286,50 @@ async def test_create_one_create_instance_failure_deletes_row(pool_setup):
     provisioner.should_fail = True
 
     row_id = await repo.reserve_creation_slot(1)
-    await pool._create_one(row_id)
+    success = await pool._create_one(row_id)
 
+    assert success is False
     available = await repo.get_by_state("available")
     assert len(available) == 0
     failed = await repo.get_by_state("failed")
     assert len(failed) == 0
     creating = await repo.get_by_state("creating")
     assert len(creating) == 0  # row was deleted, not left in any state
+
+
+async def test_fill_to_target_backs_off_on_create_failure():
+    """When createInstance fails, _fill_to_target sleeps before retrying
+    to avoid hammering Green's API in a tight loop."""
+    repo = InMemoryGreenInstancePoolRepository()
+    green_client = FakeGreenClient()
+    provisioner = FakeProvisioner()
+    provisioner.fail_count = 1  # fail once, then succeed
+    connection_repo = FakeConnectionRepo()
+    pool = GreenInstancePool(
+        provisioner=provisioner,
+        green_client=green_client,
+        repo=repo,
+        connection_repo=connection_repo,
+        webhook_base_url="https://echo.example.com",
+        target_size=1,
+        ready_poll_interval=0.01,
+        ready_max_attempts=3,
+        create_backoff_seconds=0.05,
+    )
+
+    import time as _time
+    start = _time.monotonic()
+    await pool._fill_to_target()
+    elapsed = _time.monotonic() - start
+
+    # First createInstance failed, row deleted, backoff slept 0.05s,
+    # then second createInstance succeeded and instance became available.
+    assert len(provisioner.create_calls) == 2, (
+        f"expected 2 create attempts, got {len(provisioner.create_calls)}"
+    )
+    assert elapsed >= 0.05, f"backoff not applied (elapsed={elapsed:.3f}s)"
+    available = await repo.get_by_state("available")
+    assert len(available) == 1
 
 
 async def test_create_one_timeout_marks_failed(pool_setup):
