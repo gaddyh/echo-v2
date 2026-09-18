@@ -49,26 +49,72 @@ You will receive:
 
 Your job: Was the analyzer's decision correct?
 
-Definitions:
-- "waiting_for_me": The next step is expected from the user. The ball is in \
-the user's court. This includes:
-  * A direct request, question, or expectation from "them" that "me" hasn't \
-addressed.
+## Core principle: actionability, not just reply expectation
+
+A reply can be conversationally expected without being an actionable \
+responsibility. The question is not merely "does this message expect a \
+reply?" but "does this create an actionable interpersonal responsibility \
+worth tracking?"
+
+A question from "them" does NOT automatically make it waiting_for_me. \
+A question is actionable only if at least one is true:
+1. The answer is needed for a concrete decision or next action.
+2. The user is being asked to perform, confirm, choose, provide, send, \
+call, attend, or decide something.
+3. The other person is meaningfully blocked until the user responds.
+4. There is an existing commitment or obligation that the question \
+advances.
+
+Pure social conversation is NOT an actionable responsibility:
+- "מה שלומך?" → not_waiting_for_me (social greeting, no action depends on it)
+- "איך היה הטיול?" → not_waiting_for_me (social catch-up, answering is \
+polite not required)
+- "מה מצבו של אבא?" → not_waiting_for_me (status check, no stated \
+decision blocked on it)
+
+But the same question WITH a dependency IS actionable:
+- "מה מצבו של אבא? עדכן אותי, אני צריך להחליט אם לנסוע" → waiting_for_me \
+(the answer is needed for a concrete decision)
+
+Short or informal questions can still be actionable:
+- "מאשר?" → waiting_for_me (sender needs confirmation to proceed)
+- "את רוצה את מוטי?" → waiting_for_me (sender is blocked on the choice)
+
+Tone and length do not determine actionability. The dependency on the \
+answer does.
+
+## Definitions
+
+- "waiting_for_me": There is an actionable interpersonal responsibility \
+where the user owes a reply or action now. This includes:
+  * A direct request, question, or expectation from "them" that creates a \
+concrete dependency or blocks the other person.
   * A commitment "me" made ("I'll send it tomorrow", "I'll come soon") that \
 hasn't been fulfilled yet.
-  * Any open obligation where "me" needs to act next.
-- "not_waiting_for_me": No open expectation. The ball is NOT in the user's \
-court. The conversation is closed, or the other person needs to act next.
-- "uncertain": Not enough information to decide confidently.
+  * Any open actionable obligation where "me" needs to act next.
+- "not_waiting_for_me": No actionable responsibility, or the ball is NOT \
+in the user's court. The conversation is closed, social, optional, or the \
+other person needs to act next.
+- "uncertain": Not enough readable information to determine whether a \
+responsibility exists (e.g. media-only messages, unreadable content, \
+ambiguous forwarded fragments).
+
+## Evaluation criteria
 
 Evaluate based on the full conversation, not just the last message. \
 Consider:
-- Is there an unanswered question from "them"?
+- Is there an unanswered actionable question from "them" (not just a \
+social question)?
 - Did "me" make a commitment that hasn't been fulfilled or acknowledged?
-- Did "me" already respond to the last request from "them"?
-- Is there a closing acknowledgment ("thanks", "got it") that resolves the thread?
-- If all messages are from "me", is there a self-commitment that's still open?
+- Did "me" already respond to the last actionable request from "them"?
+- Is there a closing acknowledgment ("thanks", "got it") that resolves the \
+thread?
+- If all messages are from "me", is there a self-commitment that's still \
+open?
 - Is the decision consistent with the conversation flow?
+- For ambiguous/media-only content: absence of readable evidence is NOT \
+evidence that no responsibility exists — uncertain may be more appropriate \
+than not_waiting_for_me.
 
 Return ONLY a JSON object:
 {"score": <0.0, 0.5, or 1.0>, "explanation": "<one short sentence>"}

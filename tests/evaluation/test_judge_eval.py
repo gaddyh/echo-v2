@@ -44,6 +44,7 @@ from tests.evaluation.waiting_for_me_cases import (
     SOC_CASES,
     EvalCase,
 )
+from tests.evaluation.waiting_for_me_casual_cases import CASUAL_ALL_CASES
 from tests.evaluation.waiting_for_me_soc2508_cases import (
     SOC2508_DEV_CASES,
     SOC2508_TEST_CASES,
@@ -408,3 +409,15 @@ async def test_judge_soc2508_all_eval(judge):
     min_agreement = float(os.environ.get("EVAL_JUDGE_SOC2508_MIN_AGREEMENT", "0.7"))
     all_cases = SOC2508_DEV_CASES + SOC2508_TEST_CASES
     await _run_judge_suite(judge, all_cases, "SOC2508-all", min_agreement)
+
+
+@pytest.mark.eval
+async def test_judge_casual_eval(judge):
+    """Run the casual-question cases through the judge with golden labels.
+
+    Tests whether the judge understands the actionability distinction:
+    social questions should be NWM, actionable questions should be WFM.
+    Threshold: 70%.
+    """
+    min_agreement = float(os.environ.get("EVAL_JUDGE_CASUAL_MIN_AGREEMENT", "0.7"))
+    await _run_judge_suite(judge, CASUAL_ALL_CASES, "Casual", min_agreement)
