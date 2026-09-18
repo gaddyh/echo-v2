@@ -5,7 +5,8 @@ and the ``failed`` retry path that the main test file does not exercise.
 
 Flow (simplified — name collected before provisioning):
 1. start_onboarding → create user (pending) + ask name
-2. handle_name_response → store name + start provisioning
+2. handle_name_response → store name + send [חבר אותי] button
+3. handle_onboarding_connect → start_pairing (pool miss = background create)
 3. _poll_until_authorized → send OTP once, then complete to active
 4. handle_connection_established → status=active + welcome
 """
@@ -298,9 +299,14 @@ def _make_service(
 async def _start_and_name(
     service: OnboardingService, phone: str = PHONE, name: str = "Dana"
 ) -> None:
-    """Helper: consent → create user → send name → start provisioning."""
+    """Helper: consent → create user → send name → click [חבר אותי].
+
+    In the click-driven flow, provisioning starts only after the user
+    clicks [חבר אותי]. This helper simulates that click.
+    """
     await service.start_onboarding(phone)
     await service.handle_name_response(phone, name)
+    await service.handle_onboarding_connect(phone)
 
 
 # --- start_onboarding: failed / create_user failure -----------------------
@@ -325,8 +331,14 @@ async def test_failed_user_retries_onboarding():
     assert user[1] == "pending"
     assert len(bot.sent) == 1  # name prompt
 
-    # Send name → provisioning starts.
+    # Send name → [חבר אותי] button sent (no auto-provisioning).
     await service.handle_name_response(PHONE, "Dana")
+    assert len(bot.sent_buttons) == 1
+    # Click [חבר אותי] → provisioning starts (pool miss: background create).
+    await service.handle_onboarding_connect(PHONE)
+    await asyncio.sleep(0.2)
+    # Instance ready, [הצג QR] button sent. Click it.
+    await service.handle_onboarding_show_qr(PHONE)
     await asyncio.sleep(0.2)
 
     # A new instance was provisioned; QR sent (default path), no OTP.
@@ -364,7 +376,7 @@ async def test_provisioner_create_connection_fails():
     assert user is not None
     assert user[1] == "failed"
     assert len(green_client.otp_calls) == 0
-    # name prompt + name confirm + failure message.
+    # name prompt + "preparing" + failure message.
     assert len(bot.sent) == 3
     _phone, failure_msg = bot.sent[2]
     assert "מצטער" in failure_msg
@@ -388,11 +400,14 @@ async def test_get_authorization_code_fails():
 
     await _start_and_name(service)
     await asyncio.sleep(0.2)
+    # Pool miss: instance ready, [הצג QR] button sent. Click it.
+    await service.handle_onboarding_show_qr(PHONE)
+    await asyncio.sleep(0.2)
 
     user = await user_repo.get_by_phone(PHONE)
     assert user is not None
     assert user[1] == "failed"
-    # name prompt + name confirm + OTP failure message.
+    # name prompt + "preparing" + OTP failure message.
     assert len(bot.sent) == 3
     _phone, failure_msg = bot.sent[2]
     assert "מצטער" in failure_msg
@@ -1089,8 +1104,11 @@ async def test_resend_otp_get_code_fails():
         green_client=green_client
     )
 
-    # Full flow: consent → name → provisioning (QR sent by default).
+    # Full flow: consent → name → connect → show_qr (QR sent by default).
     await _start_and_name(service)
+    await asyncio.sleep(0.2)
+    # Pool miss: instance ready, [הצג QR] button sent. Click it.
+    await service.handle_onboarding_show_qr(PHONE)
     await asyncio.sleep(0.2)
     assert len(green_client.otp_calls) == 0
     assert len(bot.sent_images) == 1

@@ -1,24 +1,30 @@
 """OnboardingService — WhatsApp onboarding flow (QR-first, OTP fallback).
 
-Simplified flow (name collected before provisioning):
+Click-driven flow (name collected before pairing; QR only on user click):
 
 1. Unknown user messages the Echo bot → intro + consent buttons.
 2. User consents ("חברו אותי") → create user row (pending), ask for name.
-3. User sends name (or skips) → store name, start provisioning.
-4. Background: create Green instance, single lifecycle poll.
-5. Poll reaches ``notAuthorized`` → send QR image + instructions (once).
-   If QR fetch fails → fall back to OTP code.
-6. User scans the QR (or enters the 8-digit code if OTP fallback).
-7. Poll reaches ``authorized`` → user becomes ``active``, send welcome.
-8. Timeout/failure → user remains ``pending`` or becomes ``failed``.
+3. User sends name → store name, send _NAME_CONFIRMATION with [חבר אותי] button.
+   (NO auto-provisioning — user must explicitly click to start pairing.)
+4. User clicks "חבר אותי" (onboarding:connect) → start_pairing():
+   - Pool hit (available instance): claim → save PAIRING_REQUIRED → finalize
+     → refill → fetch + send QR immediately → poll for authorization.
+   - Pool miss (or no pool): send "preparing..." → background task creates
+     instance, saves PROVISIONING, waits until notAuthorized, updates to
+     PAIRING_REQUIRED, sends "ready" + [הצג QR] button.
+5. User clicks "הצג QR" (onboarding:show_qr) → fetch + send QR → poll.
+6. Poll reaches ``authorized`` → user becomes ``active``, send welcome.
+7. Timeout/failure → user becomes ``failed``.
+
+**Invariant**: A QR is never fetched/sent except as the direct consequence
+of a recent user click. This holds on re-entry too: ``start_onboarding``
+re-sends the appropriate button (not a QR) for pending users.
 
 Onboarding states: ``pending`` → ``active`` (or ``failed``).
-The ``connected`` state is gone — connection status is owned by the
-``WhatsAppConnection`` (PROVISIONING → PAIRING_REQUIRED → CONNECTED).
 
 Idempotency:
 - If onboarding is already ``pending``, don't create a second instance.
-  Re-send the QR (or OTP) if the user asks.
+  Re-send the appropriate button ([חבר אותי] or [הצג QR]) or "still preparing".
 - If onboarding is ``active``, skip.
 
 Commands:
@@ -48,11 +54,13 @@ from echo_v2.ports.whatsapp import (
     ConnectionRef,
     ConnectionStatus,
     PairingOutcome,
+    ProviderCredentials,
     WhatsAppEventSubscription,
 )
 
 if TYPE_CHECKING:
     from echo_v2.integrations.green.client import GreenClient
+    from echo_v2.services.green_instance_pool import GreenInstancePool
 
 __all__ = ["OnboardingContext", "OnboardingService", "UserRepository"]
 
@@ -64,11 +72,28 @@ _DEFAULT_NAME = "חבר"
 # Name prompt sent after consent (before provisioning).
 _NAME_PROMPT = "איך אפנה אליך? (שלח את השם שלך)"
 
-# Name confirmation sent after name is stored, before provisioning starts.
+# Name confirmation sent after name is stored, before user clicks to pair.
+# Contains a [חבר אותי] button — NO auto-provisioning.
 _NAME_CONFIRMATION = (
     "נחמד להכיר אותך, {name}! 🎉\n\n"
-    "מחבר אותך ל-Echo... זה יכול לקחת דקה-שתיים. רגע ותקבל קוד QR לסריקה. ⏳"
+    "החיבור ל־Echo כמעט מוכן.\n"
+    "כשתהיה מוכן לפתוח את WhatsApp ולסרוק QR, לחץ על הכפתור למטה."
 )
+
+# Sent when pool miss — instance is being created in the background.
+_CREATING_INSTANCE = "מכין חיבור חדש בשבילך, רגע שנייה... ⏳"
+
+# Sent when user re-clicks "חבר אותי" while instance is still being prepared.
+_STILL_PREPARING = "עדיין מכין את החיבור... רגע ⏳"
+
+# Sent after background creation completes — user clicks to get QR.
+_READY_FOR_QR = "החיבור מוכן! 🎉\nלחץ כדי לקבל את קוד ה-QR."
+
+# Button sent with _NAME_CONFIRMATION (start pairing).
+_CONNECT_BUTTON = {"id": "onboarding:connect", "title": "חבר אותי"}
+
+# Button sent with _READY_FOR_QR (fetch QR after background creation).
+_SHOW_QR_BUTTON = {"id": "onboarding:show_qr", "title": "הצג QR"}
 
 # Onboarding instructions sent to the user (OTP fallback path).
 _OTP_INSTRUCTIONS = (
@@ -209,8 +234,11 @@ class OnboardingService:
     * ``connection_repo`` — stores the Green API connection.
     * ``provisioner`` — creates Green instances, configures webhooks, and
       fetches pairing QRs (``get_pairing_qr``).
-    * ``green_client`` — calls ``getAuthorizationCode`` for the OTP fallback.
+    * ``green_client`` — calls ``getAuthorizationCode`` for the OTP fallback
+      and ``getStateInstance`` for the ready poll.
     * ``webhook_base_url`` — the public URL Green should send webhooks to.
+    * ``pool`` — optional :class:`GreenInstancePool` for fast onboarding.
+      When ``None`` (or pool size 0), onboarding creates instances on demand.
     """
 
     def __init__(
@@ -224,6 +252,7 @@ class OnboardingService:
         webhook_base_url: str,
         poll_interval: float = 5.0,
         poll_max_attempts: int = 60,
+        pool: GreenInstancePool | None = None,
     ) -> None:
         self._bot = bot
         self._user_repo = user_repo
@@ -233,6 +262,13 @@ class OnboardingService:
         self._webhook_base_url = webhook_base_url.rstrip("/")
         self._poll_interval = poll_interval
         self._poll_max_attempts = poll_max_attempts
+        self._pool = pool
+        # Background instance-preparation tasks (pool miss path), keyed by
+        # user_id. Prevents double-click from creating two instances.
+        self._prepare_tasks: dict[str, asyncio.Task[None]] = {}
+        # Authorization poll tasks, keyed by user_id. Ensures at most one poll
+        # per user even on repeated "הצג QR" clicks.
+        self._poll_tasks: dict[str, asyncio.Task[None]] = {}
 
     # --- Context resolution (once per interaction) ---------------------------
 
@@ -327,10 +363,16 @@ class OnboardingService:
         """Start onboarding for a user who has explicitly consented.
 
         Creates the user row (``pending``) and asks for their name.
-        Provisioning starts after the name is received (or skipped).
+        Pairing starts only after the user clicks [חבר אותי] (see
+        :meth:`start_pairing`).
 
-        Idempotent: if onboarding is already pending, re-send instructions
-        or ask for name (if name not yet provided).
+        Idempotent: if onboarding is already pending, re-send the
+        appropriate button (NOT a QR — the QR invariant must hold on
+        re-entry):
+        - No name yet → re-ask for name.
+        - Name set, no connection → re-send _NAME_CONFIRMATION + [חבר אותי].
+        - Connection PROVISIONING → "still preparing".
+        - Connection PAIRING_REQUIRED → [הצג QR].
         """
         normalized = self._normalize_phone(phone)
         if normalized is None:
@@ -345,8 +387,25 @@ class OnboardingService:
                     # Consented but hasn't sent name yet — re-ask.
                     await self._bot.send_text(normalized, _NAME_PROMPT)
                 else:
-                    # Already provisioning — re-send QR if connection exists.
-                    await self._resend_qr(user_id, normalized)
+                    # Name set — re-send the appropriate button, NOT a QR.
+                    conn = await self._connection_repo.get_by_user(user_id)
+                    if conn is None:
+                        await self._bot.send_buttons(
+                            normalized,
+                            body_text=_NAME_CONFIRMATION.format(name=name),
+                            buttons=[_CONNECT_BUTTON],
+                        )
+                    elif conn.status == ConnectionStatus.PROVISIONING:
+                        await self._bot.send_text(normalized, _STILL_PREPARING)
+                    elif conn.status == ConnectionStatus.PAIRING_REQUIRED:
+                        await self._bot.send_buttons(
+                            normalized,
+                            body_text=_READY_FOR_QR,
+                            buttons=[_SHOW_QR_BUTTON],
+                        )
+                    else:
+                        # CONNECTED or other — re-send QR (user is known).
+                        await self._resend_qr(user_id, normalized)
                 return
             if onboarding_status == "active":
                 return
@@ -383,7 +442,7 @@ class OnboardingService:
         if ctx.onboarding_status != "pending":
             return False
         if ctx.first_name is not None:
-            # Already has a name — provisioning in progress. Don't eat text.
+            # Already has a name — pairing in progress. Don't eat text.
             return False
 
         clean_name = name.strip()[:50]
@@ -393,84 +452,259 @@ class OnboardingService:
         # Store the name (still pending — not active until authorized).
         await self._user_repo.update_first_name(ctx.user_id, clean_name)
 
-        # Send name confirmation + "please wait".
-        await self._bot.send_text(
+        # Send name confirmation + [חבר אותי] button.
+        # NO auto-provisioning — user must explicitly click to start pairing.
+        await self._bot.send_buttons(
             ctx.phone,
-            _NAME_CONFIRMATION.format(name=clean_name),
+            body_text=_NAME_CONFIRMATION.format(name=clean_name),
+            buttons=[_CONNECT_BUTTON],
         )
 
-        # Fire off provisioning + lifecycle poll in the background.
-        asyncio.create_task(
-            self._provision_and_poll(ctx.user_id, ctx.phone)
-        )
-
-        _logger.info("onboarding: name set for user %s, provisioning started", ctx.user_id)
+        _logger.info("onboarding: name set for user %s, awaiting connect click", ctx.user_id)
         return True
 
-    # --- Background: provision + single lifecycle poll ----------------------
+    # --- Pairing entry: user clicks [חבר אותי] ------------------------------
 
-    async def _provision_and_poll(
+    async def start_pairing(self, user_id: str, phone: str) -> None:
+        """Start pairing after the user clicks [חבר אותי].
+
+        Pool hit: claim → save PAIRING_REQUIRED → finalize → refill →
+        fetch + send QR immediately → poll for authorization.
+
+        Pool miss: send "preparing..." → background task creates instance,
+        saves PROVISIONING, waits until notAuthorized, updates to
+        PAIRING_REQUIRED, sends "ready" + [הצג QR] button. The webhook
+        returns immediately (non-blocking).
+
+        If a connection already exists (re-click), re-send QR or "still
+        preparing" depending on connection status.
+        """
+        existing = await self._connection_repo.get_by_user(user_id)
+        if existing is not None:
+            # Connection already exists — re-send QR or "still preparing".
+            if existing.status == ConnectionStatus.PROVISIONING:
+                await self._bot.send_text(phone, _STILL_PREPARING)
+            else:
+                await self._send_qr_and_poll(user_id, phone, existing)
+            return
+
+        pooled = await self._pool.claim(user_id) if self._pool else None
+
+        if pooled is not None:
+            # Pool hit — instance ready (notAuthorized), send QR immediately.
+            await self._save_connection(
+                user_id,
+                pooled.ref,
+                pooled.credentials,
+                pooled.webhook_token_hash,
+                ConnectionStatus.PAIRING_REQUIRED,
+            )
+            if self._pool is not None:
+                await self._pool.finalize_claim(pooled.pool_row_id)
+                self._pool.request_refill()
+            conn = await self._connection_repo.get_by_user(user_id)
+            if conn is not None:
+                await self._send_qr_and_poll(user_id, phone, conn)
+        else:
+            # Pool miss — async preparation, don't block the webhook.
+            existing_task = self._prepare_tasks.get(user_id)
+            if existing_task is not None and not existing_task.done():
+                await self._bot.send_text(phone, _STILL_PREPARING)
+                return
+            await self._bot.send_text(phone, _CREATING_INSTANCE)
+            self._prepare_tasks[user_id] = asyncio.create_task(
+                self._prepare_instance(user_id, phone)
+            )
+
+    async def _prepare_instance(self, user_id: str, phone: str) -> None:
+        """Background task: create a fresh instance for a pool-miss user.
+
+        Steps:
+        1. createInstance via provisioner.
+        2. Save connection as PROVISIONING immediately.
+        3. Wait until notAuthorized (ready poll).
+        4. Update to PAIRING_REQUIRED.
+        5. Send "ready" + [הצג QR] button.
+
+        On failure: mark user ``failed`` + send failure message.
+        """
+        try:
+            webhook_token = secrets.token_urlsafe(32)
+            webhook_url = f"{self._webhook_base_url}/webhooks/whatsapp/green"
+            config = ConnectionConfig(
+                webhook_url=webhook_url,
+                webhook_token=webhook_token,
+                subscriptions=WhatsAppEventSubscription(),
+            )
+            created = await self._provisioner.create_connection(config)
+            token_hash = hashlib.sha256(webhook_token.encode("utf-8")).digest()
+
+            # Save immediately as PROVISIONING (reduces double-create window).
+            await self._save_connection(
+                user_id,
+                created.ref,
+                created.credentials,
+                token_hash,
+                ConnectionStatus.PROVISIONING,
+            )
+            if self._pool:
+                self._pool.request_refill()
+
+            # Wait until notAuthorized (ready for pairing).
+            api_token = created.credentials.data.decode("utf-8")
+            ready = await self._wait_until_ready(
+                created.ref.provider_connection_id, api_token,
+            )
+            if not ready:
+                await self._user_repo.update_onboarding_status(user_id, "failed")
+                await self._bot.send_text(
+                    phone,
+                    "מצטער, לא הצלחתי ליצור את החיבור. נסה שוב מאוחר יותר.",
+                )
+                return
+
+            # Update to PAIRING_REQUIRED and ask user to click for QR.
+            await self._connection_repo.update_status(
+                created.ref,
+                ConnectionStatus.PAIRING_REQUIRED,
+                "notAuthorized",
+            )
+            await self._bot.send_buttons(
+                phone, body_text=_READY_FOR_QR, buttons=[_SHOW_QR_BUTTON],
+            )
+            _logger.info(
+                "onboarding: instance ready for user %s, awaiting show_qr click",
+                user_id,
+            )
+        except Exception:
+            _logger.exception("onboarding: _prepare_instance failed for %s", user_id)
+            await self._user_repo.update_onboarding_status(user_id, "failed")
+            try:
+                await self._bot.send_text(
+                    phone,
+                    "מצטער, לא הצלחתי ליצור את החיבור. נסה שוב מאוחר יותר.",
+                )
+            except Exception:
+                _logger.exception(
+                    "onboarding: failed to send failure message to %s", phone
+                )
+        finally:
+            self._prepare_tasks.pop(user_id, None)
+
+    async def show_pairing_qr(self, user_id: str, phone: str) -> None:
+        """Handle [הצג QR] click — fetch + send QR for an existing connection.
+
+        If no connection exists (shouldn't happen), falls back to
+        :meth:`start_pairing`. If the connection is still PROVISIONING,
+        sends "still preparing".
+        """
+        conn = await self._connection_repo.get_by_user(user_id)
+        if conn is None:
+            await self.start_pairing(user_id, phone)
+            return
+        if conn.status == ConnectionStatus.PROVISIONING:
+            await self._bot.send_text(phone, _STILL_PREPARING)
+            return
+        await self._send_qr_and_poll(user_id, phone, conn)
+
+    async def _send_qr_and_poll(
         self,
         user_id: str,
         phone: str,
+        conn: StoredConnection,
     ) -> None:
-        """Create Green instance + single lifecycle poll until authorized.
+        """Fetch + send QR, then ensure one auth-poll task is running.
 
-        Runs in the background. The poll tracks the instance through its
-        lifecycle in one loop:
-
-        - ``None`` / ``starting`` → keep polling (instance being created)
-        - ``notAuthorized`` → send OTP once, keep polling
-        - ``authorized`` → user becomes ``active``, send welcome, stop
-        - timeout → user becomes ``failed``, send timeout message
-
-        Updates onboarding_status to ``failed`` on error.
+        The QR was sent by this method (as a direct consequence of a user
+        click), so the poll is started with ``pairing_already_sent=True``
+        to avoid sending a duplicate QR when it sees ``notAuthorized``.
         """
-        # Create Green instance + configure webhook.
-        webhook_token = secrets.token_urlsafe(32)
-        webhook_url = f"{self._webhook_base_url}/webhooks/whatsapp/green"
-        config = ConnectionConfig(
-            webhook_url=webhook_url,
-            webhook_token=webhook_token,
-            subscriptions=WhatsAppEventSubscription(),
+        api_token = conn.credentials.data.decode("utf-8")
+        sent = await self._send_pairing_qr(
+            user_id, phone, conn.ref, api_token,
+        )
+        if not sent:
+            return  # QR failed and OTP fallback also failed.
+        self._ensure_poll_task(
+            user_id, phone, conn.ref.provider_connection_id, api_token,
+            pairing_already_sent=True,
         )
 
-        try:
-            created = await self._provisioner.create_connection(config)
-        except Exception:
-            _logger.exception("onboarding: failed to create Green instance")
-            await self._user_repo.update_onboarding_status(user_id, "failed")
-            await self._bot.send_text(
-                phone,
-                "מצטער, לא הצלחתי ליצור את החיבור. נסה שוב מאוחר יותר.",
-            )
-            return
+    def _ensure_poll_task(
+        self,
+        user_id: str,
+        phone: str,
+        id_instance: str,
+        api_token: str,
+        *,
+        pairing_already_sent: bool = False,
+    ) -> None:
+        """Ensure at most one auth-poll task per user.
 
-        # Store the connection.
-        token_hash = hashlib.sha256(webhook_token.encode("utf-8")).digest()
+        If a poll is already running for this user, don't start a second.
+        The completion handler (:meth:`handle_connection_established`) is
+        idempotent, but avoiding duplicate polls is cleaner.
+        """
+        existing = self._poll_tasks.get(user_id)
+        if existing is not None and not existing.done():
+            return
+        self._poll_tasks[user_id] = asyncio.create_task(
+            self._poll_until_authorized(
+                user_id=user_id,
+                phone=phone,
+                id_instance=id_instance,
+                api_token=api_token,
+                pairing_already_sent=pairing_already_sent,
+            )
+        )
+
+    async def _wait_until_ready(
+        self, id_instance: str, api_token: str,
+    ) -> bool:
+        """Poll getStateInstance until ``notAuthorized``.
+
+        Returns ``True`` on ``notAuthorized``. Returns ``False`` on timeout
+        or ``authorized`` (an authorized instance is not a fresh slot).
+        """
+        for _ in range(self._poll_max_attempts):
+            try:
+                state = await self._green_client.get_state_instance(
+                    id_instance, api_token,
+                )
+                if state == "notAuthorized":
+                    return True
+                if state == "authorized":
+                    _logger.warning(
+                        "onboarding: instance %s authorized during warmup "
+                        "(not a fresh slot)", id_instance,
+                    )
+                    return False
+            except Exception:
+                _logger.debug(
+                    "onboarding: transient getStateInstance error for %s, keep polling",
+                    id_instance,
+                    exc_info=True,
+                )
+            await asyncio.sleep(self._poll_interval)
+        return False
+
+    async def _save_connection(
+        self,
+        user_id: str,
+        ref: ConnectionRef,
+        credentials: ProviderCredentials,
+        webhook_token_hash: bytes,
+        status: ConnectionStatus,
+    ) -> None:
+        """Persist a connection with the given status."""
         conn = StoredConnection(
             user_id=user_id,
-            ref=created.ref,
-            credentials=created.credentials,
-            webhook_token_hash=token_hash,
-            status=ConnectionStatus.PROVISIONING,
+            ref=ref,
+            credentials=credentials,
+            webhook_token_hash=webhook_token_hash,
+            status=status,
         )
         await self._connection_repo.save(conn)
-
-        api_token = created.credentials.data.decode("utf-8")
-        _logger.info(
-            "onboarding: instance created id=%s token_len=%d",
-            created.ref.provider_connection_id,
-            len(api_token),
-        )
-
-        # Single lifecycle poll.
-        await self._poll_until_authorized(
-            user_id=user_id,
-            phone=phone,
-            id_instance=created.ref.provider_connection_id,
-            api_token=api_token,
-        )
 
     async def _poll_until_authorized(
         self,
@@ -478,6 +712,8 @@ class OnboardingService:
         phone: str,
         id_instance: str,
         api_token: str,
+        *,
+        pairing_already_sent: bool = False,
     ) -> None:
         """Poll getStateInstance through the instance lifecycle in one loop.
 
@@ -495,9 +731,13 @@ class OnboardingService:
 
         The QR is sent exactly once, the first time we see ``notAuthorized``.
         If the QR fetch fails, we fall back to OTP.
+
+        When ``pairing_already_sent=True`` (called from ``_send_qr_and_poll``
+        after an explicit user click), the QR/OTP was already sent before the
+        poll started — don't send another one.
         """
-        pairing_sent = False
-        saw_ready = False  # saw notAuthorized or authorized at least once
+        pairing_sent = pairing_already_sent
+        saw_ready = pairing_already_sent  # already ready if we sent QR
 
         for attempt in range(self._poll_max_attempts):
             try:
@@ -706,6 +946,34 @@ class OnboardingService:
     async def handle_onboarding_start(self, phone: str) -> None:
         """Handle 'חברו אותי' command — start onboarding."""
         await self.start_onboarding(phone)
+
+    async def handle_onboarding_connect(self, phone: str) -> None:
+        """Handle [חבר אותי] button — start pairing.
+
+        Guards against stale/forged callbacks: if the user has no name yet,
+        re-ask for the name instead of starting pairing.
+        """
+        ctx = await self.resolve_context(phone)
+        if ctx is None:
+            # Unknown user — start fresh onboarding (will ask for name).
+            await self.start_onboarding(phone)
+            return
+        if ctx.onboarding_status == "active":
+            return
+        if not ctx.first_name:
+            # Stale/forged callback — don't bypass the name step.
+            await self._bot.send_text(ctx.phone, _NAME_PROMPT)
+            return
+        await self.start_pairing(ctx.user_id, ctx.phone)
+
+    async def handle_onboarding_show_qr(self, phone: str) -> None:
+        """Handle [הצג QR] button — fetch + send QR for an existing connection."""
+        ctx = await self.resolve_context(phone)
+        if ctx is None:
+            return
+        if ctx.onboarding_status == "active":
+            return
+        await self.show_pairing_qr(ctx.user_id, ctx.phone)
 
     async def handle_onboarding_info(self, phone: str) -> None:
         """Handle 'איך זה עובד?' command — send explanation."""

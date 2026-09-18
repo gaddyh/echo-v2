@@ -23,6 +23,9 @@ from echo_v2.persistence.db import (
     async_session_factory,
     create_async_engine_from_settings,
 )
+from echo_v2.persistence.green_instance_pool import (
+    PostgresGreenInstancePoolRepository,
+)
 from echo_v2.persistence.postgres_chat import (
     PostgresAnalysisCommitRepository,
     PostgresChatStateRepository,
@@ -64,6 +67,7 @@ class PostgresRepos:
     """Standalone Postgres repositories + a UoW factory."""
 
     connections: PostgresWhatsAppConnectionRepository
+    green_instance_pool: PostgresGreenInstancePoolRepository
     webhooks: PostgresWebhookDedupStore
     state_webhooks: PostgresStateWebhookRepository
     bot_inbox: PostgresWebhookInbox
@@ -103,6 +107,7 @@ def build_postgres_repos(settings: DBSettings) -> PostgresRepos:
         cipher = IdentityCredentialCipher()
 
     connections = PostgresWhatsAppConnectionRepository(factory, cipher)
+    green_instance_pool = PostgresGreenInstancePoolRepository(factory, cipher)
     webhooks = PostgresWebhookDedupStore(factory)
     state_webhooks = PostgresStateWebhookRepository(factory)
     bot_inbox = PostgresWebhookInbox(factory)
@@ -129,6 +134,7 @@ def build_postgres_repos(settings: DBSettings) -> PostgresRepos:
 
     return PostgresRepos(
         connections=connections,
+        green_instance_pool=green_instance_pool,
         webhooks=webhooks,
         state_webhooks=state_webhooks,
         bot_inbox=bot_inbox,

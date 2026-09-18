@@ -30,8 +30,10 @@ from echo_v2.bot.commands import (
     DigestOpen,
     ListDone,
     OnboardingCode,
+    OnboardingConnect,
     OnboardingInfo,
     OnboardingQr,
+    OnboardingShowQr,
     OnboardingStart,
     ResponsibilityDismiss,
     ResponsibilityDone,
@@ -85,7 +87,11 @@ class OnboardingEntry(Protocol):
 
     async def handle_onboarding_code(self, phone: str) -> bool: ...
 
+    async def handle_onboarding_connect(self, phone: str) -> None: ...
+
     async def handle_onboarding_qr(self, phone: str) -> bool: ...
+
+    async def handle_onboarding_show_qr(self, phone: str) -> None: ...
 
     async def handle_onboarding_start(self, phone: str) -> None: ...
 
@@ -219,6 +225,12 @@ class BotCommandRouter:
                 # Known user tapping onboarding:start — idempotent re-entry
                 # (re-send QR if pending, re-ask name if needed, skip if active).
                 await self._onboarding.handle_onboarding_start(event.user_phone)
+            case OnboardingConnect():
+                # Pending user tapped 'חבר אותי' — start pairing.
+                await self._onboarding.handle_onboarding_connect(event.user_phone)
+            case OnboardingShowQr():
+                # Pending user tapped 'הצג QR' — fetch + send QR.
+                await self._onboarding.handle_onboarding_show_qr(event.user_phone)
             case OnboardingInfo():
                 await self._onboarding.handle_onboarding_info(event.user_phone)
             case Cancel():

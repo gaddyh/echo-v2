@@ -36,8 +36,10 @@ __all__ = [
     "DigestOpen",
     "ListDone",
     "OnboardingCode",
+    "OnboardingConnect",
     "OnboardingInfo",
     "OnboardingQr",
+    "OnboardingShowQr",
     "OnboardingStart",
     "ResponsibilityDismiss",
     "ResponsibilityDone",
@@ -93,6 +95,16 @@ class OnboardingStart:
 
 
 @dataclass(frozen=True)
+class OnboardingConnect:
+    """Pending user tapped 'חבר אותי' — start pairing (claim/create instance)."""
+
+
+@dataclass(frozen=True)
+class OnboardingShowQr:
+    """Pending user tapped 'הצג QR' — fetch + send QR for an existing connection."""
+
+
+@dataclass(frozen=True)
 class OnboardingInfo:
     """User tapped 'איך זה עובד?' — send explanation."""
 
@@ -120,6 +132,8 @@ BotCommand = (
     | DigestOpen
     | ListDone
     | OnboardingStart
+    | OnboardingConnect
+    | OnboardingShowQr
     | OnboardingInfo
     | OnboardingCode
     | OnboardingQr
@@ -147,7 +161,8 @@ class BotCommandParser:
     Recognizes:
     * Button callbacks: ``action:{id}:handled``, ``action:{id}:snooze``,
       ``action:{id}:snooze:{preset}``, ``action:{id}:dismiss``,
-      ``dismiss:{id}:{reason}``, ``onboarding:start``, ``onboarding:info``
+      ``dismiss:{id}:{reason}``, ``onboarding:start``, ``onboarding:info``,
+      ``onboarding:connect``, ``onboarding:show_qr``
     * Text keywords: ``קוד``, ``qr``, ``סיכום חדש``, ``צפה בשיחות``,
       ``סיימתי לעבור על רשימת ההמתנה``, ``חברו אותי``, cancel words.
 
@@ -195,9 +210,13 @@ class BotCommandParser:
                 responsibility_id=active_id, reason=reason,
             )
 
-        # onboarding:start, onboarding:info
+        # onboarding:start, onboarding:info, onboarding:connect, onboarding:show_qr
         if callback_id == "onboarding:start":
             return OnboardingStart()
+        if callback_id == "onboarding:connect":
+            return OnboardingConnect()
+        if callback_id == "onboarding:show_qr":
+            return OnboardingShowQr()
         if callback_id == "onboarding:info":
             return OnboardingInfo()
 

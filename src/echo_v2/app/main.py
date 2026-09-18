@@ -157,6 +157,7 @@ def create_app() -> FastAPI:
     # --- onboarding service (OTP-based WhatsApp onboarding) ---------------
     from echo_v2.integrations.green.provisioner import GreenProvisioner
     from echo_v2.persistence.user_repository import PostgresUserRepository
+    from echo_v2.services.green_instance_pool import GreenInstancePool
     from echo_v2.services.onboarding import OnboardingService
 
     user_repo = PostgresUserRepository(repos.session_factory)
@@ -168,6 +169,25 @@ def create_app() -> FastAPI:
         "ECHO_WEBHOOK_BASE_URL",
         "https://i-me.onrender.com",
     )
+
+    # --- green instance pool (pre-created instances for fast onboarding) ---
+    # Pool size 0 disables the pool entirely (pool=None → onboarding creates
+    # instances on demand, the current behavior).
+    pool_size = int(os.environ.get("GREEN_INSTANCE_POOL_SIZE", "1"))
+    pool: GreenInstancePool | None = None
+    if pool_size > 0:
+        pool = GreenInstancePool(
+            provisioner=provisioner,
+            green_client=green_client,
+            repo=repos.green_instance_pool,
+            connection_repo=repos.connections,
+            webhook_base_url=webhook_base_url,
+            target_size=pool_size,
+        )
+        _logger.info("green instance pool enabled (target_size=%d)", pool_size)
+    else:
+        _logger.info("green instance pool disabled (GREEN_INSTANCE_POOL_SIZE=0)")
+
     onboarding_service = OnboardingService(
         bot=d360_client,
         user_repo=user_repo,
@@ -175,6 +195,7 @@ def create_app() -> FastAPI:
         provisioner=provisioner,
         green_client=green_client,
         webhook_base_url=webhook_base_url,
+        pool=pool,
     )
 
     # --- scheduling service (executes due actions) ------------------------
@@ -464,11 +485,13 @@ def create_app() -> FastAPI:
     digest_worker_task: asyncio.Task[None] | None = None
     snooze_worker_task: asyncio.Task[None] | None = None
     alert_checker_task: asyncio.Task[None] | None = None
+    pool_warmup_task: asyncio.Task[None] | None = None
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         nonlocal scheduler_task, analysis_worker_task, digest_worker_task
         nonlocal snooze_worker_task, alert_checker_task
+        nonlocal pool_warmup_task
         # Startup: recover stale actions + start scheduler loop.
         try:
             recovered = await scheduler.recover()
@@ -478,6 +501,12 @@ def create_app() -> FastAPI:
             _logger.exception("scheduler recovery failed on startup")
         scheduler_task = asyncio.create_task(scheduler.run_loop())
         _logger.info("scheduler loop started")
+
+        # Start instance pool warm-up in the background (non-blocking).
+        # Early users fall to the slow path if the pool isn't warm yet.
+        if pool is not None:
+            pool_warmup_task = asyncio.create_task(pool.ensure_capacity())
+            _logger.info("instance pool warm-up started in background")
 
         # Start chat analysis worker only if explicitly enabled.
         if chat_analysis_enabled:
@@ -525,6 +554,18 @@ def create_app() -> FastAPI:
             except asyncio.CancelledError:
                 pass
             _logger.info("scheduler loop stopped")
+
+        # Cancel pool warm-up + close pool (cancels refill task).
+        if pool_warmup_task is not None:
+            pool_warmup_task.cancel()
+            try:
+                await pool_warmup_task
+            except asyncio.CancelledError:
+                pass
+            _logger.info("instance pool warm-up stopped")
+        if pool is not None:
+            await pool.aclose()
+            _logger.info("instance pool closed")
 
         # Close the shared OpenAI client.
         try:

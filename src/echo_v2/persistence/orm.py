@@ -53,6 +53,7 @@ __all__ = [
     "ChatNotInterestedClickRow",
     "ChatRow",
     "ContactRow",
+    "GreenInstancePoolRow",
     "IdempotencyOperationRow",
     "MessageRow",
     "ProviderWebhookEventRow",
@@ -995,5 +996,91 @@ class WaitlistSignupRow(Base):
         CheckConstraint(
             "willingness_to_pay IN ('free', 'under_30', '30_70', '70_120', '120_plus')",
             name="waitlist_wtp_check",
+        ),
+    )
+
+
+# --- green_instance_pool ----------------------------------------------------
+
+
+class GreenInstancePoolRow(Base):
+    """A pre-created Green API instance available for fast onboarding.
+
+    Lifecycle: ``creating`` → ``available`` → ``claimed`` → (deleted by
+    ``finalize_claim``). ``failed`` is terminal (cleaned on next
+    ``ensure_capacity``, with a best-effort Green ``deleteInstance`` if it
+    carries a ``provider_connection_id``).
+
+    Capacity reservation: ``creating`` + ``available`` count toward the
+    target size; ``claimed`` does not (it's out of the reserve pool).
+
+    Crash safety:
+    * ``provider_connection_id`` / ``api_token`` / ``webhook_token_hash``
+      are NULL while ``creating`` (before ``createInstance`` returns). They
+      are persisted immediately after ``createInstance`` (via
+      ``mark_created``) — *before* the ready poll — so a crash during waiting
+      leaves a recoverable row with the Green instance id.
+    * ``claimed`` always carries ``claimed_by_user_id`` + ``claimed_at``.
+    * ``available`` / ``claimed`` always carry credentials (enforced by
+      CHECK constraints).
+    """
+
+    __tablename__ = "green_instance_pool"
+
+    id: Mapped[str] = mapped_column(
+        Uuid,
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+        nullable=False,
+    )
+    provider_connection_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    api_token: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    webhook_token_hash: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    state: Mapped[str] = mapped_column(Text, nullable=False, server_default="creating")
+    claimed_by_user_id: Mapped[str | None] = mapped_column(Uuid, nullable=True)
+    claimed_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    __table_args__ = (
+        # A provider_connection_id, when present, is unique across the pool.
+        UniqueConstraint(
+            "provider_connection_id", name="uq_green_pool_provider_id",
+        ),
+        Index("ix_green_pool_state", "state"),
+        CheckConstraint(
+            "state IN ('creating', 'available', 'claimed', 'failed')",
+            name="green_pool_state_check",
+        ),
+        # available/claimed/failed-with-id always carry provider_connection_id.
+        CheckConstraint(
+            "state = 'creating' OR provider_connection_id IS NOT NULL",
+            name="green_pool_id_when_not_creating_check",
+        ),
+        # available/claimed always carry credentials.
+        CheckConstraint(
+            "state IN ('creating', 'failed') OR api_token IS NOT NULL",
+            name="green_pool_credentials_when_ready_check",
+        ),
+        CheckConstraint(
+            "state IN ('creating', 'available', 'failed') "
+            "OR webhook_token_hash IS NOT NULL",
+            name="green_pool_webhook_hash_when_ready_check",
+        ),
+        # claimed always carries ownership.
+        CheckConstraint(
+            "state <> 'claimed' "
+            "OR (claimed_by_user_id IS NOT NULL AND claimed_at IS NOT NULL)",
+            name="green_pool_claimed_ownership_check",
         ),
     )
