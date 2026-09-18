@@ -311,7 +311,7 @@ def main() -> None:
     org_id = sys.argv[2] if len(sys.argv) > 2 else "default"
     # Override the module-level PROJECT_ID used by project_filter()
     PROJECT_ID = project_id
-    print(f"Building LangSmith dashboards")
+    print("Building LangSmith dashboards")
     print(f"  Project ID: {PROJECT_ID}")
     print(f"  Org ID: {org_id}")
     print(f"  API: {API_BASE}")
