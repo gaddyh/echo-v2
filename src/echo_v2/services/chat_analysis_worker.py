@@ -494,12 +494,14 @@ class ChatAnalysisWorker:
             from langsmith.run_helpers import get_current_run_tree
 
             run_tree = get_current_run_tree()
+            session_id = os.environ.get("LANGSMITH_PROJECT_ID", "")
             if run_tree is not None:
                 tracing_client.create_feedback(
                     run_id=str(run_tree.id),
                     key="judge_correctness",
                     score=judge_result.score,
                     comment=judge_result.explanation,
+                    session_id=session_id or None,
                 )
             # Flywheel: send disagreements (0.0) and ambiguous cases (0.5)
             # to the annotation queue for human review. We add the wfm.judge
@@ -508,10 +510,27 @@ class ChatAnalysisWorker:
             queue_id = os.environ.get("JUDGE_ANNOTATION_QUEUE_ID", "")
             if queue_id and judge_result.score <= 0.5 and judge_result.run_id:
                 try:
-                    tracing_client.add_runs_to_annotation_queue(
-                        queue_id=queue_id,
-                        run_ids=[judge_result.run_id],
-                    )
+                    # Flush tracing client so the judge run is persisted to the
+                    # server before we try to add it to the annotation queue.
+                    tracing_client.flush()
+                    # Use the new runs= API (RunKey with session_id + start_time).
+                    # Falls back to run_ids= if the new path 404s.
+                    try:
+                        tracing_client.add_runs_to_annotation_queue(
+                            queue_id=queue_id,
+                            runs=[
+                                {
+                                    "run_id": judge_result.run_id,
+                                    "session_id": session_id,
+                                    "start_time": run_tree.start_time.isoformat() if run_tree else "",
+                                }
+                            ],
+                        )
+                    except Exception:  # noqa: BLE001 - fallback path
+                        tracing_client.add_runs_to_annotation_queue(
+                            queue_id=queue_id,
+                            run_ids=[judge_result.run_id],
+                        )
                     _logger.info(
                         "judge score=%.1f → added judge run %s to annotation queue %s",
                         judge_result.score,
