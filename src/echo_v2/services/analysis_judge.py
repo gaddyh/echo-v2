@@ -87,6 +87,7 @@ class JudgeResult:
     score: float
     explanation: str
     run_id: str | None = None
+    run_start_time: str | None = None
 
 
 class AnalysisJudge:
@@ -122,6 +123,7 @@ class AnalysisJudge:
 
         run_tree = get_current_run_tree()
         run_id = str(run_tree.id) if run_tree is not None else None
+        run_start_time = run_tree.start_time.isoformat() if run_tree is not None else None
 
         transcript = _build_transcript(conversation)
         user_msg = (
@@ -144,11 +146,15 @@ class AnalysisJudge:
             )
         except Exception as exc:  # noqa: BLE001 - judge errors must not crash the worker
             _logger.warning("judge LLM call failed: %s", exc)
-            return JudgeResult(score=0.5, explanation=f"judge error: {exc}", run_id=run_id)
+            return JudgeResult(
+                score=0.5, explanation=f"judge error: {exc}",
+                run_id=run_id, run_start_time=run_start_time,
+            )
 
         raw = response.choices[0].message.content or ""
         parsed = _parse_judge_output(raw)
         parsed.run_id = run_id
+        parsed.run_start_time = run_start_time
         return parsed
 
 

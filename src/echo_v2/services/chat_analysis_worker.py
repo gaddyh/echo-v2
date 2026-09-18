@@ -525,24 +525,19 @@ class ChatAnalysisWorker:
                     # Flush tracing client so the judge run is persisted to the
                     # server before we try to add it to the annotation queue.
                     tracing_client.flush()
-                    # Use the new runs= API (RunKey with session_id + start_time).
-                    # Falls back to run_ids= if the new path 404s.
-                    try:
-                        tracing_client.add_runs_to_annotation_queue(
-                            queue_id=queue_id,
-                            runs=[
-                                {
-                                    "run_id": judge_result.run_id,
-                                    "session_id": session_id,
-                                    "start_time": run_tree.start_time.isoformat() if run_tree else "",
-                                }
-                            ],
-                        )
-                    except Exception:  # noqa: BLE001 - fallback path
-                        tracing_client.add_runs_to_annotation_queue(
-                            queue_id=queue_id,
-                            run_ids=[judge_result.run_id],
-                        )
+                    # Use the SmithDB-backed runs= API (RunKey with session_id +
+                    # start_time). The start_time must be the judge run's own
+                    # start_time, not the parent analysis run's.
+                    tracing_client.add_runs_to_annotation_queue(
+                        queue_id=queue_id,
+                        runs=[
+                            {
+                                "run_id": judge_result.run_id,
+                                "session_id": session_id,
+                                "start_time": judge_result.run_start_time or "",
+                            }
+                        ],
+                    )
                     _logger.info(
                         "judge score=%.1f → added judge run %s to annotation queue %s",
                         judge_result.score,
