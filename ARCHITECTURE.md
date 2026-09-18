@@ -587,6 +587,25 @@ The queue is created via `scripts/setup_annotation_queue.py` with a rubric askin
 
 Queue additions are best-effort: failures log a warning but never crash the analysis pipeline.
 
+### User false-positive flywheel
+
+When a user reports a false positive — tapping **לא מחכים לי** (WhatsApp `dismiss_not_waiting`) or marking a card as **detected_incorrectly** (web `dismiss_with_reason`) — the conversation + analyzer decision are sent to a dedicated LangSmith annotation queue (`USER_ANNOTATION_QUEUE_ID`) for human review. This is a stronger, explicit human signal than the judge's, feeding the same flywheel:
+
+```
+User reports false positive → annotation queue → human labels → gold examples → better analyzer
+```
+
+The DB `waiting_for_me_feedback` row (FALSE_POSITIVE) is the durable source of truth; the annotation queue is a best-effort, **fire-and-forget** projection. The enqueue runs via `asyncio.create_task` after the DB feedback is persisted, so the user's dismiss action is never blocked by LangSmith latency or failures.
+
+The trace (`wfm.user_false_positive`) is self-contained: it carries the conversation snapshot, analyzer decision, `next_owner`, `open_obligation`, `model`, `prompt_version`, `analyzer_version`, and `target_version` as run inputs (visible to the annotator and filterable by prompt/model). The raw `user_id` is never passed to the trace — only an HMAC hash (`correlation_id`) is attached via run metadata.
+
+The queue is created via `scripts/setup_user_annotation_queue.py` with a rubric asking:
+1. `correct_decision` — What should the analyzer have decided? (WFM / NWM / UNC)
+2. `user_feedback_valid` — Was the user's "not waiting for me" feedback valid? (yes / no)
+3. `annotation_notes` — Free-form observations
+
+Queue additions are best-effort: failures log a warning but never crash the dismiss action.
+
 ### Logging
 
 - No phone numbers, message text, user names, or raw LLM reasons are logged.

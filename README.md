@@ -211,6 +211,22 @@ Setup:
 # Add to .env: JUDGE_ANNOTATION_QUEUE_ID=<id from script output>
 ```
 
+### User false-positive flywheel
+
+When a user taps **לא מחכים לי** (WhatsApp) or marks a card as **detected_incorrectly** (web mini-app), they're reporting a false positive — Echo was wrong, nobody is actually waiting. This is a stronger, explicit human signal than the judge's. The conversation + analyzer decision are sent to a dedicated LangSmith annotation queue for human review, feeding the same flywheel:
+
+```
+User reports false positive → annotation queue → human labels → gold examples → better analyzer
+```
+
+The DB `waiting_for_me_feedback` row (FALSE_POSITIVE) is the durable source of truth; the annotation queue is a best-effort, fire-and-forget projection — the user's dismiss action is never blocked by LangSmith. The trace (`wfm.user_false_positive`) is self-contained: it carries the conversation snapshot, analyzer decision, next_owner, model, prompt_version, and analyzer_version as run inputs, so reviewers can filter by prompt/model when investigating false-positive patterns.
+
+Setup:
+```bash
+.venv/bin/python scripts/setup_user_annotation_queue.py   # creates queue, prints ID
+# Add to .env: USER_ANNOTATION_QUEUE_ID=<id from script output>
+```
+
 ### Logging
 
 - No phone numbers, message text, user names, or raw LLM reasons are logged.
@@ -440,6 +456,7 @@ pytest -m eval -k judge -v -s      # Judge eval harness (real API calls)
 | `OBSERVABILITY_HASH_KEY` | If tracing | — | HMAC key for hashing IDs in trace metadata (required when `LANGSMITH_TRACING=true`) |
 | `JUDGE_MODEL_NAME` | No | `gpt-5.4` | LLM model for the judge (different from analyzer to reduce bias) |
 | `JUDGE_ANNOTATION_QUEUE_ID` | No | — | LangSmith annotation queue ID for judge disagreements (score 0.0/0.5). Create with `scripts/setup_annotation_queue.py` |
+| `USER_ANNOTATION_QUEUE_ID` | No | — | LangSmith annotation queue ID for user-reported false positives ("לא מחכים לי" / detected_incorrectly). Create with `scripts/setup_user_annotation_queue.py` |
 | `ECHO_OWNER_PHONE` | No | — | Phone number for WhatsApp alert summaries |
 | `ALERT_CHECKER_ENABLED` | No | `false` | Start the alert checker background task |
 | `ALERT_CHECKER_POLL_INTERVAL` | No | `300` | Alert checker poll interval (seconds) |

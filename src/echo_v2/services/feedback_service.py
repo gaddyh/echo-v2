@@ -34,7 +34,9 @@ Atomicity (actions):
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -46,6 +48,8 @@ from echo_v2.domain.feedback import (
     FeedbackVerdict,
     HandlingOutcome,
 )
+from echo_v2.observability.privacy import correlation_id
+from echo_v2.observability.tracing import tracing_client
 from echo_v2.persistence.chat_repositories import (
     WaitingForMeActiveRepository,
     WaitingForMeResultRepository,
@@ -514,6 +518,14 @@ class WaitingForMeActionService:
                 provider_message_id=f"implicit:{provider_message_id}",
             )
 
+        # Fire-and-forget: enqueue the conversation + analyzer decision to a
+        # dedicated LangSmith annotation queue for human review. The DB
+        # feedback above is the durable source of truth; this is a best-effort
+        # projection. Non-blocking — the user's dismiss returns immediately.
+        self._schedule_false_positive_annotation(
+            result_id=result.result_id, user_id=user_id,
+        )
+
         _logger.info(
             "action: dismiss_not_waiting user=%s active_id=%s version=%d",
             user_id, active_id, target_version,
@@ -677,6 +689,11 @@ class WaitingForMeActionService:
                 target_version=target_version,
                 provider_message_id=f"implicit:{provider_message_id}",
             )
+            # Fire-and-forget: enqueue to the user false-positive annotation
+            # queue (same signal as the WhatsApp "לא מחכים לי" path).
+            self._schedule_false_positive_annotation(
+                result_id=result.result_id, user_id=user_id,
+            )
 
         # Escalating chat snooze for "לא מעניין, שיחכו" (web path).
         if reason == "no_response_required" and result.chat_id is not None:
@@ -735,6 +752,144 @@ class WaitingForMeActionService:
             return result.outcome
         _logger.info("action: unmute_chat user=%s chat=%s", user_id, chat_id)
         return HandlingOutcome.APPLIED
+
+    # --- User false-positive annotation flywheel -----------------------------
+
+    def _schedule_false_positive_annotation(
+        self,
+        *,
+        result_id: str | None,
+        user_id: str,
+    ) -> None:
+        """Fire-and-forget: enqueue a user false-positive to the annotation queue.
+
+        Called from both false-positive paths (``dismiss_not_waiting`` and
+        ``dismiss_with_reason("detected_incorrectly")``) after the durable
+        DB feedback is persisted. The annotation queue is a best-effort
+        projection for human review — never blocks the user's action.
+        """
+        if result_id is None:
+            return
+        asyncio.create_task(
+            self._enqueue_user_annotation(
+                result_id=result_id,
+                user_id=user_id,
+            )
+        )
+
+    @traceable(
+        name="wfm.user_false_positive",
+        client=tracing_client,
+    )
+    async def _trace_user_false_positive(
+        self,
+        *,
+        conversation: list[dict[str, Any]],
+        analyzer_decision: str,
+        next_owner: str | None,
+        open_obligation: str | None,
+        analyzer_reason: str | None,
+        analyzer_confidence: float | None,
+        model: str | None,
+        prompt_version: str | None,
+        analyzer_version: str | None,
+        target_version: int,
+        user_id_hash: str,
+    ) -> tuple[str | None, str | None]:
+        """Create a self-contained trace for a user-reported false positive.
+
+        The kwargs become the run's inputs in LangSmith — visible to the
+        annotator and filterable by ``prompt_version`` / ``model`` /
+        ``next_owner``. ``user_id`` is never passed raw; only the HMAC
+        hash (``user_id_hash``) is attached via run metadata.
+
+        Returns ``(run_id, run_start_time)`` or ``(None, None)`` when
+        tracing is disabled (``get_current_run_tree()`` is None).
+        """
+        from langsmith.run_helpers import get_current_run_tree
+
+        run_tree = get_current_run_tree()
+        if run_tree is None:
+            return None, None
+        run_tree.add_metadata({
+            "user_id_hash": user_id_hash,
+            "feedback_source": "user_false_positive",
+        })
+        return (
+            str(run_tree.id),
+            run_tree.start_time.isoformat(),
+        )
+
+    async def _enqueue_user_annotation(
+        self,
+        *,
+        result_id: str,
+        user_id: str,
+    ) -> None:
+        """Load the immutable result, trace it, and enqueue to the annotation queue.
+
+        Best-effort: any failure (network, missing queue, missing result)
+        logs a warning and returns — never propagates to the caller. The
+        DB ``waiting_for_me_feedback`` row is the durable source of truth.
+        """
+        queue_id = os.environ.get("USER_ANNOTATION_QUEUE_ID", "")
+        if not queue_id or self._result_repo is None:
+            return
+        try:
+            result = await self._result_repo.get_by_id(result_id)
+            if result is None or not result.conversation_snapshot:
+                return
+            messages = result.conversation_snapshot.get("messages")
+            if not messages:
+                return
+
+            run_id, run_start_time = await self._trace_user_false_positive(
+                conversation=messages,
+                analyzer_decision=result.decision.value,
+                next_owner=(
+                    result.next_owner.value
+                    if result.next_owner is not None
+                    else None
+                ),
+                open_obligation=result.open_obligation,
+                analyzer_reason=result.reason,
+                analyzer_confidence=result.confidence,
+                model=result.model,
+                prompt_version=result.prompt_version,
+                analyzer_version=result.analyzer_version,
+                target_version=result.target_version,
+                user_id_hash=correlation_id(user_id),
+            )
+
+            if run_id is None or run_start_time is None:
+                return
+
+            # Flush so the run is persisted before the queue references it.
+            tracing_client.flush()
+            session_id = os.environ.get("LANGSMITH_PROJECT_ID", "")
+            await tracing_client.annotation_queues.items.create(
+                queue_id=queue_id,
+                items=[
+                    {
+                        "item_type": "RUN",
+                        "run_id": run_id,
+                        "session_id": session_id,
+                        "start_time": run_start_time,
+                    }
+                ],
+            )
+            _logger.info(
+                "user false-positive: enqueued run %s to annotation queue %s "
+                "(result_id=%s)",
+                run_id, queue_id, result_id,
+            )
+        except Exception:
+            _logger.warning(
+                "failed to enqueue user false-positive annotation "
+                "result_id=%s",
+                result_id,
+                exc_info=True,
+            )
 
 
 class WaitingForMeFeedbackService:

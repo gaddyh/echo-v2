@@ -17,11 +17,18 @@ Tests the new flow:
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 import pytest
 
 from echo_v2.domain.feedback import FeedbackVerdict, HandlingOutcome
+from echo_v2.domain.waiting_for_me import (
+    NextOwner,
+    WaitingForMeDecision,
+    WaitingForMeResult,
+)
 from echo_v2.persistence.chat_repositories import (
     InMemoryChatStateRepository,
     InMemoryMessageRepository,
@@ -1746,3 +1753,304 @@ async def test_digest_request_skips_stale_acknowledged_snoozed_muted():
     assert len(bot.texts) == 1
     assert "מחכות" in bot.texts[0][1]
     assert len(tokens.issued) == 0
+
+
+# --- User false-positive annotation queue ------------------------------------
+
+
+class _FakeAnnotationItems:
+    """Fake ``tracing_client.annotation_queues.items`` — records create calls."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def create(self, *, queue_id: str, items: list[dict[str, Any]]) -> None:
+        self.calls.append({"queue_id": queue_id, "items": items})
+
+
+class _FakeTracingClient:
+    """Fake ``tracing_client`` for annotation-queue tests."""
+
+    def __init__(self) -> None:
+        self.annotation_queues: Any = type("FakeAQ", (), {})()
+        self.annotation_queues.items = _FakeAnnotationItems()
+        self.flushed = False
+
+    def flush(self) -> None:
+        self.flushed = True
+
+
+def _seed_result(
+    result_repo: InMemoryWaitingForMeResultRepository,
+    *,
+    result_id: str = RESULT_ID,
+    decision: WaitingForMeDecision = WaitingForMeDecision.WAITING_FOR_ME,
+    next_owner: NextOwner | None = NextOwner.USER,
+    conversation_snapshot: dict[str, Any] | None = None,
+    prompt_version: str | None = "v4.1",
+    analyzer_version: str | None = "2026-09-15.1",
+    model: str | None = "gpt-4.1",
+) -> str:
+    """Seed a WaitingForMeResult into the in-memory repo and return its ID.
+
+    Directly appends to the repo's internal list so we control the row ID
+    (the real ``save`` generates a UUID).
+    """
+    if conversation_snapshot is None:
+        conversation_snapshot = {
+            "messages": [
+                {"direction": "inbound", "text": "מה קורה?", "timestamp": None},
+                {"direction": "outbound", "text": "אני אחזור אליך", "timestamp": None},
+            ],
+            "target_version": 1,
+        }
+    result = WaitingForMeResult(
+        decision=decision,
+        next_owner=next_owner,
+        open_obligation="user needs to reply",
+        confidence=0.9,
+        reason="test reason",
+        summary="test summary",
+        target_version=1,
+        conversation_snapshot=conversation_snapshot,
+        model=model,
+        prompt_version=prompt_version,
+        analyzer_version=analyzer_version,
+    )
+    result_repo._results.append(  # direct access for test setup
+        (USER_ID, CHAT_ID, result_id, datetime.now(timezone.utc), result)
+    )
+    return result_id
+
+
+def _patch_annotation_infra(
+    action_service: WaitingForMeActionService,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    queue_id: str = "q-user-test",
+) -> tuple[_FakeTracingClient, dict[str, Any]]:
+    """Patch tracing_client + _trace_user_false_positive for annotation tests.
+
+    Returns ``(fake_client, trace_kwargs)``. The patched
+    ``_trace_user_false_positive`` records its kwargs in ``trace_kwargs``
+    for assertions and returns a fixed ``(run_id, run_start_time)``.
+
+    Also sets ``OBSERVABILITY_HASH_KEY`` so ``correlation_id(user_id)``
+    (called in ``_enqueue_user_annotation`` before the patched trace)
+    does not raise.
+    """
+    monkeypatch.setenv("OBSERVABILITY_HASH_KEY", "test-key-12345")
+    fake_client = _FakeTracingClient()
+    monkeypatch.setattr(
+        "echo_v2.services.feedback_service.tracing_client", fake_client
+    )
+
+    trace_kwargs: dict[str, Any] = {}
+
+    async def _fake_trace(**kwargs: Any) -> tuple[str | None, str | None]:
+        trace_kwargs.update(kwargs)
+        return ("run-123", "2026-09-19T10:00:00+00:00")
+
+    monkeypatch.setattr(action_service, "_trace_user_false_positive", _fake_trace)
+    return fake_client, trace_kwargs
+
+
+def _patch_scheduler_to_track_tasks(
+    action_service: WaitingForMeActionService,
+) -> list[asyncio.Task]:
+    """Replace _schedule_false_positive_annotation with a version that stores tasks.
+
+    The real method creates fire-and-forget tasks whose references are lost.
+    This replacement stores them so tests can await completion.
+    """
+    tasks: list[asyncio.Task] = []
+
+    def _schedule(*, result_id: str | None, user_id: str) -> None:
+        if result_id is None:
+            return
+        tasks.append(
+            asyncio.create_task(
+                action_service._enqueue_user_annotation(
+                    result_id=result_id, user_id=user_id,
+                )
+            )
+        )
+
+    action_service._schedule_false_positive_annotation = _schedule  # type: ignore[method-assign]
+    return tasks
+
+
+async def test_dismiss_not_waiting_enqueues_annotation(monkeypatch):
+    """לא מחכים לי → APPLIED, enqueues conversation to annotation queue."""
+    monkeypatch.setenv("USER_ANNOTATION_QUEUE_ID", "q-user-test")
+    bot = FakeBot()
+    handler, action_service, _, active_repo, feedback_repo = _make_handler(bot=bot)
+    await _setup_chat_state(handler, CHAT_ID, version=1)
+
+    # Seed a result with conversation_snapshot into the result_repo.
+    result_repo = action_service._result_repo
+    assert result_repo is not None
+    _seed_result(result_repo, result_id=RESULT_ID)
+
+    active_id = await _setup_active(active_repo, result_id=RESULT_ID)
+
+    # Patch annotation infra.
+    fake_client, trace_kwargs = _patch_annotation_infra(
+        action_service, monkeypatch,
+    )
+    tasks = _patch_scheduler_to_track_tasks(action_service)
+
+    event = _make_event(
+        event_id="evt-nw-ann",
+        button_id=f"dismiss:{active_id}:not_waiting",
+    )
+    result = await handler.handle(event)
+    assert result is True
+
+    # Await the fire-and-forget enqueue task.
+    await asyncio.gather(*tasks)
+
+    # items.create called once with the right queue_id and RUN item.
+    assert len(fake_client.annotation_queues.items.calls) == 1
+    call = fake_client.annotation_queues.items.calls[0]
+    assert call["queue_id"] == "q-user-test"
+    assert len(call["items"]) == 1
+    assert call["items"][0]["item_type"] == "RUN"
+    assert call["items"][0]["run_id"] == "run-123"
+
+    # The trace received the full analyzer metadata (versioning fields).
+    assert trace_kwargs["analyzer_decision"] == "waiting_for_me"
+    assert trace_kwargs["next_owner"] == "user"
+    assert trace_kwargs["prompt_version"] == "v4.1"
+    assert trace_kwargs["analyzer_version"] == "2026-09-15.1"
+    assert trace_kwargs["model"] == "gpt-4.1"
+    assert trace_kwargs["target_version"] == 1
+    assert len(trace_kwargs["conversation"]) == 2
+
+    # FALSE_POSITIVE feedback still recorded.
+    assert len(feedback_repo._rows) == 1
+    assert feedback_repo._rows[0].verdict == FeedbackVerdict.FALSE_POSITIVE
+
+
+async def test_dismiss_not_waiting_no_enqueue_without_queue_id(monkeypatch):
+    """No USER_ANNOTATION_QUEUE_ID → items.create never called."""
+    monkeypatch.delenv("USER_ANNOTATION_QUEUE_ID", raising=False)
+    bot = FakeBot()
+    handler, action_service, _, active_repo, _ = _make_handler(bot=bot)
+    await _setup_chat_state(handler, CHAT_ID, version=1)
+
+    result_repo = action_service._result_repo
+    assert result_repo is not None
+    _seed_result(result_repo, result_id=RESULT_ID)
+    active_id = await _setup_active(active_repo, result_id=RESULT_ID)
+
+    fake_client, _ = _patch_annotation_infra(action_service, monkeypatch)
+    tasks = _patch_scheduler_to_track_tasks(action_service)
+
+    event = _make_event(
+        event_id="evt-nw-noq",
+        button_id=f"dismiss:{active_id}:not_waiting",
+    )
+    await handler.handle(event)
+    await asyncio.gather(*tasks)
+
+    assert len(fake_client.annotation_queues.items.calls) == 0
+
+
+async def test_dismiss_not_waiting_duplicate_no_enqueue(monkeypatch):
+    """Duplicate dismiss_not_waiting → DUPLICATE, no enqueue."""
+    monkeypatch.setenv("USER_ANNOTATION_QUEUE_ID", "q-user-test")
+    bot = FakeBot()
+    handler, action_service, _, active_repo, _ = _make_handler(bot=bot)
+    await _setup_chat_state(handler, CHAT_ID, version=1)
+
+    result_repo = action_service._result_repo
+    assert result_repo is not None
+    _seed_result(result_repo, result_id=RESULT_ID)
+    active_id = await _setup_active(active_repo, result_id=RESULT_ID)
+
+    fake_client, _ = _patch_annotation_infra(action_service, monkeypatch)
+    tasks = _patch_scheduler_to_track_tasks(action_service)
+
+    # First call → APPLIED.
+    event1 = _make_event(
+        event_id="evt-dup-ann",
+        button_id=f"dismiss:{active_id}:not_waiting",
+    )
+    await handler.handle(event1)
+    await asyncio.gather(*tasks)
+    assert len(fake_client.annotation_queues.items.calls) == 1
+
+    # Second call (same event_id) → DUPLICATE, no additional enqueue.
+    tasks2 = _patch_scheduler_to_track_tasks(action_service)
+    event2 = _make_event(
+        event_id="evt-dup-ann",
+        button_id=f"dismiss:{active_id}:not_waiting",
+    )
+    await handler.handle(event2)
+    await asyncio.gather(*tasks2)
+    assert len(fake_client.annotation_queues.items.calls) == 1
+
+
+async def test_dismiss_with_reason_detected_incorrectly_enqueues_annotation(
+    monkeypatch,
+):
+    """Web path: dismiss_with_reason(detected_incorrectly) → enqueues annotation."""
+    monkeypatch.setenv("USER_ANNOTATION_QUEUE_ID", "q-user-test")
+    _, action_service, _, active_repo, _ = _make_handler()
+
+    result_repo = action_service._result_repo
+    assert result_repo is not None
+    _seed_result(result_repo, result_id=RESULT_ID)
+    active_id = await _setup_active(active_repo, result_id=RESULT_ID)
+
+    fake_client, trace_kwargs = _patch_annotation_infra(
+        action_service, monkeypatch,
+    )
+    tasks = _patch_scheduler_to_track_tasks(action_service)
+
+    outcome = await action_service.dismiss_with_reason(
+        user_id=USER_ID,
+        active_id=active_id,
+        target_version=1,
+        provider_message_id="evt-di-ann",
+        reason="detected_incorrectly",
+    )
+    assert outcome == HandlingOutcome.APPLIED
+    await asyncio.gather(*tasks)
+
+    assert len(fake_client.annotation_queues.items.calls) == 1
+    call = fake_client.annotation_queues.items.calls[0]
+    assert call["queue_id"] == "q-user-test"
+    assert call["items"][0]["run_id"] == "run-123"
+
+    # Versioning fields passed to the trace.
+    assert trace_kwargs["prompt_version"] == "v4.1"
+    assert trace_kwargs["analyzer_version"] == "2026-09-15.1"
+    assert trace_kwargs["next_owner"] == "user"
+
+
+async def test_dismiss_with_reason_already_handled_no_enqueue(monkeypatch):
+    """Web path: dismiss_with_reason(already_handled) → no enqueue."""
+    monkeypatch.setenv("USER_ANNOTATION_QUEUE_ID", "q-user-test")
+    _, action_service, _, active_repo, _ = _make_handler()
+
+    result_repo = action_service._result_repo
+    assert result_repo is not None
+    _seed_result(result_repo, result_id=RESULT_ID)
+    active_id = await _setup_active(active_repo, result_id=RESULT_ID)
+
+    fake_client, _ = _patch_annotation_infra(action_service, monkeypatch)
+    tasks = _patch_scheduler_to_track_tasks(action_service)
+
+    outcome = await action_service.dismiss_with_reason(
+        user_id=USER_ID,
+        active_id=active_id,
+        target_version=1,
+        provider_message_id="evt-ah-ann",
+        reason="already_handled",
+    )
+    assert outcome == HandlingOutcome.APPLIED
+    await asyncio.gather(*tasks)
+
+    assert len(fake_client.annotation_queues.items.calls) == 0
