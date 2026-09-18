@@ -104,13 +104,15 @@ async def test_delete_instance_calls_partner_endpoint():
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen["path"] = request.url.path
-        return _ok({"ok": True})
+        seen["body"] = json.loads(request.content)
+        return _ok({"deleteInstanceAccount": True})
 
     client = _client_with_handler(handler)
     try:
         await client.delete_instance("123")
-        assert "deleteInstance" in seen["path"]
-        assert "123" in seen["path"]
+        assert "deleteInstanceAccount" in seen["path"]
+        assert "123" not in seen["path"]  # id is in the body, not the path
+        assert seen["body"] == {"idInstance": 123}
     finally:
         await client.aclose()
 

@@ -5,7 +5,9 @@ Usage:
 
 The argument is treated as a phone number if it starts with ``+`` or is all
 digits (after an optional leading ``+``); otherwise it is treated as a
-case-sensitive exact match on ``users.first_name``.
+case-insensitive substring match on ``users.first_name`` (so you can find
+"שי המלך" by passing "שי" or the full name). Quote multi-word names so the
+shell passes them as a single argument.
 
 Reads DATABASE_URL and GREEN_API_PARTNER_TOKEN from .env. Prints matching
 users, their related row counts (connections, chats, waiting items, etc.),
@@ -14,8 +16,8 @@ impact before deleting. Does NOT delete anything.
 
 Pass --yes to actually delete (after reviewing the dry-run output). When
 deleting, the user's Green API instance is also deleted via the partner
-``deleteInstance`` endpoint (best-effort — DB deletion proceeds even if
-Green is unreachable).
+``deleteInstanceAccount`` endpoint (best-effort — DB deletion proceeds even
+if Green is unreachable).
 """
 
 from __future__ import annotations
@@ -64,7 +66,7 @@ def _normalize_phone(arg: str) -> str:
 
 
 async def _delete_green_instance(green_client: GreenClient, instance_id: str) -> None:
-    """Best-effort partner ``deleteInstance``. Never raises."""
+    """Best-effort partner ``deleteInstanceAccount``. Never raises."""
     try:
         await green_client.delete_instance(instance_id)
         print(f"    green: deleted instance {instance_id}")
@@ -89,9 +91,9 @@ async def main() -> None:
         bind_value: str = phone
         label = f"phone_number = {phone!r}"
     else:
-        where_clause = "users.first_name = :q"
-        bind_value = query
-        label = f"first_name = {query!r}"
+        where_clause = "users.first_name ILIKE :q"
+        bind_value = f"%{query}%"
+        label = f"first_name ILIKE %{query}%"
 
     # Green client is only needed for actual deletion, but construct it up
     # front so a missing GREEN_API_PARTNER_TOKEN fails fast and clearly.
@@ -198,15 +200,7 @@ async def main() -> None:
                     if provider_id:
                         await _delete_green_instance(green_client, provider_id)
 
-            # 2. Clean up any pool rows claimed by this user (no FK cascade).
-            await conn.execute(
-                text(
-                    "DELETE FROM green_instance_pool WHERE claimed_by_user_id = :uid"
-                ),
-                {"uid": uid},
-            )
-
-            # 3. Delete the user (cascades to whatsapp_connections, chats, ...).
+            # 2. Delete the user (cascades to whatsapp_connections, chats, ...).
             await conn.execute(
                 text("DELETE FROM users WHERE id = :uid"),
                 {"uid": uid},

@@ -131,17 +131,30 @@ class GreenClient:
         raise GreenApiError("getInstances returned non-list response")
 
     async def delete_instance(self, instance_id: str) -> None:
-        """Partner ``deleteInstance``. Irreversible write."""
+        """Partner ``deleteInstanceAccount``. Irreversible write.
+
+        Green's current API takes the instance id in the JSON body
+        (not the URL path) and the endpoint is ``deleteInstanceAccount``
+        (not ``deleteInstance``). The older path-form ``deleteInstance``
+        returns HTTP 403. Green's spec types ``idInstance`` as int64, so
+        a numeric id is sent as an integer.
+        """
         url = (
-            f"{self._settings.partner_api_url}/partner/deleteInstance/"
-            f"{self._settings.partner_token}/{instance_id}"
+            f"{self._settings.partner_api_url}/partner/deleteInstanceAccount/"
+            f"{self._settings.partner_token}"
         )
+        id_value: int | str
+        try:
+            id_value = int(instance_id)
+        except ValueError:
+            id_value = instance_id
         await self._request_json(
             "POST",
             url,
             operation="delete_instance",
             connection_id=instance_id,
             is_write=True,
+            json_body={"idInstance": id_value},
         )
 
     # -- per-instance endpoints -------------------------------------------
