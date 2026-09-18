@@ -438,6 +438,18 @@ class ChatAnalysisWorker:
         """
         version_being_processed = chat.activity_version
 
+        # Add user/chat metadata to the trace for dashboard grouping (cost per user).
+        from langsmith.run_helpers import get_current_run_tree
+
+        from echo_v2.observability.privacy import correlation_id
+
+        run_tree = get_current_run_tree()
+        if run_tree is not None:
+            run_tree.add_metadata({
+                "user_id_hash": correlation_id(chat.user_id),
+                "chat_id_hash": correlation_id(chat.chat_id),
+            })
+
         # Process (outside any transaction — no lock held)
         prepared = await self._processor.process(
             chat.user_id,

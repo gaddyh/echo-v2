@@ -96,8 +96,37 @@ def error_rate_series(name: str, run_filter: str | None = None) -> dict:
     return series
 
 
+def cost_series(name: str, run_filter: str | None = None) -> dict:
+    """A total-cost sum series (USD)."""
+    series: dict = {
+        "name": name,
+        "metric_definition": {"type": "sum", "field": "total_cost"},
+        "filter_definition": project_filter(),
+    }
+    if run_filter:
+        series["filters"] = {"filter": run_filter}
+    return series
+
+
+def token_series(name: str, field: str, run_filter: str | None = None) -> dict:
+    """A token-count sum series (field: total_tokens, prompt_tokens, completion_tokens)."""
+    series: dict = {
+        "name": name,
+        "metric_definition": {"type": "sum", "field": field},
+        "filter_definition": project_filter(),
+    }
+    if run_filter:
+        series["filters"] = {"filter": run_filter}
+    return series
+
+
 def group_by_name() -> list[dict]:
     return [{"attribute": "name"}]
+
+
+def group_by_metadata(path: str) -> list[dict]:
+    """Group by a metadata key (e.g. 'user_id_hash', 'chat_id_hash')."""
+    return [{"attribute": "metadata", "path": path}]
 
 
 # --- API calls -------------------------------------------------------------
@@ -235,6 +264,48 @@ def build_overview_dashboard(section_id: str) -> None:
             "chart_type": "bar",
             "series": [
                 count_series("feedback", 'eq(name, "wfm.feedback.handle")'),
+            ],
+        },
+        # 10. KPI — total LLM cost (analyzer + judge)
+        {
+            "title": "Total LLM Cost",
+            "description": "Sum of total_cost across all LLM runs (analyzer + judge)",
+            "chart_type": "kpi",
+            "series": [cost_series("cost", 'eq(run_type, "llm")')],
+        },
+        # 11. Line — cost over time: analyzer vs judge
+        {
+            "title": "LLM Cost Over Time",
+            "description": "Cost (USD) split by analyzer (wfm.llm_analyze) vs judge (wfm.judge) traces",
+            "chart_type": "line",
+            "series": [
+                cost_series("analyzer", 'eq(name, "wfm.llm_analyze")'),
+                cost_series("judge", 'eq(name, "wfm.judge")'),
+            ],
+        },
+        # 12. Line — token usage over time: prompt vs completion
+        {
+            "title": "Token Usage",
+            "description": "Prompt vs completion tokens across all LLM runs",
+            "chart_type": "line",
+            "series": [
+                token_series("prompt", "prompt_tokens", 'eq(run_type, "llm")'),
+                token_series("completion", "completion_tokens", 'eq(run_type, "llm")'),
+            ],
+        },
+        # 13. Bar — cost per user (top spenders)
+        {
+            "title": "Cost Per User",
+            "description": "Total LLM cost grouped by user_id_hash (from wfm.analysis metadata)",
+            "chart_type": "bar",
+            "series": [
+                {
+                    "name": "cost",
+                    "metric_definition": {"type": "sum", "field": "total_cost"},
+                    "filter_definition": project_filter(),
+                    "filters": {"filter": 'eq(name, "wfm.analysis")'},
+                    "group_by_definitions": group_by_metadata("user_id_hash"),
+                }
             ],
         },
     ]
