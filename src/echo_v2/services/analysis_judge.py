@@ -86,6 +86,7 @@ class JudgeResult:
 
     score: float
     explanation: str
+    run_id: str | None = None
 
 
 class AnalysisJudge:
@@ -117,6 +118,11 @@ class AnalysisJudge:
 
         Returns a :class:`JudgeResult` with a score (0-1) and explanation.
         """
+        from langsmith.run_helpers import get_current_run_tree
+
+        run_tree = get_current_run_tree()
+        run_id = str(run_tree.id) if run_tree is not None else None
+
         transcript = _build_transcript(conversation)
         user_msg = (
             f"Conversation:\n{transcript}\n\n"
@@ -138,10 +144,12 @@ class AnalysisJudge:
             )
         except Exception as exc:  # noqa: BLE001 - judge errors must not crash the worker
             _logger.warning("judge LLM call failed: %s", exc)
-            return JudgeResult(score=0.5, explanation=f"judge error: {exc}")
+            return JudgeResult(score=0.5, explanation=f"judge error: {exc}", run_id=run_id)
 
         raw = response.choices[0].message.content or ""
-        return _parse_judge_output(raw)
+        parsed = _parse_judge_output(raw)
+        parsed.run_id = run_id
+        return parsed
 
 
 def _build_transcript(conversation: ConversationInput) -> str:

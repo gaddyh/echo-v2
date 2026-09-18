@@ -501,26 +501,29 @@ class ChatAnalysisWorker:
                     score=judge_result.score,
                     comment=judge_result.explanation,
                 )
-                # Flywheel: send disagreements (0.0) and ambiguous cases (0.5)
-                # to the annotation queue for human review.
-                queue_id = os.environ.get("JUDGE_ANNOTATION_QUEUE_ID", "")
-                if queue_id and judge_result.score <= 0.5:
-                    try:
-                        tracing_client.add_runs_to_annotation_queue(
-                            queue_id=queue_id,
-                            run_ids=[str(run_tree.id)],
-                        )
-                        _logger.info(
-                            "judge score=%.1f → added to annotation queue %s",
-                            judge_result.score,
-                            queue_id,
-                        )
-                    except Exception:
-                        _logger.warning(
-                            "failed to add run to annotation queue %s",
-                            queue_id,
-                            exc_info=True,
-                        )
+            # Flywheel: send disagreements (0.0) and ambiguous cases (0.5)
+            # to the annotation queue for human review. We add the wfm.judge
+            # run (not wfm.analysis) because the judge trace has the full
+            # conversation and result as inputs — visible to the reviewer.
+            queue_id = os.environ.get("JUDGE_ANNOTATION_QUEUE_ID", "")
+            if queue_id and judge_result.score <= 0.5 and judge_result.run_id:
+                try:
+                    tracing_client.add_runs_to_annotation_queue(
+                        queue_id=queue_id,
+                        run_ids=[judge_result.run_id],
+                    )
+                    _logger.info(
+                        "judge score=%.1f → added judge run %s to annotation queue %s",
+                        judge_result.score,
+                        judge_result.run_id,
+                        queue_id,
+                    )
+                except Exception:
+                    _logger.warning(
+                        "failed to add run to annotation queue %s",
+                        queue_id,
+                        exc_info=True,
+                    )
             _logger.info(
                 "judge score=%.1f: %s",
                 judge_result.score,
