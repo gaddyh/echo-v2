@@ -5,7 +5,8 @@ dependencies (bot, provisioner, green client, repos).
 
 Flow (click-driven — name collected before pairing; QR only on click):
 1. start_onboarding → create user (pending) + ask name
-2. handle_name_response → store name + send [חבר אותי] button
+2. handle_name_response → store name. Pool hit: send QR immediately.
+   Pool miss: send [חבר אותי] button.
 3. handle_onboarding_connect → start_pairing (pool hit = QR immediately,
    pool miss = background create → [הצג QR] button)
 4. handle_onboarding_show_qr → fetch + send QR + poll
@@ -321,8 +322,8 @@ async def test_connect_click_pool_miss_creates_instance(fakes):
     assert user[1] == "active"
 
 
-async def test_connect_click_pool_hit_sends_qr_immediately(fakes):
-    """Pool hit: [חבר אותי] → QR sent immediately (no "preparing")."""
+async def test_name_response_pool_hit_sends_qr_immediately(fakes):
+    """Pool hit on name response: QR sent immediately (no connect button)."""
     from echo_v2.persistence.green_instance_pool import (
         InMemoryGreenInstancePoolRepository,
     )
@@ -371,15 +372,20 @@ async def test_connect_click_pool_hit_sends_qr_immediately(fakes):
 
     await service_with_pool.start_onboarding("+972546610653")
     await service_with_pool.handle_name_response("+972546610653", "Dana")
-    await service_with_pool.handle_onboarding_connect("+972546610653")
     await asyncio.sleep(0.3)
 
-    # QR sent immediately (pool hit).
+    # QR sent immediately on name response (pool hit) — no connect button.
     assert len(bot.sent_images) == 1
+    # No connect button sent (pool hit skips it).
+    connect_buttons = [
+        (p, b, btns) for p, b, btns in bot.sent_buttons
+        if any(x["id"] == "onboarding:connect" for x in btns)
+    ]
+    assert len(connect_buttons) == 0
     # No "preparing" message.
     preparing_msgs = [m for _p, m in bot.sent if "מכין" in m]
     assert len(preparing_msgs) == 0
-    # User becomes active.
+    # User becomes active (authorized).
     user = await user_repo.get_by_phone("+972546610653")
     assert user[1] == "active"
     # Pool row finalized (deleted).

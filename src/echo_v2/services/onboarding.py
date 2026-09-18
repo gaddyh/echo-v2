@@ -4,8 +4,10 @@ Click-driven flow (name collected before pairing; QR only on user click):
 
 1. Unknown user messages the Echo bot → intro + consent buttons.
 2. User consents ("חברו אותי") → create user row (pending), ask for name.
-3. User sends name → store name, send _NAME_CONFIRMATION with [חבר אותי] button.
-   (NO auto-provisioning — user must explicitly click to start pairing.)
+3. User sends name → store name. If the pool has an available instance,
+   claim it and send the QR immediately (skip the connect button). If the
+   pool is empty (or no pool), send _NAME_CONFIRMATION with [חבר אותי]
+   button — pairing starts only after the user explicitly clicks.
 4. User clicks "חבר אותי" (onboarding:connect) → start_pairing():
    - Pool hit (available instance): claim → save PAIRING_REQUIRED → finalize
      → refill → fetch + send QR immediately → poll for authorization.
@@ -60,6 +62,7 @@ from echo_v2.ports.whatsapp import (
 
 if TYPE_CHECKING:
     from echo_v2.integrations.green.client import GreenClient
+    from echo_v2.persistence.green_instance_pool import PooledInstance
     from echo_v2.services.green_instance_pool import GreenInstancePool
 
 __all__ = ["OnboardingContext", "OnboardingService", "UserRepository"]
@@ -452,15 +455,25 @@ class OnboardingService:
         # Store the name (still pending — not active until authorized).
         await self._user_repo.update_first_name(ctx.user_id, clean_name)
 
-        # Send name confirmation + [חבר אותי] button.
-        # NO auto-provisioning — user must explicitly click to start pairing.
-        await self._bot.send_buttons(
-            ctx.phone,
-            body_text=_NAME_CONFIRMATION.format(name=clean_name),
-            buttons=[_CONNECT_BUTTON],
-        )
-
-        _logger.info("onboarding: name set for user %s, awaiting connect click", ctx.user_id)
+        # Pool hit: claim the instance and send the QR immediately, skipping
+        # the [חבר אותי] button. Pool miss (or no pool): send the connect
+        # button so the user explicitly starts pairing — the pool may have
+        # been refilled by the time they click.
+        if await self._claim_pool_and_send_qr(ctx.user_id, ctx.phone):
+            _logger.info(
+                "onboarding: name set for user %s, pool hit — QR sent",
+                ctx.user_id,
+            )
+        else:
+            await self._bot.send_buttons(
+                ctx.phone,
+                body_text=_NAME_CONFIRMATION.format(name=clean_name),
+                buttons=[_CONNECT_BUTTON],
+            )
+            _logger.info(
+                "onboarding: name set for user %s, awaiting connect click",
+                ctx.user_id,
+            )
         return True
 
     # --- Pairing entry: user clicks [חבר אותי] ------------------------------
@@ -492,19 +505,7 @@ class OnboardingService:
 
         if pooled is not None:
             # Pool hit — instance ready (notAuthorized), send QR immediately.
-            await self._save_connection(
-                user_id,
-                pooled.ref,
-                pooled.credentials,
-                pooled.webhook_token_hash,
-                ConnectionStatus.PAIRING_REQUIRED,
-            )
-            if self._pool is not None:
-                await self._pool.finalize_claim(pooled.pool_row_id)
-                self._pool.request_refill()
-            conn = await self._connection_repo.get_by_user(user_id)
-            if conn is not None:
-                await self._send_qr_and_poll(user_id, phone, conn)
+            await self._claim_pool_and_send_qr(user_id, phone, pooled)
         else:
             # Pool miss — async preparation, don't block the webhook.
             existing_task = self._prepare_tasks.get(user_id)
@@ -606,6 +607,46 @@ class OnboardingService:
             await self._bot.send_text(phone, _STILL_PREPARING)
             return
         await self._send_qr_and_poll(user_id, phone, conn)
+
+    async def _claim_pool_and_send_qr(
+        self,
+        user_id: str,
+        phone: str,
+        pooled: PooledInstance | None = None,
+    ) -> bool:
+        """Claim a pool instance (if not passed in) and send the QR immediately.
+
+        Returns ``True`` if a pool instance was claimed and the QR flow
+        started. Returns ``False`` if the pool is missing or empty (pool
+        miss) — the caller decides what to do (send the connect button, or
+        start background creation).
+
+        If ``pooled`` is already claimed (passed in by the caller), it is
+        finalized here. This shared by :meth:`handle_name_response` (skip
+        the connect button on pool hit) and :meth:`start_pairing`.
+        """
+        if pooled is None:
+            if self._pool is None:
+                return False
+            pooled = await self._pool.claim(user_id)
+            if pooled is None:
+                return False
+
+        # Pool hit — instance ready (notAuthorized), send QR immediately.
+        await self._save_connection(
+            user_id,
+            pooled.ref,
+            pooled.credentials,
+            pooled.webhook_token_hash,
+            ConnectionStatus.PAIRING_REQUIRED,
+        )
+        if self._pool is not None:
+            await self._pool.finalize_claim(pooled.pool_row_id)
+            self._pool.request_refill()
+        conn = await self._connection_repo.get_by_user(user_id)
+        if conn is not None:
+            await self._send_qr_and_poll(user_id, phone, conn)
+        return True
 
     async def _send_qr_and_poll(
         self,
