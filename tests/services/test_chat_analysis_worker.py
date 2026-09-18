@@ -66,6 +66,8 @@ def _make_worker(
     chat_state: InMemoryChatStateRepository,
     processor,
     commit_repo: InMemoryAnalysisCommitRepository | None = None,
+    *,
+    excluded_chat_ids: frozenset[str] = frozenset(),
 ) -> ChatAnalysisWorker:
     """Build a worker with the new commit_repo parameter."""
     if commit_repo is None:
@@ -74,6 +76,7 @@ def _make_worker(
         chat_state_repo=chat_state,
         processor=processor,
         commit_repo=commit_repo,
+        excluded_chat_ids=excluded_chat_ids,
     )
 
 
@@ -704,3 +707,57 @@ async def test_commit_preserves_waiting_since_on_re_analysis():
     assert second_active is not None
     assert second_active.target_version == 2
     assert second_active.waiting_since == first_waiting_since
+
+
+# --- Excluded service chats (e.g. Echo bot's own chat) ----------------------
+
+
+async def test_worker_drains_excluded_chat_without_processing():
+    """Excluded due chats are drained via mark_processed (no analysis run)."""
+    repo = InMemoryChatStateRepository()
+    processor = RecordingAnalysisProcessor()
+    commit_repo = _make_commit_repo(repo)
+    echo_chat_id = "972559937256@c.us"
+    worker = _make_worker(
+        repo,
+        processor,
+        commit_repo,
+        excluded_chat_ids=frozenset({echo_chat_id}),
+    )
+
+    now = datetime.now(timezone.utc)
+    _seed_chat(repo, chat_id=echo_chat_id, next_analysis_at=now - timedelta(minutes=5))
+
+    processed = await worker.run_once()
+    assert processed is True
+    # Processor was NOT called for the excluded chat.
+    assert processor.calls == []
+
+    # The excluded chat was drained: marked processed, next_analysis_at cleared.
+    chat = await repo.get("user-1", echo_chat_id)
+    assert chat is not None
+    assert chat.last_processed_version == 1
+    assert chat.next_analysis_at is None
+
+
+async def test_worker_processes_non_excluded_chat_normally():
+    """Non-excluded due chats are still processed when excluded_chat_ids is set."""
+    repo = InMemoryChatStateRepository()
+    processor = RecordingAnalysisProcessor()
+    commit_repo = _make_commit_repo(repo)
+    echo_chat_id = "972559937256@c.us"
+    other_chat_id = "972501234567@c.us"
+    worker = _make_worker(
+        repo,
+        processor,
+        commit_repo,
+        excluded_chat_ids=frozenset({echo_chat_id}),
+    )
+
+    now = datetime.now(timezone.utc)
+    _seed_chat(repo, chat_id=other_chat_id, next_analysis_at=now - timedelta(minutes=5))
+
+    processed = await worker.run_once()
+    assert processed is True
+    assert len(processor.calls) == 1
+    assert processor.calls[0] == ("user-1", other_chat_id, 1)

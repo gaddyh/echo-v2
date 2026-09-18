@@ -488,6 +488,8 @@ class PostgresWaitingForMeResultRepository:
                     chat_id=chat_id,
                     target_version=result.target_version,
                     decision=result.decision.value,
+                    next_owner=result.next_owner.value if result.next_owner else None,
+                    open_obligation=result.open_obligation,
                     confidence=result.confidence,
                     reason=result.reason,
                     summary=result.summary,
@@ -558,8 +560,18 @@ class PostgresWaitingForMeResultRepository:
 
     @staticmethod
     def _row_to_domain(row: WaitingForMeResultRow) -> WaitingForMeResult:
+        from echo_v2.domain.waiting_for_me import NextOwner
+
+        next_owner = None
+        if row.next_owner:
+            try:
+                next_owner = NextOwner(row.next_owner)
+            except ValueError:
+                next_owner = None
         return WaitingForMeResult(
             decision=WaitingForMeDecision(row.decision),
+            next_owner=next_owner,
+            open_obligation=row.open_obligation,
             confidence=row.confidence,
             reason=row.reason,
             summary=row.summary,
@@ -1016,6 +1028,8 @@ class PostgresAnalysisCommitRepository:
                         chat_id=chat_id,
                         target_version=target_version,
                         decision=result_to_save.decision.value,
+                        next_owner=result_to_save.next_owner.value if result_to_save.next_owner else None,
+                        open_obligation=result_to_save.open_obligation,
                         confidence=result_to_save.confidence,
                         reason=result_to_save.reason,
                         summary=result_to_save.summary,

@@ -45,6 +45,7 @@ def _make_service(
     *,
     quiet_period_seconds: float = 300.0,
     private_only: bool = True,
+    excluded_chat_ids: frozenset[str] = frozenset(),
 ) -> ChatIngestionService:
     message_repo = InMemoryMessageRepository()
     chat_state_repo = InMemoryChatStateRepository()
@@ -52,6 +53,7 @@ def _make_service(
         InMemoryIngestionRepository(message_repo, chat_state_repo),
         quiet_period_seconds=quiet_period_seconds,
         private_only=private_only,
+        excluded_chat_ids=excluded_chat_ids,
     )
     # Expose underlying repos for test assertions.
     service._chat_state_repo = chat_state_repo  # type: ignore[attr-defined]
@@ -264,3 +266,57 @@ async def test_transaction_rollback_on_failure():
         await service.ingest_message(
             event, user_id="user-1", connection_id="conn-uuid-1"
         )
+
+
+# --- excluded service chats (e.g. Echo bot's own chat) ----------------------
+
+
+async def test_excluded_chat_id_is_not_ingested():
+    """The Echo bot's own chat is excluded from ingestion entirely."""
+    echo_chat_id = "972559937256@c.us"
+    service = _make_service(excluded_chat_ids=frozenset({echo_chat_id}))
+    event = _make_event(chat_id=echo_chat_id, text="שלח איש קשר כדי להתחיל")
+
+    inserted = await service.ingest_message(
+        event, user_id="user-1", connection_id="conn-uuid-1"
+    )
+    assert inserted is False
+
+    chat = await service._chat_state_repo.get("user-1", echo_chat_id)
+    assert chat is None
+    messages = await service._message_repo.list_recent_for_chat(
+        user_id="user-1", chat_id=echo_chat_id
+    )
+    assert messages == []
+
+
+async def test_non_excluded_chat_id_is_ingested_normally():
+    """Non-excluded chats are still ingested when excluded_chat_ids is set."""
+    echo_chat_id = "972559937256@c.us"
+    other_chat_id = "972501234567@c.us"
+    service = _make_service(excluded_chat_ids=frozenset({echo_chat_id}))
+    event = _make_event(chat_id=other_chat_id, text="hello")
+
+    inserted = await service.ingest_message(
+        event, user_id="user-1", connection_id="conn-uuid-1"
+    )
+    assert inserted is True
+
+    chat = await service._chat_state_repo.get("user-1", other_chat_id)
+    assert chat is not None
+    assert chat.activity_version == 1
+
+
+async def test_excluded_chat_skip_takes_precedence_over_private_only():
+    """The excluded check runs before the private_only check."""
+    echo_chat_id = "972559937256@c.us"
+    service = _make_service(
+        private_only=True,
+        excluded_chat_ids=frozenset({echo_chat_id}),
+    )
+    event = _make_event(chat_id=echo_chat_id, text="reminder")
+
+    inserted = await service.ingest_message(
+        event, user_id="user-1", connection_id="conn-uuid-1"
+    )
+    assert inserted is False

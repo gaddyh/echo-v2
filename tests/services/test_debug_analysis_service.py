@@ -42,7 +42,10 @@ CHAT_ID_B = "972502222222@c.us"
 BOT_PHONE = "972500000000"
 
 
-def _make_app() -> tuple[
+def _make_app(
+    *,
+    excluded_chat_ids: frozenset[str] = frozenset(),
+) -> tuple[
     FastAPI,
     WaitingListTokenService,
     DebugAnalysisService,
@@ -57,6 +60,7 @@ def _make_app() -> tuple[
         token_service=token_service,
         chat_state_repo=chat_state_repo,
         result_repo=result_repo,
+        excluded_chat_ids=excluded_chat_ids,
     )
 
     # Minimal WaitingListActionService stub — not used by debug routes but
@@ -309,3 +313,104 @@ async def test_debug_analysis_empty_data():
     data = resp.json()
     assert data["chats"] == []
     assert data["total_results"] == 0
+
+
+# --- Excluded service chats + next_owner fields ----------------------------
+
+
+async def test_list_analysis_excludes_echo_bot_chat():
+    """The Echo bot's own chat is filtered out of the debug view."""
+    echo_chat_id = "972559937256@c.us"
+    _app, token_service, debug_service, chat_state_repo, result_repo = _make_app(
+        excluded_chat_ids=frozenset({echo_chat_id}),
+    )
+    # Seed the Echo chat + a normal chat.
+    await chat_state_repo.upsert_on_message(
+        user_id=USER_ID,
+        chat_id=echo_chat_id,
+        direction=MessageDirection.INBOUND,
+        observed_at=NOW,
+        next_analysis_at=None,
+        chat_name="Echo",
+    )
+    await chat_state_repo.upsert_on_message(
+        user_id=USER_ID,
+        chat_id=CHAT_ID_A,
+        direction=MessageDirection.INBOUND,
+        observed_at=NOW,
+        next_analysis_at=None,
+        chat_name="שיוש",
+    )
+    await result_repo.save(
+        user_id=USER_ID,
+        chat_id=echo_chat_id,
+        result=WaitingForMeResult(
+            decision=WaitingForMeDecision.WAITING_FOR_ME,
+            target_version=1,
+        ),
+    )
+    await result_repo.save(
+        user_id=USER_ID,
+        chat_id=CHAT_ID_A,
+        result=WaitingForMeResult(
+            decision=WaitingForMeDecision.WAITING_FOR_ME,
+            target_version=1,
+        ),
+    )
+    session_id, _raw = await token_service.issue(user_id=USER_ID)
+
+    result = await debug_service.list_analysis(session_id=session_id)
+
+    assert result is not None
+    chat_ids = {c.chat_id for c in result.chats}
+    assert echo_chat_id not in chat_ids
+    assert CHAT_ID_A in chat_ids
+    # Only the non-excluded chat's result counts.
+    assert result.total_results == 1
+
+
+async def test_list_analysis_includes_next_owner_and_open_obligation():
+    """v3 results expose next_owner + open_obligation in the debug entry."""
+    from echo_v2.domain.waiting_for_me import NextOwner
+
+    _app, token_service, debug_service, _chat_state_repo, result_repo = _make_app()
+    await result_repo.save(
+        user_id=USER_ID,
+        chat_id=CHAT_ID_A,
+        result=WaitingForMeResult(
+            decision=WaitingForMeDecision.NOT_WAITING_FOR_ME,
+            next_owner=NextOwner.OTHER,
+            open_obligation="other person must send the dimensions",
+            target_version=1,
+        ),
+    )
+    session_id, _raw = await token_service.issue(user_id=USER_ID)
+
+    result = await debug_service.list_analysis(session_id=session_id)
+
+    assert result is not None
+    assert len(result.chats) == 1
+    entry = result.chats[0].results[0]
+    assert entry.next_owner == "other"
+    assert entry.open_obligation == "other person must send the dimensions"
+
+
+async def test_list_analysis_next_owner_none_for_legacy_results():
+    """v0–v2 results have next_owner=None in the debug entry."""
+    _app, token_service, debug_service, _chat_state_repo, result_repo = _make_app()
+    await result_repo.save(
+        user_id=USER_ID,
+        chat_id=CHAT_ID_A,
+        result=WaitingForMeResult(
+            decision=WaitingForMeDecision.WAITING_FOR_ME,
+            target_version=1,
+        ),
+    )
+    session_id, _raw = await token_service.issue(user_id=USER_ID)
+
+    result = await debug_service.list_analysis(session_id=session_id)
+
+    assert result is not None
+    entry = result.chats[0].results[0]
+    assert entry.next_owner is None
+    assert entry.open_obligation is None

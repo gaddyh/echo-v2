@@ -354,6 +354,10 @@ class ChatAnalysisWorker:
             commits the analysis if the chat version is still current.
         poll_interval_seconds: How often ``run_loop`` polls for due chats.
             Default 60 seconds.
+        excluded_chat_ids: Chat IDs to never analyze (e.g. the Echo bot's
+            own service chat). Due rows for these chats are drained via
+            ``mark_processed`` so they don't reappear every poll, but no
+            analysis is run. Defaults to empty.
     """
 
     def __init__(
@@ -364,21 +368,45 @@ class ChatAnalysisWorker:
         *,
         poll_interval_seconds: float = 60.0,
         judge: Any | None = None,
+        excluded_chat_ids: frozenset[str] = frozenset(),
     ) -> None:
         self._chat_state_repo = chat_state_repo
         self._processor = processor
         self._commit_repo = commit_repo
         self._poll_interval = poll_interval_seconds
         self._judge = judge
+        self._excluded_chat_ids = excluded_chat_ids
 
     async def run_once(self, *, limit: int = 20) -> bool:
         """Process all due chats once.
 
-        Returns ``True`` if at least one chat was processed.
+        Returns ``True`` if at least one due chat was touched (processed or
+        drained). A processor exception on one chat does not flip the
+        return to ``False`` — the chat was still seen and attempted.
         """
         now = datetime.now(timezone.utc)
         due_chats = await self._chat_state_repo.list_due(now, limit=limit)
+        processed_any = False
         for chat in due_chats:
+            # Drain excluded service chats (e.g. the Echo bot's own chat)
+            # without analyzing them. mark_processed is version-fenced, so
+            # a new message arriving between list_due and mark_processed
+            # won't get wrongly marked as processed.
+            if chat.chat_id in self._excluded_chat_ids:
+                try:
+                    await self._chat_state_repo.mark_processed(
+                        chat.user_id, chat.chat_id, chat.activity_version
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    _logger.exception(
+                        "error draining excluded chat %s/%s, continuing",
+                        chat.user_id,
+                        chat.chat_id,
+                    )
+                processed_any = True
+                continue
             try:
                 await self._process_chat(chat)
             except asyncio.CancelledError:
@@ -389,7 +417,9 @@ class ChatAnalysisWorker:
                     chat.user_id,
                     chat.chat_id,
                 )
-        return len(due_chats) > 0
+            # The chat was seen/attempted even if processing raised.
+            processed_any = True
+        return processed_any
 
     async def run_loop(self) -> None:
         """Poll for due chats until cancelled.

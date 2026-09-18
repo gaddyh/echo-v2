@@ -57,6 +57,7 @@ async def main() -> None:
         ChatAnalysisProcessor,
         ChatAnalysisWorker,
     )
+    from echo_v2.services.scheduling_flow import _phone_to_chat_id
     from echo_v2.services.transcription_factory import build_transcriber
     from echo_v2.services.waiting_for_me_analyzer import LLMWaitingForMeAnalyzer
 
@@ -74,6 +75,11 @@ async def main() -> None:
     if tracing_enabled:
         from langsmith.wrappers import wrap_openai
         openai_client = wrap_openai(raw_client)
+
+    # Exclude the Echo bot's own service chat from analysis (same as main.py).
+    bot_phone = os.environ.get("ECHO_BOT_PHONE", "972559937256")
+    bot_chat_id = _phone_to_chat_id(bot_phone)
+    excluded_chat_ids = frozenset({bot_chat_id})
 
     analyzer = LLMWaitingForMeAnalyzer(
         client=openai_client,
@@ -96,6 +102,7 @@ async def main() -> None:
         processor=processor,
         commit_repo=repos.analysis_commit,
         judge=judge,
+        excluded_chat_ids=excluded_chat_ids,
     )
 
     # Find chats to analyze

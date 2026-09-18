@@ -25,7 +25,11 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from langsmith import traceable
 
-from echo_v2.domain.waiting_for_me import WaitingForMeDecision, WaitingForMeResult
+from echo_v2.domain.waiting_for_me import (
+    NextOwner,
+    WaitingForMeDecision,
+    WaitingForMeResult,
+)
 from echo_v2.observability.tracing import tracing_client
 from echo_v2.services.waiting_for_me_prompts import (
     DEFAULT_PROMPT_VERSION,
@@ -51,7 +55,17 @@ WFM_PROMPT_VERSION = DEFAULT_PROMPT_VERSION
 # Bump when the analysis pipeline changes — preprocessing, window, rules,
 # schema, thresholds, post-processing — not just model+prompt. Stored on
 # every result so feedback can be correlated with the exact algorithm.
-WFM_ANALYZER_VERSION = "2026-09-15.1"
+WFM_ANALYZER_VERSION = "2026-09-18.1"
+
+# Deterministic mapping from the v3 next_owner contract to the product
+# decision. The model never emits `waiting_for_me` directly in v3; the
+# derivation happens here so the label can never be inverted by the model.
+_NEXT_OWNER_TO_DECISION: dict[NextOwner, WaitingForMeDecision] = {
+    NextOwner.USER: WaitingForMeDecision.WAITING_FOR_ME,
+    NextOwner.OTHER: WaitingForMeDecision.NOT_WAITING_FOR_ME,
+    NextOwner.NONE: WaitingForMeDecision.NOT_WAITING_FOR_ME,
+    NextOwner.UNCERTAIN: WaitingForMeDecision.UNCERTAIN,
+}
 
 
 # Direction labels as the LLM sees them.
@@ -162,6 +176,7 @@ def safe_analysis_output(output: WaitingForMeResult) -> dict[str, Any]:
     """
     return {
         "decision": output.decision.value,
+        "next_owner": output.next_owner.value if output.next_owner else None,
         "confidence": output.confidence,
         "target_version": output.target_version,
     }
@@ -279,7 +294,18 @@ def _build_user_message(conversation: ConversationInput) -> str:
 
 
 def _parse_llm_output(raw: str, target_version: int) -> WaitingForMeResult:
-    """Parse and validate the LLM's JSON output."""
+    """Parse and validate the LLM's JSON output.
+
+    Supports two output contracts:
+    - **v3+**: ``next_owner`` (user|other|none|uncertain) + ``open_obligation``.
+      The product ``decision`` is derived deterministically from
+      ``next_owner`` so the model can never invert the label.
+    - **v0–v2**: ``decision`` (waiting_for_me|not_waiting_for_me|uncertain).
+      Parsed directly as today; ``next_owner`` stays ``None``.
+
+    The two contracts are distinguished by which key is present. If both are
+    present, ``next_owner`` wins (v3 contract).
+    """
     raw = raw.strip()
     # Strip markdown code fences if present.
     if raw.startswith("```"):
@@ -292,8 +318,43 @@ def _parse_llm_output(raw: str, target_version: int) -> WaitingForMeResult:
     except json.JSONDecodeError as exc:
         raise AnalysisError(f"LLM output is not valid JSON: {raw!r}") from exc
 
-    if not isinstance(data, dict) or "decision" not in data:
-        raise AnalysisError(f"LLM output missing 'decision' key: {raw!r}")
+    if not isinstance(data, dict):
+        raise AnalysisError(f"LLM output is not a JSON object: {raw!r}")
+
+    # --- v3 contract: next_owner -------------------------------------------
+    if "next_owner" in data:
+        owner_str = str(data["next_owner"]).strip().lower()
+        try:
+            next_owner = NextOwner(owner_str)
+        except ValueError as exc:
+            raise AnalysisError(
+                f"LLM returned unknown next_owner {owner_str!r}"
+            ) from exc
+        decision = _NEXT_OWNER_TO_DECISION[next_owner]
+
+        open_obligation = data.get("open_obligation")
+        if open_obligation is not None:
+            open_obligation = str(open_obligation).strip() or None
+
+        confidence = _parse_confidence(data.get("confidence"))
+        reason = _parse_reason(data.get("reason"))
+        summary = _parse_summary(data.get("summary"))
+
+        return WaitingForMeResult(
+            decision=decision,
+            next_owner=next_owner,
+            open_obligation=open_obligation,
+            confidence=confidence,
+            reason=reason,
+            summary=summary,
+            target_version=target_version,
+        )
+
+    # --- v0–v2 contract: decision ------------------------------------------
+    if "decision" not in data:
+        raise AnalysisError(
+            f"LLM output missing 'next_owner' or 'decision' key: {raw!r}"
+        )
 
     decision_str = str(data["decision"]).strip().lower()
     try:
@@ -303,30 +364,42 @@ def _parse_llm_output(raw: str, target_version: int) -> WaitingForMeResult:
             f"LLM returned unknown decision {decision_str!r}"
         ) from exc
 
-    confidence = data.get("confidence")
-    if confidence is not None:
-        try:
-            confidence = float(confidence)
-            confidence = max(0.0, min(1.0, confidence))
-        except (TypeError, ValueError):
-            confidence = None
-
-    reason = data.get("reason")
-    if reason is not None:
-        reason = str(reason)
-
-    summary = data.get("summary")
-    if summary is not None:
-        summary = str(summary).strip()
-        if not summary:
-            summary = None
-        elif len(summary) > 160:
-            summary = summary[:157] + "…"
+    confidence = _parse_confidence(data.get("confidence"))
+    reason = _parse_reason(data.get("reason"))
+    summary = _parse_summary(data.get("summary"))
 
     return WaitingForMeResult(
         decision=decision,
+        next_owner=None,
+        open_obligation=None,
         confidence=confidence,
         reason=reason,
         summary=summary,
         target_version=target_version,
     )
+
+
+def _parse_confidence(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return max(0.0, min(1.0, float(value)))
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_reason(value: Any) -> str | None:
+    if value is None:
+        return None
+    return str(value)
+
+
+def _parse_summary(value: Any) -> str | None:
+    if value is None:
+        return None
+    summary = str(value).strip()
+    if not summary:
+        return None
+    if len(summary) > 160:
+        return summary[:157] + "…"
+    return summary

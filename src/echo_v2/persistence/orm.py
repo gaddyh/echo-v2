@@ -559,6 +559,8 @@ class WaitingForMeResultRow(Base):
     chat_id: Mapped[str] = mapped_column(Text, nullable=False)
     target_version: Mapped[int] = mapped_column(nullable=False)
     decision: Mapped[str] = mapped_column(Text, nullable=False)
+    next_owner: Mapped[str | None] = mapped_column(Text, nullable=True)
+    open_obligation: Mapped[str | None] = mapped_column(Text, nullable=True)
     confidence: Mapped[float | None] = mapped_column(nullable=True)
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)

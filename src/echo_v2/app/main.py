@@ -229,11 +229,23 @@ def create_app() -> FastAPI:
     )
 
     # --- chat ingestion (saves messages + manages analysis queue) ----------
+    # Build the Echo bot's own chat_id once, early, so ingestion, the
+    # analysis worker, and the debug view all exclude it consistently.
+    # Uses the existing phone→chat_id normalizer so a config like
+    # "+972..." doesn't break the match.
+    from echo_v2.services.scheduling_flow import _phone_to_chat_id
+
+    bot_phone = os.environ.get("ECHO_BOT_PHONE", "972559937256")
+    bot_chat_id = _phone_to_chat_id(bot_phone)
+    excluded_chat_ids = frozenset({bot_chat_id})
+    _logger.info("Echo bot chat excluded from analysis: %s", bot_chat_id)
+
     ingestion_service = ChatIngestionService(
         repos.ingestion,
         quiet_period_seconds=float(os.environ.get("CHAT_QUIET_PERIOD_SECONDS", "300")),
         private_only=os.environ.get("CHAT_PRIVATE_ONLY", "true").lower()
         in ("1", "true", "yes"),
+        excluded_chat_ids=excluded_chat_ids,
     )
     chat_dispatcher = ChatEventDispatcher(
         ingestion_service=ingestion_service,
@@ -274,6 +286,7 @@ def create_app() -> FastAPI:
         commit_repo=repos.analysis_commit,
         poll_interval_seconds=float(os.environ.get("CHAT_ANALYSIS_POLL_INTERVAL", "60")),
         judge=judge,
+        excluded_chat_ids=excluded_chat_ids,
     )
     chat_analysis_enabled = os.environ.get("CHAT_ANALYSIS_ENABLED", "false").lower() in (
         "1",
@@ -419,7 +432,6 @@ def create_app() -> FastAPI:
     from echo_v2.services.debug_analysis_service import DebugAnalysisService
     from echo_v2.services.waiting_list_action_service import WaitingListActionService
 
-    bot_phone = os.environ.get("ECHO_BOT_PHONE", "972559937256")
     waiting_list_service = WaitingListActionService(
         token_service=token_service,
         query_service=query_service,
@@ -437,6 +449,7 @@ def create_app() -> FastAPI:
         token_service=token_service,
         chat_state_repo=repos.chat_state,
         result_repo=repos.wfm_results,
+        excluded_chat_ids=excluded_chat_ids,
     )
     waiting_list_router = build_waiting_list_router(
         token_service=token_service,

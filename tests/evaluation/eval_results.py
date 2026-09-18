@@ -143,6 +143,7 @@ def _category_breakdown(case_results: list[CaseResult]) -> dict:
 
 def _case_to_dict(cr: CaseResult) -> dict:
     """Convert a CaseResult to a JSON-serializable dict."""
+    parsed = _extract_parsed_fields(cr)
     return {
         "id": cr.case.id,
         "description": cr.case.description,
@@ -155,9 +156,11 @@ def _case_to_dict(cr: CaseResult) -> dict:
         "expected": cr.case.expected.value,
         "actual": cr.actual.value if cr.actual else None,
         "pass": cr.actual == cr.case.expected if cr.actual else False,
-        "confidence": None,  # populated below if result available
-        "reason": None,
-        "summary": None,
+        "confidence": parsed.get("confidence"),
+        "reason": parsed.get("reason"),
+        "summary": parsed.get("summary"),
+        "next_owner": parsed.get("next_owner"),
+        "open_obligation": parsed.get("open_obligation"),
         "raw_response": cr.raw_response,
         "error": cr.error,
         "latency_ms": cr.latency_ms,
@@ -166,7 +169,7 @@ def _case_to_dict(cr: CaseResult) -> dict:
 
 
 def _extract_parsed_fields(cr: CaseResult) -> dict:
-    """Extract confidence/reason/summary from the raw LLM response."""
+    """Extract confidence/reason/summary/next_owner/open_obligation from the raw LLM response."""
     if not cr.raw_response:
         return {}
     try:
@@ -179,6 +182,8 @@ def _extract_parsed_fields(cr: CaseResult) -> dict:
             "confidence": data.get("confidence"),
             "reason": data.get("reason"),
             "summary": data.get("summary"),
+            "next_owner": data.get("next_owner"),
+            "open_obligation": data.get("open_obligation"),
         }
     except (json.JSONDecodeError, ValueError, TypeError):
         return {}
@@ -301,6 +306,10 @@ def _build_markdown_report(
             ]
             if parsed.get("confidence") is not None:
                 lines.append(f"- **Confidence:** {parsed['confidence']:.2f}")
+            if parsed.get("next_owner"):
+                lines.append(f"- **Next Owner:** {parsed['next_owner']}")
+            if parsed.get("open_obligation"):
+                lines.append(f"- **Open Obligation:** {parsed['open_obligation']}")
             if parsed.get("reason"):
                 lines.append(f"- **LLM Reason:** {parsed['reason']}")
             if parsed.get("summary"):

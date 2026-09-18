@@ -16,14 +16,21 @@ set -a
 set +a
 export LANGSMITH_TRACING=false
 
+# Prompt/model under test — recorded per run so saved results are never
+# ambiguous about which prompt/model produced them.
+export WFM_PROMPT_VERSION="${WFM_PROMPT_VERSION:-v1}"
+export LLM_MODEL_NAME="${LLM_MODEL_NAME:-gpt-4.1}"
+
 RUNS="${1:-3}"
 RESULTS=()
 
 echo "=== SOC Test Split — $RUNS runs ==="
+echo "  Prompt:  $WFM_PROMPT_VERSION"
+echo "  Model:   $LLM_MODEL_NAME"
 echo ""
 
 for i in $(seq 1 "$RUNS"); do
-    echo "--- Run $i/$RUNS ---"
+    echo "--- Run $i/$RUNS  (prompt=$WFM_PROMPT_VERSION model=$LLM_MODEL_NAME) ---"
     OUTPUT=$(.venv/bin/python -m pytest -m eval_soc -v -s -k "test_eval" 2>&1)
     echo "$OUTPUT" | grep -E "(Total cases|Correct|Accuracy|WAITING_FOR_ME|NOT_WAITING|Results saved|FAIL.*socf)" || true
     echo ""

@@ -1148,6 +1148,108 @@ SOC_FAMILY_CASES_2: list[EvalCase] = [
         expected=WaitingForMeDecision.NOT_WAITING_FOR_ME,
         notes="The promised send is no longer necessary and the recipient confirms they obtained the artifact.",
     ),
+
+    # ======================================================================
+    # FAMILY: OWNER INVERSION (socf-81..87)
+    # Cases where v1 incorrectly labels as WFM when the next actionable step
+    # belongs to the OTHER person. Two patterns are covered:
+    #   1. QUESTION (socf-81, socf-83): user asks a clarifying question → other
+    #      person must answer. v1 inverts the label to WFM.
+    #   2. CONTRAST (socf-82, 84, 85, 86, 87): offer-blocked or explicit-request
+    #      patterns where WFM is correct. These prevent the fix from collapsing
+    #      into a naive "last message outbound → OTHER" rule.
+    # ======================================================================
+
+    EvalCase(
+        id="socf-81",
+        description="User asks 'מה להביא?' after being asked to bring something — other must specify",
+        messages=[
+            ("inbound", "תביא משהו"),
+            ("outbound", "מה להביא?"),
+        ],
+        expected=WaitingForMeDecision.NOT_WAITING_FOR_ME,
+        notes="v1 says WFM 98-99%: 'the other person asked the user to bring something, and the user asked what to bring.' But the user asked a question — the other person must answer what to bring before the user can act (BLOCKED). 3/3 fails on v1.",
+    ),
+    EvalCase(
+        id="socf-82",
+        description="User offers to send something, other says 'כן' — user should follow up",
+        messages=[
+            ("outbound", "אני יכול לשלוח לך משהו, רוצה?"),
+            ("inbound", "כן"),
+        ],
+        expected=WaitingForMeDecision.WAITING_FOR_ME,
+        notes="Offer-blocked pattern: the user offered, the other person accepted — the user should follow up and ask what to send. WFM is correct. v1 correctly returns WFM (3/3). Contrast case for the QUESTION-pattern inversions.",
+    ),
+    EvalCase(
+        id="socf-83",
+        description="User asks 'הבאת קופסא קטנה יותר?' after receiving a task list",
+        messages=[
+            ("outbound", "רוצה נכנס כולנו לבריכה או ים?"),
+            ("inbound", "יושבת עם מיקה ללמוד\nהיא בשוונג"),
+            ("inbound", "שי עושה לגו!"),
+            ("inbound", "?"),
+            ("inbound", "משימות למתוקי בעזרת השם:\nלזרוק קרטונים למחזור\nלשייף את התקרה \nלסדר את הקופסא עם הכלים במגירה\n❣️"),
+            ("outbound", "הבאת קופסא קטנה יותר?"),
+        ],
+        expected=WaitingForMeDecision.NOT_WAITING_FOR_ME,
+        notes="Real snapshot v11: v1 reason said 'They asked a direct question and it has not been answered yet' but the USER asked the question — the other person must answer. Label was inverted to WFM. 3/3 fails on v1.",
+    ),
+    EvalCase(
+        id="socf-84",
+        description="User offers to make food, other says 'כן' — user should follow up",
+        messages=[
+            ("outbound", "אני מכין משהו לאכול, אתה רוצה?"),
+            ("inbound", "כן"),
+        ],
+        expected=WaitingForMeDecision.WAITING_FOR_ME,
+        notes="Offer-blocked pattern: the user offered, the other person accepted — the user should follow up and ask what to make. WFM is correct. v1 correctly returns WFM (3/3). Contrast case for the QUESTION-pattern inversions.",
+    ),
+    EvalCase(
+        id="socf-85",
+        description="User offers to bring something; other says 'כן' — ambiguous (UNC)",
+        messages=[
+            ("outbound", "050-513-1216"),
+            ("outbound", "😘"),
+            ("inbound", "היי"),
+            ("outbound", "מה קורה מתוקה,  סיימת?"),
+            ("outbound", "להביא לך משהו בדרך?"),
+            ("inbound", "כן"),
+        ],
+        expected=WaitingForMeDecision.UNCERTAIN,
+        notes="Real snapshot v88-v92: the 'כן' reply is genuinely ambiguous — it could answer either of the user's two questions ('סיימת?' or 'להביא לך משהו?'). v3 correctly returns UNCERTAIN (3/3). v1 incorrectly returned WFM or NWM. UNCERTAIN is the defensible label.",
+    ),
+    EvalCase(
+        id="socf-86",
+        description="Other person explicitly requests the user bring a blessing to the meeting",
+        messages=[
+            ("outbound", "050-513-1216"),
+            ("outbound", "😘"),
+            ("inbound", "תכף נסיימת עם המייל, אני מתייחסת להערות של עינת."),
+            ("inbound", "היי"),
+            ("outbound", "מה קורה מתוקה,  סיימת?"),
+            ("outbound", "להביא לך משהו בדרך?"),
+            ("inbound", "כן"),
+            ("inbound", "להביא היום ברכה לשי לאסיפה"),
+        ],
+        expected=WaitingForMeDecision.WAITING_FOR_ME,
+        notes="Real snapshot v95-v100: contrast case. The other person explicitly requested the user bring a blessing — the user owes the action. v1 correctly returned WFM here. 0/3 fails on v1.",
+    ),
+    EvalCase(
+        id="socf-87",
+        description="Other person asks if user is awake and says the girls need a ride",
+        messages=[
+            ("inbound", "/16 מביא בוקר / אחהצ\n17 כל היום \n18 צהרים"),
+            ("outbound", "מזה?"),
+            ("outbound", "כל הכבוד מתוקה. וואו. שאפו"),
+            ("inbound", "בפטריה?"),
+            ("outbound", "יאללה"),
+            ("inbound", "מתוקי ער ?"),
+            ("inbound", "הילולי לא יכולה לקחת את הבנות"),
+            ("inbound", "התחנה 24 פז יסמין\nממש קרןב לביהס"),
+        ],
+        expected=WaitingForMeDecision.WAITING_FOR_ME,
+        notes="Real snapshot v41: contrast case. The other person asked 'מתוקי ער?' and said the girls need a ride — the user must respond. v1 correctly returned WFM here. 0/3 fails on v1.",
+    ),
 ]
 
 
@@ -1248,6 +1350,14 @@ SOC_CASE_METADATA: dict[str, dict[str, str]] = {
     "socf-78": {"family": "corrections_retractions", "source_group": "accidental_form", "split": "test"},
     "socf-79": {"family": "corrections_retractions", "source_group": "logs_reschedule", "split": "test"},
     "socf-80": {"family": "corrections_retractions", "source_group": "report_shared_folder", "split": "dev"},
+    # --- Batch 3 (socf-81..87) — owner_inversion family, all DEV ---
+    "socf-81": {"family": "owner_inversion", "source_group": "what_to_bring_question", "split": "dev"},
+    "socf-82": {"family": "owner_inversion", "source_group": "send_something_offer", "split": "dev"},
+    "socf-83": {"family": "owner_inversion", "source_group": "smaller_box_question", "split": "dev"},
+    "socf-84": {"family": "owner_inversion", "source_group": "make_food_offer", "split": "dev"},
+    "socf-85": {"family": "owner_inversion", "source_group": "bring_something_blocked", "split": "dev"},
+    "socf-86": {"family": "owner_inversion", "source_group": "shai_blessing_meeting", "split": "dev"},
+    "socf-87": {"family": "owner_inversion", "source_group": "girls_ride_request", "split": "dev"},
 }
 
 

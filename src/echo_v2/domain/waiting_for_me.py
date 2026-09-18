@@ -31,6 +31,7 @@ from typing import Any, Literal
 
 __all__ = [
     "AnalysisCommitOutcome",
+    "NextOwner",
     "PreparedAnalysis",
     "WaitingForMeActive",
     "WaitingForMeDecision",
@@ -76,12 +77,43 @@ class WaitingForMeDecision(str, Enum):
     """
 
 
+class NextOwner(str, Enum):
+    """Who owns the next actionable step right now.
+
+    The v3 prompt output contract. The product decision
+    (:class:`WaitingForMeDecision`) is derived deterministically from this
+    value in the analyzer:
+
+    - ``USER`` → ``WAITING_FOR_ME``
+    - ``OTHER`` / ``NONE`` → ``NOT_WAITING_FOR_ME``
+    - ``UNCERTAIN`` → ``UNCERTAIN``
+
+    ``None`` means the result was produced by an older prompt (v0–v2) that
+    emitted ``decision`` directly; the owner distinction was not captured.
+    """
+
+    USER = "user"
+    OTHER = "other"
+    NONE = "none"
+    UNCERTAIN = "uncertain"
+
+
 @dataclass(frozen=True)
 class WaitingForMeResult:
     """The full output of a single chat analysis.
 
     Attributes:
-        decision: The :class:`WaitingForMeDecision` verdict.
+        decision: The :class:`WaitingForMeDecision` verdict. Derived
+            deterministically from ``next_owner`` for v3+ prompts.
+        next_owner: Who owns the next actionable step right now
+            (:class:`NextOwner`). ``None`` for results produced by older
+            prompts (v0–v2) that emitted ``decision`` directly. Distinguishes
+            ``NOT_WAITING_FOR_ME / OTHER`` (an obligation exists but we're
+            waiting on them) from ``NOT_WAITING_FOR_ME / NONE`` (no open
+            obligation at all).
+        open_obligation: Short description of the owed action/reply and its
+            owner, when ``next_owner`` is ``USER`` or ``OTHER``. ``None`` for
+            ``NONE`` / ``UNCERTAIN`` and for older prompts.
         confidence: Optional 0.0–1.0 confidence score from the LLM.
         reason: Optional short explanation of why this decision was reached.
             Internal/technical — not shown to the user.
@@ -105,6 +137,8 @@ class WaitingForMeResult:
     """
 
     decision: WaitingForMeDecision
+    next_owner: NextOwner | None = None
+    open_obligation: str | None = None
     confidence: float | None = None
     reason: str | None = None
     summary: str | None = None

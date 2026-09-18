@@ -324,3 +324,31 @@ async def test_reminder_flow_asks_when_to_remind():
     await flow.handle(_text_event("buy milk", event_id="wamid.LI2"))
 
     assert "מתי להזכיר" in bot.sent[-1][1]
+
+
+# --- _phone_to_chat_id normalization (used for Echo bot exclusion) ----------
+
+
+def test_phone_to_chat_id_strips_plus_and_appends_suffix():
+    from echo_v2.services.scheduling_flow import _phone_to_chat_id
+
+    assert _phone_to_chat_id("+972559937256") == "972559937256@c.us"
+
+
+def test_phone_to_chat_id_strips_spaces_and_hyphens():
+    from echo_v2.services.scheduling_flow import _phone_to_chat_id
+
+    assert _phone_to_chat_id("+972 559-937-256") == "972559937256@c.us"
+
+
+def test_phone_to_chat_id_passes_through_existing_chat_id():
+    from echo_v2.services.scheduling_flow import _phone_to_chat_id
+
+    assert _phone_to_chat_id("972559937256@c.us") == "972559937256@c.us"
+
+
+def test_phone_to_chat_id_default_phone_matches_default_echo_bot_chat():
+    """The default ECHO_BOT_PHONE config normalizes to the canonical chat_id."""
+    from echo_v2.services.scheduling_flow import _phone_to_chat_id
+
+    assert _phone_to_chat_id("972559937256") == "972559937256@c.us"

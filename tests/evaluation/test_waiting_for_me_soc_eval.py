@@ -31,6 +31,7 @@ from echo_v2.services.waiting_for_me_analyzer import (
     AnalysisError,
     LLMWaitingForMeAnalyzer,
 )
+from echo_v2.services.waiting_for_me_prompts import DEFAULT_PROMPT_VERSION
 from tests.evaluation.eval_results import CaseResult, save_eval_run
 from tests.evaluation.waiting_for_me_cases import EvalCase
 from tests.evaluation.waiting_for_me_soc2508_cases import (
@@ -94,7 +95,7 @@ def analyzer() -> LLMWaitingForMeAnalyzer:
     return LLMWaitingForMeAnalyzer(
         client=client,
         model=os.environ.get("LLM_MODEL_NAME", "gpt-4.1"),
-        prompt_version=os.environ.get("WFM_PROMPT_VERSION", "v1"),
+        prompt_version=os.environ.get("WFM_PROMPT_VERSION", DEFAULT_PROMPT_VERSION),
     )
 
 
@@ -311,7 +312,7 @@ async def _run_split(
 
     # Save results to disk.
     model = os.environ.get("LLM_MODEL_NAME", "gpt-4.1")
-    prompt_version = os.environ.get("WFM_PROMPT_VERSION", "v1")
+    prompt_version = os.environ.get("WFM_PROMPT_VERSION", DEFAULT_PROMPT_VERSION)
     safe_label = label.lower().replace(" ", "_")
     run_id = save_eval_run(
         label, model, case_results, prompt_version=prompt_version,

@@ -220,7 +220,7 @@ def test_parse_invalid_json_raises():
 
 
 def test_parse_missing_decision_key_raises():
-    with pytest.raises(AnalysisError, match="missing 'decision'"):
+    with pytest.raises(AnalysisError, match="missing 'next_owner' or 'decision'"):
         _parse_llm_output('{"foo": "bar"}', target_version=1)
 
 
@@ -356,3 +356,161 @@ async def test_analyze_summary_in_result():
     analyzer = LLMWaitingForMeAnalyzer(client=client)
     result = await analyzer.analyze(conv)
     assert result.summary == "מחכה לאישור פגישה."
+
+
+# --- v3 next_owner contract -------------------------------------------------
+# The v3 prompt emits `next_owner` (user|other|none|uncertain) instead of
+# `decision`. The product decision is derived deterministically in the
+# parser so the model can never invert the label.
+
+
+def test_parse_next_owner_user_derives_wfm():
+    raw = json.dumps({
+        "next_owner": "user",
+        "open_obligation": "user owes a reply",
+        "confidence": 0.9,
+        "reason": "User must reply.",
+        "summary": "מחכה לתשובה שלך.",
+    })
+    result = _parse_llm_output(raw, target_version=1)
+    assert result.decision == WaitingForMeDecision.WAITING_FOR_ME
+    assert result.next_owner is not None
+    assert result.next_owner.value == "user"
+    assert result.open_obligation == "user owes a reply"
+    assert result.summary == "מחכה לתשובה שלך."
+
+
+def test_parse_next_owner_other_derives_nwm():
+    raw = json.dumps({
+        "next_owner": "other",
+        "open_obligation": "other person must answer the user's question",
+        "confidence": 0.9,
+        "reason": "User asked a question; other person must answer.",
+    })
+    result = _parse_llm_output(raw, target_version=1)
+    assert result.decision == WaitingForMeDecision.NOT_WAITING_FOR_ME
+    assert result.next_owner is not None
+    assert result.next_owner.value == "other"
+    assert result.open_obligation == "other person must answer the user's question"
+
+
+def test_parse_next_owner_none_derives_nwm():
+    raw = json.dumps({
+        "next_owner": "none",
+        "reason": "No open obligation.",
+    })
+    result = _parse_llm_output(raw, target_version=1)
+    assert result.decision == WaitingForMeDecision.NOT_WAITING_FOR_ME
+    assert result.next_owner is not None
+    assert result.next_owner.value == "none"
+    # NONE → open_obligation should be null per the contract.
+    assert result.open_obligation is None
+
+
+def test_parse_next_owner_uncertain_derives_unc():
+    raw = json.dumps({
+        "next_owner": "uncertain",
+        "reason": "Ambiguous.",
+    })
+    result = _parse_llm_output(raw, target_version=1)
+    assert result.decision == WaitingForMeDecision.UNCERTAIN
+    assert result.next_owner is not None
+    assert result.next_owner.value == "uncertain"
+    assert result.open_obligation is None
+
+
+def test_parse_next_owner_case_insensitive():
+    raw = json.dumps({"next_owner": "OTHER", "reason": "r"})
+    result = _parse_llm_output(raw, target_version=1)
+    assert result.decision == WaitingForMeDecision.NOT_WAITING_FOR_ME
+    assert result.next_owner is not None
+    assert result.next_owner.value == "other"
+
+
+def test_parse_next_owner_unknown_raises():
+    raw = json.dumps({"next_owner": "banana"})
+    with pytest.raises(AnalysisError, match="unknown next_owner"):
+        _parse_llm_output(raw, target_version=1)
+
+
+def test_parse_next_owner_missing_and_no_decision_raises():
+    raw = json.dumps({"foo": "bar"})
+    with pytest.raises(AnalysisError, match="missing 'next_owner' or 'decision'"):
+        _parse_llm_output(raw, target_version=1)
+
+
+def test_parse_next_owner_with_code_fences():
+    raw = f"```json\n{json.dumps({'next_owner': 'user', 'reason': 'r'})}\n```"
+    result = _parse_llm_output(raw, target_version=1)
+    assert result.decision == WaitingForMeDecision.WAITING_FOR_ME
+    assert result.next_owner is not None
+    assert result.next_owner.value == "user"
+
+
+def test_parse_next_owner_strips_open_obligation_whitespace():
+    raw = json.dumps({
+        "next_owner": "user",
+        "open_obligation": "  user owes X  ",
+        "reason": "r",
+    })
+    result = _parse_llm_output(raw, target_version=1)
+    assert result.open_obligation == "user owes X"
+
+
+def test_parse_next_owner_empty_open_obligation_becomes_none():
+    raw = json.dumps({
+        "next_owner": "user",
+        "open_obligation": "   ",
+        "reason": "r",
+    })
+    result = _parse_llm_output(raw, target_version=1)
+    assert result.open_obligation is None
+
+
+def test_parse_next_owner_wins_over_decision_when_both_present():
+    """If both keys are present, next_owner wins (v3 contract)."""
+    raw = json.dumps({
+        "next_owner": "other",
+        "decision": "waiting_for_me",
+        "reason": "r",
+    })
+    result = _parse_llm_output(raw, target_version=1)
+    assert result.decision == WaitingForMeDecision.NOT_WAITING_FOR_ME
+    assert result.next_owner is not None
+    assert result.next_owner.value == "other"
+
+
+# --- owner-inversion scenario test ------------------------------------------
+# The core bug this change fixes: a user-originated unanswered question
+# must classify as OTHER (→ NOT_WAITING_FOR_ME), not WAITING_FOR_ME.
+
+
+async def test_owner_inversion_user_question_is_not_waiting_for_me():
+    """User asks a direct question; next_owner should be OTHER → NWM."""
+    conv = _make_conversation([("outbound", "הבאת קופסה קטנה יותר?")])
+    response = _mock_openai_response(
+        json.dumps({
+            "next_owner": "other",
+            "open_obligation": "other person must answer whether they brought a smaller box",
+            "confidence": 0.95,
+            "reason": "User asked a direct question; other person must answer next.",
+        })
+    )
+    client = _mock_client(response)
+    analyzer = LLMWaitingForMeAnalyzer(client=client, prompt_version="v3")
+    result = await analyzer.analyze(conv)
+    assert result.decision == WaitingForMeDecision.NOT_WAITING_FOR_ME
+    assert result.next_owner is not None
+    assert result.next_owner.value == "other"
+
+
+# --- legacy decision contract still works (backward compat) ----------------
+
+
+def test_parse_legacy_decision_still_works_with_next_owner_none():
+    """v0–v2 prompts emit `decision` directly; next_owner stays None."""
+    raw = json.dumps({"decision": "waiting_for_me", "confidence": 0.9, "reason": "r"})
+    result = _parse_llm_output(raw, target_version=1)
+    assert result.decision == WaitingForMeDecision.WAITING_FOR_ME
+    assert result.next_owner is None
+    assert result.open_obligation is None

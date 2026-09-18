@@ -40,6 +40,8 @@ class DebugResultEntry:
     created_at: str
     target_version: int
     decision: str
+    next_owner: str | None
+    open_obligation: str | None
     confidence: float | None
     reason: str | None
     summary: str | None
@@ -79,6 +81,8 @@ class DebugAnalysisService:
         chat_state_repo: The :class:`ChatStateRepository` for listing chats.
         result_repo: The :class:`WaitingForMeResultRepository` for listing
             analysis results.
+        excluded_chat_ids: Chat IDs to hide from the debug view (e.g. the
+            Echo bot's own service chat). Defaults to empty.
     """
 
     def __init__(
@@ -87,10 +91,12 @@ class DebugAnalysisService:
         token_service: WaitingListTokenService,
         chat_state_repo: ChatStateRepository,
         result_repo: WaitingForMeResultRepository,
+        excluded_chat_ids: frozenset[str] = frozenset(),
     ) -> None:
         self._token_service = token_service
         self._chat_state_repo = chat_state_repo
         self._result_repo = result_repo
+        self._excluded_chat_ids = excluded_chat_ids
 
     async def list_analysis(
         self,
@@ -109,6 +115,12 @@ class DebugAnalysisService:
 
         chats = await self._chat_state_repo.list_all_for_user(user_id=user_id)
         results = await self._result_repo.list_all_for_user(user_id=user_id)
+
+        # Exclude service chats (e.g. the Echo bot's own chat) from the
+        # debug view — they are not analyzed and would only add noise.
+        if self._excluded_chat_ids:
+            chats = [c for c in chats if c.chat_id not in self._excluded_chat_ids]
+            results = [r for r in results if r.chat_id not in self._excluded_chat_ids]
 
         # Group results by chat_id.
         results_by_chat: dict[str, list[WaitingForMeResultEntry]] = {}
@@ -133,6 +145,8 @@ class DebugAnalysisService:
                             created_at=r.created_at.isoformat() if r.created_at else "",
                             target_version=r.result.target_version,
                             decision=r.result.decision.value,
+                            next_owner=r.result.next_owner.value if r.result.next_owner else None,
+                            open_obligation=r.result.open_obligation,
                             confidence=r.result.confidence,
                             reason=r.result.reason,
                             summary=r.result.summary,
@@ -165,6 +179,8 @@ class DebugAnalysisService:
                             created_at=r.created_at.isoformat() if r.created_at else "",
                             target_version=r.result.target_version,
                             decision=r.result.decision.value,
+                            next_owner=r.result.next_owner.value if r.result.next_owner else None,
+                            open_obligation=r.result.open_obligation,
                             confidence=r.result.confidence,
                             reason=r.result.reason,
                             summary=r.result.summary,

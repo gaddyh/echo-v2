@@ -51,6 +51,10 @@ class ChatIngestionService:
         private_only: If ``True`` (default), skip group chats
             (``chat_id`` ending in ``@g.us``). Set to ``False`` to ingest
             all chats.
+        excluded_chat_ids: Chat IDs to never ingest or schedule for
+            analysis (e.g. the Echo bot's own service chat, whose
+            reminders would otherwise be classified as the user's
+            obligations). Defaults to empty.
     """
 
     def __init__(
@@ -59,10 +63,12 @@ class ChatIngestionService:
         *,
         quiet_period_seconds: float = 300.0,
         private_only: bool = True,
+        excluded_chat_ids: frozenset[str] = frozenset(),
     ) -> None:
         self._ingestion_repo = ingestion_repo
         self._quiet_period = quiet_period_seconds
         self._private_only = private_only
+        self._excluded_chat_ids = excluded_chat_ids
 
     async def ingest_message(
         self,
@@ -76,6 +82,11 @@ class ChatIngestionService:
         Returns ``True`` if a new message was stored, ``False`` if it was
         a duplicate or skipped (e.g. group chat with ``private_only``).
         """
+        # Skip excluded service chats (e.g. the Echo bot's own chat) before
+        # any scheduling — prevents self-referential analysis loops.
+        if event.chat_id in self._excluded_chat_ids:
+            return False
+
         # Skip group chats if configured for private only.
         if self._private_only and not event.chat_id.endswith("@c.us"):
             return False
