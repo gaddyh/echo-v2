@@ -315,7 +315,11 @@ class GreenInstancePool:
             created = await self._provisioner.create_connection(config)
         except Exception:
             _logger.exception("pool: createInstance failed for row %s", row_id)
-            await self._repo.mark_failed(row_id)
+            # No provider_connection_id was ever assigned, so mark_failed
+            # would violate the green_pool_id_when_not_creating_check
+            # constraint (state='failed' requires a non-null id). Delete
+            # the row instead — the pool will refill on the next cycle.
+            await self._repo.delete_row(row_id)
             return
 
         token_hash = _sha256(webhook_token)

@@ -274,6 +274,24 @@ async def test_create_one_marks_available_after_notAuthorized(pool_setup):
     assert available[0].provider_connection_id == "inst-1"
 
 
+async def test_create_one_create_instance_failure_deletes_row(pool_setup):
+    """createInstance raises → row deleted (not mark_failed, which would
+    violate the green_pool_id_when_not_creating_check constraint since
+    there's no provider_connection_id)."""
+    pool, repo, _green, provisioner, _conn = pool_setup
+    provisioner.should_fail = True
+
+    row_id = await repo.reserve_creation_slot(1)
+    await pool._create_one(row_id)
+
+    available = await repo.get_by_state("available")
+    assert len(available) == 0
+    failed = await repo.get_by_state("failed")
+    assert len(failed) == 0
+    creating = await repo.get_by_state("creating")
+    assert len(creating) == 0  # row was deleted, not left in any state
+
+
 async def test_create_one_timeout_marks_failed(pool_setup):
     """Ready timeout → mark_failed, no available row."""
     pool, repo, green, provisioner, _conn = pool_setup
