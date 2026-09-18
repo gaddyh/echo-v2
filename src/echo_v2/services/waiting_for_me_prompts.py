@@ -18,7 +18,7 @@ from __future__ import annotations
 __all__ = ["DEFAULT_PROMPT_VERSION", "PROMPTS", "get_prompt"]
 
 # Default prompt version is set at the bottom of this module, after the
-# prompt bodies are defined. See `DEFAULT_PROMPT_VERSION = "v3"`.
+# prompt bodies are defined. See `DEFAULT_PROMPT_VERSION = "v4.1"`.
 
 # ---------------------------------------------------------------------------
 # v0 — Original prompt (baseline)
@@ -1044,7 +1044,7 @@ PROMPTS: dict[str, str] = {
     "v4.1": _V4_1,
 }
 
-DEFAULT_PROMPT_VERSION = "v3"
+DEFAULT_PROMPT_VERSION = "v4.1"
 
 
 def get_prompt(version: str = DEFAULT_PROMPT_VERSION) -> str:

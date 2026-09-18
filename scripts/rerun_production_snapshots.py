@@ -1,12 +1,12 @@
 #!/usr/bin/env python
 """Re-analyze all chats that have results, locally, without modifying the DB.
 
-Pulls conversation snapshots from the DB, runs the v3 analyzer locally,
-and compares against the stored v1 decisions.
+Pulls conversation snapshots from the DB, runs the current default analyzer
+locally, and compares against the stored decisions.
 
 Usage:
     set -a; source .env; set +a
-    export LANGSMITH_TRACING=false LLM_MODEL_NAME=gpt-5.6-luna WFM_PROMPT_VERSION=v3
+    export LANGSMITH_TRACING=false LLM_MODEL_NAME=gpt-5.6-luna WFM_PROMPT_VERSION=v4.1
     .venv/bin/python scripts/rerun_production_snapshots.py
 """
 from __future__ import annotations
@@ -19,6 +19,8 @@ from pathlib import Path
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
+
+from echo_v2.services.waiting_for_me_prompts import DEFAULT_PROMPT_VERSION
 
 
 async def main() -> None:
@@ -68,16 +70,17 @@ async def main() -> None:
 
     print(f"Captured {len(old_results)} chats with existing results")
 
-    # 2. Run v3 analyzer locally on each snapshot
+    # 2. Run analyzer locally on each snapshot
+    from openai import AsyncOpenAI
+
     from echo_v2.services.chat_analysis_worker import ConversationInput
     from echo_v2.services.waiting_for_me_analyzer import LLMWaitingForMeAnalyzer
-    from openai import AsyncOpenAI
 
     raw_client = AsyncOpenAI()
     analyzer = LLMWaitingForMeAnalyzer(
         client=raw_client,
         model=os.environ.get("LLM_MODEL_NAME", "gpt-4.1"),
-        prompt_version=os.environ.get("WFM_PROMPT_VERSION", "v3"),
+        prompt_version=os.environ.get("WFM_PROMPT_VERSION", DEFAULT_PROMPT_VERSION),
     )
 
     now = datetime.now(timezone.utc)
@@ -119,7 +122,7 @@ async def main() -> None:
 
     # 3. Compare old vs new
     print("\n" + "=" * 80)
-    print(f"COMPARISON: old ({old_results[0]['old_prompt_version'] or 'None'}) vs new ({os.environ.get('WFM_PROMPT_VERSION', 'v3')})")
+    print(f"COMPARISON: old ({old_results[0]['old_prompt_version'] or 'None'}) vs new ({os.environ.get('WFM_PROMPT_VERSION', DEFAULT_PROMPT_VERSION)})")
     print("=" * 80)
 
     flips = []
@@ -182,7 +185,7 @@ async def main() -> None:
     with open(output_path, "w") as f:
         json.dump({
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "prompt_version": os.environ.get("WFM_PROMPT_VERSION", "v3"),
+            "prompt_version": os.environ.get("WFM_PROMPT_VERSION", DEFAULT_PROMPT_VERSION),
             "model": os.environ.get("LLM_MODEL_NAME", "gpt-4.1"),
             "old_results": [{k: v for k, v in r.items() if k != "messages"} for r in old_results],
             "new_results": new_results,
