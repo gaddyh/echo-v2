@@ -357,6 +357,7 @@ PostgreSQL with 24 Alembic migrations:
 | 0019 | Contact color labels + tags |
 | 0020 | Result model / prompt_version / analyzer_version |
 | 0024 | Message audio metadata (audio_download_url, audio_mime_type, audio_file_name) |
+| 0029 | Rename audio_* columns to media_* (covers image/video/document) |
 
 ## Getting started
 

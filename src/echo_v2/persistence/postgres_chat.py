@@ -119,9 +119,9 @@ class PostgresMessageRepository:
                     timestamp=message.timestamp,
                     message_type=message.message_type,
                     text=message.text,
-                    audio_download_url=message.audio_download_url,
-                    audio_mime_type=message.audio_mime_type,
-                    audio_file_name=message.audio_file_name,
+                    media_download_url=message.media_download_url,
+                    media_mime_type=message.media_mime_type,
+                    media_file_name=message.media_file_name,
                 )
                 .on_conflict_do_nothing(
                     index_elements=["connection_id", "provider_message_id"],
@@ -305,9 +305,9 @@ class PostgresMessageRepository:
             timestamp=row.timestamp,
             message_type=row.message_type,
             text=row.text,
-            audio_download_url=row.audio_download_url,
-            audio_mime_type=row.audio_mime_type,
-            audio_file_name=row.audio_file_name,
+            media_download_url=row.media_download_url,
+            media_mime_type=row.media_mime_type,
+            media_file_name=row.media_file_name,
         )
 
 
@@ -633,9 +633,9 @@ class PostgresIngestionRepository:
                         timestamp=message.timestamp,
                         message_type=message.message_type,
                         text=message.text,
-                        audio_download_url=message.audio_download_url,
-                        audio_mime_type=message.audio_mime_type,
-                        audio_file_name=message.audio_file_name,
+                        media_download_url=message.media_download_url,
+                        media_mime_type=message.media_mime_type,
+                        media_file_name=message.media_file_name,
                     )
                     .on_conflict_do_nothing(
                         index_elements=["connection_id", "provider_message_id"],

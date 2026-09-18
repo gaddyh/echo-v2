@@ -31,3 +31,4 @@ tests/evaluation/results/
 
 # Local audio recordings
 *.opus
+tests/fixtures/

@@ -54,6 +54,7 @@ from echo_v2.persistence.chat_repositories import (
     ChatStateRepository,
     MessageRepository,
 )
+from echo_v2.services.media_summarizer import MediaSummarizer
 from echo_v2.services.transcription import Transcriber, handle_direct_audio_download_url
 from echo_v2.services.waiting_for_me_analyzer import WaitingForMeAnalyzer
 
@@ -186,9 +187,15 @@ class ChatAnalysisProcessor:
             messages. Default 20.
         transcriber: Optional :class:`Transcriber` for lazy audio
             transcription. When provided, audio messages with
-            ``audio_download_url`` are transcribed before analysis and
+            ``media_download_url`` are transcribed before analysis and
             the transcript is persisted via ``message_repo.update_text``.
             When ``None``, audio messages use ``text=""`` (same as today).
+        media_summarizer: Optional :class:`MediaSummarizer` for lazy
+            summarization of image/video/document messages. When
+            provided, media messages with ``media_download_url`` and no
+            text are summarized before analysis and the summary is
+            persisted via ``message_repo.update_text``. When ``None``,
+            media messages use ``text=""`` (same as today).
     """
 
     def __init__(
@@ -199,12 +206,14 @@ class ChatAnalysisProcessor:
         context_messages: int = 5,
         max_no_outbound: int = 20,
         transcriber: Transcriber | None = None,
+        media_summarizer: MediaSummarizer | None = None,
     ) -> None:
         self._messages = message_repo
         self._analyzer = analyzer
         self._context_messages = context_messages
         self._max_no_outbound = max_no_outbound
         self._transcriber = transcriber
+        self._media_summarizer = media_summarizer
 
     async def process(
         self,
@@ -219,16 +228,26 @@ class ChatAnalysisProcessor:
             max_no_outbound=self._max_no_outbound,
         )
 
-        # Lazy audio transcription: if a transcriber is available, transcribe
-        # any audio messages that have a download URL but no text yet.
+        # Lazy media processing: transcribe audio and summarize
+        # image/video/document messages that have a download URL but no
+        # text yet, so the analyzer sees a textual representation.
         audio_count = sum(1 for m in messages if m.message_type == "audio")
         audio_with_url = sum(
             1 for m in messages
-            if m.message_type == "audio" and m.audio_download_url is not None
+            if m.message_type == "audio" and m.media_download_url is not None
+        )
+        media_count = sum(
+            1 for m in messages if m.message_type in ("image", "video", "document")
+        )
+        media_with_url = sum(
+            1 for m in messages
+            if m.message_type in ("image", "video", "document")
+            and m.media_download_url is not None
         )
         _logger.info(
             "process chat %s/%s version=%d: loaded %d messages, "
-            "transcriber=%s, audio=%d (with_url=%d)",
+            "transcriber=%s, audio=%d (with_url=%d), "
+            "media_summarizer=%s, media=%d (with_url=%d)",
             user_id,
             chat_id,
             target_version,
@@ -236,9 +255,16 @@ class ChatAnalysisProcessor:
             type(self._transcriber).__name__ if self._transcriber else "None",
             audio_count,
             audio_with_url,
+            type(self._media_summarizer).__name__ if self._media_summarizer else "None",
+            media_count,
+            media_with_url,
         )
         if self._transcriber is not None and audio_with_url > 0:
             messages = await self._transcribe_audio_messages(messages)
+        if self._media_summarizer is not None and media_with_url > 0:
+            messages = await self._summarize_media_messages(messages)
+        if self._media_summarizer is not None:
+            messages = await self._summarize_link_messages(messages)
 
         conversation = ConversationInput(
             user_id=user_id,
@@ -284,7 +310,7 @@ class ChatAnalysisProcessor:
         """Transcribe audio messages that have a download URL but no text.
 
         For each message with ``message_type == "audio"``, ``text is None``,
-        and ``audio_download_url is not None``: download + convert +
+        and ``media_download_url is not None``: download + convert +
         transcribe via :func:`handle_direct_audio_download_url`, persist the
         transcript via :meth:`MessageRepository.update_text`, and replace
         the message in the returned list.
@@ -299,19 +325,19 @@ class ChatAnalysisProcessor:
                     "audio message %s: text=%s download_url=%s file_name=%s mime=%s",
                     msg.id,
                     "set" if msg.text else "None",
-                    "set" if msg.audio_download_url else "None",
-                    msg.audio_file_name,
-                    msg.audio_mime_type,
+                    "set" if msg.media_download_url else "None",
+                    msg.media_file_name,
+                    msg.media_mime_type,
                 )
             if (
                 msg.message_type == "audio"
                 and msg.text is None
-                and msg.audio_download_url is not None
+                and msg.media_download_url is not None
             ):
                 _logger.info(
                     "starting transcription for message %s url=%s",
                     msg.id,
-                    msg.audio_download_url,
+                    msg.media_download_url,
                 )
                 try:
                     if self._transcriber is None:
@@ -322,9 +348,9 @@ class ChatAnalysisProcessor:
                     else:
                         transcript = await handle_direct_audio_download_url(
                             transcriber=self._transcriber,
-                            download_url=msg.audio_download_url,
-                            file_name=msg.audio_file_name or "voice-message",
-                            mime_type=msg.audio_mime_type or "",
+                            download_url=msg.media_download_url,
+                            file_name=msg.media_file_name or "voice-message",
+                            mime_type=msg.media_mime_type or "",
                         )
                         await self._messages.update_text(msg.id, transcript)
                         _logger.info(
@@ -339,6 +365,130 @@ class ChatAnalysisProcessor:
                         "using text=None",
                         msg.id,
                     )
+            result_messages.append(msg)
+        return result_messages
+
+    async def _summarize_media_messages(self, messages: list[Message]) -> list[Message]:
+        """Summarize image/video/document messages with a download URL but no text.
+
+        For each message with ``message_type`` in (image, video, document),
+        ``text is None``, and ``media_download_url is not None``: summarize
+        via :meth:`MediaSummarizer.summarize_media`, persist the summary via
+        :meth:`MessageRepository.update_text`, and replace the message in
+        the returned list. The existing caption (if any) is passed as
+        context to the summarizer.
+
+        On failure: log and leave ``text=None`` (the conversation input
+        will use ``text=""`` for this message, same as today).
+        """
+        result_messages = []
+        for msg in messages:
+            if msg.message_type in ("image", "video", "document"):
+                _logger.info(
+                    "%s message %s: text=%s download_url=%s file_name=%s mime=%s",
+                    msg.message_type,
+                    msg.id,
+                    "set" if msg.text else "None",
+                    "set" if msg.media_download_url else "None",
+                    msg.media_file_name,
+                    msg.media_mime_type,
+                )
+            if (
+                msg.message_type in ("image", "video", "document")
+                and msg.text is None
+                and msg.media_download_url is not None
+            ):
+                _logger.info(
+                    "starting media summarization for message %s type=%s url=%s",
+                    msg.id,
+                    msg.message_type,
+                    msg.media_download_url,
+                )
+                try:
+                    if self._media_summarizer is None:
+                        _logger.warning(
+                            "%s message %s has download URL but no summarizer configured",
+                            msg.message_type,
+                            msg.id,
+                        )
+                    else:
+                        summary = await self._media_summarizer.summarize_media(
+                            download_url=msg.media_download_url,
+                            mime_type=msg.media_mime_type,
+                            file_name=msg.media_file_name,
+                            message_type=msg.message_type,
+                            caption=None,
+                        )
+                        await self._messages.update_text(msg.id, summary.text)
+                        _logger.info(
+                            "summarized %s message %s: %s",
+                            msg.message_type,
+                            msg.id,
+                            summary.text[:100],
+                        )
+                        msg = dataclasses.replace(msg, text=summary.text)
+                except Exception:
+                    _logger.exception(
+                        "media summarization failed for message %s; "
+                        "using text=None",
+                        msg.id,
+                    )
+            result_messages.append(msg)
+        return result_messages
+
+    async def _summarize_link_messages(self, messages: list[Message]) -> list[Message]:
+        """Summarize text messages that are "mostly a link".
+
+        For each text message where :func:`is_link_message` returns True,
+        fetch the URL and replace the message text with a short summary
+        (prefixed with the original URL for context). The summary is
+        persisted via :meth:`MessageRepository.update_text`.
+
+        On failure: log and keep the original text (the URL is still
+        useful to the analyzer even without a summary).
+        """
+        from echo_v2.services.media_summarizer import is_link_message
+
+        result_messages = []
+        for msg in messages:
+            if msg.message_type != "text" or not is_link_message(msg.text):
+                result_messages.append(msg)
+                continue
+            _logger.info(
+                "link message %s: summarizing url in text=%s",
+                msg.id,
+                (msg.text or "")[:80],
+            )
+            try:
+                if self._media_summarizer is None:
+                    result_messages.append(msg)
+                    continue
+                from echo_v2.services.media_summarizer import extract_urls
+
+                urls = extract_urls(msg.text or "")
+                if not urls:
+                    result_messages.append(msg)
+                    continue
+                summary = await self._media_summarizer.summarize_link(urls[0])
+                # Keep the original URL visible alongside the summary so the
+                # analyzer can still see what was shared.
+                if summary.text:
+                    new_text = f"{urls[0]} — {summary.text}"
+                else:
+                    new_text = msg.text or urls[0]
+                await self._messages.update_text(msg.id, new_text)
+                _logger.info(
+                    "summarized link message %s: %s",
+                    msg.id,
+                    summary.text[:100],
+                )
+                msg = dataclasses.replace(msg, text=new_text)
+            except Exception:
+                _logger.exception(
+                    "link summarization failed for message %s; "
+                    "keeping original text",
+                    msg.id,
+                )
             result_messages.append(msg)
         return result_messages
 

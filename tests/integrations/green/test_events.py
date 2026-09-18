@@ -183,6 +183,91 @@ def test_parse_image_message_with_caption():
     assert event.text == "look at this"
 
 
+def test_parse_image_message_populates_media_fields():
+    payload = _base(
+        "incomingMessageReceived",
+        chatId="9725@c.us",
+        idMessage="m-image",
+        messageData={
+            "typeMessage": "imageMessage",
+            "caption": "look at this",
+            "fileMessageData": {
+                "downloadUrl": "https://api.green-api.com/waInstance123/file/img.jpeg",
+                "mimeType": "image/jpeg",
+                "fileName": "photo.jpeg",
+            },
+        },
+    )
+    event = GreenEventAdapter().parse(payload)
+    assert isinstance(event, ProviderMessageEvent)
+    assert event.kind is MessageKind.IMAGE
+    assert event.text == "look at this"
+    assert event.media_download_url == "https://api.green-api.com/waInstance123/file/img.jpeg"
+    assert event.media_mime_type == "image/jpeg"
+    assert event.media_file_name == "photo.jpeg"
+
+
+def test_parse_document_message_populates_media_fields():
+    payload = _base(
+        "incomingMessageReceived",
+        chatId="9725@c.us",
+        idMessage="m-doc",
+        messageData={
+            "typeMessage": "documentMessage",
+            "caption": "the report",
+            "fileMessageData": {
+                "downloadUrl": "https://api.green-api.com/waInstance123/file/report.pdf",
+                "mimeType": "application/pdf",
+                "fileName": "report.pdf",
+            },
+        },
+    )
+    event = GreenEventAdapter().parse(payload)
+    assert isinstance(event, ProviderMessageEvent)
+    assert event.kind is MessageKind.DOCUMENT
+    assert event.text == "the report"
+    assert event.media_download_url == "https://api.green-api.com/waInstance123/file/report.pdf"
+    assert event.media_mime_type == "application/pdf"
+    assert event.media_file_name == "report.pdf"
+
+
+def test_parse_video_message_populates_media_fields():
+    payload = _base(
+        "incomingMessageReceived",
+        chatId="9725@c.us",
+        idMessage="m-video",
+        messageData={
+            "typeMessage": "videoMessage",
+            "caption": "clip",
+            "fileMessageData": {
+                "downloadUrl": "https://api.green-api.com/waInstance123/file/clip.mp4",
+                "mimeType": "video/mp4",
+                "fileName": "clip.mp4",
+            },
+        },
+    )
+    event = GreenEventAdapter().parse(payload)
+    assert isinstance(event, ProviderMessageEvent)
+    assert event.kind is MessageKind.VIDEO
+    assert event.media_download_url == "https://api.green-api.com/waInstance123/file/clip.mp4"
+    assert event.media_mime_type == "video/mp4"
+    assert event.media_file_name == "clip.mp4"
+
+
+def test_parse_text_message_has_no_media_fields():
+    payload = _base(
+        "incomingMessageReceived",
+        chatId="c",
+        idMessage="m",
+        messageData={"typeMessage": "textMessage", "textMessage": "hi"},
+    )
+    event = GreenEventAdapter().parse(payload)
+    assert isinstance(event, ProviderMessageEvent)
+    assert event.media_download_url is None
+    assert event.media_mime_type is None
+    assert event.media_file_name is None
+
+
 def test_parse_audio_message_populates_audio_fields():
     payload = _base(
         "incomingMessageReceived",
@@ -201,9 +286,9 @@ def test_parse_audio_message_populates_audio_fields():
     assert isinstance(event, ProviderMessageEvent)
     assert event.kind is MessageKind.AUDIO
     assert event.text is None
-    assert event.audio_download_url == "https://api.green-api.com/waInstance123/file/abc.ogg"
-    assert event.audio_mime_type == "audio/ogg"
-    assert event.audio_file_name == "voice-message.ogg"
+    assert event.media_download_url == "https://api.green-api.com/waInstance123/file/abc.ogg"
+    assert event.media_mime_type == "audio/ogg"
+    assert event.media_file_name == "voice-message.ogg"
 
 
 def test_parse_audio_message_missing_file_data_returns_none_audio_fields():
@@ -216,23 +301,9 @@ def test_parse_audio_message_missing_file_data_returns_none_audio_fields():
     event = GreenEventAdapter().parse(payload)
     assert isinstance(event, ProviderMessageEvent)
     assert event.kind is MessageKind.AUDIO
-    assert event.audio_download_url is None
-    assert event.audio_mime_type is None
-    assert event.audio_file_name is None
-
-
-def test_parse_text_message_has_no_audio_fields():
-    payload = _base(
-        "incomingMessageReceived",
-        chatId="c",
-        idMessage="m",
-        messageData={"typeMessage": "textMessage", "textMessage": "hi"},
-    )
-    event = GreenEventAdapter().parse(payload)
-    assert isinstance(event, ProviderMessageEvent)
-    assert event.audio_download_url is None
-    assert event.audio_mime_type is None
-    assert event.audio_file_name is None
+    assert event.media_download_url is None
+    assert event.media_mime_type is None
+    assert event.media_file_name is None
 
 
 def test_parse_quoted_message_extracts_text():

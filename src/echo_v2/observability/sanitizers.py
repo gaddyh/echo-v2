@@ -215,9 +215,9 @@ def safe_ingest_green_inputs(inputs: dict[str, Any]) -> dict[str, Any]:
             sanitized["sender_id"] = event.sender_id
         if event.sender_name is not None:
             sanitized["sender_name"] = event.sender_name
-        if event.audio_download_url is not None:
-            sanitized["has_audio"] = True
-            sanitized["audio_mime_type"] = event.audio_mime_type
+        if event.media_download_url is not None:
+            sanitized["has_media"] = True
+            sanitized["media_mime_type"] = event.media_mime_type
         return sanitized
     # ProviderMessageStatusEvent
     if hasattr(event, "status"):

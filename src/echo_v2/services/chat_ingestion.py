@@ -112,9 +112,9 @@ class ChatIngestionService:
             timestamp=event.timestamp,
             message_type=event.kind.value,
             text=event.text,
-            audio_download_url=event.audio_download_url,
-            audio_mime_type=event.audio_mime_type,
-            audio_file_name=event.audio_file_name,
+            media_download_url=event.media_download_url,
+            media_mime_type=event.media_mime_type,
+            media_file_name=event.media_file_name,
         )
 
         return await self._ingestion_repo.ingest_if_new(

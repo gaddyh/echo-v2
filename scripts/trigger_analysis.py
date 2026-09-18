@@ -57,6 +57,7 @@ async def main() -> None:
         ChatAnalysisProcessor,
         ChatAnalysisWorker,
     )
+    from echo_v2.services.media_summarizer import OpenAIMediaSummarizer
     from echo_v2.services.scheduling_flow import _phone_to_chat_id
     from echo_v2.services.transcription_factory import build_transcriber
     from echo_v2.services.waiting_for_me_analyzer import LLMWaitingForMeAnalyzer
@@ -86,12 +87,14 @@ async def main() -> None:
         model=os.environ.get("LLM_MODEL_NAME", "gpt-4.1"),
     )
     transcriber = build_transcriber()
+    media_summarizer = OpenAIMediaSummarizer(client=openai_client)
     processor = ChatAnalysisProcessor(
         message_repo=repos.messages,
         analyzer=analyzer,
         context_messages=5,
         max_no_outbound=20,
         transcriber=transcriber,
+        media_summarizer=media_summarizer,
     )
     judge = None if args.no_judge else AnalysisJudge(
         client=openai_client,

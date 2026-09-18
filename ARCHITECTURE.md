@@ -155,7 +155,7 @@ Ingestion persists messages immutably and maintains per-chat state that doubles 
 6. **Ingestion.** `ChatIngestionService.ingest_message`:
    - Skips group chats if `private_only=True` (default) unless `chat_id.endswith("@c.us")`.
    - Computes `next_analysis_at = now + quiet_period` (default 300s) for both inbound and outbound.
-   - Builds a `Message` domain object, including `audio_download_url`, `audio_mime_type`, `audio_file_name` for audio messages.
+   - Builds a `Message` domain object, including `media_download_url`, `media_mime_type`, `media_file_name` for media messages (audio, image, video, document).
    - Calls `message_repo.save(message)`; if `False`, it was a duplicate and the operation no-ops.
    - Calls `chat_state_repo.upsert_on_message(...)` to increment `activity_version`, set `last_message_at`, `last_direction`, `next_analysis_at`, and `chat_name`.
 7. **State events.** `ProviderConnectionStateChanged` updates `connection_repo.update_status`; on `CONNECTED` it completes onboarding; on `PAIRING_REQUIRED` after `was_connected`, it sends a disconnect notice.
@@ -185,7 +185,7 @@ The analysis worker polls for due chats, runs the LLM classifier, and commits re
 ### Processor flow (`ChatAnalysisProcessor`)
 
 1. `MessageRepository.list_for_analysis` loads the message window around the last outbound message (or last 20 if none).
-2. If a `Transcriber` is configured, audio messages with `audio_download_url` and `text is None` are transcribed and updated via `MessageRepository.update_text`. See [Audio transcription](#audio-transcription).
+2. If a `Transcriber` is configured, audio messages with `media_download_url` and `text is None` are transcribed and updated via `MessageRepository.update_text`. See [Audio transcription](#audio-transcription). If a `MediaSummarizer` is configured, image/video/document messages with `media_download_url` and `text is None` are summarized and updated via `MessageRepository.update_text`. See [Media summarization](#media-summarization).
 3. A `ConversationInput` is built from `(direction, text, timestamp)` tuples.
 4. `LLMWaitingForMeAnalyzer.analyze` classifies the conversation:
    - Returns `UNCERTAIN` if the conversation is empty.
@@ -214,6 +214,7 @@ The analysis worker polls for due chats, runs the LLM classifier, and commits re
 - Processor errors are caught per chat; the worker logs and continues to the next due chat.
 - LLM failures raise `AnalysisError`, which bubbles up; the worker continues.
 - Audio transcription failures are logged and the message is left with `text=None`; the `ConversationInput` uses `text=""` for that message.
+- Media summarization failures are logged and the message is left with `text=None`; the `ConversationInput` uses `text=""` for that message.
 
 ## Audio transcription
 
@@ -227,12 +228,12 @@ Audio transcription is lazy: the webhook stores the download URL and returns imm
 
 ### Flow
 
-1. **Ingestion.** A Green `audioMessage` webhook is parsed by `GreenEventAdapter._extract_audio_metadata`, populating `audio_download_url`, `audio_mime_type`, `audio_file_name` on `ProviderMessageEvent`.
-2. **Persistence.** `ChatIngestionService` stores the `Message` with `text=None` and the audio fields set.
+1. **Ingestion.** A Green `audioMessage` webhook is parsed by `GreenEventAdapter._extract_media_metadata`, populating `media_download_url`, `media_mime_type`, `media_file_name` on `ProviderMessageEvent`.
+2. **Persistence.** `ChatIngestionService` stores the `Message` with `text=None` and the media fields set.
 3. **Trigger.** The `ChatAnalysisWorker` polls `ChatStateRepository.list_due` for due chats.
 4. **Load conversation.** `ChatAnalysisProcessor.process` calls `MessageRepository.list_for_analysis` to load the message window.
 5. **Count audio.** The processor counts total audio messages and those with a download URL.
-6. **Lazy transcription.** If a `Transcriber` is configured and there is at least one audio message with `audio_download_url` and `text is None`, `_transcribe_audio_messages` is called.
+6. **Lazy transcription.** If a `Transcriber` is configured and there is at least one audio message with `media_download_url` and `text is None`, `_transcribe_audio_messages` is called.
 7. **Per-message transcription.** For each qualifying audio message:
    - `handle_direct_audio_download_url` downloads the file to a temp dir using `httpx`.
    - `ensure_transcribable_audio` runs `ffmpeg -ar 16000 -ac 1` to convert unsupported formats to 16kHz mono WAV if needed. Common WhatsApp voice note formats (`.ogg`, `.opus`, `.mp3`, `.m4a`, `.wav`, `.webm`) pass through without ffmpeg.
@@ -245,7 +246,7 @@ Audio transcription is lazy: the webhook stores the download URL and returns imm
 ### Design decisions
 
 - **Provider-neutral `Transcriber` port.** The analyzer and worker depend only on the `Transcriber` protocol; Modal is one implementation, and `transcription_factory.py` is the single composition point.
-- **Audio metadata stored on `Message`.** The `messages` table has nullable `audio_download_url`, `audio_mime_type`, `audio_file_name` (migration `0024`).
+- **Media metadata stored on `Message`.** The `messages` table has nullable `media_download_url`, `media_mime_type`, `media_file_name` (migration `0024` added them as `audio_*`; migration `0029` renamed them to `media_*` to cover images, video, and documents).
 - **Download URL consumed at analysis time.** Green's `fileMessageData.downloadUrl` is captured at ingestion and reused later; no separate audio storage.
 - **Format normalization with ffmpeg.** Unsupported extensions are converted to 16kHz mono WAV before sending to Modal. ffmpeg is a system binary, not a Python dependency.
 - **Transcript persisted back to `text`.** After transcription, the same `text` column used for textual messages holds the transcript, keeping the analyzer interface uniform.
@@ -258,6 +259,47 @@ Audio transcription is lazy: the webhook stores the download URL and returns imm
 - **Modal transport errors.** `ModalTranscriptionClient` raises `ModalTranscriptionTransportError`; `ModalWhisperTranscriber` re-raises as `TranscriptionError`.
 - **Retry on 502/503/504.** `ModalTranscriptionClient` retries once with exponential backoff + jitter for `httpx.ConnectError` and 5xx status codes.
 - **Invalid response.** If Modal JSON lacks a string `text` field, `TranscriptionError` is raised.
+
+## Media summarization
+
+Image, video, and document messages are summarized lazily by the analysis worker, mirroring the audio transcription pattern. The webhook stores the media download URL and returns immediately; the worker downloads and summarizes when it picks up the chat.
+
+### Why lazy
+
+- Same rationale as audio transcription: webhooks must acknowledge quickly, and OpenAI vision calls can take several seconds.
+- Media metadata is durable in the `messages` table, so summarization can happen later without losing the URL.
+- If summarization is disabled or fails, the media message is analyzed with `text=""` — no crash, no blocked webhook.
+
+### Flow
+
+1. **Ingestion.** A Green `imageMessage`/`videoMessage`/`documentMessage` webhook is parsed by `GreenEventAdapter._extract_media_metadata`, populating `media_download_url`, `media_mime_type`, `media_file_name` on `ProviderMessageEvent`.
+2. **Persistence.** `ChatIngestionService` stores the `Message` with `text=None` (or the caption, if Green provided one) and the media fields set.
+3. **Trigger.** The `ChatAnalysisWorker` polls `ChatStateRepository.list_due` for due chats.
+4. **Load conversation.** `ChatAnalysisProcessor.process` calls `MessageRepository.list_for_analysis` to load the message window.
+5. **Count media.** The processor counts image/video/document messages and those with a download URL.
+6. **Lazy summarization.** If a `MediaSummarizer` is configured and there is at least one media message with `media_download_url` and `text is None`, `_summarize_media_messages` is called.
+7. **Per-message summarization.** For each qualifying media message, `MediaSummarizer.summarize_media(...)` is called:
+   - **Image** — downloaded and sent to a vision-capable model (`gpt-4o`) as a base64 data URL; the model returns a one-or-two-sentence description.
+   - **Document** — downloaded; text-like files (text, JSON, CSV, markdown, etc.) are decoded and summarized by the text model; PDFs are sent to the vision model as a base64 file; other binary types fall back to a `[document: <file_name>]` placeholder.
+   - **Video** — frame extraction is out of scope for the basic version; the caption or a `[video: <file_name>]` placeholder is used.
+8. **Persist summary.** On success, `MessageRepository.update_text(msg.id, summary.text)` is called, then the message dataclass is replaced with `text=summary.text`.
+9. **Failure fallback.** If summarization fails, the exception is logged and the message remains `text=None`; the `ConversationInput` uses `text=""` for that message.
+10. **Analysis.** The `ConversationInput` is built from `(direction, text, timestamp)` tuples and passed to `LLMWaitingForMeAnalyzer.analyze`.
+
+### Design decisions
+
+- **Provider-neutral `MediaSummarizer` port.** The processor depends only on the `MediaSummarizer` protocol; `OpenAIMediaSummarizer` is the implementation, reusing the injected OpenAI client (optionally LangSmith-wrapped).
+- **Basic-scope summaries.** One or two sentences, in the source content's language. Not a full document analysis — just enough for the waiting-for-me analyzer to see what was shared.
+- **Summary persisted back to `text`.** After summarization, the same `text` column used for textual messages holds the summary, keeping the analyzer interface uniform.
+- **Summarization failures are non-fatal.** A bad image or document does not block the entire waiting-for-me pipeline.
+- **Link summarization.** `MediaSummarizer.summarize_link(url)` fetches a URL, strips HTML, and summarizes the text. Best-effort: fetch failures degrade to a `[link: <url>]` placeholder. (Not yet wired into the processor; available for future use.)
+
+### Error handling
+
+- **Summarization disabled.** If no `MediaSummarizer` is injected, the processor logs `media_summarizer=None` and media messages are analyzed with `text=""`.
+- **Download errors.** `download_media` raises on `httpx` errors or if the response exceeds 20 MB; the caller catches, logs, and leaves `text=None`.
+- **Vision/text API errors.** The summarizer catches OpenAI API errors and returns a placeholder summary (`[image]`, `[document: <file_name>]`) so the analyzer still sees that media was shared.
+- **Unsupported media types.** Return a `[unsupported media: <type>]` placeholder; the analyzer sees that something was shared but cannot describe it.
 
 ## Morning digest
 

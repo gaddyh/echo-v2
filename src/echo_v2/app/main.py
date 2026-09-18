@@ -275,6 +275,7 @@ def create_app() -> FastAPI:
     )
 
     # --- chat analysis worker (NOT started by default — CHAT_ANALYSIS_ENABLED)
+    from echo_v2.services.media_summarizer import OpenAIMediaSummarizer
     from echo_v2.services.transcription_factory import build_transcriber
     from echo_v2.services.waiting_for_me_analyzer import LLMWaitingForMeAnalyzer
 
@@ -283,6 +284,9 @@ def create_app() -> FastAPI:
         "transcriber built: %s",
         type(transcriber).__name__ if transcriber else "None",
     )
+
+    media_summarizer = OpenAIMediaSummarizer(client=openai_client)
+    _logger.info("media summarizer built: %s", type(media_summarizer).__name__)
 
     analyzer = LLMWaitingForMeAnalyzer(
         client=openai_client,
@@ -294,6 +298,7 @@ def create_app() -> FastAPI:
         context_messages=5,
         max_no_outbound=20,
         transcriber=transcriber,
+        media_summarizer=media_summarizer,
     )
     from echo_v2.services.analysis_judge import AnalysisJudge
 
