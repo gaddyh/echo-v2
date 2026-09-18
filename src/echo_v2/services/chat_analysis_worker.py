@@ -555,13 +555,15 @@ class ChatAnalysisWorker:
                     # Flush tracing client so the judge run is persisted to the
                     # server before we try to add it to the annotation queue.
                     tracing_client.flush()
-                    # Use the SmithDB-backed runs= API (RunKey with session_id +
-                    # start_time). The start_time must be the judge run's own
-                    # start_time, not the parent analysis run's.
-                    tracing_client.add_runs_to_annotation_queue(
+                    # Use the new annotation-queues items API (POST /items)
+                    # instead of the deprecated runs/by-key endpoint.
+                    # Each item needs run_id, session_id (project UUID), and
+                    # start_time for the SmithDB-backed lookup.
+                    await tracing_client.annotation_queues.items.create(
                         queue_id=queue_id,
-                        runs=[
+                        items=[
                             {
+                                "item_type": "RUN",
                                 "run_id": judge_result.run_id,
                                 "session_id": session_id,
                                 "start_time": judge_result.run_start_time or "",
