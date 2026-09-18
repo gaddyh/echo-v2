@@ -197,6 +197,20 @@ After each analysis run, an LLM judge (`services/analysis_judge.py`) evaluates w
 
 The judge uses a different model (`JUDGE_MODEL_NAME`, default `gpt-5.4`) from the analyzer (`gpt-5.6-luna`) to reduce same-model bias. Judge scores are visible in the LangSmith dashboard as feedback on each `wfm.analysis` run.
 
+### Judge disagreement flywheel
+
+When the judge scores 0.0 (disagreement) or 0.5 (ambiguous), the `wfm.analysis` run is automatically added to a LangSmith annotation queue for human review. The annotator labels the correct decision, creating a flywheel:
+
+```
+Judge disagrees → annotation queue → human labels → new eval cases → better judge/analyzer
+```
+
+Setup:
+```bash
+.venv/bin/python scripts/setup_annotation_queue.py   # creates queue, prints ID
+# Add to .env: JUDGE_ANNOTATION_QUEUE_ID=<id from script output>
+```
+
 ### Logging
 
 - No phone numbers, message text, user names, or raw LLM reasons are logged.
@@ -425,6 +439,7 @@ pytest -m eval -k judge -v -s      # Judge eval harness (real API calls)
 | `LANGSMITH_WORKSPACE_ID` | No | — | LangSmith workspace ID |
 | `OBSERVABILITY_HASH_KEY` | If tracing | — | HMAC key for hashing IDs in trace metadata (required when `LANGSMITH_TRACING=true`) |
 | `JUDGE_MODEL_NAME` | No | `gpt-5.4` | LLM model for the judge (different from analyzer to reduce bias) |
+| `JUDGE_ANNOTATION_QUEUE_ID` | No | — | LangSmith annotation queue ID for judge disagreements (score 0.0/0.5). Create with `scripts/setup_annotation_queue.py` |
 | `ECHO_OWNER_PHONE` | No | — | Phone number for WhatsApp alert summaries |
 | `ALERT_CHECKER_ENABLED` | No | `false` | Start the alert checker background task |
 | `ALERT_CHECKER_POLL_INTERVAL` | No | `300` | Alert checker poll interval (seconds) |

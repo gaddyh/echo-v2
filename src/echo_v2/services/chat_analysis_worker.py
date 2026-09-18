@@ -35,6 +35,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import logging
+import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Literal, Protocol, runtime_checkable
@@ -500,6 +501,26 @@ class ChatAnalysisWorker:
                     score=judge_result.score,
                     comment=judge_result.explanation,
                 )
+                # Flywheel: send disagreements (0.0) and ambiguous cases (0.5)
+                # to the annotation queue for human review.
+                queue_id = os.environ.get("JUDGE_ANNOTATION_QUEUE_ID", "")
+                if queue_id and judge_result.score <= 0.5:
+                    try:
+                        tracing_client.add_runs_to_annotation_queue(
+                            queue_id=queue_id,
+                            run_ids=[str(run_tree.id)],
+                        )
+                        _logger.info(
+                            "judge score=%.1f → added to annotation queue %s",
+                            judge_result.score,
+                            queue_id,
+                        )
+                    except Exception:
+                        _logger.warning(
+                            "failed to add run to annotation queue %s",
+                            queue_id,
+                            exc_info=True,
+                        )
             _logger.info(
                 "judge score=%.1f: %s",
                 judge_result.score,

@@ -572,6 +572,21 @@ After each analysis run, an LLM judge (`services/analysis_judge.py`) evaluates w
 - Judge scores visible in the LangSmith dashboard as feedback on each `wfm.analysis` run
 - Evaluated against golden labels via `tests/evaluation/test_judge_eval.py` (baseline: 97.9% agreement on sanity, 100% on SOC, 100% on SOC-2508)
 
+### Judge disagreement flywheel
+
+When the judge scores 0.0 (disagreement) or 0.5 (ambiguous), the `wfm.analysis` run is automatically added to a LangSmith annotation queue (`JUDGE_ANNOTATION_QUEUE_ID`) for human review. The annotator labels the correct decision, creating a feedback loop:
+
+```
+Judge disagrees → annotation queue → human labels → new eval cases → better judge/analyzer
+```
+
+The queue is created via `scripts/setup_annotation_queue.py` with a rubric asking:
+1. `correct_decision` — What should the analyzer have decided? (WFM / NWM / UNC)
+2. `judge_was_correct` — Was the judge right to flag this case? (yes / no)
+3. `annotation_notes` — Free-form observations
+
+Queue additions are best-effort: failures log a warning but never crash the analysis pipeline.
+
 ### Logging
 
 - No phone numbers, message text, user names, or raw LLM reasons are logged.
