@@ -665,6 +665,11 @@ class OnboardingService:
 
         Returns ``True`` on ``notAuthorized``. Returns ``False`` on timeout
         or ``authorized`` (an authorized instance is not a fresh slot).
+
+        A 401 immediately after ``createInstance`` is a Green propagation
+        delay (the instance exists but Green's auth hasn't propagated yet),
+        NOT a permanent auth error. So we keep polling through all exceptions
+        until the timeout.
         """
         for _ in range(self._poll_max_attempts):
             try:
@@ -791,7 +796,7 @@ class OnboardingService:
                         )
 
             except Exception as exc:  # noqa: BLE001
-                # 401 can happen transiently during creation — keep polling.
+                # Transient (network, 429, 5xx, 401 propagation delay) — keep polling.
                 _logger.info(
                     "onboarding: getStateInstance failed (attempt=%d): %s",
                     attempt + 1,

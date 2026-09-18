@@ -82,7 +82,7 @@ class GreenInstancePool:
         webhook_base_url: str,
         target_size: int = 1,
         ready_poll_interval: float = 2.0,
-        ready_max_attempts: int = 30,
+        ready_max_attempts: int = 90,
     ) -> None:
         self._provisioner = provisioner
         self._green_client = green_client
@@ -234,26 +234,47 @@ class GreenInstancePool:
             await self._repo.delete_row(row.id)
 
     async def _recover_failed(self) -> None:
-        # Best-effort delete Green instances for failed rows with provider id.
+        # A failed row means the ready poll timed out. But Green's auth
+        # propagation can be slow — the instance may have become ready
+        # *after* we timed out. Re-check state before deleting:
+        # - notAuthorized → mark available (recover the instance).
+        # - authorized → best-effort delete + delete row (not a fresh slot).
+        # - else (still failing / 401 / timeout) → best-effort delete + delete row.
         failed_with_id = await self._repo.get_failed_with_provider_id()
         for row in failed_with_id:
-            if row.provider_connection_id is not None:
-                await self._best_effort_delete_green(row.provider_connection_id)
+            if row.provider_connection_id is None or row.credentials is None:
+                await self._repo.delete_row(row.id)
+                continue
+            api_token = row.credentials.data.decode("utf-8")
+            state = await self._safe_get_state(
+                row.provider_connection_id, api_token,
+            )
+            if state == "notAuthorized":
+                _logger.info(
+                    "pool recovery: failed row %s is now notAuthorized, "
+                    "marking available (id=%s)",
+                    row.id, row.provider_connection_id,
+                )
+                await self._repo.mark_available(row.id)
+                continue
+            # Still not ready — best-effort delete + delete row.
+            _logger.info(
+                "pool recovery: failed row %s still not ready (state=%s), "
+                "cleaning up (id=%s)",
+                row.id, state, row.provider_connection_id,
+            )
+            await self._best_effort_delete_green(row.provider_connection_id)
             await self._repo.delete_row(row.id)
-        # Delete failed rows without provider id.
+        # Delete failed rows without provider id or credentials.
         all_failed = await self._repo.get_by_state("failed")
         for row in all_failed:
             await self._repo.delete_row(row.id)
 
     async def _fill_to_target(self) -> None:
-        # Clean up failed rows first so they don't cause infinite refill loops.
-        # Failed rows with provider_id get a best-effort Green delete.
-        for row in await self._repo.get_failed_with_provider_id():
-            if row.provider_connection_id is not None:
-                await self._best_effort_delete_green(row.provider_connection_id)
-            await self._repo.delete_row(row.id)
-        for row in await self._repo.get_by_state("failed"):
-            await self._repo.delete_row(row.id)
+        # Failed rows are NOT cleaned up here — they count toward capacity
+        # (reserve_creation_slot counts creating + available + failed) so the
+        # pool doesn't immediately re-create after a permanent failure.
+        # Failed rows are cleaned up on ensure_capacity (startup recovery).
         while True:
             row_id = await self._repo.reserve_creation_slot(self._target_size)
             if row_id is None:
@@ -332,6 +353,11 @@ class GreenInstancePool:
         Returns ``True`` on ``notAuthorized``. Returns ``False`` on timeout
         or ``authorized`` (an authorized instance is not a fresh slot — it's
         suspicious and should be cleaned up).
+
+        A 401 immediately after ``createInstance`` is a Green propagation
+        delay (the instance exists but Green's auth hasn't propagated yet),
+        NOT a permanent auth error. So we keep polling through all exceptions
+        until the timeout. The instance may become usable on a later attempt.
         """
         for _ in range(self._ready_max_attempts):
             try:
