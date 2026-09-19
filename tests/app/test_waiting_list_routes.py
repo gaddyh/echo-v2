@@ -1289,3 +1289,170 @@ async def test_set_starred_service_returns_none_returns_401():
             )
     assert resp.status_code == 401
     assert resp.json()["detail"] == "session invalid"
+
+
+# --- button consistency validator ------------------------------------------
+
+
+async def test_api_action_with_matching_button_accepted():
+    """button='done' with action='done' is accepted (consistent)."""
+    app, token_service, service, active_repo = _make_app()
+    _, raw_token = await token_service.issue(USER_ID)
+    active_id = await _setup_active(active_repo, service._chat_state_repo)
+    async with _client(app) as client:
+        await client.get(f"/q/{raw_token}")
+        resp = await client.post(
+            f"/api/waiting/items/{active_id}/actions",
+            json={
+                "action_id": "action-1",
+                "expected_version": 1,
+                "action": "done",
+                "button": "done",
+            },
+        )
+    assert resp.status_code == 200
+    assert resp.json()["outcome"] == "applied"
+
+
+async def test_api_action_with_mismatched_button_rejected():
+    """button='done' with action='snooze' is rejected (422)."""
+    app, token_service, service, active_repo = _make_app()
+    _, raw_token = await token_service.issue(USER_ID)
+    active_id = await _setup_active(active_repo, service._chat_state_repo)
+    async with _client(app) as client:
+        await client.get(f"/q/{raw_token}")
+        resp = await client.post(
+            f"/api/waiting/items/{active_id}/actions",
+            json={
+                "action_id": "action-1",
+                "expected_version": 1,
+                "action": "snooze",
+                "button": "done",
+            },
+        )
+    assert resp.status_code == 422
+
+
+async def test_api_action_without_button_accepted():
+    """button=None (old client) is accepted — backward compat."""
+    app, token_service, service, active_repo = _make_app()
+    _, raw_token = await token_service.issue(USER_ID)
+    active_id = await _setup_active(active_repo, service._chat_state_repo)
+    async with _client(app) as client:
+        await client.get(f"/q/{raw_token}")
+        resp = await client.post(
+            f"/api/waiting/items/{active_id}/actions",
+            json={
+                "action_id": "action-1",
+                "expected_version": 1,
+                "action": "done",
+            },
+        )
+    assert resp.status_code == 200
+    assert resp.json()["outcome"] == "applied"
+
+
+async def test_api_action_snooze_other_with_snooze_action_accepted():
+    """button='snooze_other' with action='snooze' is accepted (consistent)."""
+    app, token_service, service, active_repo = _make_app()
+    _, raw_token = await token_service.issue(USER_ID)
+    active_id = await _setup_active(active_repo, service._chat_state_repo)
+    async with _client(app) as client:
+        await client.get(f"/q/{raw_token}")
+        resp = await client.post(
+            f"/api/waiting/items/{active_id}/actions",
+            json={
+                "action_id": "action-1",
+                "expected_version": 1,
+                "action": "snooze",
+                "button": "snooze_other",
+                "snooze_preset": "1h",
+            },
+        )
+    assert resp.status_code == 200
+    assert resp.json()["outcome"] == "applied"
+
+
+async def test_api_action_not_needed_with_dismiss_action_accepted():
+    """button='not_needed' with action='dismiss' is accepted (consistent)."""
+    app, token_service, service, active_repo = _make_app()
+    _, raw_token = await token_service.issue(USER_ID)
+    active_id = await _setup_active(active_repo, service._chat_state_repo)
+    async with _client(app) as client:
+        await client.get(f"/q/{raw_token}")
+        resp = await client.post(
+            f"/api/waiting/items/{active_id}/actions",
+            json={
+                "action_id": "action-1",
+                "expected_version": 1,
+                "action": "dismiss",
+                "button": "not_needed",
+                "dismiss_reason": "no_response_required",
+            },
+        )
+    assert resp.status_code == 200
+    assert resp.json()["outcome"] == "applied"
+
+
+async def test_api_action_false_positive_with_dismiss_action_accepted():
+    """button='false_positive' with action='dismiss' is accepted (consistent)."""
+    app, token_service, service, active_repo = _make_app()
+    _, raw_token = await token_service.issue(USER_ID)
+    active_id = await _setup_active(active_repo, service._chat_state_repo)
+    async with _client(app) as client:
+        await client.get(f"/q/{raw_token}")
+        resp = await client.post(
+            f"/api/waiting/items/{active_id}/actions",
+            json={
+                "action_id": "action-1",
+                "expected_version": 1,
+                "action": "dismiss",
+                "button": "false_positive",
+                "dismiss_reason": "detected_incorrectly",
+            },
+        )
+    assert resp.status_code == 200
+    assert resp.json()["outcome"] == "applied"
+
+
+async def test_api_action_send_button_rejected_on_action_endpoint():
+    """button='send' is not valid for ActionRequest (only SendRequest)."""
+    app, token_service, service, active_repo = _make_app()
+    _, raw_token = await token_service.issue(USER_ID)
+    active_id = await _setup_active(active_repo, service._chat_state_repo)
+    async with _client(app) as client:
+        await client.get(f"/q/{raw_token}")
+        resp = await client.post(
+            f"/api/waiting/items/{active_id}/actions",
+            json={
+                "action_id": "action-1",
+                "expected_version": 1,
+                "action": "done",
+                "button": "send",
+            },
+        )
+    assert resp.status_code == 422
+
+
+async def test_api_send_with_button_send_accepted():
+    """button='send' on SendRequest is accepted."""
+    app, token_service, service, active_repo = _make_app()
+    _, raw_token = await token_service.issue(USER_ID)
+    active_id = await _setup_active(active_repo, service._chat_state_repo)
+    async with _client(app) as client:
+        await client.get(f"/q/{raw_token}")
+        resp = await client.post(
+            f"/api/waiting/items/{active_id}/send",
+            json={
+                "request_id": "11111111-1111-1111-1111-111111111111",
+                "message": "היי",
+                "send_preset": "1h",
+                "button": "send",
+            },
+        )
+    # Will be 200 (scheduled) or 422 (invalid) depending on scheduling config,
+    # but NOT 422 from the button validator.
+    assert resp.status_code in (200, 422)
+    if resp.status_code == 422:
+        # Must be a timing/scheduling error, not a button validation error.
+        assert "button" not in str(resp.json())

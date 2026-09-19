@@ -308,6 +308,39 @@ def build_overview_dashboard(section_id: str) -> None:
                 }
             ],
         },
+        # 14. Bar — successful mini-app button actions per user, split by button
+        {
+            "title": "Successful Button Actions Per User",
+            "description": (
+                "Mini-app button clicks (APPLIED/scheduled only) grouped by "
+                "user_id_hash, split by button (done, send, snooze, "
+                "snooze_other, not_needed, false_positive)"
+            ),
+            "chart_type": "bar",
+            "series": [
+                {
+                    "name": btn,
+                    "metric_definition": {"type": "count"},
+                    "filter_definition": project_filter(),
+                    "filters": {
+                        "filter": (
+                            f'and(eq(name, "wfm.miniapp.button_click"), '
+                            f'and(eq(metadata_key, "button"), '
+                            f'eq(metadata_value, "{btn}")))'
+                        )
+                    },
+                    "group_by_definitions": group_by_metadata("user_id_hash"),
+                }
+                for btn in [
+                    "done",
+                    "send",
+                    "snooze",
+                    "snooze_other",
+                    "not_needed",
+                    "false_positive",
+                ]
+            ],
+        },
     ]
 
     for i, chart in enumerate(charts):

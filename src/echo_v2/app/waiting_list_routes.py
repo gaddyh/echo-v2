@@ -51,6 +51,28 @@ _COOKIE_MAX_AGE = 172800
 _RATE_LIMIT_MAX = 60
 _RATE_LIMIT_WINDOW = 60  # seconds
 
+# All mini-app action buttons (excluding star/context which are not action
+# buttons). Constrained Literal so the client cannot inject garbage values
+# that would inflate LangSmith series cardinality.
+MiniAppActionButton = Literal[
+    "done",
+    "snooze",
+    "snooze_other",
+    "not_needed",
+    "false_positive",
+]
+
+# Mapping from button → expected server action, used by the consistency
+# validator to make `button` trustworthy for analytics without ever driving
+# business behavior. If `button` is set, `action` must match.
+_BUTTON_TO_ACTION: dict[str, str] = {
+    "done": "done",
+    "snooze": "snooze",
+    "snooze_other": "snooze",
+    "not_needed": "dismiss",
+    "false_positive": "dismiss",
+}
+
 
 class ActionRequest(BaseModel):
     """Request body for POST /api/waiting/items/{active_id}/actions."""
@@ -61,6 +83,26 @@ class ActionRequest(BaseModel):
     snooze_preset: str | None = Field(None, description="Snooze preset: morning/afternoon/evening/tomorrow")
     snooze_until: str | None = Field(None, description="ISO 8601 datetime for custom snooze")
     dismiss_reason: str | None = Field(None, description="Dismiss reason: already_handled/no_response_required/detected_incorrectly")
+    button: MiniAppActionButton | None = Field(
+        None, description="Which UI button was clicked (analytics only)"
+    )
+
+    @model_validator(mode="after")
+    def _button_matches_action(self) -> ActionRequest:
+        """If `button` is set, it must be consistent with `action`.
+
+        This makes `button` trustworthy for analytics without ever using it
+        to determine business behavior. Old clients without `button` skip
+        validation.
+        """
+        if self.button is not None:
+            expected = _BUTTON_TO_ACTION.get(self.button)
+            if expected is not None and self.action != expected:
+                raise ValueError(
+                    f"button {self.button!r} requires action {expected!r}, "
+                    f"got {self.action!r}"
+                )
+        return self
 
 
 class SendRequest(BaseModel):
@@ -83,6 +125,9 @@ class SendRequest(BaseModel):
     ] | None = Field(None, description="Time preset for scheduling")
     send_at: datetime | None = Field(
         None, description="ISO 8601 offset-aware datetime for custom scheduling"
+    )
+    button: Literal["send"] | None = Field(
+        None, description="Which UI button was clicked (analytics only)"
     )
 
     @field_validator("message")
@@ -326,6 +371,7 @@ def build_waiting_list_router(
             snooze_preset=body.snooze_preset,
             snooze_until=snooze_until_dt,
             dismiss_reason=body.dismiss_reason,
+            button=body.button,
         )
         if result is None:
             raise HTTPException(status_code=401, detail="session invalid")
@@ -390,6 +436,7 @@ def build_waiting_list_router(
             message=body.message,
             send_preset=body.send_preset,
             send_at=body.send_at,
+            button=body.button,
         )
         if result is None:
             raise HTTPException(status_code=401, detail="session invalid")

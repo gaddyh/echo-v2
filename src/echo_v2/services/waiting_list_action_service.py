@@ -22,8 +22,12 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Literal
 
+from langsmith import traceable
+from langsmith.run_helpers import get_current_run_tree
+
 from echo_v2.domain.feedback import HandlingOutcome, WaitingForMeActionType
 from echo_v2.domain.scheduling import ScheduledActionType
+from echo_v2.observability.privacy import correlation_id
 from echo_v2.persistence.chat_repositories import (
     ChatStateRepository,
     MessageRepository,
@@ -302,6 +306,27 @@ class WaitingListActionService:
             for message in messages
         ]
 
+    @traceable(name="wfm.miniapp.button_click")
+    async def _trace_button_click(self, *, user_id: str, button: str) -> None:
+        """Emit a success-only trace for a mini-app button click.
+
+        Called only after APPLIED (execute_action) or "scheduled"
+        (schedule_send) outcomes so the LangSmith chart counts successful
+        actions, not retries/stale/not_found. Attaches ``button`` and the
+        HMAC-hashed ``user_id_hash`` to the run metadata for per-user
+        grouping.
+
+        Safe when tracing is disabled: ``get_current_run_tree()`` returns
+        ``None`` and the block is a no-op; ``correlation_id`` is never
+        called (so ``OBSERVABILITY_HASH_KEY`` is not required).
+        """
+        run_tree = get_current_run_tree()
+        if run_tree is not None:
+            run_tree.add_metadata({
+                "button": button,
+                "user_id_hash": correlation_id(user_id),
+            })
+
     async def execute_action(
         self,
         session_id: str,
@@ -313,6 +338,7 @@ class WaitingListActionService:
         snooze_preset: str | None = None,
         snooze_until: datetime | None = None,
         dismiss_reason: str | None = None,
+        button: str | None = None,
     ) -> ActionResponse | None:
         """Execute an action on a waiting item.
 
@@ -378,6 +404,11 @@ class WaitingListActionService:
                 item = _view_to_item(view, now=now)
 
         summary = await self._build_summary(session_id, user_id)
+        # Emit a success-only trace for analytics (button clicks per user).
+        # Only APPLIED outcomes are counted — DUPLICATE/STALE/NOT_FOUND are
+        # excluded to avoid inflating the chart with retries.
+        if outcome_str == "applied" and button is not None:
+            await self._trace_button_click(user_id=user_id, button=button)
         return ActionResponse(
             outcome=outcome_str,
             action=action,
@@ -394,6 +425,7 @@ class WaitingListActionService:
         message: str,
         send_preset: str | None = None,
         send_at: datetime | None = None,
+        button: str | None = None,
     ) -> SendResponse | None:
         """Schedule a WhatsApp message to the contact of a waiting item.
 
@@ -490,6 +522,13 @@ class WaitingListActionService:
                 target_version=active.target_version,
                 provider_message_id=f"send:{request_id}",
                 session_id=session_id,
+            )
+        # Emit a success-only trace for analytics (button clicks per user).
+        # Only "scheduled" outcomes are counted — "duplicate" retries are
+        # excluded to avoid inflating the chart.
+        if created:
+            await self._trace_button_click(
+                user_id=user_id, button=button or "send"
             )
         return SendResponse(
             outcome="scheduled" if created else "duplicate",

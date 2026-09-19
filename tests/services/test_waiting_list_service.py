@@ -1498,3 +1498,363 @@ async def test_get_context_media_message_has_null_text():
     assert len(result) == 1
     assert result[0].text is None
     assert result[0].message_type == "image"
+
+
+# --- schedule_send edge cases -----------------------------------------------
+
+
+async def test_schedule_send_without_scheduling_service_returns_invalid():
+    """When scheduling_service is None, schedule_send returns 'invalid'."""
+    service, active_repo, _, _, token_service = _make_service()
+    session_id, _ = await token_service.issue(USER_ID)
+
+    result = await service.schedule_send(
+        session_id=session_id,
+        user_id=USER_ID,
+        active_id="any",
+        request_id="req-1",
+        message="hello",
+        send_preset="1h",
+    )
+    assert result is not None
+    assert result.outcome == "invalid"
+
+
+async def test_schedule_send_invalid_preset_returns_invalid():
+    """An unknown preset (ValueError from preset_to_utc) returns 'invalid'."""
+    service, active_repo, _, _, token_service = _make_service_with_scheduling()
+    session_id, _ = await token_service.issue(USER_ID)
+    active_id = await _setup_chat_and_active(active_repo, service._chat_state_repo)
+
+    result = await service.schedule_send(
+        session_id=session_id,
+        user_id=USER_ID,
+        active_id=active_id,
+        request_id="req-1",
+        message="hello",
+        send_preset="bogus_preset",
+    )
+    assert result is not None
+    assert result.outcome == "invalid"
+
+
+async def test_schedule_send_naive_datetime_returns_invalid():
+    """A naive (tzinfo-less) send_at returns 'invalid'."""
+    service, active_repo, _, _, token_service = _make_service_with_scheduling()
+    session_id, _ = await token_service.issue(USER_ID)
+    active_id = await _setup_chat_and_active(active_repo, service._chat_state_repo)
+
+    result = await service.schedule_send(
+        session_id=session_id,
+        user_id=USER_ID,
+        active_id=active_id,
+        request_id="req-1",
+        message="hello",
+        send_at=datetime(2099, 1, 1, 10, 0),  # naive — no tzinfo
+    )
+    assert result is not None
+    assert result.outcome == "invalid"
+
+
+async def test_schedule_send_past_datetime_returns_invalid():
+    """A send_at in the past returns 'invalid'."""
+    service, active_repo, _, _, token_service = _make_service_with_scheduling()
+    session_id, _ = await token_service.issue(USER_ID)
+    active_id = await _setup_chat_and_active(active_repo, service._chat_state_repo)
+
+    result = await service.schedule_send(
+        session_id=session_id,
+        user_id=USER_ID,
+        active_id=active_id,
+        request_id="req-1",
+        message="hello",
+        send_at=datetime(2020, 1, 1, 10, 0, tzinfo=timezone.utc),
+    )
+    assert result is not None
+    assert result.outcome == "invalid"
+
+
+async def test_schedule_send_both_preset_and_send_at_returns_invalid():
+    """Providing both send_preset and send_at returns 'invalid'."""
+    service, active_repo, _, _, token_service = _make_service_with_scheduling()
+    session_id, _ = await token_service.issue(USER_ID)
+    active_id = await _setup_chat_and_active(active_repo, service._chat_state_repo)
+
+    result = await service.schedule_send(
+        session_id=session_id,
+        user_id=USER_ID,
+        active_id=active_id,
+        request_id="req-1",
+        message="hello",
+        send_preset="1h",
+        send_at=datetime(2099, 1, 1, 10, 0, tzinfo=timezone.utc),
+    )
+    assert result is not None
+    assert result.outcome == "invalid"
+
+
+async def test_schedule_send_neither_preset_nor_send_at_returns_invalid():
+    """Providing neither send_preset nor send_at returns 'invalid'."""
+    service, active_repo, _, _, token_service = _make_service_with_scheduling()
+    session_id, _ = await token_service.issue(USER_ID)
+    active_id = await _setup_chat_and_active(active_repo, service._chat_state_repo)
+
+    result = await service.schedule_send(
+        session_id=session_id,
+        user_id=USER_ID,
+        active_id=active_id,
+        request_id="req-1",
+        message="hello",
+    )
+    assert result is not None
+    assert result.outcome == "invalid"
+
+
+async def test_schedule_send_empty_message_returns_invalid():
+    """An empty/whitespace message returns 'invalid'."""
+    service, active_repo, _, _, token_service = _make_service_with_scheduling()
+    session_id, _ = await token_service.issue(USER_ID)
+    active_id = await _setup_chat_and_active(active_repo, service._chat_state_repo)
+
+    result = await service.schedule_send(
+        session_id=session_id,
+        user_id=USER_ID,
+        active_id=active_id,
+        request_id="req-1",
+        message="   ",
+        send_preset="1h",
+    )
+    assert result is not None
+    assert result.outcome == "invalid"
+
+
+async def test_schedule_send_active_not_found_returns_not_found():
+    """Active item missing or owned by another user returns 'not_found'."""
+    service, _, _, _, token_service = _make_service_with_scheduling()
+    session_id, _ = await token_service.issue(USER_ID)
+
+    result = await service.schedule_send(
+        session_id=session_id,
+        user_id=USER_ID,
+        active_id="nonexistent",
+        request_id="req-1",
+        message="hello",
+        send_preset="1h",
+    )
+    assert result is not None
+    assert result.outcome == "not_found"
+
+
+# --- _trace_button_click: success-only analytics trace ----------------------
+
+
+async def test_execute_action_applied_traces_button_click():
+    """APPLIED outcome with button set → _trace_button_click called."""
+    from unittest.mock import AsyncMock, patch
+
+    service, active_repo, _, _, token_service = _make_service()
+    session_id, _ = await token_service.issue(USER_ID)
+    active_id = await _setup_chat_and_active(active_repo, service._chat_state_repo)
+
+    with patch.object(
+        service, "_trace_button_click", new=AsyncMock()
+    ) as mock_trace:
+        result = await service.execute_action(
+            session_id=session_id,
+            user_id=USER_ID,
+            active_id=active_id,
+            action_id="action-1",
+            expected_version=1,
+            action="done",
+            button="done",
+        )
+    assert result is not None
+    assert result.outcome == "applied"
+    mock_trace.assert_awaited_once_with(user_id=USER_ID, button="done")
+
+
+async def test_execute_action_duplicate_does_not_trace_button_click():
+    """DUPLICATE outcome → _trace_button_click NOT called (excludes retries)."""
+    from unittest.mock import AsyncMock, patch
+
+    service, active_repo, _, _, token_service = _make_service()
+    session_id, _ = await token_service.issue(USER_ID)
+    active_id = await _setup_chat_and_active(active_repo, service._chat_state_repo)
+
+    # First call succeeds.
+    await service.execute_action(
+        session_id=session_id,
+        user_id=USER_ID,
+        active_id=active_id,
+        action_id="action-1",
+        expected_version=1,
+        action="done",
+        button="done",
+    )
+
+    # Retry with same action_id → duplicate, no trace.
+    with patch.object(
+        service, "_trace_button_click", new=AsyncMock()
+    ) as mock_trace:
+        result = await service.execute_action(
+            session_id=session_id,
+            user_id=USER_ID,
+            active_id=active_id,
+            action_id="action-1",
+            expected_version=1,
+            action="done",
+            button="done",
+        )
+    assert result is not None
+    assert result.outcome == "duplicate"
+    mock_trace.assert_not_awaited()
+
+
+async def test_execute_action_stale_does_not_trace_button_click():
+    """STALE outcome → _trace_button_click NOT called."""
+    from unittest.mock import AsyncMock, patch
+
+    service, active_repo, _, _, token_service = _make_service()
+    session_id, _ = await token_service.issue(USER_ID)
+    active_id = await _setup_chat_and_active(active_repo, service._chat_state_repo)
+
+    with patch.object(
+        service, "_trace_button_click", new=AsyncMock()
+    ) as mock_trace:
+        result = await service.execute_action(
+            session_id=session_id,
+            user_id=USER_ID,
+            active_id=active_id,
+            action_id="action-1",
+            expected_version=99,  # wrong version → stale
+            action="done",
+            button="done",
+        )
+    assert result is not None
+    assert result.outcome == "stale"
+    mock_trace.assert_not_awaited()
+
+
+async def test_execute_action_applied_without_button_does_not_trace():
+    """APPLIED but button=None (old client) → no trace (nothing to group by)."""
+    from unittest.mock import AsyncMock, patch
+
+    service, active_repo, _, _, token_service = _make_service()
+    session_id, _ = await token_service.issue(USER_ID)
+    active_id = await _setup_chat_and_active(active_repo, service._chat_state_repo)
+
+    with patch.object(
+        service, "_trace_button_click", new=AsyncMock()
+    ) as mock_trace:
+        result = await service.execute_action(
+            session_id=session_id,
+            user_id=USER_ID,
+            active_id=active_id,
+            action_id="action-1",
+            expected_version=1,
+            action="done",
+            button=None,
+        )
+    assert result is not None
+    assert result.outcome == "applied"
+    mock_trace.assert_not_awaited()
+
+
+async def test_schedule_send_scheduled_traces_button_click():
+    """schedule_send with outcome='scheduled' → _trace_button_click called."""
+    from unittest.mock import AsyncMock, patch
+
+    service, active_repo, _, _, token_service = _make_service_with_scheduling()
+    session_id, _ = await token_service.issue(USER_ID)
+    active_id = await _setup_chat_and_active(active_repo, service._chat_state_repo)
+
+    with patch.object(
+        service, "_trace_button_click", new=AsyncMock()
+    ) as mock_trace:
+        result = await service.schedule_send(
+            session_id=session_id,
+            user_id=USER_ID,
+            active_id=active_id,
+            request_id="req-1",
+            message="hello",
+            send_preset="1h",
+            button="send",
+        )
+    assert result is not None
+    assert result.outcome == "scheduled"
+    mock_trace.assert_awaited_once_with(user_id=USER_ID, button="send")
+
+
+async def test_schedule_send_duplicate_does_not_trace_button_click():
+    """schedule_send with outcome='duplicate' → _trace_button_click NOT called."""
+    from unittest.mock import AsyncMock, patch
+
+    service, active_repo, _, _, token_service = _make_service_with_scheduling()
+    session_id, _ = await token_service.issue(USER_ID)
+    active_id = await _setup_chat_and_active(active_repo, service._chat_state_repo)
+
+    # First call schedules.
+    await service.schedule_send(
+        session_id=session_id,
+        user_id=USER_ID,
+        active_id=active_id,
+        request_id="req-1",
+        message="hello",
+        send_preset="1h",
+        button="send",
+    )
+
+    # Retry with same request_id → duplicate, no trace.
+    with patch.object(
+        service, "_trace_button_click", new=AsyncMock()
+    ) as mock_trace:
+        result = await service.schedule_send(
+            session_id=session_id,
+            user_id=USER_ID,
+            active_id=active_id,
+            request_id="req-1",
+            message="hello",
+            send_preset="1h",
+            button="send",
+        )
+    assert result is not None
+    assert result.outcome == "duplicate"
+    mock_trace.assert_not_awaited()
+
+
+async def test_trace_button_click_attaches_metadata_when_run_tree_present():
+    """_trace_button_click attaches button + user_id_hash to the run tree."""
+    import os
+    from unittest.mock import MagicMock, patch
+
+    service, _, _, _, _ = _make_service()
+
+    fake_run = MagicMock()
+    with patch(
+        "echo_v2.services.waiting_list_action_service.get_current_run_tree",
+        return_value=fake_run,
+    ), patch.dict(os.environ, {"OBSERVABILITY_HASH_KEY": "test-key-12345"}):
+        from echo_v2.observability.privacy import _reset_key_cache
+        _reset_key_cache()
+        await service._trace_button_click(user_id=USER_ID, button="done")
+
+    fake_run.add_metadata.assert_called_once()
+    meta = fake_run.add_metadata.call_args.args[0]
+    assert meta["button"] == "done"
+    assert "user_id_hash" in meta
+    assert meta["user_id_hash"]  # non-empty HMAC hash
+    _reset_key_cache()
+
+
+async def test_trace_button_click_noop_when_no_run_tree():
+    """_trace_button_click is a no-op when no run tree (tracing disabled)."""
+    from unittest.mock import patch
+
+    service, _, _, _, _ = _make_service()
+
+    with patch(
+        "echo_v2.services.waiting_list_action_service.get_current_run_tree",
+        return_value=None,
+    ):
+        # Should not raise even without OBSERVABILITY_HASH_KEY.
+        await service._trace_button_click(user_id=USER_ID, button="done")

@@ -843,19 +843,19 @@ async function handleAction(card, activeId, expectedVersion, action) {
     return;
   }
   if (action === "snooze") {
-    await sendAction(card, activeId, expectedVersion, "snooze", {snooze_preset: "1h"}, "⏰ אזכיר בעוד שעה");
+    await sendAction(card, activeId, expectedVersion, "snooze", "snooze", {snooze_preset: "1h"}, "⏰ אזכיר בעוד שעה");
     return;
   }
   if (action === "tomorrow") {
-    await sendAction(card, activeId, expectedVersion, "snooze", {snooze_preset: "tomorrow"}, "⏰ אזכיר מחר בבוקר");
+    await sendAction(card, activeId, expectedVersion, "snooze", "snooze", {snooze_preset: "tomorrow"}, "⏰ אזכיר מחר בבוקר");
     return;
   }
   if (action === "not_needed") {
-    await sendAction(card, activeId, expectedVersion, "dismiss", {dismiss_reason: "no_response_required"}, "👌 יישאר בהמתנה");
+    await sendAction(card, activeId, expectedVersion, "dismiss", "not_needed", {dismiss_reason: "no_response_required"}, "👌 יישאר בהמתנה");
     return;
   }
   if (action === "false_positive") {
-    await sendAction(card, activeId, expectedVersion, "dismiss", {dismiss_reason: "detected_incorrectly"}, "🧠 Echo לומד מהפידבק");
+    await sendAction(card, activeId, expectedVersion, "dismiss", "false_positive", {dismiss_reason: "detected_incorrectly"}, "🧠 Echo לומד מהפידבק");
     return;
   }
   if (action === "snooze_other") {
@@ -878,14 +878,15 @@ async function handleAction(card, activeId, expectedVersion, action) {
     return;
   }
   // done
-  await sendAction(card, activeId, expectedVersion, "done", null, "✓ טופל");
+  await sendAction(card, activeId, expectedVersion, "done", "done", null, "✓ טופל");
 }
 
-async function sendAction(card, activeId, expectedVersion, action, extra, successToast) {
+async function sendAction(card, activeId, expectedVersion, action, button, extra, successToast) {
   const buttons = card.querySelectorAll("button");
   buttons.forEach(b => b.disabled = true);
   const actionId = crypto.randomUUID();
   const body = {action_id: actionId, expected_version: expectedVersion, action: action};
+  if (button) body.button = button;
   if (extra) Object.assign(body, extra);
   try {
     const resp = await fetchAPI("/items/" + activeId + "/actions", {
@@ -1017,7 +1018,7 @@ document.querySelectorAll("#snooze-overlay .overlay-option[data-preset]").forEac
     const preset = btn.dataset.preset;
     closeSnooze();
     if (pendingAction) {
-      sendAction(pendingAction.card, pendingAction.activeId, pendingAction.expectedVersion, "snooze", {snooze_preset: preset}, snoozePresetToast(preset));
+      sendAction(pendingAction.card, pendingAction.activeId, pendingAction.expectedVersion, "snooze", "snooze_other", {snooze_preset: preset}, snoozePresetToast(preset));
       pendingAction = null;
     }
   });
@@ -1092,6 +1093,7 @@ async function submitSendWith(extra, successToast) {
   const body = {
     request_id: pendingAction.requestId,
     message: msg,
+    button: "send",
   };
   Object.assign(body, extra);
   try {
