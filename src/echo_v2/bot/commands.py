@@ -147,6 +147,7 @@ _CONSENT_PHRASE = "חברו אותי"
 _CODE_KEYWORD = "קוד"
 _QR_KEYWORD = "qr"
 _DIGEST_KEYWORD = "סיכום חדש"
+_DIGEST_KEYWORDS = ("סיכום חדש", "סיכום שיחה", "חדש")
 _VIEW_DETAILS_BUTTON = "צפה בשיחות"
 _LIST_DONE_TEXT = "סיימתי לעבור על רשימת ההמתנה"
 _CANCEL_KEYWORDS = {"cancel", "בטל", "ביטול", "stop"}
@@ -230,7 +231,7 @@ class BotCommandParser:
             return OnboardingCode()
         if stripped.lower() == _QR_KEYWORD:
             return OnboardingQr()
-        if _DIGEST_KEYWORD in stripped:
+        if any(kw in stripped for kw in _DIGEST_KEYWORDS):
             return DigestOpen()
         if stripped.strip("[]") == _VIEW_DETAILS_BUTTON:
             return ResponsibilityList()

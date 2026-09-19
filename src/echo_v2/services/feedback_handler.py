@@ -34,6 +34,7 @@ from datetime import datetime, timezone
 
 from langsmith import traceable
 
+from echo_v2.bot.commands import _DIGEST_KEYWORDS
 from echo_v2.domain.feedback import HandlingOutcome
 from echo_v2.observability.sanitizers import (
     safe_feedback_handle_inputs,
@@ -165,11 +166,11 @@ class FeedbackHandler:
             await self._bot.send_text(event.user_phone, _LIST_DONE_REPLY)
             return True
 
-        # 0b. User requests a new digest ("סיכום חדש" / "סיכום חדש בבקשה").
+        # 0b. User requests a new digest ("סיכום חדש" / "סיכום שיחה" / "סיכום חדש בבקשה").
         if (
             event.type is BotEventType.TEXT
             and event.text
-            and "סיכום חדש" in event.text
+            and any(kw in event.text for kw in _DIGEST_KEYWORDS)
             and self._token_service is not None
         ):
             return await self._handle_digest_request(event)
