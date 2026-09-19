@@ -900,15 +900,18 @@ class WaitingForMeActionService:
 
         LangSmith's run indexing is asynchronous — ``flush()`` returns
         before the run is queryable by the annotation queue API. We poll
-        until the run appears, then use the server-side ``start_time``
-        and ``session_id`` from the polled run (which may differ from
-        the local run_tree values) to enqueue it.
+        using ``runs.query(ids=[run_id])`` until the run appears, then
+        enqueue it.
+
+        Note: the deprecated ``list_runs(run_id=...)`` does NOT filter by
+        run_id — it returns all runs in the project, so the poll would
+        always succeed immediately. We use the new ``runs.query()`` API
+        with ``ids=[...]`` which properly filters.
 
         Args:
-            _run_checker: Optional callable ``(run_id) -> dict | None``
-                for testing. Returns run info (with ``start_time`` and
-                ``session_id``) if queryable, ``None`` otherwise. Defaults
-                to querying LangSmith via ``list_runs``.
+            _run_checker: Optional async callable ``(run_id) -> bool``
+                for testing. Returns True if the run is queryable.
+                Defaults to querying LangSmith via ``runs.query``.
         """
         import asyncio as _asyncio
 
@@ -920,29 +923,27 @@ class WaitingForMeActionService:
                 hide_inputs=False,
                 hide_outputs=False,
             )
-            project = os.environ.get("LANGSMITH_PROJECT", "")
+            project_id = os.environ.get("LANGSMITH_PROJECT_ID", "")
 
-            def _default_checker(rid: str) -> dict[str, Any] | None:
+            async def _default_checker(rid: str) -> bool:
                 try:
-                    runs = list(client.list_runs(project_name=project, run_id=rid))
-                    if runs:
-                        r = runs[0]
-                        return {
-                            "start_time": r.start_time.isoformat(),
-                            "session_id": str(r.session_id),
-                        }
+                    paginator = await client.runs.query(
+                        project_ids=[project_id],
+                        ids=[rid],
+                        page_size=1,
+                    )
+                    async for _ in paginator:
+                        return True
+                    return False
                 except Exception:  # noqa: BLE001 - poll, transient ok
-                    return None
-                return None
+                    return False
 
             _run_checker = _default_checker
 
         # Poll until the run is queryable.
         elapsed = 0.0
-        run_info: dict[str, Any] | None = None
         while elapsed < max_wait:
-            run_info = _run_checker(run_id)
-            if run_info is not None:
+            if await _run_checker(run_id):
                 break
             await _asyncio.sleep(poll_interval)
             elapsed += poll_interval
@@ -954,10 +955,6 @@ class WaitingForMeActionService:
             )
             return
 
-        # Use server-side start_time and session_id from the polled run.
-        enqueue_start_time = run_info.get("start_time", run_start_time)
-        enqueue_session_id = run_info.get("session_id", session_id)
-
         # Run is queryable — enqueue it.
         await tracing_client.annotation_queues.items.create(
             queue_id=queue_id,
@@ -965,8 +962,8 @@ class WaitingForMeActionService:
                 {
                     "item_type": "RUN",
                     "run_id": run_id,
-                    "session_id": enqueue_session_id,
-                    "start_time": enqueue_start_time,
+                    "session_id": session_id,
+                    "start_time": run_start_time,
                 }
             ],
         )
