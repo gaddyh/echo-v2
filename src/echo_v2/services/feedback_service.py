@@ -892,48 +892,74 @@ class WaitingForMeActionService:
         session_id: str,
         run_start_time: str,
         result_id: str,
-        max_attempts: int = 3,
-        initial_delay: float = 2.0,
+        max_wait: float = 60.0,
+        poll_interval: float = 3.0,
+        _run_checker: Any = None,
     ) -> None:
-        """Enqueue a run with retry on 404 (run not indexed yet).
+        """Poll LangSmith until the run is queryable, then enqueue it.
 
         LangSmith's run indexing is asynchronous — ``flush()`` returns
-        before the run is queryable by the annotation queue API. Retry
-        with exponential backoff.
+        before the run is queryable by the annotation queue API. We poll
+        until the run appears, then enqueue it.
+
+        Args:
+            _run_checker: Optional callable ``(run_id) -> bool`` for
+                testing. Defaults to querying LangSmith via ``list_runs``.
         """
         import asyncio as _asyncio
 
-        delay = initial_delay
-        for attempt in range(1, max_attempts + 1):
-            try:
-                await tracing_client.annotation_queues.items.create(
-                    queue_id=queue_id,
-                    items=[
-                        {
-                            "item_type": "RUN",
-                            "run_id": run_id,
-                            "session_id": session_id,
-                            "start_time": run_start_time,
-                        }
-                    ],
-                )
-                _logger.info(
-                    "user false-positive: enqueued run %s to annotation queue %s "
-                    "(result_id=%s, attempt=%d)",
-                    run_id, queue_id, result_id, attempt,
-                )
-                return
-            except Exception as exc:
-                if attempt < max_attempts:
-                    _logger.info(
-                        "user false-positive: enqueue attempt %d failed "
-                        "(run %s not indexed yet), retrying in %.1fs: %s",
-                        attempt, run_id, delay, exc,
+        if _run_checker is None:
+            from langsmith import Client
+
+            client = Client(
+                api_key=os.environ.get("LANGSMITH_API_KEY", ""),
+                hide_inputs=False,
+                hide_outputs=False,
+            )
+            project = os.environ.get("LANGSMITH_PROJECT", "")
+
+            def _default_checker(rid: str) -> bool:
+                try:
+                    return bool(
+                        list(client.list_runs(project_name=project, run_id=rid))
                     )
-                    await _asyncio.sleep(delay)
-                    delay *= 2
-                else:
-                    raise
+                except Exception:  # noqa: BLE001 - poll, transient ok
+                    return False
+
+            _run_checker = _default_checker
+
+        # Poll until the run is queryable.
+        elapsed = 0.0
+        while elapsed < max_wait:
+            if _run_checker(run_id):
+                break
+            await _asyncio.sleep(poll_interval)
+            elapsed += poll_interval
+        else:
+            _logger.warning(
+                "user false-positive: run %s not queryable after %.0fs, "
+                "giving up (result_id=%s)",
+                run_id, max_wait, result_id,
+            )
+            return
+
+        # Run is queryable — enqueue it.
+        await tracing_client.annotation_queues.items.create(
+            queue_id=queue_id,
+            items=[
+                {
+                    "item_type": "RUN",
+                    "run_id": run_id,
+                    "session_id": session_id,
+                    "start_time": run_start_time,
+                }
+            ],
+        )
+        _logger.info(
+            "user false-positive: enqueued run %s to annotation queue %s "
+            "(result_id=%s, waited %.1fs)",
+            run_id, queue_id, result_id, elapsed,
+        )
 
 
 class WaitingForMeFeedbackService:

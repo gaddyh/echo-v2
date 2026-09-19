@@ -1838,6 +1838,9 @@ def _patch_annotation_infra(
     Also sets ``OBSERVABILITY_HASH_KEY`` so ``correlation_id(user_id)``
     (called in ``_enqueue_user_annotation`` before the patched trace)
     does not raise.
+
+    Patches ``_enqueue_with_retry`` to skip the LangSmith poll (the run
+    is treated as immediately queryable) so tests don't hit the network.
     """
     monkeypatch.setenv("OBSERVABILITY_HASH_KEY", "test-key-12345")
     fake_client = _FakeTracingClient()
@@ -1852,6 +1855,35 @@ def _patch_annotation_infra(
         return ("run-123", "2026-09-19T10:00:00+00:00")
 
     monkeypatch.setattr(action_service, "_trace_user_false_positive", _fake_trace)
+
+    # Patch _enqueue_with_retry to skip the poll and enqueue immediately.
+    async def _fast_enqueue(
+        *,
+        queue_id: str,
+        run_id: str,
+        session_id: str,
+        run_start_time: str,
+        result_id: str,
+        max_wait: float = 60.0,
+        poll_interval: float = 3.0,
+        _run_checker: Any = None,
+    ) -> None:
+        from echo_v2.services.feedback_service import tracing_client as _tc
+
+        await _tc.annotation_queues.items.create(
+            queue_id=queue_id,
+            items=[
+                {
+                    "item_type": "RUN",
+                    "run_id": run_id,
+                    "session_id": session_id,
+                    "start_time": run_start_time,
+                }
+            ],
+        )
+
+    action_service._enqueue_with_retry = _fast_enqueue  # type: ignore[method-assign]
+
     return fake_client, trace_kwargs
 
 
@@ -2056,22 +2088,8 @@ async def test_dismiss_with_reason_already_handled_no_enqueue(monkeypatch):
     assert len(fake_client.annotation_queues.items.calls) == 0
 
 
-class _FakeAnnotationItemsWithRetry:
-    """Fake annotation items that fails the first N calls then succeeds."""
-
-    def __init__(self, fail_count: int = 1) -> None:
-        self.calls: list[dict[str, Any]] = []
-        self._fail_count = fail_count
-
-    async def create(self, *, queue_id: str, items: list[dict[str, Any]]) -> None:
-        self.calls.append({"queue_id": queue_id, "items": items})
-        if self._fail_count > 0:
-            self._fail_count -= 1
-            raise RuntimeError("404: run not found")
-
-
-async def test_enqueue_retries_on_not_found(monkeypatch):
-    """Enqueue retries with backoff when LangSmith returns 404 (run not indexed)."""
+async def test_enqueue_polls_until_run_queryable(monkeypatch):
+    """Enqueue polls until the run is queryable, then enqueues it."""
     monkeypatch.setenv("USER_ANNOTATION_QUEUE_ID", "q-user-test")
     monkeypatch.setenv("OBSERVABILITY_HASH_KEY", "test-key-12345")
     bot = FakeBot()
@@ -2083,63 +2101,69 @@ async def test_enqueue_retries_on_not_found(monkeypatch):
     _seed_result(result_repo, result_id=RESULT_ID)
     active_id = await _setup_active(active_repo, result_id=RESULT_ID)
 
-    # Patch tracing client with a retry-failing items fake.
+    # Patch tracing client with a fake items recorder.
     fake_client = _FakeTracingClient()
-    fake_items = _FakeAnnotationItemsWithRetry(fail_count=2)
-    fake_client.annotation_queues.items = fake_items
     monkeypatch.setattr(
         "echo_v2.services.feedback_service.tracing_client", fake_client
     )
 
     async def _fake_trace(**kwargs: Any) -> tuple[str | None, str | None]:
-        return ("run-retry", "2026-09-19T10:00:00+00:00")
+        return ("run-poll", "2026-09-19T10:00:00+00:00")
 
     monkeypatch.setattr(action_service, "_trace_user_false_positive", _fake_trace)
 
-    # Patch _enqueue_with_retry to use zero delay for the test.
-    async def _fast_enqueue(
+    # Fake run checker: returns False twice, then True.
+    checker_calls = [0]
+
+    def _fake_checker(run_id: str) -> bool:
+        checker_calls[0] += 1
+        return checker_calls[0] >= 3
+
+    # Patch _enqueue_with_retry to use the fake checker with zero delay.
+    async def _poll_enqueue(
         *,
         queue_id: str,
         run_id: str,
         session_id: str,
         run_start_time: str,
         result_id: str,
-        max_attempts: int = 3,
-        initial_delay: float = 0,
+        max_wait: float = 60.0,
+        poll_interval: float = 0,
+        _run_checker: Any = None,
     ) -> None:
         from echo_v2.services.feedback_service import tracing_client as _tc
 
-        for attempt in range(1, max_attempts + 1):
-            try:
-                await _tc.annotation_queues.items.create(
-                    queue_id=queue_id,
-                    items=[
-                        {
-                            "item_type": "RUN",
-                            "run_id": run_id,
-                            "session_id": session_id,
-                            "start_time": run_start_time,
-                        }
-                    ],
-                )
-                return
-            except Exception:
-                if attempt < max_attempts:
-                    await asyncio.sleep(0)
-                else:
-                    raise
+        elapsed = 0.0
+        while elapsed < max_wait:
+            if _fake_checker(run_id):
+                break
+            await asyncio.sleep(0)
+            elapsed += 0.01
 
-    action_service._enqueue_with_retry = _fast_enqueue  # type: ignore[method-assign]
+        await _tc.annotation_queues.items.create(
+            queue_id=queue_id,
+            items=[
+                {
+                    "item_type": "RUN",
+                    "run_id": run_id,
+                    "session_id": session_id,
+                    "start_time": run_start_time,
+                }
+            ],
+        )
+
+    action_service._enqueue_with_retry = _poll_enqueue  # type: ignore[method-assign]
 
     tasks = _patch_scheduler_to_track_tasks(action_service)
 
     event = _make_event(
-        event_id="evt-retry",
+        event_id="evt-poll",
         button_id=f"dismiss:{active_id}:not_waiting",
     )
     result = await handler.handle(event)
     assert result is True
     await asyncio.gather(*tasks)
 
-    # First two calls failed, third succeeded.
-    assert len(fake_items.calls) == 3
+    # Checker was called 3 times (2 False, 1 True), then enqueued.
+    assert checker_calls[0] == 3
+    assert len(fake_client.annotation_queues.items.calls) == 1
