@@ -348,3 +348,39 @@ async def test_create_once_does_not_duplicate_web_action():
     second, created_second = await action_repo.create_once(modified)
     assert created_second is False
     assert second.status is ScheduledActionStatus.PENDING  # unchanged
+
+
+# --- run_loop cancellation --------------------------------------------------
+
+
+async def test_run_loop_propagates_cancelled_error():
+    """run_loop re-raises CancelledError from run_once."""
+    scheduler, _, _ = _make_scheduler(poll_interval=0.01)
+
+    async def raise_cancelled():
+        raise asyncio.CancelledError()
+
+    scheduler.run_once = raise_cancelled  # type: ignore[method-assign]
+
+    with pytest.raises(asyncio.CancelledError):
+        await scheduler.run_loop()
+
+
+async def test_run_loop_continues_on_unexpected_error():
+    """run_loop logs and continues on unexpected errors."""
+    scheduler, _, _ = _make_scheduler(poll_interval=0.01)
+
+    call_count = 0
+
+    async def fail_then_succeed():
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise RuntimeError("unexpected")
+        raise asyncio.CancelledError()
+
+    scheduler.run_once = fail_then_succeed  # type: ignore[method-assign]
+
+    with pytest.raises(asyncio.CancelledError):
+        await scheduler.run_loop()
+    assert call_count == 2

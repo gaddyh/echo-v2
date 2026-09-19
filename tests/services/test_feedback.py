@@ -20,10 +20,15 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from echo_v2.domain.feedback import FeedbackVerdict, HandlingOutcome
+from echo_v2.domain.feedback import (
+    ActionCommandResult,
+    FeedbackVerdict,
+    HandlingOutcome,
+)
 from echo_v2.domain.waiting_for_me import (
     NextOwner,
     WaitingForMeDecision,
@@ -47,6 +52,7 @@ from echo_v2.services.feedback_handler import FeedbackHandler
 from echo_v2.services.feedback_service import (
     WaitingForMeActionService,
     WaitingForMeFeedbackService,
+    make_snooze_reminder_validator,
 )
 from echo_v2.services.waiting_list_query import WaitingListQueryService
 
@@ -2167,3 +2173,1227 @@ async def test_enqueue_polls_until_run_queryable(monkeypatch):
     # Checker was called 3 times (2 False, 1 True), then enqueued.
     assert checker_calls[0] == 3
     assert len(fake_client.annotation_queues.items.calls) == 1
+
+
+# --- Coverage: make_snooze_reminder_validator (lines 121-136) ----------------
+
+
+async def test_snooze_reminder_validator_missing_fields():
+    """Missing payload fields → returns True (can't validate, let it through)."""
+    active_repo = MagicMock()
+    active_repo.get_by_id = AsyncMock(return_value=None)
+    validator = make_snooze_reminder_validator(active_repo)
+
+    # No active_id
+    assert await validator({"target_version": 1, "expected_snoozed_until": "x"}) is True
+    # No target_version
+    assert await validator({"active_id": "a1", "expected_snoozed_until": "x"}) is True
+    # No expected_snoozed_until
+    assert await validator({"active_id": "a1", "target_version": 1}) is True
+    # Empty payload
+    assert await validator({}) is True
+
+
+async def test_snooze_reminder_validator_active_deleted():
+    """Active item deleted → returns False."""
+    active_repo = MagicMock()
+    active_repo.get_by_id = AsyncMock(return_value=None)
+    validator = make_snooze_reminder_validator(active_repo)
+    result = await validator({
+        "active_id": "a1",
+        "target_version": 1,
+        "expected_snoozed_until": "2026-01-01T00:00:00+00:00",
+    })
+    assert result is False
+
+
+async def test_snooze_reminder_validator_version_mismatch():
+    """Version mismatch → returns False."""
+    active = MagicMock()
+    active.target_version = 2
+    active.snoozed_until = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    active_repo = MagicMock()
+    active_repo.get_by_id = AsyncMock(return_value=active)
+    validator = make_snooze_reminder_validator(active_repo)
+    result = await validator({
+        "active_id": "a1",
+        "target_version": 1,
+        "expected_snoozed_until": "2026-01-01T00:00:00+00:00",
+    })
+    assert result is False
+
+
+async def test_snooze_reminder_validator_no_snoozed_until():
+    """Active item no longer snoozed → returns False."""
+    active = MagicMock()
+    active.target_version = 1
+    active.snoozed_until = None
+    active_repo = MagicMock()
+    active_repo.get_by_id = AsyncMock(return_value=active)
+    validator = make_snooze_reminder_validator(active_repo)
+    result = await validator({
+        "active_id": "a1",
+        "target_version": 1,
+        "expected_snoozed_until": "2026-01-01T00:00:00+00:00",
+    })
+    assert result is False
+
+
+async def test_snooze_reminder_validator_snoozed_until_mismatch():
+    """Snoozed_until mismatch → returns False."""
+    active = MagicMock()
+    active.target_version = 1
+    active.snoozed_until = datetime(2026, 1, 2, tzinfo=timezone.utc)
+    active_repo = MagicMock()
+    active_repo.get_by_id = AsyncMock(return_value=active)
+    validator = make_snooze_reminder_validator(active_repo)
+    result = await validator({
+        "active_id": "a1",
+        "target_version": 1,
+        "expected_snoozed_until": "2026-01-01T00:00:00+00:00",
+    })
+    assert result is False
+
+
+async def test_snooze_reminder_validator_all_match():
+    """All fields match → returns True."""
+    snoozed = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    active = MagicMock()
+    active.target_version = 1
+    active.snoozed_until = snoozed
+    active_repo = MagicMock()
+    active_repo.get_by_id = AsyncMock(return_value=active)
+    validator = make_snooze_reminder_validator(active_repo)
+    result = await validator({
+        "active_id": "a1",
+        "target_version": 1,
+        "expected_snoozed_until": snoozed.isoformat(),
+    })
+    assert result is True
+
+
+# --- Coverage: click_repo=None paths (lines 196, 239) -----------------------
+
+
+async def test_apply_not_interested_snooze_no_click_repo():
+    """_apply_not_interested_snooze is a no-op when click_repo is None."""
+    action_service = WaitingForMeActionService(
+        active_repo=MagicMock(),
+        action_repo=MagicMock(),
+        mute_repo=MagicMock(),
+        click_repo=None,
+    )
+    await action_service._apply_not_interested_snooze(
+        user_id=USER_ID, chat_id=CHAT_ID,
+    )
+
+
+async def test_reset_not_interested_clicks_no_click_repo():
+    """_reset_not_interested_clicks is a no-op when click_repo is None."""
+    action_service = WaitingForMeActionService(
+        active_repo=MagicMock(),
+        action_repo=MagicMock(),
+        mute_repo=MagicMock(),
+        click_repo=None,
+    )
+    await action_service._reset_not_interested_clicks(
+        user_id=USER_ID, chat_id=CHAT_ID,
+    )
+
+
+# --- Coverage: handled with feedback_repo=None / chat_id=None (lines 269->280, 280->285) ---
+
+
+async def test_handled_no_feedback_repo():
+    """handled without feedback_repo → APPLIED, no feedback recorded."""
+    active_repo = InMemoryWaitingForMeActiveRepository()
+    mute_repo = InMemoryChatMuteRepository()
+    action_repo = InMemoryWaitingForMeActionRepository(
+        active_repo=active_repo, mute_repo=mute_repo,
+    )
+    click_repo = InMemoryChatNotInterestedClickRepository()
+    action_service = WaitingForMeActionService(
+        active_repo=active_repo,
+        action_repo=action_repo,
+        mute_repo=mute_repo,
+        feedback_repo=None,
+        click_repo=click_repo,
+    )
+    active_id = await _setup_active(active_repo)
+    outcome = await action_service.handled(
+        user_id=USER_ID,
+        active_id=active_id,
+        target_version=1,
+        provider_message_id="evt-no-fb",
+    )
+    assert outcome == HandlingOutcome.APPLIED
+
+
+async def test_handled_chat_id_none():
+    """handled with chat_id=None → APPLIED, no feedback, no reset."""
+    action_repo = MagicMock()
+    action_repo.resolve_and_delete_by_chat = AsyncMock(
+        return_value=ActionCommandResult(
+            outcome=HandlingOutcome.APPLIED,
+            chat_id=None,
+            result_id=None,
+        )
+    )
+    feedback_repo = MagicMock()
+    feedback_repo.record = AsyncMock()
+    click_repo = MagicMock()
+    click_repo.reset = AsyncMock()
+    action_service = WaitingForMeActionService(
+        active_repo=MagicMock(),
+        action_repo=action_repo,
+        mute_repo=MagicMock(),
+        feedback_repo=feedback_repo,
+        click_repo=click_repo,
+    )
+    outcome = await action_service.handled(
+        user_id=USER_ID,
+        active_id="a1",
+        target_version=1,
+        provider_message_id="evt-no-chat",
+    )
+    assert outcome == HandlingOutcome.APPLIED
+    feedback_repo.record.assert_not_called()
+    click_repo.reset.assert_not_called()
+
+
+# --- Coverage: snooze validation paths (lines 320-355) ---------------------
+
+
+async def test_snooze_until_in_past():
+    """snooze with snooze_until in the past → INVALID."""
+    _, action_service, _, active_repo, _ = _make_handler()
+    active_id = await _setup_active(active_repo)
+    past = datetime.now(timezone.utc) - timedelta(hours=1)
+    outcome = await action_service.snooze(
+        user_id=USER_ID,
+        active_id=active_id,
+        target_version=1,
+        provider_message_id="evt-past",
+        snooze_until=past,
+    )
+    assert outcome == HandlingOutcome.INVALID
+
+
+async def test_snooze_until_too_far():
+    """snooze with snooze_until > 7 days → INVALID."""
+    _, action_service, _, active_repo, _ = _make_handler()
+    active_id = await _setup_active(active_repo)
+    future = datetime.now(timezone.utc) + timedelta(days=8)
+    outcome = await action_service.snooze(
+        user_id=USER_ID,
+        active_id=active_id,
+        target_version=1,
+        provider_message_id="evt-far",
+        snooze_until=future,
+    )
+    assert outcome == HandlingOutcome.INVALID
+
+
+async def test_snooze_invalid_preset():
+    """snooze with invalid preset → INVALID."""
+    _, action_service, _, active_repo, _ = _make_handler()
+    active_id = await _setup_active(active_repo)
+    outcome = await action_service.snooze(
+        user_id=USER_ID,
+        active_id=active_id,
+        target_version=1,
+        provider_message_id="evt-bad-preset",
+        snooze_preset="bogus_preset",
+    )
+    assert outcome == HandlingOutcome.INVALID
+
+
+async def test_snooze_with_valid_until():
+    """snooze with valid snooze_until → APPLIED."""
+    _, action_service, _, active_repo, _ = _make_handler()
+    active_id = await _setup_active(active_repo)
+    future = datetime.now(timezone.utc) + timedelta(hours=3)
+    outcome = await action_service.snooze(
+        user_id=USER_ID,
+        active_id=active_id,
+        target_version=1,
+        provider_message_id="evt-until",
+        snooze_until=future,
+    )
+    assert outcome == HandlingOutcome.APPLIED
+
+
+async def test_snooze_with_valid_preset():
+    """snooze with valid snooze_preset → APPLIED."""
+    _, action_service, _, active_repo, _ = _make_handler()
+    active_id = await _setup_active(active_repo)
+    outcome = await action_service.snooze(
+        user_id=USER_ID,
+        active_id=active_id,
+        target_version=1,
+        provider_message_id="evt-preset",
+        snooze_preset="1h",
+    )
+    assert outcome == HandlingOutcome.APPLIED
+
+
+async def test_snooze_with_session_id():
+    """snooze with session_id → APPLIED, action_payload has source."""
+    _, action_service, _, active_repo, _ = _make_handler()
+    active_id = await _setup_active(active_repo)
+    outcome = await action_service.snooze(
+        user_id=USER_ID,
+        active_id=active_id,
+        target_version=1,
+        provider_message_id="evt-session",
+        session_id="sess-1",
+    )
+    assert outcome == HandlingOutcome.APPLIED
+
+
+# --- Coverage: snooze with chat_id=None (line 380->389) ---------------------
+
+
+async def test_snooze_chat_id_none():
+    """snooze with chat_id=None → APPLIED, no reminder scheduled."""
+    action_repo = MagicMock()
+    action_repo.snooze_active = AsyncMock(
+        return_value=ActionCommandResult(
+            outcome=HandlingOutcome.APPLIED,
+            chat_id=None,
+            result_id=None,
+        )
+    )
+    scheduling_service = MagicMock()
+    scheduling_service.create = AsyncMock()
+    action_service = WaitingForMeActionService(
+        active_repo=MagicMock(),
+        action_repo=action_repo,
+        mute_repo=MagicMock(),
+        scheduling_service=scheduling_service,
+        user_phone_lookup=AsyncMock(return_value="972501234567"),
+    )
+    outcome = await action_service.snooze(
+        user_id=USER_ID,
+        active_id="a1",
+        target_version=1,
+        provider_message_id="evt-no-chat-snooze",
+    )
+    assert outcome == HandlingOutcome.APPLIED
+    scheduling_service.create.assert_not_called()
+
+
+# --- Coverage: _schedule_snooze_reminder (lines 417-472) --------------------
+
+
+async def test_schedule_snooze_reminder_no_scheduler():
+    """_schedule_snooze_reminder is a no-op without scheduling_service."""
+    action_service = WaitingForMeActionService(
+        active_repo=MagicMock(),
+        action_repo=MagicMock(),
+        mute_repo=MagicMock(),
+    )
+    await action_service._schedule_snooze_reminder(
+        user_id=USER_ID,
+        active_id="a1",
+        chat_id=CHAT_ID,
+        target_version=1,
+        snoozed_until=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+
+
+async def test_schedule_snooze_reminder_no_phone_lookup():
+    """_schedule_snooze_reminder is a no-op without user_phone_lookup."""
+    scheduling_service = MagicMock()
+    scheduling_service.create = AsyncMock()
+    action_service = WaitingForMeActionService(
+        active_repo=MagicMock(),
+        action_repo=MagicMock(),
+        mute_repo=MagicMock(),
+        scheduling_service=scheduling_service,
+    )
+    await action_service._schedule_snooze_reminder(
+        user_id=USER_ID,
+        active_id="a1",
+        chat_id=CHAT_ID,
+        target_version=1,
+        snoozed_until=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+    scheduling_service.create.assert_not_called()
+
+
+async def test_schedule_snooze_reminder_no_phone():
+    """_schedule_snooze_reminder skips when phone is None."""
+    scheduling_service = MagicMock()
+    scheduling_service.create = AsyncMock()
+    action_service = WaitingForMeActionService(
+        active_repo=MagicMock(),
+        action_repo=MagicMock(),
+        mute_repo=MagicMock(),
+        scheduling_service=scheduling_service,
+        user_phone_lookup=AsyncMock(return_value=None),
+    )
+    await action_service._schedule_snooze_reminder(
+        user_id=USER_ID,
+        active_id="a1",
+        chat_id=CHAT_ID,
+        target_version=1,
+        snoozed_until=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+    scheduling_service.create.assert_not_called()
+
+
+async def test_schedule_snooze_reminder_with_name_lookup():
+    """_schedule_snooze_reminder resolves display name via chat_name_lookup."""
+    scheduling_service = MagicMock()
+    scheduling_service.create = AsyncMock()
+    action_service = WaitingForMeActionService(
+        active_repo=MagicMock(),
+        action_repo=MagicMock(),
+        mute_repo=MagicMock(),
+        scheduling_service=scheduling_service,
+        user_phone_lookup=AsyncMock(return_value="972501234567"),
+        chat_name_lookup=AsyncMock(return_value="יוסי"),
+    )
+    await action_service._schedule_snooze_reminder(
+        user_id=USER_ID,
+        active_id="a1",
+        chat_id=CHAT_ID,
+        target_version=1,
+        snoozed_until=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+    scheduling_service.create.assert_called_once()
+    call_kwargs = scheduling_service.create.call_args.kwargs
+    assert call_kwargs["payload"]["template"]["body_params"] == ["יוסי"]
+
+
+async def test_schedule_snooze_reminder_name_lookup_none():
+    """_schedule_snooze_reminder falls back to 'לקוח' when name is None."""
+    scheduling_service = MagicMock()
+    scheduling_service.create = AsyncMock()
+    action_service = WaitingForMeActionService(
+        active_repo=MagicMock(),
+        action_repo=MagicMock(),
+        mute_repo=MagicMock(),
+        scheduling_service=scheduling_service,
+        user_phone_lookup=AsyncMock(return_value="972501234567"),
+        chat_name_lookup=None,
+    )
+    await action_service._schedule_snooze_reminder(
+        user_id=USER_ID,
+        active_id="a1",
+        chat_id=CHAT_ID,
+        target_version=1,
+        snoozed_until=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+    scheduling_service.create.assert_called_once()
+    call_kwargs = scheduling_service.create.call_args.kwargs
+    assert call_kwargs["payload"]["template"]["body_params"] == ["לקוח"]
+
+
+async def test_schedule_snooze_reminder_token_service_failure():
+    """_schedule_snooze_reminder continues when token_service.issue fails."""
+    scheduling_service = MagicMock()
+    scheduling_service.create = AsyncMock()
+    token_service = MagicMock()
+    token_service.issue = AsyncMock(side_effect=RuntimeError("token down"))
+    action_service = WaitingForMeActionService(
+        active_repo=MagicMock(),
+        action_repo=MagicMock(),
+        mute_repo=MagicMock(),
+        scheduling_service=scheduling_service,
+        user_phone_lookup=AsyncMock(return_value="972501234567"),
+        token_service=token_service,
+    )
+    await action_service._schedule_snooze_reminder(
+        user_id=USER_ID,
+        active_id="a1",
+        chat_id=CHAT_ID,
+        target_version=1,
+        snoozed_until=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+    scheduling_service.create.assert_called_once()
+    call_kwargs = scheduling_service.create.call_args.kwargs
+    assert call_kwargs["payload"]["template"]["url_suffix"] is None
+
+
+async def test_schedule_snooze_reminder_token_service_success():
+    """_schedule_snooze_reminder issues token and passes as url_suffix."""
+    scheduling_service = MagicMock()
+    scheduling_service.create = AsyncMock()
+    token_service = MagicMock()
+    token_service.issue = AsyncMock(return_value=("session-1", "tok-abc"))
+    action_service = WaitingForMeActionService(
+        active_repo=MagicMock(),
+        action_repo=MagicMock(),
+        mute_repo=MagicMock(),
+        scheduling_service=scheduling_service,
+        user_phone_lookup=AsyncMock(return_value="972501234567"),
+        token_service=token_service,
+    )
+    await action_service._schedule_snooze_reminder(
+        user_id=USER_ID,
+        active_id="a1",
+        chat_id=CHAT_ID,
+        target_version=1,
+        snoozed_until=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+    scheduling_service.create.assert_called_once()
+    call_kwargs = scheduling_service.create.call_args.kwargs
+    assert call_kwargs["payload"]["template"]["url_suffix"] == "tok-abc"
+
+
+async def test_schedule_snooze_reminder_scheduling_failure():
+    """_schedule_snooze_reminder logs but does not raise on scheduling failure."""
+    scheduling_service = MagicMock()
+    scheduling_service.create = AsyncMock(side_effect=RuntimeError("scheduler down"))
+    action_service = WaitingForMeActionService(
+        active_repo=MagicMock(),
+        action_repo=MagicMock(),
+        mute_repo=MagicMock(),
+        scheduling_service=scheduling_service,
+        user_phone_lookup=AsyncMock(return_value="972501234567"),
+    )
+    await action_service._schedule_snooze_reminder(
+        user_id=USER_ID,
+        active_id="a1",
+        chat_id=CHAT_ID,
+        target_version=1,
+        snoozed_until=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+
+
+# --- Coverage: dismiss_not_waiting with chat_id=None / no feedback_repo (lines 511->525) ---
+
+
+async def test_dismiss_not_waiting_chat_id_none():
+    """dismiss_not_waiting with chat_id=None → APPLIED, no feedback, no annotation."""
+    action_repo = MagicMock()
+    action_repo.resolve_and_delete_by_chat = AsyncMock(
+        return_value=ActionCommandResult(
+            outcome=HandlingOutcome.APPLIED,
+            chat_id=None,
+            result_id=None,
+        )
+    )
+    feedback_repo = MagicMock()
+    feedback_repo.record = AsyncMock()
+    action_service = WaitingForMeActionService(
+        active_repo=MagicMock(),
+        action_repo=action_repo,
+        mute_repo=MagicMock(),
+        feedback_repo=feedback_repo,
+    )
+    outcome = await action_service.dismiss_not_waiting(
+        user_id=USER_ID,
+        active_id="a1",
+        target_version=1,
+        provider_message_id="evt-no-chat-nw",
+    )
+    assert outcome == HandlingOutcome.APPLIED
+    feedback_repo.record.assert_not_called()
+
+
+async def test_dismiss_not_waiting_no_feedback_repo():
+    """dismiss_not_waiting without feedback_repo → APPLIED, no feedback recorded."""
+    active_repo = InMemoryWaitingForMeActiveRepository()
+    mute_repo = InMemoryChatMuteRepository()
+    action_repo = InMemoryWaitingForMeActionRepository(
+        active_repo=active_repo, mute_repo=mute_repo,
+    )
+    action_service = WaitingForMeActionService(
+        active_repo=active_repo,
+        action_repo=action_repo,
+        mute_repo=mute_repo,
+        feedback_repo=None,
+    )
+    active_id = await _setup_active(active_repo)
+    outcome = await action_service.dismiss_not_waiting(
+        user_id=USER_ID,
+        active_id=active_id,
+        target_version=1,
+        provider_message_id="evt-no-fb-nw",
+    )
+    assert outcome == HandlingOutcome.APPLIED
+
+
+# --- Coverage: dismiss_not_interested with chat_id=None (lines 569->574) -----
+
+
+async def test_dismiss_not_interested_chat_id_none():
+    """dismiss_not_interested with chat_id=None → APPLIED, no snooze."""
+    action_repo = MagicMock()
+    action_repo.resolve_and_delete_by_chat = AsyncMock(
+        return_value=ActionCommandResult(
+            outcome=HandlingOutcome.APPLIED,
+            chat_id=None,
+            result_id=None,
+        )
+    )
+    click_repo = MagicMock()
+    click_repo.increment = AsyncMock(return_value=1)
+    action_service = WaitingForMeActionService(
+        active_repo=MagicMock(),
+        action_repo=action_repo,
+        mute_repo=MagicMock(),
+        click_repo=click_repo,
+    )
+    outcome = await action_service.dismiss_not_interested(
+        user_id=USER_ID,
+        active_id="a1",
+        target_version=1,
+        provider_message_id="evt-no-chat-ni",
+    )
+    assert outcome == HandlingOutcome.APPLIED
+    click_repo.increment.assert_not_called()
+
+
+# --- Coverage: done with session_id / STALE / chat_id=None (lines 604, 615->619, 624-629) ---
+
+
+async def test_done_with_session_id():
+    """done with session_id → APPLIED, action_payload has session_id."""
+    _, action_service, _, active_repo, _ = _make_handler()
+    active_id = await _setup_active(active_repo)
+    outcome = await action_service.done(
+        user_id=USER_ID,
+        active_id=active_id,
+        target_version=1,
+        provider_message_id="evt-done-sess",
+        session_id="sess-1",
+    )
+    assert outcome == HandlingOutcome.APPLIED
+
+
+async def test_done_chat_id_none():
+    """done with chat_id=None → APPLIED, no reset."""
+    action_repo = MagicMock()
+    action_repo.resolve_and_delete_by_version = AsyncMock(
+        return_value=ActionCommandResult(
+            outcome=HandlingOutcome.APPLIED,
+            chat_id=None,
+            result_id=None,
+        )
+    )
+    click_repo = MagicMock()
+    click_repo.reset = AsyncMock()
+    action_service = WaitingForMeActionService(
+        active_repo=MagicMock(),
+        action_repo=action_repo,
+        mute_repo=MagicMock(),
+        click_repo=click_repo,
+    )
+    outcome = await action_service.done(
+        user_id=USER_ID,
+        active_id="a1",
+        target_version=1,
+        provider_message_id="evt-done-no-chat",
+    )
+    assert outcome == HandlingOutcome.APPLIED
+    click_repo.reset.assert_not_called()
+
+
+async def test_done_stale():
+    """done with stale version → STALE."""
+    _, action_service, _, active_repo, _ = _make_handler()
+    active_id = await _setup_active(active_repo, target_version=2)
+    outcome = await action_service.done(
+        user_id=USER_ID,
+        active_id=active_id,
+        target_version=1,
+        provider_message_id="evt-done-stale",
+    )
+    assert outcome == HandlingOutcome.STALE
+
+
+# --- Coverage: dismiss_with_reason with session_id / STALE (lines 660, 670-676) ---
+
+
+async def test_dismiss_with_reason_session_id():
+    """dismiss_with_reason with session_id → APPLIED."""
+    _, action_service, _, active_repo, _ = _make_handler()
+    active_id = await _setup_active(active_repo)
+    outcome = await action_service.dismiss_with_reason(
+        user_id=USER_ID,
+        active_id=active_id,
+        target_version=1,
+        provider_message_id="evt-dwr-sess",
+        reason="already_handled",
+        session_id="sess-1",
+    )
+    assert outcome == HandlingOutcome.APPLIED
+
+
+async def test_dismiss_with_reason_stale():
+    """dismiss_with_reason with stale version → STALE."""
+    _, action_service, _, active_repo, _ = _make_handler()
+    active_id = await _setup_active(active_repo, target_version=2)
+    outcome = await action_service.dismiss_with_reason(
+        user_id=USER_ID,
+        active_id=active_id,
+        target_version=1,
+        provider_message_id="evt-dwr-stale",
+        reason="already_handled",
+    )
+    assert outcome == HandlingOutcome.STALE
+
+
+# --- Coverage: _schedule_false_positive_annotation with result_id=None (line 772) ---
+
+
+async def test_schedule_false_positive_annotation_result_id_none():
+    """_schedule_false_positive_annotation is a no-op when result_id is None."""
+    action_service = WaitingForMeActionService(
+        active_repo=MagicMock(),
+        action_repo=MagicMock(),
+        mute_repo=MagicMock(),
+    )
+    action_service._schedule_false_positive_annotation(
+        result_id=None,
+        user_id=USER_ID,
+    )
+    await asyncio.sleep(0)
+
+
+# --- Coverage: _trace_user_false_positive (lines 809-818) -------------------
+
+
+async def test_trace_user_false_positive_no_run_tree():
+    """_trace_user_false_positive returns (None, None) when no run tree."""
+    action_service = WaitingForMeActionService(
+        active_repo=MagicMock(),
+        action_repo=MagicMock(),
+        mute_repo=MagicMock(),
+    )
+    with patch("langsmith.run_helpers.get_current_run_tree", return_value=None):
+        result = await action_service._trace_user_false_positive(
+            conversation=[],
+            analyzer_decision="waiting_for_me",
+            next_owner="user",
+            open_obligation="test",
+            analyzer_reason="test",
+            analyzer_confidence=0.9,
+            model="gpt-4.1",
+            prompt_version="v4.1",
+            analyzer_version="1.0",
+            target_version=1,
+            user_id_hash="hash123",
+        )
+    assert result == (None, None)
+
+
+async def test_trace_user_false_positive_with_run_tree():
+    """_trace_user_false_positive returns (run_id, start_time) with run tree."""
+    action_service = WaitingForMeActionService(
+        active_repo=MagicMock(),
+        action_repo=MagicMock(),
+        mute_repo=MagicMock(),
+    )
+    run_tree = MagicMock()
+    run_tree.id = "run-abc"
+    run_tree.start_time = datetime(2026, 9, 19, 10, 0, 0, tzinfo=timezone.utc)
+    run_tree.add_metadata = MagicMock()
+    with patch("langsmith.run_helpers.get_current_run_tree", return_value=run_tree):
+        result = await action_service._trace_user_false_positive(
+            conversation=[],
+            analyzer_decision="waiting_for_me",
+            next_owner="user",
+            open_obligation="test",
+            analyzer_reason="test",
+            analyzer_confidence=0.9,
+            model="gpt-4.1",
+            prompt_version="v4.1",
+            analyzer_version="1.0",
+            target_version=1,
+            user_id_hash="hash123",
+        )
+    assert result == ("run-abc", "2026-09-19T10:00:00+00:00")
+    run_tree.add_metadata.assert_called_once()
+    metadata = run_tree.add_metadata.call_args.args[0]
+    assert metadata["user_id_hash"] == "hash123"
+    assert metadata["feedback_source"] == "user_false_positive"
+
+
+# --- Coverage: _enqueue_user_annotation edge cases (lines 841, 844, 865, 879-880) ---
+
+
+async def test_enqueue_user_annotation_result_none(monkeypatch):
+    """_enqueue_user_annotation returns when result is None."""
+    monkeypatch.setenv("USER_ANNOTATION_QUEUE_ID", "q-test")
+    monkeypatch.setenv("OBSERVABILITY_HASH_KEY", "test-key")
+    result_repo = MagicMock()
+    result_repo.get_by_id = AsyncMock(return_value=None)
+    action_service = WaitingForMeActionService(
+        active_repo=MagicMock(),
+        action_repo=MagicMock(),
+        mute_repo=MagicMock(),
+        result_repo=result_repo,
+    )
+    fake_client = _FakeTracingClient()
+    monkeypatch.setattr(
+        "echo_v2.services.feedback_service.tracing_client", fake_client
+    )
+    await action_service._enqueue_user_annotation(
+        result_id="missing", user_id=USER_ID,
+    )
+    assert len(fake_client.annotation_queues.items.calls) == 0
+
+
+async def test_enqueue_user_annotation_no_snapshot(monkeypatch):
+    """_enqueue_user_annotation returns when conversation_snapshot is None."""
+    monkeypatch.setenv("USER_ANNOTATION_QUEUE_ID", "q-test")
+    monkeypatch.setenv("OBSERVABILITY_HASH_KEY", "test-key")
+    result = MagicMock()
+    result.conversation_snapshot = None
+    result_repo = MagicMock()
+    result_repo.get_by_id = AsyncMock(return_value=result)
+    action_service = WaitingForMeActionService(
+        active_repo=MagicMock(),
+        action_repo=MagicMock(),
+        mute_repo=MagicMock(),
+        result_repo=result_repo,
+    )
+    fake_client = _FakeTracingClient()
+    monkeypatch.setattr(
+        "echo_v2.services.feedback_service.tracing_client", fake_client
+    )
+    await action_service._enqueue_user_annotation(
+        result_id="r1", user_id=USER_ID,
+    )
+    assert len(fake_client.annotation_queues.items.calls) == 0
+
+
+async def test_enqueue_user_annotation_empty_messages(monkeypatch):
+    """_enqueue_user_annotation returns when messages is empty."""
+    monkeypatch.setenv("USER_ANNOTATION_QUEUE_ID", "q-test")
+    monkeypatch.setenv("OBSERVABILITY_HASH_KEY", "test-key")
+    result = MagicMock()
+    result.conversation_snapshot = {"messages": []}
+    result_repo = MagicMock()
+    result_repo.get_by_id = AsyncMock(return_value=result)
+    action_service = WaitingForMeActionService(
+        active_repo=MagicMock(),
+        action_repo=MagicMock(),
+        mute_repo=MagicMock(),
+        result_repo=result_repo,
+    )
+    fake_client = _FakeTracingClient()
+    monkeypatch.setattr(
+        "echo_v2.services.feedback_service.tracing_client", fake_client
+    )
+    await action_service._enqueue_user_annotation(
+        result_id="r1", user_id=USER_ID,
+    )
+    assert len(fake_client.annotation_queues.items.calls) == 0
+
+
+async def test_enqueue_user_annotation_run_id_none(monkeypatch):
+    """_enqueue_user_annotation returns when trace returns (None, None)."""
+    monkeypatch.setenv("USER_ANNOTATION_QUEUE_ID", "q-test")
+    monkeypatch.setenv("OBSERVABILITY_HASH_KEY", "test-key")
+    result = MagicMock()
+    result.conversation_snapshot = {"messages": [{"text": "hi"}]}
+    result.decision.value = "waiting_for_me"
+    result.next_owner = None
+    result.open_obligation = "test"
+    result.reason = "test"
+    result.confidence = 0.9
+    result.model = "gpt-4.1"
+    result.prompt_version = "v4.1"
+    result.analyzer_version = "1.0"
+    result.target_version = 1
+    result_repo = MagicMock()
+    result_repo.get_by_id = AsyncMock(return_value=result)
+    action_service = WaitingForMeActionService(
+        active_repo=MagicMock(),
+        action_repo=MagicMock(),
+        mute_repo=MagicMock(),
+        result_repo=result_repo,
+    )
+
+    async def _fake_trace(**kwargs: Any) -> tuple[str | None, str | None]:
+        return (None, None)
+
+    action_service._trace_user_false_positive = _fake_trace  # type: ignore[method-assign]
+    fake_client = _FakeTracingClient()
+    monkeypatch.setattr(
+        "echo_v2.services.feedback_service.tracing_client", fake_client
+    )
+    await action_service._enqueue_user_annotation(
+        result_id="r1", user_id=USER_ID,
+    )
+    assert len(fake_client.annotation_queues.items.calls) == 0
+
+
+async def test_enqueue_user_annotation_exception(monkeypatch):
+    """_enqueue_user_annotation catches exceptions and logs warning."""
+    monkeypatch.setenv("USER_ANNOTATION_QUEUE_ID", "q-test")
+    monkeypatch.setenv("OBSERVABILITY_HASH_KEY", "test-key")
+    result_repo = MagicMock()
+    result_repo.get_by_id = AsyncMock(side_effect=RuntimeError("db down"))
+    action_service = WaitingForMeActionService(
+        active_repo=MagicMock(),
+        action_repo=MagicMock(),
+        mute_repo=MagicMock(),
+        result_repo=result_repo,
+    )
+    fake_client = _FakeTracingClient()
+    monkeypatch.setattr(
+        "echo_v2.services.feedback_service.tracing_client", fake_client
+    )
+    await action_service._enqueue_user_annotation(
+        result_id="r1", user_id=USER_ID,
+    )
+    assert len(fake_client.annotation_queues.items.calls) == 0
+
+
+# --- Coverage: _enqueue_with_retry (lines 916-970) --------------------------
+
+
+async def test_enqueue_with_retry_success(monkeypatch):
+    """_enqueue_with_retry enqueues when run is immediately queryable."""
+    monkeypatch.setenv("OBSERVABILITY_HASH_KEY", "test-key")
+    fake_client = _FakeTracingClient()
+    monkeypatch.setattr(
+        "echo_v2.services.feedback_service.tracing_client", fake_client
+    )
+    action_service = WaitingForMeActionService(
+        active_repo=MagicMock(),
+        action_repo=MagicMock(),
+        mute_repo=MagicMock(),
+    )
+
+    async def _checker(rid: str) -> bool:
+        return True
+
+    await action_service._enqueue_with_retry(
+        queue_id="q-test",
+        run_id="run-1",
+        session_id="sess-1",
+        run_start_time="2026-01-01T00:00:00+00:00",
+        result_id="r1",
+        max_wait=60.0,
+        poll_interval=0.01,
+        _run_checker=_checker,
+    )
+    assert len(fake_client.annotation_queues.items.calls) == 1
+    call = fake_client.annotation_queues.items.calls[0]
+    assert call["queue_id"] == "q-test"
+    assert call["items"][0]["run_id"] == "run-1"
+
+
+async def test_enqueue_with_retry_timeout(monkeypatch):
+    """_enqueue_with_retry gives up after max_wait when run never queryable."""
+    monkeypatch.setenv("OBSERVABILITY_HASH_KEY", "test-key")
+    fake_client = _FakeTracingClient()
+    monkeypatch.setattr(
+        "echo_v2.services.feedback_service.tracing_client", fake_client
+    )
+    action_service = WaitingForMeActionService(
+        active_repo=MagicMock(),
+        action_repo=MagicMock(),
+        mute_repo=MagicMock(),
+    )
+
+    async def _checker(rid: str) -> bool:
+        return False
+
+    await action_service._enqueue_with_retry(
+        queue_id="q-test",
+        run_id="run-1",
+        session_id="sess-1",
+        run_start_time="2026-01-01T00:00:00+00:00",
+        result_id="r1",
+        max_wait=0.05,
+        poll_interval=0.01,
+        _run_checker=_checker,
+    )
+    assert len(fake_client.annotation_queues.items.calls) == 0
+
+
+async def test_enqueue_with_retry_polls_then_succeeds(monkeypatch):
+    """_enqueue_with_retry polls multiple times before succeeding."""
+    monkeypatch.setenv("OBSERVABILITY_HASH_KEY", "test-key")
+    fake_client = _FakeTracingClient()
+    monkeypatch.setattr(
+        "echo_v2.services.feedback_service.tracing_client", fake_client
+    )
+    action_service = WaitingForMeActionService(
+        active_repo=MagicMock(),
+        action_repo=MagicMock(),
+        mute_repo=MagicMock(),
+    )
+
+    call_count = [0]
+
+    async def _checker(rid: str) -> bool:
+        call_count[0] += 1
+        return call_count[0] >= 3
+
+    await action_service._enqueue_with_retry(
+        queue_id="q-test",
+        run_id="run-1",
+        session_id="sess-1",
+        run_start_time="2026-01-01T00:00:00+00:00",
+        result_id="r1",
+        max_wait=60.0,
+        poll_interval=0,
+        _run_checker=_checker,
+    )
+    assert call_count[0] == 3
+    assert len(fake_client.annotation_queues.items.calls) == 1
+
+
+# --- Coverage: done NOT_FOUND branch (line 624->629) ------------------------
+
+
+async def test_done_not_found():
+    """done for non-existent active_id → NOT_FOUND (not STALE)."""
+    _, action_service, _, _, _ = _make_handler()
+    outcome = await action_service.done(
+        user_id=USER_ID,
+        active_id="nonexistent",
+        target_version=1,
+        provider_message_id="evt-done-nf",
+    )
+    assert outcome == HandlingOutcome.NOT_FOUND
+
+
+# --- Coverage: dismiss_with_reason NOT_FOUND branch (line 670->676) ---------
+
+
+async def test_dismiss_with_reason_not_found():
+    """dismiss_with_reason for non-existent active_id → NOT_FOUND (not STALE)."""
+    _, action_service, _, _, _ = _make_handler()
+    outcome = await action_service.dismiss_with_reason(
+        user_id=USER_ID,
+        active_id="nonexistent",
+        target_version=1,
+        provider_message_id="evt-dwr-nf",
+        reason="already_handled",
+    )
+    assert outcome == HandlingOutcome.NOT_FOUND
+
+
+# --- Coverage: _enqueue_with_retry default LangSmith checker (lines 919-941) ---
+
+
+async def test_enqueue_with_retry_default_checker_success(monkeypatch):
+    """_enqueue_with_retry uses default LangSmith checker when _run_checker is None."""
+    monkeypatch.setenv("OBSERVABILITY_HASH_KEY", "test-key")
+    monkeypatch.setenv("LANGSMITH_API_KEY", "test-key")
+    monkeypatch.setenv("LANGSMITH_PROJECT_ID", "proj-1")
+
+    fake_client = _FakeTracingClient()
+    monkeypatch.setattr(
+        "echo_v2.services.feedback_service.tracing_client", fake_client
+    )
+
+    class _FakePaginatorWithItem:
+        def __init__(self) -> None:
+            self._yielded = False
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if not self._yielded:
+                self._yielded = True
+                return {"id": "run-1"}
+            raise StopAsyncIteration
+
+    mock_ls_client = MagicMock()
+    mock_ls_client.runs.query = AsyncMock(return_value=_FakePaginatorWithItem())
+
+    with patch("langsmith.Client", return_value=mock_ls_client):
+        action_service = WaitingForMeActionService(
+            active_repo=MagicMock(),
+            action_repo=MagicMock(),
+            mute_repo=MagicMock(),
+        )
+        await action_service._enqueue_with_retry(
+            queue_id="q-test",
+            run_id="run-1",
+            session_id="sess-1",
+            run_start_time="2026-01-01T00:00:00+00:00",
+            result_id="r1",
+            max_wait=60.0,
+            poll_interval=0.01,
+        )
+
+    assert len(fake_client.annotation_queues.items.calls) == 1
+
+
+async def test_enqueue_with_retry_default_checker_exception(monkeypatch):
+    """_enqueue_with_retry default checker catches exceptions and returns False."""
+    monkeypatch.setenv("OBSERVABILITY_HASH_KEY", "test-key")
+    monkeypatch.setenv("LANGSMITH_API_KEY", "test-key")
+    monkeypatch.setenv("LANGSMITH_PROJECT_ID", "proj-1")
+
+    fake_client = _FakeTracingClient()
+    monkeypatch.setattr(
+        "echo_v2.services.feedback_service.tracing_client", fake_client
+    )
+
+    mock_ls_client = MagicMock()
+    mock_ls_client.runs.query = AsyncMock(side_effect=RuntimeError("network error"))
+
+    with patch("langsmith.Client", return_value=mock_ls_client):
+        action_service = WaitingForMeActionService(
+            active_repo=MagicMock(),
+            action_repo=MagicMock(),
+            mute_repo=MagicMock(),
+        )
+        await action_service._enqueue_with_retry(
+            queue_id="q-test",
+            run_id="run-1",
+            session_id="sess-1",
+            run_start_time="2026-01-01T00:00:00+00:00",
+            result_id="r1",
+            max_wait=0.05,
+            poll_interval=0.01,
+        )
+
+    # Timed out without enqueuing.
+    assert len(fake_client.annotation_queues.items.calls) == 0
+
+
+async def test_enqueue_with_retry_default_checker_empty_paginator(monkeypatch):
+    """_enqueue_with_retry default checker returns False when paginator is empty."""
+    monkeypatch.setenv("OBSERVABILITY_HASH_KEY", "test-key")
+    monkeypatch.setenv("LANGSMITH_API_KEY", "test-key")
+    monkeypatch.setenv("LANGSMITH_PROJECT_ID", "proj-1")
+
+    fake_client = _FakeTracingClient()
+    monkeypatch.setattr(
+        "echo_v2.services.feedback_service.tracing_client", fake_client
+    )
+
+    class _EmptyPaginator:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            raise StopAsyncIteration
+
+    mock_ls_client = MagicMock()
+    mock_ls_client.runs.query = AsyncMock(return_value=_EmptyPaginator())
+
+    with patch("langsmith.Client", return_value=mock_ls_client):
+        action_service = WaitingForMeActionService(
+            active_repo=MagicMock(),
+            action_repo=MagicMock(),
+            mute_repo=MagicMock(),
+        )
+        await action_service._enqueue_with_retry(
+            queue_id="q-test",
+            run_id="run-1",
+            session_id="sess-1",
+            run_start_time="2026-01-01T00:00:00+00:00",
+            result_id="r1",
+            max_wait=0.05,
+            poll_interval=0.01,
+        )
+
+    # Checker always returns False (empty paginator) → timeout → no enqueue.
+    assert len(fake_client.annotation_queues.items.calls) == 0
+
+
+# --- In-memory feedback repo dedup edge cases ------------------------------
+
+
+async def test_feedback_repo_semantic_dedup_skips_nonmatching_rows():
+    """The semantic dedup loop iterates past rows for other users/result_ids."""
+    feedback_repo = InMemoryWaitingForMeFeedbackRepository()
+    # Existing feedback for a different user + result_id.
+    await feedback_repo.record(
+        user_id="user-other",
+        chat_id=CHAT_ID,
+        verdict=FeedbackVerdict.CORRECT,
+        result_id="result-other",
+    )
+    # New feedback for a different user + different result_id → should succeed.
+    result = await feedback_repo.record(
+        user_id=USER_ID,
+        chat_id=CHAT_ID,
+        verdict=FeedbackVerdict.FALSE_POSITIVE,
+        result_id="result-new",
+    )
+    assert result is not None
+    assert result.verdict == FeedbackVerdict.FALSE_POSITIVE
+
+
+async def test_feedback_repo_semantic_dedup_same_result_id_returns_none():
+    """Duplicate result_id for the same user returns None."""
+    feedback_repo = InMemoryWaitingForMeFeedbackRepository()
+    await feedback_repo.record(
+        user_id=USER_ID,
+        chat_id=CHAT_ID,
+        verdict=FeedbackVerdict.CORRECT,
+        result_id="result-1",
+    )
+    # Second feedback with same result_id → None (semantic dedup).
+    result = await feedback_repo.record(
+        user_id=USER_ID,
+        chat_id=CHAT_ID,
+        verdict=FeedbackVerdict.FALSE_POSITIVE,
+        result_id="result-1",
+    )
+    assert result is None
+
+
+async def test_action_repo_record_without_provider_message_id():
+    """Action repo record() with provider_message_id=None creates the action."""
+    from echo_v2.domain.feedback import WaitingForMeActionType
+
+    action_repo = InMemoryWaitingForMeActionRepository()
+    result = await action_repo.record(
+        user_id=USER_ID,
+        chat_id=CHAT_ID,
+        action_type=WaitingForMeActionType.RESOLVE,
+        active_id="active-1",
+        target_version=1,
+    )
+    assert result is not None
+    assert result.action_type == WaitingForMeActionType.RESOLVE
+    assert result.provider_message_id is None
+
+
+async def test_action_repo_record_duplicate_provider_message_id_returns_none():
+    """Action repo record() with duplicate provider_message_id returns None."""
+    from echo_v2.domain.feedback import WaitingForMeActionType
+
+    action_repo = InMemoryWaitingForMeActionRepository()
+    await action_repo.record(
+        user_id=USER_ID,
+        chat_id=CHAT_ID,
+        action_type=WaitingForMeActionType.RESOLVE,
+        provider_message_id="evt-1",
+    )
+    result = await action_repo.record(
+        user_id=USER_ID,
+        chat_id=CHAT_ID,
+        action_type=WaitingForMeActionType.RESOLVE,
+        provider_message_id="evt-1",
+    )
+    assert result is None
+
+
+async def test_action_repo_record_different_user_same_message_id_succeeds():
+    """Same provider_message_id for different users is not a duplicate."""
+    from echo_v2.domain.feedback import WaitingForMeActionType
+
+    action_repo = InMemoryWaitingForMeActionRepository()
+    await action_repo.record(
+        user_id=USER_ID,
+        chat_id=CHAT_ID,
+        action_type=WaitingForMeActionType.RESOLVE,
+        provider_message_id="evt-shared",
+    )
+    result = await action_repo.record(
+        user_id="user-other",
+        chat_id=CHAT_ID,
+        action_type=WaitingForMeActionType.RESOLVE,
+        provider_message_id="evt-shared",
+    )
+    assert result is not None

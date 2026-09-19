@@ -138,3 +138,20 @@ def test_stored_connection_webhook_token_hash_is_bytes_not_plaintext():
 def test_stored_connection_credentials_are_redacted_in_repr():
     conn = _stored(token="super-secret")
     assert "super-secret" not in repr(conn)
+
+
+async def test_save_with_existing_id_preserves_id():
+    """When conn.id is not None, save uses the existing id."""
+    import uuid
+
+    existing_id = str(uuid.uuid4())
+    conn = _stored()
+    # Build a connection with an explicit id.
+    from dataclasses import replace
+
+    conn_with_id = replace(conn, id=existing_id)
+    repo = InMemoryWhatsAppConnectionRepository()
+    await repo.save(conn_with_id)
+    fetched = await repo.get(conn.ref)
+    assert fetched is not None
+    assert fetched.id == existing_id

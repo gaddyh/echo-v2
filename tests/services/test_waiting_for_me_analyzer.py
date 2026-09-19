@@ -514,3 +514,79 @@ def test_parse_legacy_decision_still_works_with_next_owner_none():
     assert result.decision == WaitingForMeDecision.WAITING_FOR_ME
     assert result.next_owner is None
     assert result.open_obligation is None
+
+
+# --- additional coverage ----------------------------------------------------
+
+
+async def test_waiting_for_me_analyzer_protocol_raises_not_implemented():
+    """The Protocol's default analyze body raises NotImplementedError."""
+    from echo_v2.services.waiting_for_me_analyzer import WaitingForMeAnalyzer
+
+    with pytest.raises(NotImplementedError):
+        await WaitingForMeAnalyzer.analyze(None, None)  # type: ignore[arg-type]
+
+
+async def test_analyze_with_raw_returns_result_and_raw():
+    """analyze_with_raw returns both the result and the raw LLM response."""
+    raw = json.dumps({
+        "next_owner": "user",
+        "open_obligation": "user owes a reply",
+        "confidence": 0.9,
+        "reason": "User must reply.",
+    })
+    response = _mock_openai_response(raw)
+    client = _mock_client(response)
+
+    analyzer = LLMWaitingForMeAnalyzer(client=client, prompt_version="v3")
+    conv = _make_conversation()
+    result, raw_output = await analyzer.analyze_with_raw(conv)
+
+    assert result.decision == WaitingForMeDecision.WAITING_FOR_ME
+    assert raw_output == raw
+
+
+async def test_analyze_reasoning_model_uses_larger_token_budget():
+    """Reasoning models (gpt-5+) get max_completion_tokens=4000, no temperature."""
+    raw = json.dumps({
+        "next_owner": "user",
+        "open_obligation": "user owes a reply",
+        "confidence": 0.9,
+        "reason": "User must reply.",
+    })
+    response = _mock_openai_response(raw)
+    client = _mock_client(response)
+
+    analyzer = LLMWaitingForMeAnalyzer(client=client, model="gpt-5", prompt_version="v3")
+    conv = _make_conversation()
+    await analyzer.analyze(conv)
+
+    call_kwargs = client.chat.completions.create.await_args.kwargs
+    assert call_kwargs["max_completion_tokens"] == 4000
+    assert "temperature" not in call_kwargs
+
+
+def test_parse_llm_output_not_a_dict_raises():
+    """When the LLM returns a JSON array (not an object), AnalysisError is raised."""
+    with pytest.raises(AnalysisError, match="not a JSON object"):
+        _parse_llm_output("[1, 2, 3]", target_version=1)
+
+
+# --- waiting_for_me_prompts -------------------------------------------------
+
+
+def test_get_prompt_unknown_version_raises():
+    from echo_v2.services.waiting_for_me_prompts import get_prompt
+
+    with pytest.raises(ValueError, match="Unknown prompt version"):
+        get_prompt("v999")
+
+
+def test_get_prompt_default_returns_prompt():
+    from echo_v2.services.waiting_for_me_prompts import DEFAULT_PROMPT_VERSION, get_prompt
+
+    prompt = get_prompt()
+    assert isinstance(prompt, str)
+    assert len(prompt) > 0
+    # Default version should match.
+    assert get_prompt(DEFAULT_PROMPT_VERSION) == prompt

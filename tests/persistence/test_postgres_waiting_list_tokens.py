@@ -164,3 +164,59 @@ async def test_pg_session_raw_token_not_stored(waiting_list_sessions_repo, sessi
     assert isinstance(token_hash, (bytes, bytearray))
     assert token_hash != raw_token.encode("utf-8")
     assert raw_token.encode("utf-8") not in bytes(token_hash)
+
+
+async def test_pg_session_create_with_shared_session(session_factory, clean_db):
+    """When constructed with a shared session, _session() returns owns=False."""
+    from echo_v2.persistence.waiting_list_tokens import (
+        PostgresWaitingListSessionRepository,
+    )
+
+    user_id = await insert_user(session_factory)
+    async with session_factory() as shared_session:
+        repo = PostgresWaitingListSessionRepository(
+            session_factory, session=shared_session
+        )
+        session_id, raw_token = await repo.create(user_id=user_id, ttl_hours=48)
+        assert isinstance(session_id, str)
+        assert isinstance(raw_token, str)
+        await shared_session.commit()
+
+
+async def test_pg_session_create_retries_on_token_hash_collision(
+    waiting_list_sessions_repo, session_factory
+):
+    """When a token hash collision occurs, create retries and succeeds."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from echo_v2.persistence.waiting_list_tokens import (
+        PostgresWaitingListSessionRepository,
+    )
+
+    user_id = await insert_user(session_factory)
+
+    # First call returns None (collision), second call returns a row_id.
+    call_count = 0
+
+    async def mock_execute(stmt):
+        nonlocal call_count
+        call_count += 1
+        mock_result = MagicMock()
+        if call_count == 1:
+            mock_result.scalar_one_or_none.return_value = None
+        else:
+            mock_result.scalar_one_or_none.return_value = "session-retry-id"
+        return mock_result
+
+    repo = waiting_list_sessions_repo
+    with patch.object(repo, "_session") as mock_session_ctx:
+        mock_session = MagicMock()
+        mock_session.execute = AsyncMock(side_effect=mock_execute)
+        mock_ctx = MagicMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_ctx.__aexit__ = AsyncMock(return_value=None)
+        mock_session_ctx.return_value = mock_ctx
+
+        session_id, raw_token = await repo.create(user_id=user_id, ttl_hours=48)
+        assert call_count == 2
+        assert session_id == "session-retry-id"

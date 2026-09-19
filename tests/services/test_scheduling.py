@@ -736,3 +736,30 @@ async def test_bot_send_no_validator_sends_normally():
 
     assert result == "wamid.BUTTONS"
     assert len(bot.button_sends) == 1
+
+
+async def test_bot_send_permanent_error_marks_failed():
+    """If the bot send raises PermanentError, the action is marked FAILED."""
+    bot = FakeBot(fail_with=PermanentError("permanent bot failure"))
+    service, _ = _make_bot_service(bot=bot)
+    action = _make_bot_action()
+    await service._action_repo.save(action)
+
+    with pytest.raises(PermanentError):
+        await service.execute(action)
+
+    fetched = await service._action_repo.get("bot-act-1")
+    assert fetched.status is ScheduledActionStatus.FAILED
+    assert fetched.error is not None
+
+
+async def test_bot_send_operation_returns_bot_sent_when_bot_is_none():
+    """_bot_send_operation returns 'bot_sent' when bot channel is None."""
+    from echo_v2.services.scheduling import _BotSendInput
+
+    service, _ = _make_bot_service()
+    service._bot_channel = None
+    result = await service._bot_send_operation(
+        _BotSendInput(chat_id="972@c.us", message="hi")
+    )
+    assert result == "bot_sent"

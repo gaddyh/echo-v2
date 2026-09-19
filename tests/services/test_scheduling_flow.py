@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from echo_v2.domain.scheduling import ScheduledActionType
 from echo_v2.persistence.contacts import InMemoryContactRepository
 from echo_v2.persistence.conversation_state import InMemoryConversationStateRepository
@@ -352,3 +353,103 @@ def test_phone_to_chat_id_default_phone_matches_default_echo_bot_chat():
     from echo_v2.services.scheduling_flow import _phone_to_chat_id
 
     assert _phone_to_chat_id("972559937256") == "972559937256@c.us"
+
+
+async def test_base_conversation_state_repo_get_raises_not_implemented():
+    """The base ConversationStateRepository.get raises NotImplementedError."""
+    from echo_v2.persistence.conversation_state import ConversationStateRepository
+
+    repo = ConversationStateRepository()
+    with pytest.raises(NotImplementedError):
+        await repo.get("user-1")
+
+
+# --- _is_cancel helper ------------------------------------------------------
+
+
+def test_is_cancel_none_returns_false():
+    from echo_v2.services.scheduling_flow import _is_cancel
+
+    assert _is_cancel(None) is False
+
+
+def test_is_cancel_empty_string_returns_false():
+    from echo_v2.services.scheduling_flow import _is_cancel
+
+    assert _is_cancel("") is False
+
+
+def test_is_cancel_non_cancel_text_returns_false():
+    from echo_v2.services.scheduling_flow import _is_cancel
+
+    assert _is_cancel("hello") is False
+
+
+def test_is_cancel_cancel_keyword_returns_true():
+    from echo_v2.services.scheduling_flow import _is_cancel
+
+    assert _is_cancel("cancel") is True
+    assert _is_cancel("בטל") is True
+
+
+# --- edge cases -------------------------------------------------------------
+
+
+async def test_non_text_non_contact_event_is_ignored():
+    """A BUTTON_REPLY event (not TEXT/CONTACT) is silently ignored."""
+    flow, bot, _ = _make_flow_service()
+    event = BotEvent(
+        event_id="evt-btn",
+        user_phone="972500000001",
+        type=BotEventType.BUTTON_REPLY,
+        text=None,
+    )
+    await flow.handle(event)
+    # Nothing should be sent.
+    assert len(bot.sent) == 0
+
+
+async def test_contact_event_with_none_contact_is_ignored():
+    """A CONTACT event with contact=None is silently ignored."""
+    flow, bot, _ = _make_flow_service()
+    event = BotEvent(
+        event_id="evt-contact-none",
+        user_phone="972500000001",
+        type=BotEventType.CONTACT,
+        contact=None,
+    )
+    await flow.handle(event)
+    assert len(bot.sent) == 0
+
+
+async def test_contact_save_failure_does_not_break_flow():
+    """If contact_repo.save raises, the flow still continues."""
+    from unittest.mock import AsyncMock
+
+    flow, bot, _ = _make_flow_service(with_contacts=True)
+    # Make save raise an exception.
+    flow._contact_repo.save = AsyncMock(side_effect=RuntimeError("db down"))  # type: ignore[union-attr]
+    await flow.handle(_contact_event(name="Dana", phone="972526610653"))
+
+    # Flow should still transition to AWAITING_MESSAGE.
+    ctx = await flow._state_repo.get("user-1")
+    assert ctx.state.name == "AWAITING_MESSAGE"
+    assert ctx.recipient_name == "Dana"
+    # Confirmation should still be sent.
+    assert len(bot.sent) == 1
+
+
+async def test_empty_text_in_awaiting_time_is_ignored():
+    """Empty/whitespace text in AWAITING_TIME is ignored (no action taken)."""
+    flow, bot, _ = _make_flow_service()
+    await flow.handle(_contact_event(name="Dana"))
+    await flow.handle(_text_event("call me"))
+    bot.sent.clear()
+
+    # Send empty text.
+    await flow.handle(_text_event("   ", event_id="wamid.EMPTY"))
+
+    # Should still be in AWAITING_TIME, nothing sent.
+    ctx = await flow._state_repo.get("user-1")
+    assert ctx.state.name == "AWAITING_TIME"
+    assert len(bot.sent) == 0

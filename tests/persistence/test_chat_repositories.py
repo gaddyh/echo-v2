@@ -390,6 +390,41 @@ async def test_wfm_result_get_by_id_returns_none_if_not_found():
     assert await repo.get_by_id("nonexistent") is None
 
 
+async def test_wfm_result_get_by_id_skips_nonmatching_rows():
+    """get_by_id iterates past nonmatching rows before finding the match."""
+    from echo_v2.domain.waiting_for_me import (
+        WaitingForMeDecision,
+        WaitingForMeResult,
+    )
+    from echo_v2.persistence.chat_repositories import (
+        InMemoryWaitingForMeResultRepository,
+    )
+
+    repo = InMemoryWaitingForMeResultRepository()
+    result_a = WaitingForMeResult(
+        decision=WaitingForMeDecision.NOT_WAITING_FOR_ME,
+        confidence=0.5,
+        reason="a",
+        target_version=1,
+    )
+    result_b = WaitingForMeResult(
+        decision=WaitingForMeDecision.WAITING_FOR_ME,
+        confidence=0.9,
+        reason="b",
+        target_version=1,
+    )
+    row_a = await repo.save(user_id="user-1", chat_id="chat-1@c.us", result=result_a)
+    row_b = await repo.save(user_id="user-1", chat_id="chat-2@c.us", result=result_b)
+    # Fetch the second row — must iterate past the first.
+    fetched = await repo.get_by_id(row_b)
+    assert fetched is not None
+    assert fetched.reason == "b"
+    # Also verify the first row is still there.
+    fetched_a = await repo.get_by_id(row_a)
+    assert fetched_a is not None
+    assert fetched_a.reason == "a"
+
+
 # --- InMemoryWaitingForMeActiveRepository edge cases -----------------------
 
 

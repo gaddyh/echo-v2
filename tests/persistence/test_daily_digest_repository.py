@@ -110,3 +110,14 @@ async def test_same_user_different_dates():
 async def test_satisfies_protocol():
     repo = InMemoryDailyDigestRepository()
     assert isinstance(repo, DailyDigestRepository)
+
+
+async def test_update_status_returns_false_for_unknown_digest_id():
+    """update_status returns False when the digest ID is not found."""
+    repo = InMemoryDailyDigestRepository()
+    updated = await repo.update_status(
+        digest_id="nonexistent-id",
+        status=DailyDigestStatus.SENT,
+        item_count=0,
+    )
+    assert updated is False

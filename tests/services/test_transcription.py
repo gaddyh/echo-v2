@@ -266,3 +266,15 @@ async def test_handle_direct_audio_download_url_transcriber_failure(
             download_url="http://example.com/audio.ogg",
             mime_type="audio/ogg",
         )
+
+
+def test_safe_unlink_os_error_is_swallowed(tmp_path: Path) -> None:
+    """OSError from unlink is caught and swallowed (best-effort cleanup)."""
+    from unittest.mock import patch
+
+    path = tmp_path / "test.txt"
+    path.write_text("hello")
+
+    with patch("pathlib.Path.unlink", side_effect=OSError("permission denied")):
+        # Should not raise.
+        safe_unlink(path)

@@ -555,3 +555,72 @@ async def test_digest_request_success_sends_link_with_count():
     assert phone == USER_PHONE
     assert "1 שיחות" in text
     assert "https://echo.example.com/q/tok-1" in text
+
+
+# --- _handle_action / _handle_dismiss edge cases ----------------------------
+
+
+async def test_handle_action_with_no_button_id_returns_false():
+    """_handle_action with button_id=None returns False."""
+    handler, _, _, _, _ = _make_handler()
+    event = _make_event(button_id=None)
+    result = await handler._handle_action(event)
+    assert result is False
+
+
+async def test_handle_action_with_short_button_id_returns_false():
+    """_handle_action with button_id having < 3 parts returns False."""
+    handler, _, _, _, _ = _make_handler()
+    event = _make_event(button_id="action:only")
+    result = await handler._handle_action(event)
+    assert result is False
+
+
+async def test_handle_action_snooze_with_preset():
+    """_handle_action with 'snooze:1h' action_type parses the preset."""
+    action_service = AsyncMock()
+    action_service.snooze = AsyncMock(return_value=HandlingOutcome.APPLIED)
+    handler, action_service, bot, _, _ = _make_handler(action_service=action_service)
+    event = _make_event(button_id=f"action:{ACTIVE_ID}:snooze:1h")
+
+    result = await handler._handle_action(event)
+    assert result is True
+    action_service.snooze.assert_awaited_once_with(
+        user_id=USER_ID,
+        active_id=ACTIVE_ID,
+        target_version=0,
+        provider_message_id=EVENT_ID,
+        snooze_preset="1h",
+    )
+
+
+async def test_handle_action_unknown_action_type_returns_false():
+    """_handle_action with unknown action_type returns False."""
+    handler, _, _, _, _ = _make_handler()
+    event = _make_event(button_id=f"action:{ACTIVE_ID}:bogus")
+    result = await handler._handle_action(event)
+    assert result is False
+
+
+async def test_handle_dismiss_with_no_button_id_returns_false():
+    """_handle_dismiss with button_id=None returns False."""
+    handler, _, _, _, _ = _make_handler()
+    event = _make_event(button_id=None)
+    result = await handler._handle_dismiss(event)
+    assert result is False
+
+
+async def test_handle_dismiss_with_short_button_id_returns_false():
+    """_handle_dismiss with button_id having < 3 parts returns False."""
+    handler, _, _, _, _ = _make_handler()
+    event = _make_event(button_id="dismiss:only")
+    result = await handler._handle_dismiss(event)
+    assert result is False
+
+
+async def test_handle_dismiss_unknown_reason_returns_false():
+    """_handle_dismiss with unknown reason returns False."""
+    handler, _, _, _, _ = _make_handler()
+    event = _make_event(button_id=f"dismiss:{ACTIVE_ID}:bogus")
+    result = await handler._handle_dismiss(event)
+    assert result is False

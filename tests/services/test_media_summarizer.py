@@ -847,3 +847,76 @@ def test_strip_html_title_at_start_does_not_duplicate():
     # The title appears once from the <title> tag and once from the body,
     # but the function should not add a third occurrence.
     assert text.count("My Page") == 2
+
+
+def test_strip_html_title_after_long_body_prepends_title():
+    """When the title tag appears after a long body (malformed HTML or
+    head-after-body), the title is not in the first ``len(title)+50`` chars
+    of the stripped text, so it is prepended."""
+    body_text = "x" * 80  # longer than len(title) + 50
+    html = (
+        f"<html><body><p>{body_text}</p></body>"
+        "<head><title>Late Title</title></head></html>"
+    )
+    text = _strip_html(html)
+    assert text.startswith("Late Title.")
+    assert body_text in text
+
+
+# --- _extract_url_fallback edge cases ---------------------------------------
+
+
+def test_extract_url_fallback_youtube_no_video_id_returns_none():
+    from echo_v2.services.media_summarizer import _extract_url_fallback
+
+    # YouTube watch URL with no v parameter.
+    assert _extract_url_fallback("https://www.youtube.com/watch?list=PL123") is None
+    # youtu.be with empty path.
+    assert _extract_url_fallback("https://youtu.be/") is None
+
+
+def test_extract_url_fallback_unparseable_url_returns_none():
+    from echo_v2.services.media_summarizer import _extract_url_fallback
+
+    # Passing an object whose str() raises — simulates a broken URL.
+    class BadURL:
+        def __str__(self):
+            raise ValueError("broken")
+
+    assert _extract_url_fallback(BadURL()) is None
+
+
+# --- summarize_link with injected http_client (owns_client=False) -----------
+
+
+@patch("echo_v2.services.media_summarizer.httpx.AsyncClient")
+async def test_summarize_link_with_injected_http_client_does_not_close_it(
+    MockClient: MagicMock,
+):
+    """When an http_client is injected, summarize_link should NOT close it
+    (owns_client=False). The caller owns the lifecycle."""
+    injected_client = MagicMock()
+    mock_response = MagicMock()
+    mock_response.url = "https://example.com/page"
+    mock_response.headers = {"content-type": "text/html; charset=utf-8"}
+    mock_response.text = "<html><head><title>News</title></head><body><p>Big event</p></body></html>"
+    mock_response.raise_for_status = MagicMock()
+    injected_client.get = AsyncMock(return_value=mock_response)
+    injected_client.aclose = AsyncMock()
+
+    fake_response = MagicMock()
+    fake_response.choices = [MagicMock(message=MagicMock(content="big event"))]
+
+    client = MagicMock()
+    client.chat.completions.create = AsyncMock(return_value=fake_response)
+
+    await summarize_link(
+        client=client,
+        model="gpt-4.1",
+        url="https://example.com/news",
+        http_client=injected_client,
+    )
+    # The injected client must NOT be closed by summarize_link.
+    injected_client.aclose.assert_not_called()
+    # The module-level AsyncClient constructor should not be called.
+    MockClient.assert_not_called()

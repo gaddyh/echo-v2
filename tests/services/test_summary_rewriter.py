@@ -6,6 +6,8 @@ import json
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 from echo_v2.domain.waiting_for_me import WaitingForMeDecision
 from echo_v2.services.chat_analysis_worker import ConversationInput
 from echo_v2.services.summary_rewriter import SummaryRewriter
@@ -98,6 +100,47 @@ async def test_rewrite_strips_whitespace_from_output():
     rewriter = SummaryRewriter(client=client)
     result = await rewriter.rewrite("ממתין לאישור תאריך הפגישה")
     assert result == "מחכים שתאשר"
+
+
+async def test_rewrite_reasoning_model_uses_larger_token_budget():
+    """Reasoning models (gpt-5+, o*) get max_completion_tokens=2000, no temperature."""
+    client = _mock_client(_mock_openai_response("מחכים שתאשר"))
+    rewriter = SummaryRewriter(client=client, model="gpt-5")
+    await rewriter.rewrite("ממתין לאישור תאריך הפגישה")
+
+    call_kwargs = client.chat.completions.create.await_args.kwargs
+    assert call_kwargs["max_completion_tokens"] == 2000
+    assert "temperature" not in call_kwargs
+
+
+async def test_rewrite_reasoning_model_o_prefix():
+    """Model names starting with 'o' (e.g. o3) are treated as reasoning models."""
+    client = _mock_client(_mock_openai_response("מחכים שתאשר"))
+    rewriter = SummaryRewriter(client=client, model="o3")
+    await rewriter.rewrite("ממתין לאישור תאריך הפגישה")
+
+    call_kwargs = client.chat.completions.create.await_args.kwargs
+    assert call_kwargs["max_completion_tokens"] == 2000
+    assert "temperature" not in call_kwargs
+
+
+async def test_rewrite_non_reasoning_model_sets_temperature_zero():
+    """Non-reasoning models get temperature=0 and max_completion_tokens=100."""
+    client = _mock_client(_mock_openai_response("מחכים שתאשר"))
+    rewriter = SummaryRewriter(client=client, model="gpt-4.1")
+    await rewriter.rewrite("ממתין לאישור תאריך הפגישה")
+
+    call_kwargs = client.chat.completions.create.await_args.kwargs
+    assert call_kwargs["temperature"] == 0
+    assert call_kwargs["max_completion_tokens"] == 100
+
+
+async def test_summary_rewriter_protocol_raises_not_implemented():
+    """The Protocol's default rewrite body raises NotImplementedError."""
+    from echo_v2.services.summary_rewriter import SummaryRewriterProtocol
+
+    with pytest.raises(NotImplementedError):
+        await SummaryRewriterProtocol.rewrite(None, "summary")  # type: ignore[arg-type]
 
 
 # --- Analyzer integration tests -------------------------------------------

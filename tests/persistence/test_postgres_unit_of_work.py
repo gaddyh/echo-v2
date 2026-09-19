@@ -139,6 +139,7 @@ async def test_uow_properties_raise_before_enter(unit_of_work_factory):
         "wfm_feedback",
         "wfm_actions",
         "chat_mutes",
+        "chat_not_interested_clicks",
     ):
         with pytest.raises(AssertionError, match="UnitOfWork not entered"):
             getattr(uow, prop)

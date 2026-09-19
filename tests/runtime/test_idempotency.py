@@ -1066,3 +1066,155 @@ async def test_indeterminate_outcome_emits_indeterminate_event():
     indet_event = sink.events[-1]
     assert indet_event.attributes["idempotency_key"] == "op:indet-event"
     assert indet_event.attributes["error_type"] == "TimeoutError"
+
+
+# ---------------------------------------------------------------------------
+# Additional InMemoryIdempotencyStore coverage
+# ---------------------------------------------------------------------------
+
+
+async def test_wait_for_completion_falls_back_to_terminal_outcome():
+    """When the owner finishes between reserve(IN_PROGRESS) and wait_for_completion,
+    wait_for_completion falls back to the terminal outcome in _outcomes."""
+    store: InMemoryIdempotencyStore[int] = InMemoryIdempotencyStore()
+
+    # Worker A reserves and completes.
+    r1 = await store.reserve("k")
+    assert r1.status == ReserveStatus.ACQUIRED
+    await store.put_success(
+        "k", r1.owner_token, SuccessOutcome(value=42, attempts=1, duration_ms=1.0)
+    )
+
+    # Worker B reserves → gets COMPLETED (not IN_PROGRESS).
+    # But to test line 290, we need reserve to return IN_PROGRESS first,
+    # then the owner finishes, then wait_for_completion is called.
+    # Simulate: reserve returns IN_PROGRESS, then owner puts success,
+    # then wait_for_completion finds no in-progress entry but a terminal outcome.
+
+    # Set up: reserve a second key, then have another "owner" complete it
+    # before wait_for_completion is called.
+    r2 = await store.reserve("k2")
+    assert r2.status == ReserveStatus.ACQUIRED
+
+    # Simulate a third worker that gets IN_PROGRESS for k2.
+    r3 = await store.reserve("k2")
+    assert r3.status == ReserveStatus.IN_PROGRESS
+
+    # Owner (r2) completes k2.
+    await store.put_success(
+        "k2", r2.owner_token, SuccessOutcome(value=99, attempts=1, duration_ms=1.0)
+    )
+
+    # Now the third worker calls wait_for_completion.
+    # The in-progress entry was removed by put_success, but the outcome exists.
+    outcome = await store.wait_for_completion("k2")
+    assert isinstance(outcome, SuccessOutcome)
+    assert outcome.value == 99
+
+
+async def test_put_success_with_no_in_progress_raises_lost_ownership():
+    """put_success with a key that has no in-progress claim raises LostOwnershipError."""
+    import uuid
+
+    store: InMemoryIdempotencyStore[int] = InMemoryIdempotencyStore()
+    with pytest.raises(LostOwnershipError):
+        await store.put_success(
+            "never-reserved",
+            uuid.uuid4(),
+            SuccessOutcome(value=1, attempts=1, duration_ms=1.0),
+        )
+
+
+async def test_put_failure_with_no_in_progress_raises_lost_ownership():
+    """put_failure with a key that has no in-progress claim raises LostOwnershipError."""
+    import uuid
+
+    store: InMemoryIdempotencyStore[int] = InMemoryIdempotencyStore()
+    with pytest.raises(LostOwnershipError):
+        await store.put_failure(
+            "never-reserved",
+            uuid.uuid4(),
+            PermanentFailureOutcome(error_type="PermanentError", error_message="x"),
+        )
+
+
+async def test_put_indeterminate_with_no_in_progress_raises_lost_ownership():
+    """put_indeterminate with a key that has no in-progress claim raises LostOwnershipError."""
+    import uuid
+
+    store: InMemoryIdempotencyStore[int] = InMemoryIdempotencyStore()
+    with pytest.raises(LostOwnershipError):
+        await store.put_indeterminate(
+            "never-reserved",
+            uuid.uuid4(),
+            IndeterminateOutcome(error_type="TimeoutError", error_message="timeout"),
+        )
+
+
+async def test_release_with_no_in_progress_raises_lost_ownership():
+    """release with a key that has no in-progress claim raises LostOwnershipError."""
+    import uuid
+
+    store: InMemoryIdempotencyStore[int] = InMemoryIdempotencyStore()
+    with pytest.raises(LostOwnershipError):
+        await store.release("never-reserved", uuid.uuid4())
+
+
+async def test_put_success_without_waiter():
+    """put_success when no waiter exists (future is None) still stores outcome."""
+    store: InMemoryIdempotencyStore[int] = InMemoryIdempotencyStore()
+    r = await store.reserve("k")
+    # No waiter created — just put success directly.
+    await store.put_success(
+        "k", r.owner_token, SuccessOutcome(value=1, attempts=1, duration_ms=1.0)
+    )
+    outcome = await store.get("k")
+    assert isinstance(outcome, SuccessOutcome)
+
+
+async def test_put_failure_without_waiter():
+    """put_failure when no waiter exists (future is None) still stores outcome."""
+    store: InMemoryIdempotencyStore[int] = InMemoryIdempotencyStore()
+    r = await store.reserve("k")
+    await store.put_failure(
+        "k", r.owner_token, PermanentFailureOutcome(error_type="PermanentError", error_message="x")
+    )
+    outcome = await store.get("k")
+    assert isinstance(outcome, PermanentFailureOutcome)
+
+
+async def test_put_indeterminate_without_waiter():
+    """put_indeterminate when no waiter exists (future is None) still stores outcome."""
+    store: InMemoryIdempotencyStore[int] = InMemoryIdempotencyStore()
+    r = await store.reserve("k")
+    await store.put_indeterminate(
+        "k", r.owner_token, IndeterminateOutcome(error_type="TimeoutError", error_message="t")
+    )
+    outcome = await store.get("k")
+    assert isinstance(outcome, IndeterminateOutcome)
+
+
+async def test_put_success_with_already_done_future():
+    """put_success when the waiter future is already done does not set result again."""
+    store: InMemoryIdempotencyStore[int] = InMemoryIdempotencyStore()
+    r = await store.reserve("k")
+
+    # Create a waiter.
+    wait_task = asyncio.create_task(store.wait_for_completion("k"))
+    await asyncio.sleep(0)
+
+    # Cancel the waiter so its future is done.
+    wait_task.cancel()
+    try:
+        await wait_task
+    except asyncio.CancelledError:
+        pass
+
+    # Now put_success — the future is done, so set_result should not be called.
+    # This should not raise even though the future is done.
+    await store.put_success(
+        "k", r.owner_token, SuccessOutcome(value=42, attempts=1, duration_ms=1.0)
+    )
+    # The outcome should still be stored.
+    outcome = await store.get("k")
+    assert isinstance(outcome, SuccessOutcome)

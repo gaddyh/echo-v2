@@ -14,11 +14,13 @@ Covers:
 from __future__ import annotations
 
 import asyncio
+import uuid
 
 import pytest
 
 from echo_v2.persistence.green_instance_pool import (
     InMemoryGreenInstancePoolRepository,
+    PoolRow,
 )
 from echo_v2.ports.whatsapp import (
     ConnectionRef,
@@ -504,3 +506,348 @@ async def test_pool_size_zero_disables_pool():
     # With no pool, onboarding always creates synchronously.
     # This is implicitly tested by all the pool-miss tests above.
     assert repo is not None  # placeholder
+
+
+# --- request_refill / aclose -----------------------------------------------
+
+
+async def test_request_refill_noop_when_task_running(pool_setup):
+    """request_refill is a no-op when a refill task is already in flight."""
+    pool, _repo, _green, _prov, _conn = pool_setup
+    # Simulate a running refill task.
+    pool._refill_task = asyncio.create_task(asyncio.sleep(100))
+    pool.request_refill()  # should return early (line 151)
+    # Task was not replaced.
+    assert pool._refill_task is not None
+    # Clean up.
+    pool._refill_task.cancel()
+    try:
+        await pool._refill_task
+    except asyncio.CancelledError:
+        pass
+
+
+async def test_aclose_cancels_running_refill_task():
+    """aclose cancels a running refill task and swallows CancelledError."""
+    repo = InMemoryGreenInstancePoolRepository()
+    green_client = FakeGreenClient()
+    provisioner = FakeProvisioner()
+    connection_repo = FakeConnectionRepo()
+    pool = GreenInstancePool(
+        provisioner=provisioner,
+        green_client=green_client,
+        repo=repo,
+        connection_repo=connection_repo,
+        webhook_base_url="https://echo.example.com",
+        target_size=1,
+        ready_poll_interval=0.01,
+        ready_max_attempts=3,
+    )
+    # Block create_connection so the refill task stays running.
+    block = asyncio.Event()
+
+    async def blocking_create(config):
+        await block.wait()  # never set
+
+    provisioner.create_connection = blocking_create
+    pool.request_refill()
+    await asyncio.sleep(0.01)  # let the task start
+    await pool.aclose()  # lines 160-161
+    assert pool._refill_task is None
+
+
+async def test_aclose_no_task_is_noop(pool_setup):
+    """aclose with no refill task is a no-op."""
+    pool, _repo, _green, _prov, _conn = pool_setup
+    assert pool._refill_task is None
+    await pool.aclose()
+    assert pool._refill_task is None
+
+
+# --- _recover_claimed edge cases -------------------------------------------
+
+
+async def test_recover_claimed_no_provider_id_deletes_row(pool_setup):
+    """Defensive: claimed row with no provider_connection_id → delete."""
+    pool, repo, _green, _prov, _conn = pool_setup
+    row_id = str(uuid.uuid4())
+    repo._rows[row_id] = PoolRow(
+        id=row_id,
+        state="claimed",
+        provider_connection_id=None,
+        credentials=None,
+        webhook_token_hash=None,
+        claimed_by_user_id="user-1",
+    )
+    await pool._recover_claimed()
+    claimed = await repo.get_by_state("claimed")
+    assert len(claimed) == 0
+
+
+async def test_recover_claimed_no_credentials_deletes_row(pool_setup):
+    """Claimed row with provider_id but no credentials → delete."""
+    pool, repo, _green, _prov, _conn = pool_setup
+    row_id = str(uuid.uuid4())
+    repo._rows[row_id] = PoolRow(
+        id=row_id,
+        state="claimed",
+        provider_connection_id="inst-1",
+        credentials=None,
+        webhook_token_hash=None,
+        claimed_by_user_id="user-1",
+    )
+    await pool._recover_claimed()
+    claimed = await repo.get_by_state("claimed")
+    assert len(claimed) == 0
+
+
+async def test_recover_claimed_authorized_state_cleans_up(pool_setup):
+    """Claimed row, no connection, Green state authorized → delete + best-effort Green delete."""
+    pool, repo, green, provisioner, _conn = pool_setup
+    green.set_default_state("authorized")
+    row_id = await repo.reserve_creation_slot(1)
+    await repo.mark_created(
+        row_id,
+        ConnectionRef(provider="green", provider_connection_id="inst-1"),
+        ProviderCredentials(data=b"token-1"),
+        b"hash-1",
+    )
+    await repo.mark_available(row_id)
+    await repo.claim("user-1")
+    await pool._recover_claimed()
+    claimed = await repo.get_by_state("claimed")
+    assert len(claimed) == 0
+    assert len(provisioner.delete_calls) == 1
+
+
+# --- _recover_creating_with_credentials edge cases -------------------------
+
+
+async def test_recover_creating_with_credentials_no_credentials_skips(pool_setup):
+    """Creating row with provider_id but no credentials → skip (defensive continue)."""
+    pool, repo, _green, _prov, _conn = pool_setup
+    row_id = str(uuid.uuid4())
+    repo._rows[row_id] = PoolRow(
+        id=row_id,
+        state="creating",
+        provider_connection_id="inst-1",
+        credentials=None,
+        webhook_token_hash=None,
+        claimed_by_user_id=None,
+    )
+    await pool._recover_creating_with_credentials()
+    # Row still exists (was skipped, not deleted).
+    creating = await repo.get_by_state("creating")
+    assert len(creating) == 1
+
+
+async def test_recover_creating_with_credentials_authorized_marks_failed(pool_setup):
+    """Creating row with credentials, Green state authorized → mark_failed + delete."""
+    pool, repo, green, provisioner, _conn = pool_setup
+    green.set_default_state("authorized")
+    row_id = await repo.reserve_creation_slot(1)
+    await repo.mark_created(
+        row_id,
+        ConnectionRef(provider="green", provider_connection_id="inst-1"),
+        ProviderCredentials(data=b"token-1"),
+        b"hash-1",
+    )
+    await pool._recover_creating_with_credentials()
+    available = await repo.get_by_state("available")
+    assert len(available) == 0
+    failed = await repo.get_by_state("failed")
+    assert len(failed) == 1
+    assert len(provisioner.delete_calls) == 1
+
+
+# --- _recover_failed edge cases --------------------------------------------
+
+
+async def test_recover_failed_now_not_authorized_marks_available(pool_setup):
+    """Failed row with provider_id, Green now notAuthorized → mark available."""
+    pool, repo, green, _prov, _conn = pool_setup
+    green.set_default_state("notAuthorized")
+    row_id = await repo.reserve_creation_slot(1)
+    await repo.mark_created(
+        row_id,
+        ConnectionRef(provider="green", provider_connection_id="inst-1"),
+        ProviderCredentials(data=b"token-1"),
+        b"hash-1",
+    )
+    await repo.mark_failed(row_id)
+    await pool._recover_failed()
+    available = await repo.get_by_state("available")
+    assert len(available) == 1
+    failed = await repo.get_by_state("failed")
+    assert len(failed) == 0
+
+
+async def test_recover_failed_still_not_ready_deletes_row(pool_setup):
+    """Failed row with provider_id, Green still not ready → delete + best-effort Green delete."""
+    pool, repo, green, provisioner, _conn = pool_setup
+    green.set_default_state("authorized")
+    row_id = await repo.reserve_creation_slot(1)
+    await repo.mark_created(
+        row_id,
+        ConnectionRef(provider="green", provider_connection_id="inst-1"),
+        ProviderCredentials(data=b"token-1"),
+        b"hash-1",
+    )
+    await repo.mark_failed(row_id)
+    await pool._recover_failed()
+    failed = await repo.get_by_state("failed")
+    assert len(failed) == 0
+    assert len(provisioner.delete_calls) == 1
+
+
+async def test_recover_failed_no_credentials_deletes_row(pool_setup):
+    """Failed row with provider_id but no credentials → delete_row."""
+    pool, repo, _green, _prov, _conn = pool_setup
+    row_id = str(uuid.uuid4())
+    repo._rows[row_id] = PoolRow(
+        id=row_id,
+        state="failed",
+        provider_connection_id="inst-1",
+        credentials=None,
+        webhook_token_hash=None,
+        claimed_by_user_id=None,
+    )
+    await pool._recover_failed()
+    failed = await repo.get_by_state("failed")
+    assert len(failed) == 0
+
+
+async def test_recover_failed_no_provider_id_deletes_row(pool_setup):
+    """Failed row without provider_id → delete (second loop in _recover_failed)."""
+    pool, repo, _green, _prov, _conn = pool_setup
+    row_id = str(uuid.uuid4())
+    repo._rows[row_id] = PoolRow(
+        id=row_id,
+        state="failed",
+        provider_connection_id=None,
+        credentials=None,
+        webhook_token_hash=None,
+        claimed_by_user_id=None,
+    )
+    await pool._recover_failed()
+    failed = await repo.get_by_state("failed")
+    assert len(failed) == 0
+
+
+# --- _refill_to_target exception handling ----------------------------------
+
+
+async def test_refill_to_target_logs_exception(pool_setup):
+    """_refill_to_target catches and logs exceptions from _fill_to_target."""
+    pool, repo, _green, _prov, _conn = pool_setup
+
+    async def boom(target_size):
+        raise RuntimeError("reserve boom")
+
+    repo.reserve_creation_slot = boom
+    # Should not raise — exception is caught and logged.
+    await pool._refill_to_target()
+
+
+# --- _wait_until_ready transient error -------------------------------------
+
+
+async def test_wait_until_ready_handles_transient_error(pool_setup):
+    """_wait_until_ready keeps polling through transient getStateInstance errors."""
+    pool, repo, green, _prov, _conn = pool_setup
+    call_count = 0
+
+    async def flaky_get_state(id_instance, api_token):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise RuntimeError("transient boom")
+        return "notAuthorized"
+
+    green.get_state_instance = flaky_get_state
+    row_id = await repo.reserve_creation_slot(1)
+    await pool._create_one(row_id)
+    available = await repo.get_by_state("available")
+    assert len(available) == 1
+
+
+# --- _safe_get_state exception ---------------------------------------------
+
+
+async def test_safe_get_state_handles_exception(pool_setup):
+    """_safe_get_state returns None on exception."""
+    pool, _repo, green, _prov, _conn = pool_setup
+
+    async def boom(id_instance, api_token):
+        raise RuntimeError("state boom")
+
+    green.get_state_instance = boom
+    result = await pool._safe_get_state("inst-1", "token-1")
+    assert result is None
+
+
+async def test_safe_get_state_returns_state_on_success(pool_setup):
+    """_safe_get_state returns the state string on success."""
+    pool, _repo, green, _prov, _conn = pool_setup
+    green.set_default_state("notAuthorized")
+    result = await pool._safe_get_state("inst-1", "token-1")
+    assert result == "notAuthorized"
+
+
+# --- _best_effort_delete_green exception -----------------------------------
+
+
+async def test_best_effort_delete_green_handles_exception(pool_setup):
+    """_best_effort_delete_green swallows exceptions from delete_connection."""
+    pool, _repo, _green, provisioner, _conn = pool_setup
+
+    async def boom(ref):
+        raise RuntimeError("delete boom")
+
+    provisioner.delete_connection = boom
+    # Should not raise.
+    await pool._best_effort_delete_green("inst-1")
+
+
+# --- finalize_claim / claim service methods --------------------------------
+
+
+async def test_pool_finalize_claim_delegates_to_repo(pool_setup):
+    """pool.finalize_claim deletes the row via the repo."""
+    pool, repo, _green, _prov, _conn = pool_setup
+    row_id = await repo.reserve_creation_slot(1)
+    await repo.mark_created(
+        row_id,
+        ConnectionRef(provider="green", provider_connection_id="inst-1"),
+        ProviderCredentials(data=b"token-1"),
+        b"hash-1",
+    )
+    await repo.mark_available(row_id)
+    await repo.claim("user-1")
+    await pool.finalize_claim(row_id)
+    claimed = await repo.get_by_state("claimed")
+    assert len(claimed) == 0
+
+
+async def test_pool_claim_returns_none_when_empty(pool_setup):
+    """pool.claim returns None when no available rows."""
+    pool, _repo, _green, _prov, _conn = pool_setup
+    result = await pool.claim("user-1")
+    assert result is None
+
+
+async def test_pool_claim_returns_pooled_instance(pool_setup):
+    """pool.claim returns a PooledInstance when an available row exists."""
+    pool, repo, _green, _prov, _conn = pool_setup
+    row_id = await repo.reserve_creation_slot(1)
+    await repo.mark_created(
+        row_id,
+        ConnectionRef(provider="green", provider_connection_id="inst-1"),
+        ProviderCredentials(data=b"token-1"),
+        b"hash-1",
+    )
+    await repo.mark_available(row_id)
+    result = await pool.claim("user-1")
+    assert result is not None
+    assert result.pool_row_id == row_id
+    assert result.ref.provider_connection_id == "inst-1"

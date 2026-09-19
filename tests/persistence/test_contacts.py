@@ -60,6 +60,19 @@ async def test_inmem_find_by_name_not_found():
     assert await repo.find_by_name("user-1", "Nobody") is None
 
 
+async def test_inmem_find_by_name_no_match_with_existing_contacts():
+    """find_by_name iterates existing contacts but finds no match."""
+    repo = InMemoryContactRepository()
+    await repo.save(
+        ContactRecord(user_id="user-1", display_name="Alice", phone_number="+111")
+    )
+    await repo.save(
+        ContactRecord(user_id="user-1", display_name="Bob", phone_number="+222")
+    )
+    # Name that doesn't match any contact — loop iterates but condition is false.
+    assert await repo.find_by_name("user-1", "Charlie") is None
+
+
 async def test_inmem_find_by_name_strips_whitespace():
     repo = InMemoryContactRepository()
     await repo.save(

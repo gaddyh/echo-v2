@@ -25,6 +25,7 @@ from echo_v2.domain.scheduling import (
     ScheduledActionType,
 )
 from echo_v2.observability.sanitizers import (
+    _hash_if_present,
     safe_action_inputs,
     safe_action_output,
     safe_bot_send_inputs,
@@ -35,6 +36,8 @@ from echo_v2.observability.sanitizers import (
     safe_feedback_handle_output,
     safe_green_http_inputs,
     safe_green_http_output,
+    safe_ingest_green_inputs,
+    safe_ingest_green_output,
     safe_scheduling_execute_inputs,
     safe_scheduling_execute_output,
     safe_webhook_inputs,

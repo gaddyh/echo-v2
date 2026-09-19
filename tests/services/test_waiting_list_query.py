@@ -313,3 +313,30 @@ async def test_is_muted_temporary_with_null_until_returns_false():
         updated_at=NOW,
     )
     assert await repo.is_muted(user_id=USER_ID, chat_id=CHAT_ID_A, now=NOW) is False
+
+
+# --- build_view_for_active edge cases ---------------------------------------
+
+
+async def test_build_view_for_active_without_resolver_raises():
+    """build_view_for_active raises RuntimeError when resolver is None."""
+    from echo_v2.domain.waiting_for_me import WaitingForMeActive
+
+    active_repo = InMemoryWaitingForMeActiveRepository()
+    chat_state_repo = InMemoryChatStateRepository()
+    # No message_repo / contact_repo → resolver is None.
+    service = WaitingListQueryService(
+        active_repo=active_repo,
+        chat_state_repo=chat_state_repo,
+        mute_repo=None,
+    )
+    active = WaitingForMeActive(
+        id="active-1",
+        user_id=USER_ID,
+        chat_id=CHAT_ID_A,
+        target_version=1,
+        result_id="result-1",
+        waiting_since=NOW,
+    )
+    with pytest.raises(RuntimeError, match="requires message_repo and contact_repo"):
+        await service.build_view_for_active(USER_ID, active)

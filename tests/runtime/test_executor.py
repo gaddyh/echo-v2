@@ -589,3 +589,57 @@ async def test_bare_execution_error_releases_idempotency_key():
     assert calls == 1
     # Key should be released (no stored outcome).
     assert await store.get("op:bare") is None
+
+
+async def test_execute_reserve_completed_returns_cached_outcome():
+    """When reserve returns COMPLETED (race: outcome appeared after fast-path get),
+    the executor fetches and returns the cached outcome."""
+    from echo_v2.runtime.idempotency import (
+        ReserveResult,
+        ReserveStatus,
+        SuccessOutcome,
+    )
+
+    class RaceStore:
+        """Mock store: first get misses, reserve says COMPLETED, second get hits."""
+
+        def __init__(self) -> None:
+            self._get_count = 0
+            self._outcome = SuccessOutcome(value=77, attempts=1, duration_ms=1.0)
+
+        async def get(self, key):
+            self._get_count += 1
+            if self._get_count == 1:
+                return None
+            return self._outcome
+
+        async def reserve(self, key):
+            return ReserveResult(ReserveStatus.COMPLETED)
+
+        async def wait_for_completion(self, key):
+            return self._outcome
+
+        async def put_success(self, key, token, outcome):
+            pass
+
+        async def put_failure(self, key, token, outcome):
+            pass
+
+        async def put_indeterminate(self, key, token, outcome):
+            pass
+
+        async def release(self, key, token):
+            pass
+
+        async def renew_lease(self, key, token):
+            return True
+
+    store = RaceStore()
+    result = await execute(
+        operation=lambda v: v,
+        input_=1,
+        context=RunContext(operation_name="op"),
+        idempotency_key="op:race",
+        idempotency_store=store,
+    )
+    assert result.value == 77

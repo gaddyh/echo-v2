@@ -1094,3 +1094,29 @@ async def test_run_loop_cancelled_during_sleep(
     with pytest.raises(asyncio.CancelledError):
         await worker.run_loop()
     assert mock_run_once.call_count == 1
+
+
+async def test_run_once_propagates_cancelled_error():
+    """CancelledError from _process_user is re-raised (not swallowed)."""
+    digest_repo = InMemoryDailyDigestRepository()
+    active_repo = InMemoryWaitingForMeActiveRepository()
+    chat_state_repo = InMemoryChatStateRepository()
+    message_repo = InMemoryMessageRepository()
+    contact_repo = InMemoryContactRepository()
+    bot = FakeBot()
+
+    worker = _make_worker(
+        digest_repo=digest_repo,
+        active_repo=active_repo,
+        chat_state_repo=chat_state_repo,
+        message_repo=message_repo,
+        contact_repo=contact_repo,
+        bot=bot,
+        user_provider=_make_user_provider([(USER_ID, USER_PHONE, "Asia/Jerusalem", "גדי")]),
+    )
+
+    with patch.object(
+        worker, "_process_user", side_effect=asyncio.CancelledError()
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await worker.run_once(now_utc=NOW)
