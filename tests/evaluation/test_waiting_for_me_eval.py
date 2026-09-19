@@ -95,11 +95,21 @@ def _build_conversation(case: EvalCase) -> ConversationInput:
 def analyzer() -> LLMWaitingForMeAnalyzer:
     from openai import AsyncOpenAI
 
+    from echo_v2.services.summary_rewriter import SummaryRewriter
+
     client = AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
+    rewriter_model = os.environ.get(
+        "SUMMARY_REWRITER_MODEL",
+        os.environ.get("LLM_MODEL_NAME", "gpt-4.1"),
+    )
+    summary_rewriter: SummaryRewriter | None = None
+    if os.environ.get("SUMMARY_REWRITER_ENABLED", "1") != "0":
+        summary_rewriter = SummaryRewriter(client=client, model=rewriter_model)
     return LLMWaitingForMeAnalyzer(
         client=client,
         model=os.environ.get("LLM_MODEL_NAME", "gpt-4.1"),
         prompt_version=os.environ.get("WFM_PROMPT_VERSION", DEFAULT_PROMPT_VERSION),
+        summary_rewriter=summary_rewriter,
     )
 
 

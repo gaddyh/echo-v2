@@ -276,6 +276,7 @@ def create_app() -> FastAPI:
 
     # --- chat analysis worker (NOT started by default — CHAT_ANALYSIS_ENABLED)
     from echo_v2.services.media_summarizer import OpenAIMediaSummarizer
+    from echo_v2.services.summary_rewriter import SummaryRewriter
     from echo_v2.services.transcription_factory import build_transcriber
     from echo_v2.services.waiting_for_me_analyzer import LLMWaitingForMeAnalyzer
 
@@ -288,9 +289,19 @@ def create_app() -> FastAPI:
     media_summarizer = OpenAIMediaSummarizer(client=openai_client)
     _logger.info("media summarizer built: %s", type(media_summarizer).__name__)
 
+    summary_rewriter = SummaryRewriter(
+        client=openai_client,
+        model=os.environ.get(
+            "SUMMARY_REWRITER_MODEL",
+            os.environ.get("LLM_MODEL_NAME", "gpt-4.1"),
+        ),
+    )
+    _logger.info("summary rewriter built: %s", type(summary_rewriter).__name__)
+
     analyzer = LLMWaitingForMeAnalyzer(
         client=openai_client,
         model=os.environ.get("LLM_MODEL_NAME", "gpt-4.1"),
+        summary_rewriter=summary_rewriter,
     )
     analysis_processor = ChatAnalysisProcessor(
         message_repo=repos.messages,

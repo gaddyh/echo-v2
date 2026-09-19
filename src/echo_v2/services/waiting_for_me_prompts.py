@@ -11,6 +11,7 @@ Versions:
     v3 — Owner-centric output contract (next_owner). No waiting_for_me mentions.
     v4 — Actionability threshold: two-stage decision (trackable? → who owns?).
     v4.1 — Precision rules for informal requests and ambiguity (append-only on v4).
+    v4.2 — Warmer, more conversational "summary" tone (append-only on v4.1).
 """
 
 from __future__ import annotations
@@ -1030,6 +1031,36 @@ Only after the triggering event occurs does the requested action become active.
 """
 
 # ---------------------------------------------------------------------------
+# v4.2 — Warmer, more conversational "summary" tone.
+# Restructured: tone guidance is integrated directly into the summary
+# field description (where it applies), with explicit scoping that it
+# affects ONLY the summary field — never the reasoning or next_owner
+# decision. No appended section, no changes to any decision rules.
+# ---------------------------------------------------------------------------
+
+_V4_2 = _V4_1.replace(
+    'The "summary" field:\n'
+    "- One sentence in Hebrew describing the situation and what is being waited for, from the user's perspective.\n"
+    "- Do NOT include the contact's name (it is shown separately).\n"
+    "- Do NOT invent details not present in the conversation.\n"
+    "- Max 160 characters.\n"
+    '- Only for "user" owners; use null or empty string otherwise.\n',
+    'The "summary" field:\n'
+    "- One sentence in Hebrew describing the situation and what is being waited for, from the user's perspective.\n"
+    "- TONE (applies ONLY to this field — never to your reasoning or the "
+    "next_owner decision): write it like a friendly, casual nudge, the way "
+    "a helpful friend would phrase it when reminding the user about the "
+    "open item. Prefer warm, second-person phrasing such as "
+    "\"מחכים שתאשר את תאריך הפגישה\" or \"צריך לחזור אליהם עם המחיר\". Avoid "
+    "stiff, bureaucratic phrasing such as \"ממתין לאישור תאריך הפגישה\" or "
+    "\"נדרשת תגובה מהמשתמש\". No exclamation marks, no emojis.\n"
+    "- Do NOT include the contact's name (it is shown separately).\n"
+    "- Do NOT invent details not present in the conversation.\n"
+    "- Max 160 characters.\n"
+    '- Only for "user" owners; use null or empty string otherwise.\n',
+)
+
+# ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
 
@@ -1042,6 +1073,7 @@ PROMPTS: dict[str, str] = {
     "v3": _V3,
     "v4": _V4,
     "v4.1": _V4_1,
+    "v4.2": _V4_2,
 }
 
 DEFAULT_PROMPT_VERSION = "v4.1"

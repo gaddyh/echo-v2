@@ -38,6 +38,7 @@ from echo_v2.services.waiting_for_me_prompts import (
 
 if TYPE_CHECKING:
     from echo_v2.services.chat_analysis_worker import ConversationInput
+    from echo_v2.services.summary_rewriter import SummaryRewriterProtocol
 
 __all__ = [
     "AnalysisError",
@@ -201,11 +202,13 @@ class LLMWaitingForMeAnalyzer:
         client: ChatCompletionClient,
         model: str = "gpt-4.1",
         prompt_version: str = DEFAULT_PROMPT_VERSION,
+        summary_rewriter: SummaryRewriterProtocol | None = None,
     ) -> None:
         self._client = client
         self._model = model
         self._system_prompt = get_prompt(prompt_version)
         self._prompt_version = prompt_version
+        self._summary_rewriter = summary_rewriter
         # GPT-5+ reasoning models only support the default temperature (1)
         # and consume completion tokens for reasoning, so they need a larger
         # budget than the 200 tokens that suffice for gpt-4.x.
@@ -280,6 +283,17 @@ class LLMWaitingForMeAnalyzer:
             prompt_version=self._prompt_version,
             analyzer_version=WFM_ANALYZER_VERSION,
         )
+        # Warm the summary tone via a separate LLM call. This is fully
+        # isolated from the decision logic — the rewriter only touches the
+        # ``summary`` field, never ``decision`` or ``next_owner``. Falls
+        # back to the original summary on any failure.
+        if (
+            self._summary_rewriter is not None
+            and result.summary
+            and result.decision is WaitingForMeDecision.WAITING_FOR_ME
+        ):
+            warmed = await self._summary_rewriter.rewrite(result.summary)
+            result = replace(result, summary=warmed)
         return result, raw_output
 
 
