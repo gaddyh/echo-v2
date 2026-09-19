@@ -2112,12 +2112,17 @@ async def test_enqueue_polls_until_run_queryable(monkeypatch):
 
     monkeypatch.setattr(action_service, "_trace_user_false_positive", _fake_trace)
 
-    # Fake run checker: returns False twice, then True.
+    # Fake run checker: returns None twice, then run info.
     checker_calls = [0]
 
-    def _fake_checker(run_id: str) -> bool:
+    def _fake_checker(run_id: str) -> dict[str, Any] | None:
         checker_calls[0] += 1
-        return checker_calls[0] >= 3
+        if checker_calls[0] >= 3:
+            return {
+                "start_time": "2026-09-19T10:00:01.123456+00:00",
+                "session_id": "server-session-id",
+            }
+        return None
 
     # Patch _enqueue_with_retry to use the fake checker with zero delay.
     async def _poll_enqueue(
@@ -2134,8 +2139,10 @@ async def test_enqueue_polls_until_run_queryable(monkeypatch):
         from echo_v2.services.feedback_service import tracing_client as _tc
 
         elapsed = 0.0
+        run_info: dict[str, Any] | None = None
         while elapsed < max_wait:
-            if _fake_checker(run_id):
+            run_info = _fake_checker(run_id)
+            if run_info is not None:
                 break
             await asyncio.sleep(0)
             elapsed += 0.01
@@ -2146,8 +2153,8 @@ async def test_enqueue_polls_until_run_queryable(monkeypatch):
                 {
                     "item_type": "RUN",
                     "run_id": run_id,
-                    "session_id": session_id,
-                    "start_time": run_start_time,
+                    "session_id": run_info["session_id"],
+                    "start_time": run_info["start_time"],
                 }
             ],
         )
@@ -2164,6 +2171,10 @@ async def test_enqueue_polls_until_run_queryable(monkeypatch):
     assert result is True
     await asyncio.gather(*tasks)
 
-    # Checker was called 3 times (2 False, 1 True), then enqueued.
+    # Checker was called 3 times (2 None, 1 run info), then enqueued.
     assert checker_calls[0] == 3
     assert len(fake_client.annotation_queues.items.calls) == 1
+    # Server-side start_time/session_id used, not local values.
+    call = fake_client.annotation_queues.items.calls[0]
+    assert call["items"][0]["start_time"] == "2026-09-19T10:00:01.123456+00:00"
+    assert call["items"][0]["session_id"] == "server-session-id"
