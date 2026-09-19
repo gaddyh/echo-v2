@@ -867,21 +867,14 @@ class WaitingForMeActionService:
             # Flush so the run is persisted before the queue references it.
             tracing_client.flush()
             session_id = os.environ.get("LANGSMITH_PROJECT_ID", "")
-            await tracing_client.annotation_queues.items.create(
+            # LangSmith's indexing is asynchronous — the run may not be
+            # queryable immediately after flush. Retry with backoff.
+            await self._enqueue_with_retry(
                 queue_id=queue_id,
-                items=[
-                    {
-                        "item_type": "RUN",
-                        "run_id": run_id,
-                        "session_id": session_id,
-                        "start_time": run_start_time,
-                    }
-                ],
-            )
-            _logger.info(
-                "user false-positive: enqueued run %s to annotation queue %s "
-                "(result_id=%s)",
-                run_id, queue_id, result_id,
+                run_id=run_id,
+                session_id=session_id,
+                run_start_time=run_start_time,
+                result_id=result_id,
             )
         except Exception:
             _logger.warning(
@@ -890,6 +883,57 @@ class WaitingForMeActionService:
                 result_id,
                 exc_info=True,
             )
+
+    async def _enqueue_with_retry(
+        self,
+        *,
+        queue_id: str,
+        run_id: str,
+        session_id: str,
+        run_start_time: str,
+        result_id: str,
+        max_attempts: int = 3,
+        initial_delay: float = 2.0,
+    ) -> None:
+        """Enqueue a run with retry on 404 (run not indexed yet).
+
+        LangSmith's run indexing is asynchronous — ``flush()`` returns
+        before the run is queryable by the annotation queue API. Retry
+        with exponential backoff.
+        """
+        import asyncio as _asyncio
+
+        delay = initial_delay
+        for attempt in range(1, max_attempts + 1):
+            try:
+                await tracing_client.annotation_queues.items.create(
+                    queue_id=queue_id,
+                    items=[
+                        {
+                            "item_type": "RUN",
+                            "run_id": run_id,
+                            "session_id": session_id,
+                            "start_time": run_start_time,
+                        }
+                    ],
+                )
+                _logger.info(
+                    "user false-positive: enqueued run %s to annotation queue %s "
+                    "(result_id=%s, attempt=%d)",
+                    run_id, queue_id, result_id, attempt,
+                )
+                return
+            except Exception as exc:
+                if attempt < max_attempts:
+                    _logger.info(
+                        "user false-positive: enqueue attempt %d failed "
+                        "(run %s not indexed yet), retrying in %.1fs: %s",
+                        attempt, run_id, delay, exc,
+                    )
+                    await _asyncio.sleep(delay)
+                    delay *= 2
+                else:
+                    raise
 
 
 class WaitingForMeFeedbackService:
