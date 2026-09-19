@@ -574,6 +574,7 @@ async def test_openai_media_summarizer_document_text_path():
 async def test_summarize_link_empty_body_returns_placeholder(MockClient: MagicMock):
     mock_client = MagicMock()
     mock_response = MagicMock()
+    mock_response.url = "https://example.com/empty"
     mock_response.headers = {"content-type": "text/plain"}
     mock_response.text = "   "
     mock_response.raise_for_status = MagicMock()
@@ -611,6 +612,118 @@ async def test_summarize_link_non_html_content(MockClient: MagicMock):
     )
     assert result.text == "plain text summary"
     assert result.kind == "link"
+
+
+# --- _extract_url_fallback ------------------------------------------------
+
+
+def test_extract_url_fallback_google_search():
+    from echo_v2.services.media_summarizer import _extract_url_fallback
+
+    url = "https://www.google.com/search?q=piano+sabrina+carpenter&ibp=video"
+    result = _extract_url_fallback(url)
+    assert result is not None
+    assert "piano sabrina carpenter" in result
+    assert "video" in result
+
+
+def test_extract_url_fallback_google_search_no_video():
+    from echo_v2.services.media_summarizer import _extract_url_fallback
+
+    url = "https://www.google.com/search?q=best+pizza+recipe"
+    result = _extract_url_fallback(url)
+    assert result is not None
+    assert "best pizza recipe" in result
+    assert "video" not in result
+
+
+def test_extract_url_fallback_youtube_watch():
+    from echo_v2.services.media_summarizer import _extract_url_fallback
+
+    url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+    result = _extract_url_fallback(url)
+    assert result is not None
+    assert "dQw4w9WgXcQ" in result
+
+
+def test_extract_url_fallback_youtu_be():
+    from echo_v2.services.media_summarizer import _extract_url_fallback
+
+    url = "https://youtu.be/dQw4w9WgXcQ"
+    result = _extract_url_fallback(url)
+    assert result is not None
+    assert "dQw4w9WgXcQ" in result
+
+
+def test_extract_url_fallback_non_matching_url_returns_none():
+    from echo_v2.services.media_summarizer import _extract_url_fallback
+
+    assert _extract_url_fallback("https://example.com/page") is None
+    assert _extract_url_fallback("https://example.com/search?q=test") is None
+
+
+def test_extract_url_fallback_google_search_no_q_returns_none():
+    from echo_v2.services.media_summarizer import _extract_url_fallback
+
+    url = "https://www.google.com/search?rlz=1"
+    assert _extract_url_fallback(url) is None
+
+
+# --- summarize_link with URL fallback (JS-rendered pages) ------------------
+
+
+@patch("echo_v2.services.media_summarizer.httpx.AsyncClient")
+async def test_summarize_link_empty_html_uses_url_fallback(MockClient: MagicMock):
+    """share.google links redirect to Google Search (JS-rendered, empty
+    body). The URL fallback should extract the search query and return it
+    directly instead of returning a useless placeholder."""
+    mock_client = MagicMock()
+    mock_response = MagicMock()
+    mock_response.url = (
+        "https://www.google.com/search?q=piano+sabrina+carpenter&ibp=video"
+    )
+    mock_response.headers = {"content-type": "text/html; charset=utf-8"}
+    mock_response.text = "<!doctype html><head><title></title></head><body></body></html>"
+    mock_response.raise_for_status = MagicMock()
+    mock_client.get = AsyncMock(return_value=mock_response)
+    mock_client.aclose = AsyncMock()
+    MockClient.return_value = mock_client
+
+    client = MagicMock()
+    result = await summarize_link(
+        client=client, model="gpt-4.1", url="https://share.google/AP16czJMNnx2IlZfD"
+    )
+    assert "piano sabrina carpenter" in result.text
+    assert "video" in result.text
+    assert result.kind == "link_url_fallback"
+    # The fallback is returned directly — no LLM call needed.
+    client.chat.completions.create.assert_not_called()
+
+
+@patch("echo_v2.services.media_summarizer.httpx.AsyncClient")
+async def test_summarize_link_empty_html_no_url_fallback_returns_placeholder(
+    MockClient: MagicMock,
+):
+    """When neither the body nor the URL fallback yields text, return the
+    placeholder."""
+    mock_client = MagicMock()
+    mock_response = MagicMock()
+    mock_response.url = "https://example.com/empty"
+    mock_response.headers = {"content-type": "text/html; charset=utf-8"}
+    mock_response.text = "<!doctype html><head><title></title></head><body></body></html>"
+    mock_response.raise_for_status = MagicMock()
+    mock_client.get = AsyncMock(return_value=mock_response)
+    mock_client.aclose = AsyncMock()
+    MockClient.return_value = mock_client
+
+    client = MagicMock()
+    result = await summarize_link(
+        client=client, model="gpt-4.1", url="https://example.com/empty"
+    )
+    assert "https://example.com/empty" in result.text
+    assert result.kind == "link_empty"
+    # LLM should not be called when there's no text to summarize.
+    client.chat.completions.create.assert_not_called()
 
 
 # --- close() ----------------------------------------------------------------

@@ -535,8 +535,6 @@ async def summarize_link(
         content_type = response.headers.get("content-type", "").split(";")[0].strip().lower()
         body = response.text[:_MAX_LINK_BYTES]
     except Exception as exc:
-        if owns_client:
-            await hc.aclose()
         raise MediaSummaryError(f"link fetch failed: {exc}") from exc
     finally:
         if owns_client:
@@ -548,6 +546,15 @@ async def summarize_link(
         text = body
     text = text[:_MAX_LINK_TEXT_CHARS]
     if not text.strip():
+        # JS-rendered pages (e.g. Google Search) may have empty body
+        # text. Try extracting useful info from the final redirect URL.
+        # The fallback is already a concise description — return it
+        # directly instead of sending it through the LLM, which would
+        # hedge ("Sorry, I can't access...") since it's metadata, not
+        # page content.
+        fallback = _extract_url_fallback(response.url)
+        if fallback:
+            return MediaSummary(text=fallback, kind="link_url_fallback")
         return MediaSummary(text=f"[link: {url}]", kind="link_empty")
 
     return await _summarize_text(
@@ -558,6 +565,51 @@ async def summarize_link(
         caption=None,
         file_name=url,
     )
+
+
+def _extract_url_fallback(final_url: str | object) -> str | None:
+    """Extract useful text from a redirect destination URL.
+
+    When the page body is empty (JS-rendered pages like Google Search),
+    the final URL after redirects may still contain useful information
+    — e.g. a Google Search URL has the search query in the ``q``
+    parameter. This handles ``share.google`` short links, which
+    redirect to Google Search pages whose raw HTML has no extractable
+    text.
+
+    Returns a short descriptive string, or ``None`` if nothing useful
+    can be extracted.
+    """
+    from urllib.parse import parse_qs, unquote, urlparse
+
+    try:
+        parsed = urlparse(str(final_url))
+    except Exception:  # noqa: BLE001 - defensive, best-effort
+        return None
+
+    host = parsed.netloc.lower()
+    path = parsed.path.lower()
+    qs = parse_qs(parsed.query)
+
+    # Google Search pages (share.google short links redirect here).
+    if "google.com" in host and "/search" in path:
+        q = qs.get("q", [None])[0]
+        if q:
+            ibp = qs.get("ibp", [None])[0]
+            suffix = " (video)" if ibp == "video" else ""
+            return f"Google search for: {unquote(q)}{suffix}"
+        return None
+
+    # YouTube watch URLs.
+    if ("youtube.com" in host and "/watch" in path) or "youtu.be" in host:
+        v = qs.get("v", [None])[0]
+        if not v and "youtu.be" in host:
+            v = parsed.path.strip("/")
+        if v:
+            return f"YouTube video: {v}"
+        return None
+
+    return None
 
 
 def _strip_html(html: str) -> str:
