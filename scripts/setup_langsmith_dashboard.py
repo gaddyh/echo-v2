@@ -257,7 +257,7 @@ def build_overview_dashboard(section_id: str) -> None:
                     "name": "actions",
                     "metric_definition": {"type": "count"},
                     "filter_definition": project_filter(),
-                    "filters": {"filter": 'search(name, "wfm.action.")'},
+                    "filters": {"filter": 'search("wfm.action.")'},
                     "group_by_definitions": group_by_name(),
                 }
             ],
@@ -450,7 +450,7 @@ def build_usage_dashboard(section_id: str) -> None:
         "rejected": "false_positive",
         "ignored / not needed": "not_needed",
     }
-    all_actions = 'search(name, "wfm.miniapp.action.")'
+    all_actions = 'search("wfm.miniapp.action.")'
     useful_actions = (
         'or(eq(name, "wfm.miniapp.action.done"), '
         'eq(name, "wfm.miniapp.action.snooze"), '
