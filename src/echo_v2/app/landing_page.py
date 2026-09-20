@@ -16,19 +16,19 @@ LANDING_PAGE = r"""<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Echo — איזה לקוח מחכה לך עכשיו בוואטסאפ?</title>
-<meta name="description" content="Echo מזהה אילו לקוחות מחכים לתשובה ממך בוואטסאפ — לפני שזה עולה לך בעסקה. הצטרפו לרשימת ההמתנה לגישה מוקדמת.">
+<title>Echo — כמה דברים עדיין פתוחים לך מול לקוחות בוואטסאפ?</title>
+<meta name="description" content="Echo מזהה אוטומטית למי צריך לחזור, מה הבטחת לשלוח ומה עדיין מחכה לטיפול — לפני שזה הופך ללקוח מאוכזב או עסקה שנופלת.">
 <meta property="og:type" content="website">
-<meta property="og:title" content="Echo — איזה לקוח מחכה לך עכשיו בוואטסאפ?">
-<meta property="og:description" content="Echo מזהה אילו לקוחות מחכים לתשובה ממך בוואטסאפ — לפני שזה עולה לך בעסקה. הצטרפו לרשימת ההמתנה.">
+<meta property="og:title" content="Echo — כמה דברים עדיין פתוחים לך מול לקוחות בוואטסאפ?">
+<meta property="og:description" content="Echo מזהה אוטומטית למי צריך לחזור, מה הבטחת לשלוח ומה עדיין מחכה לטיפול — לפני שזה הופך ללקוח מאוכזב או עסקה שנופלת.">
 <meta property="og:url" content="{{BASE_URL}}/">
 <meta property="og:image" content="{{BASE_URL}}/og.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta property="og:locale" content="he_IL">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="Echo — איזה לקוח מחכה לך עכשיו בוואטסאפ?">
-<meta name="twitter:description" content="Echo מזהה אילו לקוחות מחכים לתשובה ממך בוואטסאפ.">
+<meta name="twitter:title" content="Echo — כמה דברים עדיין פתוחים לך מול לקוחות בוואטסאפ?">
+<meta name="twitter:description" content="Echo מזהה למי צריך לחזור, מה הבטחת לשלוח ומה עדיין מחכה לטיפול.">
 <meta name="twitter:image" content="{{BASE_URL}}/og.png">
 <style>
 :root {
@@ -530,16 +530,16 @@ body {
 <section class="hero">
   <div class="container">
     <div class="logo">ECHO</div>
-    <h1>איזה לקוח מחכה לך עכשיו בוואטסאפ?</h1>
-    <p class="sub">הצעת מחיר שלא יצאה. פרויקט שנתקע כי שכחת לענות. לקוח שממתין יומיים ומתחיל לחפש מישהו אחר. Echo מזהה את השיחות שמחכות לך — לפני שהן עולות לך בעסקה.</p>
+    <h1>כמה דברים עדיין פתוחים לך מול לקוחות בוואטסאפ?</h1>
+    <p class="sub">Echo מזהה אוטומטית למי צריך לחזור, מה הבטחת לשלוח ומה עדיין מחכה לטיפול — לפני שזה הופך ללקוח מאוכזב או עסקה שנופלת.</p>
     <a class="cta" href="#waitlist">אני רוצה גישה מוקדמת</a>
   </div>
 </section>
 
 <section class="pain">
   <div class="container">
-    <h2>כשהעסק שלך רץ על וואטסאפ, כל הודעה שנשכחת היא כסף</h2>
-    <p>פרילנסרים ועצמאים מנהלים עשרות שיחות לקוח ביום באותו מקום שבו רצה הקבוצה המשפחתית. וואטסאפ לא מזכיר לך מי מחכה — ההודעה צוללת למטה, והלקוח מסיק מסקנות.</p>
+    <h2>העסק שלך רץ על וואטסאפ? Echo שומר על כל מה שנשאר פתוח</h2>
+    <p>Echo נבנה לעצמאים ובעלי עסקים קטנים שמנהלים 15+ שיחות ביום — בלי CRM מסודר או עם CRM שלא באמת פותחים. הוא מזהה מי מחכה לתשובה, מה הבטחת לשלוח ומה עדיין דורש טיפול, כדי שלא תצטרך לזכור הכול בראש.</p>
   </div>
 </section>
 
@@ -593,7 +593,7 @@ body {
         </div>
       </div>
     </div>
-    <div class="demo-caption">ככה זה נראה — כרטיס אחד לכל מי שמחכה, פעולה אחת וממשיכים.</div>
+    <div class="demo-caption">ככה זה נראה — כרטיס אחד לכל דבר שנשאר פתוח, פעולה אחת וממשיכים.</div>
   </div>
 </section>
 
@@ -611,7 +611,7 @@ body {
       <div class="num">2</div>
       <div>
         <h3>Echo מבין את השיחות</h3>
-        <p>לא רק "מי כתב אחרון" — Echo מזהה בקשות פתוחות, הבטחות שנתת ושאלות שלא נענו.</p>
+        <p>לא רק "מי כתב אחרון" — Echo מזהה למי צריך לחזור, מה הבטחת לשלוח ומה עדיין מחכה לטיפול.</p>
       </div>
     </div>
     <div class="step">
