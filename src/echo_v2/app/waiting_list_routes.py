@@ -355,7 +355,10 @@ def build_waiting_list_router(
         snooze_until_dt: datetime | None = None
         if body.snooze_until:
             try:
-                snooze_until_dt = datetime.fromisoformat(body.snooze_until)
+                iso_value = body.snooze_until
+                if iso_value.endswith("Z"):
+                    iso_value = f"{iso_value[:-1]}+00:00"
+                snooze_until_dt = datetime.fromisoformat(iso_value)
                 if snooze_until_dt.tzinfo is None:
                     snooze_until_dt = snooze_until_dt.replace(tzinfo=timezone.utc)
             except ValueError:
