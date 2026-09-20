@@ -10,6 +10,7 @@
 ## Git workflow
 
 - Never push feature work directly to `main`.
+- Feature branch names must be unique, meaningful, and briefly describe the work (for example, `feature/add-digest-funnel` or `fix/python310-z-timestamps`).
 - Start work from an up-to-date `main` branch on a feature branch:
   `git switch main && git pull --ff-only origin main && git switch -c feature/<short-name>`.
 - Push the feature branch and open a pull request targeting `main`.
