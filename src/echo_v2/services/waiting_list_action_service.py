@@ -20,7 +20,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Literal
+from typing import Literal, Protocol, runtime_checkable
 
 from langsmith import traceable
 from langsmith.run_helpers import get_current_run_tree
@@ -59,6 +59,17 @@ __all__ = [
 ]
 
 _logger = logging.getLogger("echo_v2.services.waiting_list")
+
+
+@runtime_checkable
+class UserInfoResolver(Protocol):
+    """Resolve user_id to (phone, first_name) for trace metadata."""
+
+    async def get_user_info_by_id(
+        self, user_id: str
+    ) -> tuple[str, str | None] | None:
+        """Return (phone_number, first_name) or ``None`` if not found."""
+        ...
 
 
 @dataclass(frozen=True)
@@ -236,6 +247,7 @@ class WaitingListActionService:
         scheduling_service: SchedulingService | None = None,
         active_repo: WaitingForMeActiveRepository | None = None,
         tz_name: str = "Asia/Jerusalem",
+        user_info_resolver: UserInfoResolver | None = None,
     ) -> None:
         self._token_service = token_service
         self._query_service = query_service
@@ -249,6 +261,7 @@ class WaitingListActionService:
         self._scheduling_service = scheduling_service
         self._active_repo = active_repo
         self._tz_name = tz_name
+        self._user_info_resolver = user_info_resolver
 
     async def list_items(
         self,
@@ -314,18 +327,29 @@ class WaitingListActionService:
         (schedule_send) outcomes so the LangSmith chart counts successful
         actions, not retries/stale/not_found. Attaches ``button`` and the
         HMAC-hashed ``user_id_hash`` to the run metadata for per-user
-        grouping.
+        grouping. When a ``user_info_resolver`` is configured, also
+        attaches raw ``user_phone`` and ``user_name`` for dashboard
+        display.
 
         Safe when tracing is disabled: ``get_current_run_tree()`` returns
         ``None`` and the block is a no-op; ``correlation_id`` is never
         called (so ``OBSERVABILITY_HASH_KEY`` is not required).
         """
         run_tree = get_current_run_tree()
-        if run_tree is not None:
-            run_tree.add_metadata({
-                "button": button,
-                "user_id_hash": correlation_id(user_id),
-            })
+        if run_tree is None:
+            return
+        metadata: dict[str, object] = {
+            "button": button,
+            "user_id_hash": correlation_id(user_id),
+        }
+        if self._user_info_resolver is not None:
+            info = await self._user_info_resolver.get_user_info_by_id(user_id)
+            if info is not None:
+                phone, name = info
+                metadata["user_phone"] = phone
+                if name is not None:
+                    metadata["user_name"] = name
+        run_tree.add_metadata(metadata)
 
     async def execute_action(
         self,

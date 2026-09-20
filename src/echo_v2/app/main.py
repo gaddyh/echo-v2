@@ -481,6 +481,7 @@ def create_app() -> FastAPI:
         result_repo=repos.wfm_results,
         scheduling_service=scheduling_service,
         active_repo=repos.wfm_active,
+        user_info_resolver=user_repo,
     )
     debug_service = DebugAnalysisService(
         token_service=token_service,

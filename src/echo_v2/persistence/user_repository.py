@@ -151,3 +151,20 @@ class PostgresUserRepository:
             result = await session.execute(stmt)
             row = result.scalar_one_or_none()
             return row if row else None
+
+    async def get_user_info_by_id(
+        self, user_id: str
+    ) -> tuple[str, str | None] | None:
+        """Look up (phone_number, first_name) by user_id.
+
+        Returns ``None`` if the user doesn't exist.
+        """
+        async with self._session_factory() as session:
+            stmt = select(
+                UserRow.phone_number, UserRow.first_name
+            ).where(UserRow.id == user_id)
+            result = await session.execute(stmt)
+            row = result.first()
+            if row is None:
+                return None
+            return row.phone_number, row.first_name

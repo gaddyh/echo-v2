@@ -1858,3 +1858,60 @@ async def test_trace_button_click_noop_when_no_run_tree():
     ):
         # Should not raise even without OBSERVABILITY_HASH_KEY.
         await service._trace_button_click(user_id=USER_ID, button="done")
+
+
+async def test_trace_button_click_attaches_phone_and_name_when_resolver_present():
+    """_trace_button_click attaches user_phone + user_name when resolver is configured."""
+    import os
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    service, _, _, _, _ = _make_service()
+
+    # Inject a fake user_info_resolver.
+    fake_resolver = MagicMock()
+    fake_resolver.get_user_info_by_id = AsyncMock(
+        return_value=("+972500000000", "Gaddy")
+    )
+    service._user_info_resolver = fake_resolver
+
+    fake_run = MagicMock()
+    with patch(
+        "echo_v2.services.waiting_list_action_service.get_current_run_tree",
+        return_value=fake_run,
+    ), patch.dict(os.environ, {"OBSERVABILITY_HASH_KEY": "test-key-12345"}):
+        from echo_v2.observability.privacy import _reset_key_cache
+        _reset_key_cache()
+        await service._trace_button_click(user_id=USER_ID, button="done")
+
+    fake_run.add_metadata.assert_called_once()
+    meta = fake_run.add_metadata.call_args.args[0]
+    assert meta["button"] == "done"
+    assert meta["user_phone"] == "+972500000000"
+    assert meta["user_name"] == "Gaddy"
+    assert "user_id_hash" in meta
+    _reset_key_cache()
+
+
+async def test_trace_button_click_without_resolver_omits_phone_and_name():
+    """_trace_button_click omits user_phone/user_name when no resolver (default)."""
+    import os
+    from unittest.mock import MagicMock, patch
+
+    service, _, _, _, _ = _make_service()
+    # _user_info_resolver is None by default in _make_service()
+
+    fake_run = MagicMock()
+    with patch(
+        "echo_v2.services.waiting_list_action_service.get_current_run_tree",
+        return_value=fake_run,
+    ), patch.dict(os.environ, {"OBSERVABILITY_HASH_KEY": "test-key-12345"}):
+        from echo_v2.observability.privacy import _reset_key_cache
+        _reset_key_cache()
+        await service._trace_button_click(user_id=USER_ID, button="done")
+
+    fake_run.add_metadata.assert_called_once()
+    meta = fake_run.add_metadata.call_args.args[0]
+    assert "user_phone" not in meta
+    assert "user_name" not in meta
+    assert "user_id_hash" in meta
+    _reset_key_cache()

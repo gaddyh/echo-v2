@@ -174,6 +174,56 @@ def create_chart(section_id: str, chart: dict, index: int) -> None:
         print(f"  Created chart: {chart['title']}")
 
 
+def list_charts_in_section(section_id: str) -> list[dict]:
+    """List all charts in a section. Returns list of chart dicts with 'id' and 'title'.
+
+    Uses POST /api/v1/charts/section/{section_id} which returns a single
+    section with its charts.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime.now(timezone.utc)
+    start = now - timedelta(days=365)
+    resp = httpx.post(
+        f"{API_BASE}/api/v1/charts/section/{section_id}",
+        headers=HEADERS,
+        json={
+            "omit_data": True,
+            "start_time": start.isoformat(),
+            "end_time": now.isoformat(),
+        },
+        timeout=30,
+    )
+    resp.raise_for_status()
+    return resp.json().get("charts", [])
+
+
+def delete_chart(chart_id: str) -> bool:
+    """Delete a chart by ID. Returns True on success."""
+    resp = httpx.delete(
+        f"{API_BASE}/api/v1/charts/{chart_id}",
+        headers=HEADERS,
+        timeout=30,
+    )
+    return resp.status_code == 200
+
+
+def clean_section(section_id: str, title: str) -> None:
+    """Delete all charts in a section so it can be repopulated cleanly."""
+    charts = list_charts_in_section(section_id)
+    if not charts:
+        print(f"  Section '{title}' has no charts to clean.")
+        return
+    print(f"  Cleaning {len(charts)} chart(s) from '{title}'...")
+    for chart in charts:
+        chart_id = chart.get("id")
+        chart_title = chart.get("title", "?")
+        if chart_id and delete_chart(chart_id):
+            print(f"    Deleted: {chart_title}")
+        else:
+            print(f"    FAILED to delete: {chart_title} ({chart_id})")
+
+
 # --- dashboard definition --------------------------------------------------
 
 
@@ -308,39 +358,6 @@ def build_overview_dashboard(section_id: str) -> None:
                 }
             ],
         },
-        # 14. Bar — successful mini-app button actions per user, split by button
-        {
-            "title": "Successful Button Actions Per User",
-            "description": (
-                "Mini-app button clicks (APPLIED/scheduled only) grouped by "
-                "user_id_hash, split by button (done, send, snooze, "
-                "snooze_other, not_needed, false_positive)"
-            ),
-            "chart_type": "bar",
-            "series": [
-                {
-                    "name": btn,
-                    "metric_definition": {"type": "count"},
-                    "filter_definition": project_filter(),
-                    "filters": {
-                        "filter": (
-                            f'and(eq(name, "wfm.miniapp.button_click"), '
-                            f'and(eq(metadata_key, "button"), '
-                            f'eq(metadata_value, "{btn}")))'
-                        )
-                    },
-                    "group_by_definitions": group_by_metadata("user_id_hash"),
-                }
-                for btn in [
-                    "done",
-                    "send",
-                    "snooze",
-                    "snooze_other",
-                    "not_needed",
-                    "false_positive",
-                ]
-            ],
-        },
     ]
 
     for i, chart in enumerate(charts):
@@ -406,31 +423,149 @@ def build_realtime_dashboard(section_id: str) -> None:
         create_chart(section_id, chart, i)
 
 
+def build_miniapp_buttons_dashboard(section_id: str) -> None:
+    """Mini-app button clicks dashboard — per-user, per-button, top users."""
+    buttons = [
+        "done",
+        "send",
+        "snooze",
+        "snooze_other",
+        "not_needed",
+        "false_positive",
+    ]
+    base_filter = (
+        'and(eq(name, "wfm.miniapp.button_click"), '
+        'eq(metadata_key, "button"))'
+    )
+
+    def button_filter(btn: str) -> str:
+        return (
+            f'and(eq(name, "wfm.miniapp.button_click"), '
+            f'and(eq(metadata_key, "button"), eq(metadata_value, "{btn}")))'
+        )
+
+    charts: list[dict] = [
+        # 1. Bar — successful button actions per user, split by button
+        {
+            "title": "Successful Button Actions Per User",
+            "description": (
+                "Mini-app button clicks (APPLIED/scheduled only) grouped by "
+                "user_id_hash, split by button"
+            ),
+            "chart_type": "bar",
+            "series": [
+                {
+                    "name": btn,
+                    "metric_definition": {"type": "count"},
+                    "filter_definition": project_filter(),
+                    "filters": {"filter": button_filter(btn)},
+                    "group_by_definitions": group_by_metadata("user_id_hash"),
+                }
+                for btn in buttons
+            ],
+        },
+        # 2. Top-k — top 3 users by total button clicks (with phone/name)
+        {
+            "title": "Top 3 Users (All Buttons)",
+            "description": (
+                "Top 3 users by total successful button clicks, "
+                "grouped by user_phone"
+            ),
+            "chart_type": "top-k",
+            "series": [
+                {
+                    "name": "total clicks",
+                    "metric_definition": {"type": "count"},
+                    "filter_definition": project_filter(),
+                    "filters": {"filter": base_filter},
+                    "group_by_definitions": group_by_metadata("user_phone"),
+                }
+            ],
+        },
+        # 3. Top-k — top 3 users by done clicks (with phone/name)
+        {
+            "title": "Top 3 Users (Done Button)",
+            "description": (
+                "Top 3 users by successful 'done' button clicks, "
+                "grouped by user_phone"
+            ),
+            "chart_type": "top-k",
+            "series": [
+                {
+                    "name": "done clicks",
+                    "metric_definition": {"type": "count"},
+                    "filter_definition": project_filter(),
+                    "filters": {"filter": button_filter("done")},
+                    "group_by_definitions": group_by_metadata("user_phone"),
+                }
+            ],
+        },
+        # 4. Top-k — top 3 users by send clicks (with phone/name)
+        {
+            "title": "Top 3 Users (Send Button)",
+            "description": (
+                "Top 3 users by successful 'send' button clicks, "
+                "grouped by user_phone"
+            ),
+            "chart_type": "top-k",
+            "series": [
+                {
+                    "name": "send clicks",
+                    "metric_definition": {"type": "count"},
+                    "filter_definition": project_filter(),
+                    "filters": {"filter": button_filter("send")},
+                    "group_by_definitions": group_by_metadata("user_phone"),
+                }
+            ],
+        },
+    ]
+
+    for i, chart in enumerate(charts):
+        create_chart(section_id, chart, i)
+
+
 # --- main ------------------------------------------------------------------
 
 
 def main() -> None:
     global PROJECT_ID
-    project_id = sys.argv[1] if len(sys.argv) > 1 else PROJECT_ID
-    org_id = sys.argv[2] if len(sys.argv) > 2 else "default"
+    # Parse args: project_id, org_id, and optional --clean flag.
+    args = [a for a in sys.argv[1:] if a != "--clean"]
+    clean = "--clean" in sys.argv
+    project_id = args[0] if len(args) > 0 else PROJECT_ID
+    org_id = args[1] if len(args) > 1 else "default"
     # Override the module-level PROJECT_ID used by project_filter()
     PROJECT_ID = project_id
     print("Building LangSmith dashboards")
     print(f"  Project ID: {PROJECT_ID}")
     print(f"  Org ID: {org_id}")
     print(f"  API: {API_BASE}")
+    if clean:
+        print("  --clean: will delete existing charts before recreating")
 
     # Overview dashboard (days/weeks)
     overview_title = "echo v2 overview"
     overview_id = get_or_create_section(overview_title)
+    if clean:
+        clean_section(overview_id, overview_title)
     build_overview_dashboard(overview_id)
     print(f"Overview dashboard: https://smith.langchain.com/o/{org_id}/monitor/dashboards/{overview_id}")
 
     # Real-time dashboard (1-5 hours)
     realtime_title = "echo v2 realtime"
     realtime_id = get_or_create_section(realtime_title)
+    if clean:
+        clean_section(realtime_id, realtime_title)
     build_realtime_dashboard(realtime_id)
     print(f"Realtime dashboard: https://smith.langchain.com/o/{org_id}/monitor/dashboards/{realtime_id}")
+
+    # Mini-app button clicks dashboard (per-user, per-button, top users)
+    buttons_title = "echo v2 mini-app buttons"
+    buttons_id = get_or_create_section(buttons_title)
+    if clean:
+        clean_section(buttons_id, buttons_title)
+    build_miniapp_buttons_dashboard(buttons_id)
+    print(f"Mini-app buttons dashboard: https://smith.langchain.com/o/{org_id}/monitor/dashboards/{buttons_id}")
     print("  (Monitoring tab in the left sidebar -> Dashboards)")
 
 
