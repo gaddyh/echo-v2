@@ -423,6 +423,77 @@ def build_realtime_dashboard(section_id: str) -> None:
         create_chart(section_id, chart, i)
 
 
+def build_usage_dashboard(section_id: str) -> None:
+    """Product usage dashboard based on successful mini-app click traces."""
+    click_filter = 'eq(name, "wfm.miniapp.button_click")'
+    charts: list[dict] = [
+        {
+            "title": "Successful Mini-App Actions Over Time",
+            "description": "Successful applied actions and newly scheduled sends",
+            "chart_type": "line",
+            "series": [count_series("successful actions", click_filter)],
+        },
+        {
+            "title": "Actions Per User",
+            "description": "Successful mini-app actions grouped by phone number",
+            "chart_type": "bar",
+            "series": [
+                {
+                    "name": "actions",
+                    "metric_definition": {"type": "count"},
+                    "filter_definition": project_filter(),
+                    "filters": {"filter": click_filter},
+                    "group_by_definitions": group_by_metadata("user_phone"),
+                }
+            ],
+        },
+        {
+            "title": "Button Usage Distribution",
+            "description": "Successful actions grouped by mini-app button",
+            "chart_type": "bar",
+            "series": [
+                {
+                    "name": "actions",
+                    "metric_definition": {"type": "count"},
+                    "filter_definition": project_filter(),
+                    "filters": {"filter": click_filter},
+                    "group_by_definitions": group_by_metadata("button"),
+                }
+            ],
+        },
+        {
+            "title": "Actions By Button Over Time",
+            "description": "Successful action trends split by button",
+            "chart_type": "line",
+            "series": [
+                {
+                    "name": "actions",
+                    "metric_definition": {"type": "count"},
+                    "filter_definition": project_filter(),
+                    "filters": {"filter": click_filter},
+                    "group_by_definitions": group_by_metadata("button"),
+                }
+            ],
+        },
+        {
+            "title": "Top Users By Activity",
+            "description": "Users with the most successful mini-app actions",
+            "chart_type": "top-k",
+            "series": [
+                {
+                    "name": "actions",
+                    "metric_definition": {"type": "count"},
+                    "filter_definition": project_filter(),
+                    "filters": {"filter": click_filter},
+                    "group_by_definitions": group_by_metadata("user_phone"),
+                }
+            ],
+        },
+    ]
+    for i, chart in enumerate(charts):
+        create_chart(section_id, chart, i)
+
+
 def build_miniapp_buttons_dashboard(section_id: str) -> None:
     """Mini-app button clicks dashboard — per-user, per-button, top users."""
     buttons = [
@@ -566,6 +637,14 @@ def main() -> None:
         clean_section(buttons_id, buttons_title)
     build_miniapp_buttons_dashboard(buttons_id)
     print(f"Mini-app buttons dashboard: https://smith.langchain.com/o/{org_id}/monitor/dashboards/{buttons_id}")
+
+    # Product usage dashboard (successful activity trends and users)
+    usage_title = "echo v2 usage"
+    usage_id = get_or_create_section(usage_title)
+    if clean:
+        clean_section(usage_id, usage_title)
+    build_usage_dashboard(usage_id)
+    print(f"Usage dashboard: https://smith.langchain.com/o/{org_id}/monitor/dashboards/{usage_id}")
     print("  (Monitoring tab in the left sidebar -> Dashboards)")
 
 
