@@ -433,15 +433,12 @@ def build_miniapp_buttons_dashboard(section_id: str) -> None:
         "not_needed",
         "false_positive",
     ]
-    base_filter = (
-        'and(eq(name, "wfm.miniapp.button_click"), '
-        'eq(metadata_key, "button"))'
-    )
+    base_filter = 'eq(name, "wfm.miniapp.button_click")'
 
     def button_filter(btn: str) -> str:
         return (
             f'and(eq(name, "wfm.miniapp.button_click"), '
-            f'and(eq(metadata_key, "button"), eq(metadata_value, "{btn}")))'
+            f'eq(metadata.button, "{btn}"))'
         )
 
     charts: list[dict] = [
