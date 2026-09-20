@@ -423,205 +423,116 @@ def build_realtime_dashboard(section_id: str) -> None:
         create_chart(section_id, chart, i)
 
 
+def ratio_series(name: str, numerator_filter: str, denominator_filter: str) -> dict:
+    """A ratio of two filtered run counts (for quality/funnel rates)."""
+    return {
+        "name": name,
+        "metric_definition": {
+            "type": "ratio",
+            "numerator": {"type": "count", "filter": numerator_filter},
+            "denominator": {"type": "count", "filter": denominator_filter},
+        },
+        "filter_definition": project_filter(),
+    }
+
+
 def build_usage_dashboard(section_id: str) -> None:
-    """Product usage dashboard based on successful mini-app click traces.
+    """Product quality dashboard for the waiting-list experience.
 
-    Uses button-specific trace names (wfm.miniapp.action.{button}) for
-    reliable chart filtering by name, since metadata filters are unreliable
-    in the LangSmith chart API.
+    The action trace names intentionally encode the semantic outcome, rather
+    than relying on button metadata. This keeps the dashboard useful even
+    when the UI labels change.
     """
-    buttons = [
-        "done",
-        "send",
-        "snooze",
-        "snooze_other",
-        "not_needed",
-        "false_positive",
-    ]
-    click_filter = 'eq(name, "wfm.miniapp.button_click")'
-    failed_filter = 'eq(name, "wfm.miniapp.action.failed")'
-
-    def action_filter(btn: str) -> str:
-        return f'eq(name, "wfm.miniapp.action.{btn}")'
-
+    action_names = {
+        "resolved now": "done",
+        "deferred": "snooze",
+        "acted externally": "send",
+        "rejected": "false_positive",
+        "ignored / not needed": "not_needed",
+    }
+    all_actions = 'search(name, "wfm.miniapp.action.")'
+    useful_actions = (
+        'or(eq(name, "wfm.miniapp.action.done"), '
+        'eq(name, "wfm.miniapp.action.snooze"), '
+        'eq(name, "wfm.miniapp.action.send"))'
+    )
+    rejected_actions = (
+        'or(eq(name, "wfm.miniapp.action.false_positive"), '
+        'eq(name, "wfm.miniapp.action.not_needed"))'
+    )
     charts: list[dict] = [
-        # 1. Line — total successful actions over time
         {
-            "title": "Successful Mini-App Actions Over Time",
-            "description": "Successful applied actions and newly scheduled sends",
+            "title": "False Positive Rate Over Time",
+            "description": "False-positive detections divided by all successful semantic actions",
             "chart_type": "line",
-            "series": [count_series("successful actions", click_filter)],
+            "series": [ratio_series("false-positive rate", 'eq(name, "wfm.miniapp.action.false_positive")', all_actions)],
         },
-        # 2. Bar — actions per user
         {
-            "title": "Actions Per User",
-            "description": "Successful mini-app actions grouped by phone number",
+            "title": "Useful vs Rejected Detections",
+            "description": "Useful = done + snooze + send; rejected = false_positive + not_needed",
             "chart_type": "bar",
             "series": [
-                {
-                    "name": "actions",
-                    "metric_definition": {"type": "count"},
-                    "filter_definition": project_filter(),
-                    "filters": {"filter": click_filter},
-                    "group_by_definitions": group_by_metadata("user_phone"),
-                }
+                count_series("useful detections", useful_actions),
+                count_series("rejected detections", rejected_actions),
             ],
         },
-        # 3. Bar — button usage distribution (one series per button)
         {
-            "title": "Button Usage Distribution",
-            "description": "Successful actions per button (done, send, snooze, etc.)",
+            "title": "Action Mix Per Detected Item",
+            "description": "Semantic outcomes: resolved now, deferred, acted externally, rejected, ignored",
             "chart_type": "bar",
             "series": [
-                count_series(btn, action_filter(btn)) for btn in buttons
+                count_series(label, f'eq(name, "wfm.miniapp.action.{button}")')
+                for label, button in action_names.items()
             ],
         },
-        # 4. Line — actions by button over time (one series per button)
         {
-            "title": "Actions By Button Over Time",
-            "description": "Successful action trends split by button",
+            "title": "Detection Quality",
+            "description": "WFM detections, user false positives, done rate, and annotation queue additions",
             "chart_type": "line",
             "series": [
-                count_series(btn, action_filter(btn)) for btn in buttons
+                count_series("WFM detections", 'eq(name, "wfm.analysis")'),
+                count_series("false positives", 'eq(name, "wfm.miniapp.action.false_positive")'),
+                count_series("done", 'eq(name, "wfm.miniapp.action.done")'),
+                count_series("annotation candidates", 'eq(name, "wfm.user_false_positive")'),
             ],
         },
-        # 5. Top-k — top users by activity
         {
-            "title": "Top Users By Activity",
-            "description": "Users with the most successful mini-app actions",
-            "chart_type": "top-k",
+            "title": "Digest Open Action Funnel",
+            "description": "Digest sent → mini-app opened → at least one meaningful action",
+            "chart_type": "bar",
             "series": [
-                {
-                    "name": "actions",
-                    "metric_definition": {"type": "count"},
-                    "filter_definition": project_filter(),
-                    "filters": {"filter": click_filter},
-                    "group_by_definitions": group_by_metadata("user_phone"),
-                }
+                count_series("digest sent", 'eq(name, "wfm.digest.sent")'),
+                count_series("mini-app opened", 'eq(name, "wfm.miniapp.opened")'),
+                count_series("action taken", useful_actions),
             ],
         },
-        # 6. Bar — scheduled sends per user
         {
-            "title": "Scheduled Sends Per User",
-            "description": "Successful 'send' button clicks grouped by phone",
+            "title": "Onboarding Funnel",
+            "description": "Intro → consent → name → pairing → pool → QR → authorization",
+            "chart_type": "bar",
+            "series": [
+                count_series(event.replace("_", " "), f'eq(name, "wfm.onboarding.{event}")')
+                for event in (
+                    "intro_shown", "consent", "name_entered", "pairing_start",
+                    "pool_hit", "pool_miss", "qr_shown", "authorized",
+                )
+            ],
+        },
+        {
+            "title": "Meaningful Actions By User",
+            "description": "Meaningful actions per user, grouped by privacy-safe user hash",
             "chart_type": "bar",
             "series": [
                 {
-                    "name": "sends",
+                    "name": "meaningful actions",
                     "metric_definition": {"type": "count"},
                     "filter_definition": project_filter(),
-                    "filters": {"filter": action_filter("send")},
-                    "group_by_definitions": group_by_metadata("user_phone"),
-                }
-            ],
-        },
-        # 7. Bar — successful vs failed actions
-        {
-            "title": "Successful vs Failed Actions",
-            "description": "Successful actions vs duplicate/stale/invalid attempts",
-            "chart_type": "bar",
-            "series": [
-                count_series("successful", click_filter),
-                count_series("failed", failed_filter),
-            ],
-        },
-        # 8. KPI — action failure rate
-        {
-            "title": "Action Failure Count",
-            "description": "Duplicate, stale, not_found, and invalid attempts",
-            "chart_type": "kpi",
-            "series": [count_series("failed actions", failed_filter)],
-        },
-    ]
-    for i, chart in enumerate(charts):
-        create_chart(section_id, chart, i)
-
-
-def build_miniapp_buttons_dashboard(section_id: str) -> None:
-    """Mini-app dashboard split into user totals and button breakdowns."""
-    buttons = [
-        "done",
-        "send",
-        "snooze",
-        "snooze_other",
-        "not_needed",
-        "false_positive",
-    ]
-    all_filter = 'eq(name, "wfm.miniapp.button_click")'
-
-    def button_filter(btn: str) -> str:
-        return f'eq(name, "wfm.miniapp.action.{btn}")'
-
-    charts: list[dict] = [
-        # 1. One row per user — no button series, so phone labels are unique.
-        {
-            "title": "Successful Actions Per User",
-            "description": "All successful mini-app actions grouped by phone",
-            "chart_type": "bar",
-            "series": [
-                {
-                    "name": "total actions",
-                    "metric_definition": {"type": "count"},
-                    "filter_definition": project_filter(),
-                    "filters": {"filter": all_filter},
-                    "group_by_definitions": group_by_metadata("user_phone"),
-                }
-            ],
-        },
-        # 2. Button totals — no user grouping, so each button is one bar.
-        {
-            "title": "Button Usage Distribution",
-            "description": "Successful actions by button",
-            "chart_type": "bar",
-            "series": [count_series(btn, button_filter(btn)) for btn in buttons],
-        },
-        # 3. Top users overall.
-        {
-            "title": "Top 3 Users (All Buttons)",
-            "description": "Top users by total successful button clicks",
-            "chart_type": "top-k",
-            "series": [
-                {
-                    "name": "total clicks",
-                    "metric_definition": {"type": "count"},
-                    "filter_definition": project_filter(),
-                    "filters": {"filter": all_filter},
-                    "group_by_definitions": group_by_metadata("user_phone"),
-                }
-            ],
-        },
-        # 4. Top users for done.
-        {
-            "title": "Top 3 Users (Done Button)",
-            "description": "Top users by successful done actions",
-            "chart_type": "top-k",
-            "series": [
-                {
-                    "name": "done clicks",
-                    "metric_definition": {"type": "count"},
-                    "filter_definition": project_filter(),
-                    "filters": {"filter": button_filter("done")},
-                    "group_by_definitions": group_by_metadata("user_phone"),
-                }
-            ],
-        },
-        # 5. Top users for send.
-        {
-            "title": "Top 3 Users (Send Button)",
-            "description": "Top users by successful scheduled sends",
-            "chart_type": "top-k",
-            "series": [
-                {
-                    "name": "send clicks",
-                    "metric_definition": {"type": "count"},
-                    "filter_definition": project_filter(),
-                    "filters": {"filter": button_filter("send")},
-                    "group_by_definitions": group_by_metadata("user_phone"),
+                    "filters": {"filter": useful_actions},
+                    "group_by_definitions": group_by_metadata("user_id_hash"),
                 }
             ],
         },
     ]
-
     for i, chart in enumerate(charts):
         create_chart(section_id, chart, i)
 
@@ -661,13 +572,13 @@ def main() -> None:
     build_realtime_dashboard(realtime_id)
     print(f"Realtime dashboard: https://smith.langchain.com/o/{org_id}/monitor/dashboards/{realtime_id}")
 
-    # Product usage dashboard (successful activity trends and users)
-    usage_title = "echo v2 usage"
-    usage_id = get_or_create_section(usage_title)
+    # Product quality dashboard (semantic outcomes and detection quality)
+    quality_title = "echo v2 quality"
+    quality_id = get_or_create_section(quality_title)
     if clean:
-        clean_section(usage_id, usage_title)
-    build_usage_dashboard(usage_id)
-    print(f"Usage dashboard: https://smith.langchain.com/o/{org_id}/monitor/dashboards/{usage_id}")
+        clean_section(quality_id, quality_title)
+    build_usage_dashboard(quality_id)
+    print(f"Quality dashboard: https://smith.langchain.com/o/{org_id}/monitor/dashboards/{quality_id}")
     print("  (Monitoring tab in the left sidebar -> Dashboards)")
 
 

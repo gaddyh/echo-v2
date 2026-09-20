@@ -29,6 +29,8 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
+from langsmith import traceable
+
 from echo_v2.domain.digest import DailyDigestStatus
 from echo_v2.persistence.digest_repositories import DailyDigestRepository
 from echo_v2.ports.bot import BotChannel
@@ -46,6 +48,11 @@ DIGEST_END_HOUR = 11
 
 # Fallback first name when the user has none.
 _FALLBACK_NAME = "חבר"
+
+
+@traceable(name="wfm.digest.sent")
+async def _trace_digest_sent() -> None:
+    """Emit a privacy-safe digest funnel event."""
 
 
 class DigestWorker:
@@ -224,6 +231,7 @@ class DigestWorker:
             provider_message_id=msg_id,
             item_count=count,
         )
+        await _trace_digest_sent()
         _logger.info(
             "digest sent to user %s on %s: %d items",
             user_id,

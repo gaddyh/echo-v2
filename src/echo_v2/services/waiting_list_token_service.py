@@ -12,9 +12,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
+from langsmith import traceable
+
 from echo_v2.persistence.waiting_list_tokens import WaitingListSessionRepository
 
 __all__ = ["ResolvedWaitingSession", "WaitingListTokenService"]
+
+
+@traceable(name="wfm.miniapp.opened")
+async def _trace_miniapp_opened() -> None:
+    """Emit a privacy-safe mini-app open event."""
 
 
 @dataclass(frozen=True)
@@ -68,6 +75,7 @@ class WaitingListTokenService:
             return None
         session_id, user_id = result
         await self._repo.mark_opened(session_id)
+        await _trace_miniapp_opened()
         return ResolvedWaitingSession(session_id=session_id, user_id=user_id)
 
     async def resolve_session(self, session_id: str) -> ResolvedWaitingSession | None:

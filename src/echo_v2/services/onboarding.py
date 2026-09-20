@@ -44,7 +44,11 @@ import secrets
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
+from langsmith import traceable
+from langsmith.run_helpers import get_current_run_tree
+
 from echo_v2.integrations.green.provisioner import GreenProvisioner
+from echo_v2.observability.privacy import correlation_id
 from echo_v2.persistence.identity import PhoneParseError, normalize_phone_e164
 from echo_v2.persistence.whatsapp_connections import (
     StoredConnection,
@@ -273,6 +277,16 @@ class OnboardingService:
         # per user even on repeated "הצג QR" clicks.
         self._poll_tasks: dict[str, asyncio.Task[None]] = {}
 
+    def _trace_funnel_event(self, event: str, user_id: str | None = None) -> None:
+        """Record an onboarding funnel event without blocking the webhook."""
+        @traceable(name=f"wfm.onboarding.{event}")
+        async def emit() -> None:
+            run_tree = get_current_run_tree()
+            if run_tree is not None and user_id is not None:
+                run_tree.add_metadata({"user_id_hash": correlation_id(user_id)})
+
+        asyncio.create_task(emit())
+
     # --- Context resolution (once per interaction) ---------------------------
 
     async def resolve_context(self, phone: str) -> OnboardingContext | None:
@@ -342,6 +356,7 @@ class OnboardingService:
                 body_text=_INTRO_BODY,
                 buttons=[_ONBOARDING_START_BUTTON, _ONBOARDING_INFO_BUTTON],
             )
+            self._trace_funnel_event("intro_shown")
         except Exception:
             _logger.exception("onboarding: failed to send introduction to %s", phone)
 
@@ -426,6 +441,7 @@ class OnboardingService:
             _logger.exception("onboarding: failed to create user %s", normalized)
             return
 
+        self._trace_funnel_event("consent", user_id)
         # Ask for name.
         await self._bot.send_text(normalized, _NAME_PROMPT)
 
@@ -454,6 +470,7 @@ class OnboardingService:
 
         # Store the name (still pending — not active until authorized).
         await self._user_repo.update_first_name(ctx.user_id, clean_name)
+        self._trace_funnel_event("name_entered", ctx.user_id)
 
         # Pool hit: claim the instance and send the QR immediately, skipping
         # the [חבר אותי] button. Pool miss (or no pool): send the connect
@@ -492,6 +509,7 @@ class OnboardingService:
         If a connection already exists (re-click), re-send QR or "still
         preparing" depending on connection status.
         """
+        self._trace_funnel_event("pairing_start", user_id)
         existing = await self._connection_repo.get_by_user(user_id)
         if existing is not None:
             # Connection already exists — re-send QR or "still preparing".
@@ -504,9 +522,11 @@ class OnboardingService:
         pooled = await self._pool.claim(user_id) if self._pool else None
 
         if pooled is not None:
+            self._trace_funnel_event("pool_hit", user_id)
             # Pool hit — instance ready (notAuthorized), send QR immediately.
             await self._claim_pool_and_send_qr(user_id, phone, pooled)
         else:
+            self._trace_funnel_event("pool_miss", user_id)
             # Pool miss — async preparation, don't block the webhook.
             existing_task = self._prepare_tasks.get(user_id)
             if existing_task is not None and not existing_task.done():
@@ -664,6 +684,8 @@ class OnboardingService:
         sent = await self._send_pairing_qr(
             user_id, phone, conn.ref, api_token,
         )
+        if sent:
+            self._trace_funnel_event("qr_shown", user_id)
         if not sent:
             return  # QR failed and OTP fallback also failed.
         self._ensure_poll_task(
@@ -828,6 +850,8 @@ class OnboardingService:
                         sent = await self._send_pairing_qr(
                             user_id, phone, conn_ref, api_token,
                         )
+                        if sent:
+                            self._trace_funnel_event("qr_shown", user_id)
                         pairing_sent = True
                         if not sent:
                             # QR failed and OTP fallback also failed.
@@ -904,6 +928,7 @@ class OnboardingService:
         Updates onboarding status to ``active`` and sends the welcome message.
         Idempotent: if onboarding is already ``active``, skip.
         """
+        self._trace_funnel_event("authorized", user_id)
         existing = await self._user_repo.get_by_phone(phone)
         if existing is not None:
             _uid, onboarding_status, name = existing
