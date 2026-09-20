@@ -538,7 +538,7 @@ def build_usage_dashboard(section_id: str) -> None:
 
 
 def build_miniapp_buttons_dashboard(section_id: str) -> None:
-    """Mini-app button clicks dashboard — per-user, per-button, top users."""
+    """Mini-app dashboard split into user totals and button breakdowns."""
     buttons = [
         "done",
         "send",
@@ -547,62 +547,53 @@ def build_miniapp_buttons_dashboard(section_id: str) -> None:
         "not_needed",
         "false_positive",
     ]
-    base_filter = (
-        'and(eq(name, "wfm.miniapp.button_click"), '
-        'eq(metadata_key, "button"))'
-    )
+    all_filter = 'eq(name, "wfm.miniapp.button_click")'
 
     def button_filter(btn: str) -> str:
-        return (
-            f'and(eq(name, "wfm.miniapp.button_click"), '
-            f'eq(metadata_key, "button"), eq(metadata_value, "{btn}"))'
-        )
+        return f'eq(name, "wfm.miniapp.action.{btn}")'
 
     charts: list[dict] = [
-        # 1. Bar — successful button actions per user, split by button
+        # 1. One row per user — no button series, so phone labels are unique.
         {
-            "title": "Successful Button Actions Per User",
-            "description": (
-                "Mini-app button clicks (APPLIED/scheduled only) grouped by "
-                "user_phone, split by button"
-            ),
+            "title": "Successful Actions Per User",
+            "description": "All successful mini-app actions grouped by phone",
             "chart_type": "bar",
             "series": [
                 {
-                    "name": btn,
+                    "name": "total actions",
                     "metric_definition": {"type": "count"},
                     "filter_definition": project_filter(),
-                    "filters": {"filter": button_filter(btn)},
+                    "filters": {"filter": all_filter},
                     "group_by_definitions": group_by_metadata("user_phone"),
                 }
-                for btn in buttons
             ],
         },
-        # 2. Top-k — top 3 users by total button clicks (with phone/name)
+        # 2. Button totals — no user grouping, so each button is one bar.
+        {
+            "title": "Button Usage Distribution",
+            "description": "Successful actions by button",
+            "chart_type": "bar",
+            "series": [count_series(btn, button_filter(btn)) for btn in buttons],
+        },
+        # 3. Top users overall.
         {
             "title": "Top 3 Users (All Buttons)",
-            "description": (
-                "Top 3 users by total successful button clicks, "
-                "grouped by user_phone"
-            ),
+            "description": "Top users by total successful button clicks",
             "chart_type": "top-k",
             "series": [
                 {
                     "name": "total clicks",
                     "metric_definition": {"type": "count"},
                     "filter_definition": project_filter(),
-                    "filters": {"filter": base_filter},
+                    "filters": {"filter": all_filter},
                     "group_by_definitions": group_by_metadata("user_phone"),
                 }
             ],
         },
-        # 3. Top-k — top 3 users by done clicks (with phone/name)
+        # 4. Top users for done.
         {
             "title": "Top 3 Users (Done Button)",
-            "description": (
-                "Top 3 users by successful 'done' button clicks, "
-                "grouped by user_phone"
-            ),
+            "description": "Top users by successful done actions",
             "chart_type": "top-k",
             "series": [
                 {
@@ -614,13 +605,10 @@ def build_miniapp_buttons_dashboard(section_id: str) -> None:
                 }
             ],
         },
-        # 4. Top-k — top 3 users by send clicks (with phone/name)
+        # 5. Top users for send.
         {
             "title": "Top 3 Users (Send Button)",
-            "description": (
-                "Top 3 users by successful 'send' button clicks, "
-                "grouped by user_phone"
-            ),
+            "description": "Top users by successful scheduled sends",
             "chart_type": "top-k",
             "series": [
                 {
