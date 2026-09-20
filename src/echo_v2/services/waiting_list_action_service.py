@@ -351,6 +351,49 @@ class WaitingListActionService:
                     metadata["user_name"] = name
         run_tree.add_metadata(metadata)
 
+    async def _trace_button_outcome(
+        self,
+        *,
+        user_id: str,
+        button: str,
+        outcome: str,
+    ) -> None:
+        """Emit a button-specific trace name for reliable chart filtering.
+
+        Emits two trace names:
+        - ``wfm.miniapp.action.{button}`` for successful actions
+        - ``wfm.miniapp.action.failed`` for duplicate/stale/not_found/invalid
+
+        This avoids relying on metadata filters (which the chart API
+        mishandles) — charts can filter by ``name`` instead.
+        """
+        trace_name = (
+            f"wfm.miniapp.action.{button}"
+            if outcome == "applied" or outcome == "scheduled"
+            else "wfm.miniapp.action.failed"
+        )
+
+        @traceable(name=trace_name)
+        async def _emit() -> None:
+            run_tree = get_current_run_tree()
+            if run_tree is None:
+                return
+            metadata: dict[str, object] = {
+                "button": button,
+                "outcome": outcome,
+                "user_id_hash": correlation_id(user_id),
+            }
+            if self._user_info_resolver is not None:
+                info = await self._user_info_resolver.get_user_info_by_id(user_id)
+                if info is not None:
+                    phone, name = info
+                    metadata["user_phone"] = phone
+                    if name is not None:
+                        metadata["user_name"] = name
+            run_tree.add_metadata(metadata)
+
+        await _emit()
+
     async def execute_action(
         self,
         session_id: str,
@@ -428,11 +471,17 @@ class WaitingListActionService:
                 item = _view_to_item(view, now=now)
 
         summary = await self._build_summary(session_id, user_id)
-        # Emit a success-only trace for analytics (button clicks per user).
-        # Only APPLIED outcomes are counted — DUPLICATE/STALE/NOT_FOUND are
-        # excluded to avoid inflating the chart with retries.
-        if outcome_str == "applied" and button is not None:
-            await self._trace_button_click(user_id=user_id, button=button)
+        # Emit analytics traces.
+        # - wfm.miniapp.button_click: generic success trace (backward compat)
+        # - wfm.miniapp.action.{button}: button-specific trace for reliable
+        #   chart filtering by name (metadata filters are unreliable)
+        # - wfm.miniapp.action.failed: failed attempts (duplicate/stale/etc)
+        if button is not None:
+            if outcome_str == "applied":
+                await self._trace_button_click(user_id=user_id, button=button)
+            await self._trace_button_outcome(
+                user_id=user_id, button=button, outcome=outcome_str
+            )
         return ActionResponse(
             outcome=outcome_str,
             action=action,
@@ -547,13 +596,18 @@ class WaitingListActionService:
                 provider_message_id=f"send:{request_id}",
                 session_id=session_id,
             )
-        # Emit a success-only trace for analytics (button clicks per user).
-        # Only "scheduled" outcomes are counted — "duplicate" retries are
-        # excluded to avoid inflating the chart.
+        # Emit analytics traces.
+        # - wfm.miniapp.button_click: generic success trace (backward compat)
+        # - wfm.miniapp.action.send: button-specific trace for reliable
+        #   chart filtering by name
+        # - wfm.miniapp.action.failed: duplicate retries
+        btn = button or "send"
+        outcome_str = "scheduled" if created else "duplicate"
         if created:
-            await self._trace_button_click(
-                user_id=user_id, button=button or "send"
-            )
+            await self._trace_button_click(user_id=user_id, button=btn)
+        await self._trace_button_outcome(
+            user_id=user_id, button=btn, outcome=outcome_str
+        )
         return SendResponse(
             outcome="scheduled" if created else "duplicate",
             scheduled_for=execute_at_utc.isoformat(),

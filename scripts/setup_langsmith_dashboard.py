@@ -424,15 +424,35 @@ def build_realtime_dashboard(section_id: str) -> None:
 
 
 def build_usage_dashboard(section_id: str) -> None:
-    """Product usage dashboard based on successful mini-app click traces."""
+    """Product usage dashboard based on successful mini-app click traces.
+
+    Uses button-specific trace names (wfm.miniapp.action.{button}) for
+    reliable chart filtering by name, since metadata filters are unreliable
+    in the LangSmith chart API.
+    """
+    buttons = [
+        "done",
+        "send",
+        "snooze",
+        "snooze_other",
+        "not_needed",
+        "false_positive",
+    ]
     click_filter = 'eq(name, "wfm.miniapp.button_click")'
+    failed_filter = 'eq(name, "wfm.miniapp.action.failed")'
+
+    def action_filter(btn: str) -> str:
+        return f'eq(name, "wfm.miniapp.action.{btn}")'
+
     charts: list[dict] = [
+        # 1. Line — total successful actions over time
         {
             "title": "Successful Mini-App Actions Over Time",
             "description": "Successful applied actions and newly scheduled sends",
             "chart_type": "line",
             "series": [count_series("successful actions", click_filter)],
         },
+        # 2. Bar — actions per user
         {
             "title": "Actions Per User",
             "description": "Successful mini-app actions grouped by phone number",
@@ -447,34 +467,25 @@ def build_usage_dashboard(section_id: str) -> None:
                 }
             ],
         },
+        # 3. Bar — button usage distribution (one series per button)
         {
             "title": "Button Usage Distribution",
-            "description": "Successful actions grouped by mini-app button",
+            "description": "Successful actions per button (done, send, snooze, etc.)",
             "chart_type": "bar",
             "series": [
-                {
-                    "name": "actions",
-                    "metric_definition": {"type": "count"},
-                    "filter_definition": project_filter(),
-                    "filters": {"filter": click_filter},
-                    "group_by_definitions": group_by_metadata("button"),
-                }
+                count_series(btn, action_filter(btn)) for btn in buttons
             ],
         },
+        # 4. Line — actions by button over time (one series per button)
         {
             "title": "Actions By Button Over Time",
             "description": "Successful action trends split by button",
             "chart_type": "line",
             "series": [
-                {
-                    "name": "actions",
-                    "metric_definition": {"type": "count"},
-                    "filter_definition": project_filter(),
-                    "filters": {"filter": click_filter},
-                    "group_by_definitions": group_by_metadata("button"),
-                }
+                count_series(btn, action_filter(btn)) for btn in buttons
             ],
         },
+        # 5. Top-k — top users by activity
         {
             "title": "Top Users By Activity",
             "description": "Users with the most successful mini-app actions",
@@ -488,6 +499,38 @@ def build_usage_dashboard(section_id: str) -> None:
                     "group_by_definitions": group_by_metadata("user_phone"),
                 }
             ],
+        },
+        # 6. Bar — scheduled sends per user
+        {
+            "title": "Scheduled Sends Per User",
+            "description": "Successful 'send' button clicks grouped by phone",
+            "chart_type": "bar",
+            "series": [
+                {
+                    "name": "sends",
+                    "metric_definition": {"type": "count"},
+                    "filter_definition": project_filter(),
+                    "filters": {"filter": action_filter("send")},
+                    "group_by_definitions": group_by_metadata("user_phone"),
+                }
+            ],
+        },
+        # 7. Bar — successful vs failed actions
+        {
+            "title": "Successful vs Failed Actions",
+            "description": "Successful actions vs duplicate/stale/invalid attempts",
+            "chart_type": "bar",
+            "series": [
+                count_series("successful", click_filter),
+                count_series("failed", failed_filter),
+            ],
+        },
+        # 8. KPI — action failure rate
+        {
+            "title": "Action Failure Count",
+            "description": "Duplicate, stale, not_found, and invalid attempts",
+            "chart_type": "kpi",
+            "series": [count_series("failed actions", failed_filter)],
         },
     ]
     for i, chart in enumerate(charts):

@@ -1915,3 +1915,70 @@ async def test_trace_button_click_without_resolver_omits_phone_and_name():
     assert "user_name" not in meta
     assert "user_id_hash" in meta
     _reset_key_cache()
+
+
+async def test_trace_button_outcome_emits_button_specific_trace():
+    """_trace_button_outcome attaches button + outcome + user metadata."""
+    import os
+    from unittest.mock import MagicMock, patch
+
+    service, _, _, _, _ = _make_service()
+
+    fake_run = MagicMock()
+    with patch(
+        "echo_v2.services.waiting_list_action_service.get_current_run_tree",
+        return_value=fake_run,
+    ), patch.dict(os.environ, {"OBSERVABILITY_HASH_KEY": "test-key-12345"}):
+        from echo_v2.observability.privacy import _reset_key_cache
+        _reset_key_cache()
+        await service._trace_button_outcome(
+            user_id=USER_ID, button="done", outcome="applied"
+        )
+
+    fake_run.add_metadata.assert_called_once()
+    meta = fake_run.add_metadata.call_args.args[0]
+    assert meta["button"] == "done"
+    assert meta["outcome"] == "applied"
+    assert "user_id_hash" in meta
+    _reset_key_cache()
+
+
+async def test_trace_button_outcome_emits_failed_trace():
+    """_trace_button_outcome with non-applied outcome still attaches metadata."""
+    import os
+    from unittest.mock import MagicMock, patch
+
+    service, _, _, _, _ = _make_service()
+
+    fake_run = MagicMock()
+    with patch(
+        "echo_v2.services.waiting_list_action_service.get_current_run_tree",
+        return_value=fake_run,
+    ), patch.dict(os.environ, {"OBSERVABILITY_HASH_KEY": "test-key-12345"}):
+        from echo_v2.observability.privacy import _reset_key_cache
+        _reset_key_cache()
+        await service._trace_button_outcome(
+            user_id=USER_ID, button="snooze", outcome="duplicate"
+        )
+
+    fake_run.add_metadata.assert_called_once()
+    meta = fake_run.add_metadata.call_args.args[0]
+    assert meta["button"] == "snooze"
+    assert meta["outcome"] == "duplicate"
+    _reset_key_cache()
+
+
+async def test_trace_button_outcome_noop_when_no_run_tree():
+    """_trace_button_outcome is a no-op when no run tree (tracing disabled)."""
+    from unittest.mock import patch
+
+    service, _, _, _, _ = _make_service()
+
+    with patch(
+        "echo_v2.services.waiting_list_action_service.get_current_run_tree",
+        return_value=None,
+    ):
+        # Should not raise even without OBSERVABILITY_HASH_KEY.
+        await service._trace_button_outcome(
+            user_id=USER_ID, button="done", outcome="applied"
+        )
