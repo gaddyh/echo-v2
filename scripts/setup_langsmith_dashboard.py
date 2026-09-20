@@ -661,14 +661,6 @@ def main() -> None:
     build_realtime_dashboard(realtime_id)
     print(f"Realtime dashboard: https://smith.langchain.com/o/{org_id}/monitor/dashboards/{realtime_id}")
 
-    # Mini-app button clicks dashboard (per-user, per-button, top users)
-    buttons_title = "echo v2 mini-app buttons"
-    buttons_id = get_or_create_section(buttons_title)
-    if clean:
-        clean_section(buttons_id, buttons_title)
-    build_miniapp_buttons_dashboard(buttons_id)
-    print(f"Mini-app buttons dashboard: https://smith.langchain.com/o/{org_id}/monitor/dashboards/{buttons_id}")
-
     # Product usage dashboard (successful activity trends and users)
     usage_title = "echo v2 usage"
     usage_id = get_or_create_section(usage_title)
