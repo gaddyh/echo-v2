@@ -450,7 +450,7 @@ def build_miniapp_buttons_dashboard(section_id: str) -> None:
             "title": "Successful Button Actions Per User",
             "description": (
                 "Mini-app button clicks (APPLIED/scheduled only) grouped by "
-                "user_id_hash, split by button"
+                "user_phone, split by button"
             ),
             "chart_type": "bar",
             "series": [
@@ -459,7 +459,7 @@ def build_miniapp_buttons_dashboard(section_id: str) -> None:
                     "metric_definition": {"type": "count"},
                     "filter_definition": project_filter(),
                     "filters": {"filter": button_filter(btn)},
-                    "group_by_definitions": group_by_metadata("user_id_hash"),
+                    "group_by_definitions": group_by_metadata("user_phone"),
                 }
                 for btn in buttons
             ],
