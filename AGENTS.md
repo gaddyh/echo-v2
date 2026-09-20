@@ -3,6 +3,7 @@
 ## Verification commands
 
 - **Tests**: `.venv/bin/python -m pytest` (asyncio mode is `auto` — no need to mark async tests)
+- **Coverage gate**: `.venv/bin/python -m pytest --cov --cov-report=term-missing --cov-fail-under=95`
 - **Lint**: `.venv/bin/ruff check src tests`
 - **Type check**: `.venv/bin/mypy` (configured in `pyproject.toml` under `[tool.mypy]`, strict mode)
 
