@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+
 from echo_v2.domain.scheduling import ScheduledActionType
 from echo_v2.persistence.contacts import InMemoryContactRepository
 from echo_v2.persistence.conversation_state import InMemoryConversationStateRepository

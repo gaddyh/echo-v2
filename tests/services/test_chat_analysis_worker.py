@@ -775,7 +775,7 @@ async def test_worker_processes_non_excluded_chat_normally():
 
 
 def _make_audio_msg(**kwargs) -> Message:
-    defaults = dict(
+    defaults = dict(  # noqa: C408
         id=str(uuid.uuid4()),
         user_id="user-1",
         connection_id="conn-1",
@@ -795,7 +795,7 @@ def _make_audio_msg(**kwargs) -> Message:
 
 
 def _make_media_msg(message_type: str = "image", **kwargs) -> Message:
-    defaults = dict(
+    defaults = dict(  # noqa: C408
         id=str(uuid.uuid4()),
         user_id="user-1",
         connection_id="conn-1",
@@ -815,7 +815,7 @@ def _make_media_msg(message_type: str = "image", **kwargs) -> Message:
 
 
 def _make_link_msg(text: str = "https://example.com/news", **kwargs) -> Message:
-    defaults = dict(
+    defaults = dict(  # noqa: C408
         id=str(uuid.uuid4()),
         user_id="user-1",
         connection_id="conn-1",
@@ -1122,10 +1122,12 @@ async def test_process_chat_adds_metadata_when_run_tree_exists():
     run_tree = MagicMock()
     run_tree.add_metadata = MagicMock()
 
-    with patch.dict(os.environ, {"OBSERVABILITY_HASH_KEY": "test-key-12345"}):
-        with patch("langsmith.run_helpers.get_current_run_tree", return_value=run_tree):
-            chat = await repo.get("user-1", "972501234567@c.us")
-            result = await worker._process_chat(chat)
+    with (
+        patch.dict(os.environ, {"OBSERVABILITY_HASH_KEY": "test-key-12345"}),
+        patch("langsmith.run_helpers.get_current_run_tree", return_value=run_tree),
+    ):
+        chat = await repo.get("user-1", "972501234567@c.us")
+        result = await worker._process_chat(chat)
 
     assert result == "committed"
     run_tree.add_metadata.assert_called_once()
@@ -1265,9 +1267,11 @@ async def test_run_judge_creates_feedback_when_run_tree_exists():
     run_tree = MagicMock()
     run_tree.id = "analysis-run-123"
 
-    with patch("langsmith.run_helpers.get_current_run_tree", return_value=run_tree):
-        with patch("echo_v2.services.chat_analysis_worker.tracing_client") as mock_client:
-            await worker._run_judge(_make_prepared(conv_input=_make_conv_input()))
+    with (
+        patch("langsmith.run_helpers.get_current_run_tree", return_value=run_tree),
+        patch("echo_v2.services.chat_analysis_worker.tracing_client") as mock_client,
+    ):
+        await worker._run_judge(_make_prepared(conv_input=_make_conv_input()))
 
     mock_client.create_feedback.assert_called_once()
     fb_kwargs = mock_client.create_feedback.call_args.kwargs
@@ -1295,11 +1299,13 @@ async def test_run_judge_adds_to_annotation_queue_on_low_score():
         "JUDGE_ANNOTATION_QUEUE_ID": "queue-123",
         "LANGSMITH_PROJECT_ID": "proj-123",
     }
-    with patch.dict(os.environ, env):
-        with patch("langsmith.run_helpers.get_current_run_tree", return_value=run_tree):
-            with patch("echo_v2.services.chat_analysis_worker.tracing_client") as mock_client:
-                mock_client.annotation_queues.items.create = AsyncMock()
-                await worker._run_judge(_make_prepared(conv_input=_make_conv_input()))
+    with (
+        patch.dict(os.environ, env),
+        patch("langsmith.run_helpers.get_current_run_tree", return_value=run_tree),
+        patch("echo_v2.services.chat_analysis_worker.tracing_client") as mock_client,
+    ):
+        mock_client.annotation_queues.items.create = AsyncMock()
+        await worker._run_judge(_make_prepared(conv_input=_make_conv_input()))
 
     mock_client.flush.assert_called_once()
     mock_client.annotation_queues.items.create.assert_called_once()
@@ -1328,14 +1334,16 @@ async def test_run_judge_annotation_queue_failure_logged():
         "JUDGE_ANNOTATION_QUEUE_ID": "queue-456",
         "LANGSMITH_PROJECT_ID": "proj-456",
     }
-    with patch.dict(os.environ, env):
-        with patch("langsmith.run_helpers.get_current_run_tree", return_value=run_tree):
-            with patch("echo_v2.services.chat_analysis_worker.tracing_client") as mock_client:
-                mock_client.annotation_queues.items.create = AsyncMock(
-                    side_effect=RuntimeError("queue API down")
-                )
-                # Should not raise — failure is logged
-                await worker._run_judge(_make_prepared(conv_input=_make_conv_input()))
+    with (
+        patch.dict(os.environ, env),
+        patch("langsmith.run_helpers.get_current_run_tree", return_value=run_tree),
+        patch("echo_v2.services.chat_analysis_worker.tracing_client") as mock_client,
+    ):
+        mock_client.annotation_queues.items.create = AsyncMock(
+            side_effect=RuntimeError("queue API down")
+        )
+        # Should not raise — failure is logged
+        await worker._run_judge(_make_prepared(conv_input=_make_conv_input()))
 
     mock_client.flush.assert_called_once()
 

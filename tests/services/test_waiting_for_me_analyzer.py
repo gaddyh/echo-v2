@@ -583,7 +583,10 @@ def test_get_prompt_unknown_version_raises():
 
 
 def test_get_prompt_default_returns_prompt():
-    from echo_v2.services.waiting_for_me_prompts import DEFAULT_PROMPT_VERSION, get_prompt
+    from echo_v2.services.waiting_for_me_prompts import (
+        DEFAULT_PROMPT_VERSION,
+        get_prompt,
+    )
 
     prompt = get_prompt()
     assert isinstance(prompt, str)

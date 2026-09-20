@@ -1115,8 +1115,8 @@ async def test_run_once_propagates_cancelled_error():
         user_provider=_make_user_provider([(USER_ID, USER_PHONE, "Asia/Jerusalem", "גדי")]),
     )
 
-    with patch.object(
-        worker, "_process_user", side_effect=asyncio.CancelledError()
+    with (
+        patch.object(worker, "_process_user", side_effect=asyncio.CancelledError()),
+        pytest.raises(asyncio.CancelledError),
     ):
-        with pytest.raises(asyncio.CancelledError):
-            await worker.run_once(now_utc=NOW)
+        await worker.run_once(now_utc=NOW)

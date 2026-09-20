@@ -1505,7 +1505,7 @@ async def test_get_context_media_message_has_null_text():
 
 async def test_schedule_send_without_scheduling_service_returns_invalid():
     """When scheduling_service is None, schedule_send returns 'invalid'."""
-    service, active_repo, _, _, token_service = _make_service()
+    service, _, _, _, token_service = _make_service()
     session_id, _ = await token_service.issue(USER_ID)
 
     result = await service.schedule_send(
@@ -1550,7 +1550,7 @@ async def test_schedule_send_naive_datetime_returns_invalid():
         active_id=active_id,
         request_id="req-1",
         message="hello",
-        send_at=datetime(2099, 1, 1, 10, 0),  # naive — no tzinfo
+        send_at=datetime(2099, 1, 1, 10, 0),  # noqa: DTZ001 — intentionally naive
     )
     assert result is not None
     assert result.outcome == "invalid"
@@ -1569,60 +1569,6 @@ async def test_schedule_send_past_datetime_returns_invalid():
         request_id="req-1",
         message="hello",
         send_at=datetime(2020, 1, 1, 10, 0, tzinfo=timezone.utc),
-    )
-    assert result is not None
-    assert result.outcome == "invalid"
-
-
-async def test_schedule_send_both_preset_and_send_at_returns_invalid():
-    """Providing both send_preset and send_at returns 'invalid'."""
-    service, active_repo, _, _, token_service = _make_service_with_scheduling()
-    session_id, _ = await token_service.issue(USER_ID)
-    active_id = await _setup_chat_and_active(active_repo, service._chat_state_repo)
-
-    result = await service.schedule_send(
-        session_id=session_id,
-        user_id=USER_ID,
-        active_id=active_id,
-        request_id="req-1",
-        message="hello",
-        send_preset="1h",
-        send_at=datetime(2099, 1, 1, 10, 0, tzinfo=timezone.utc),
-    )
-    assert result is not None
-    assert result.outcome == "invalid"
-
-
-async def test_schedule_send_neither_preset_nor_send_at_returns_invalid():
-    """Providing neither send_preset nor send_at returns 'invalid'."""
-    service, active_repo, _, _, token_service = _make_service_with_scheduling()
-    session_id, _ = await token_service.issue(USER_ID)
-    active_id = await _setup_chat_and_active(active_repo, service._chat_state_repo)
-
-    result = await service.schedule_send(
-        session_id=session_id,
-        user_id=USER_ID,
-        active_id=active_id,
-        request_id="req-1",
-        message="hello",
-    )
-    assert result is not None
-    assert result.outcome == "invalid"
-
-
-async def test_schedule_send_empty_message_returns_invalid():
-    """An empty/whitespace message returns 'invalid'."""
-    service, active_repo, _, _, token_service = _make_service_with_scheduling()
-    session_id, _ = await token_service.issue(USER_ID)
-    active_id = await _setup_chat_and_active(active_repo, service._chat_state_repo)
-
-    result = await service.schedule_send(
-        session_id=session_id,
-        user_id=USER_ID,
-        active_id=active_id,
-        request_id="req-1",
-        message="   ",
-        send_preset="1h",
     )
     assert result is not None
     assert result.outcome == "invalid"

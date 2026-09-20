@@ -580,7 +580,7 @@ async def test_handle_action_snooze_with_preset():
     """_handle_action with 'snooze:1h' action_type parses the preset."""
     action_service = AsyncMock()
     action_service.snooze = AsyncMock(return_value=HandlingOutcome.APPLIED)
-    handler, action_service, bot, _, _ = _make_handler(action_service=action_service)
+    handler, action_service, _, _, _ = _make_handler(action_service=action_service)
     event = _make_event(button_id=f"action:{ACTIVE_ID}:snooze:1h")
 
     result = await handler._handle_action(event)

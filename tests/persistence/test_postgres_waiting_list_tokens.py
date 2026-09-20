@@ -189,9 +189,6 @@ async def test_pg_session_create_retries_on_token_hash_collision(
     """When a token hash collision occurs, create retries and succeeds."""
     from unittest.mock import AsyncMock, MagicMock, patch
 
-    from echo_v2.persistence.waiting_list_tokens import (
-        PostgresWaitingListSessionRepository,
-    )
 
     user_id = await insert_user(session_factory)
 
@@ -217,6 +214,6 @@ async def test_pg_session_create_retries_on_token_hash_collision(
         mock_ctx.__aexit__ = AsyncMock(return_value=None)
         mock_session_ctx.return_value = mock_ctx
 
-        session_id, raw_token = await repo.create(user_id=user_id, ttl_hours=48)
+        session_id, _ = await repo.create(user_id=user_id, ttl_hours=48)
         assert call_count == 2
         assert session_id == "session-retry-id"

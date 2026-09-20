@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -27,7 +27,6 @@ from echo_v2.observability.alert_checker import (
     check_bot_send_indeterminate,
     check_high_error_rate,
 )
-
 
 # --- helpers ----------------------------------------------------------------
 
@@ -253,7 +252,7 @@ async def test_check_once_returns_triggered_messages():
     # analyzer_stuck -> 2 (triggered)
     # high_error_rate -> succeeded=1, failed=3 (triggered)
     session = _make_session([1, 0, 2, 1, 3])
-    checker, bot, _ = _make_checker(session)
+    checker, _, _ = _make_checker(session)
 
     triggered = await checker.check_once()
 
@@ -469,7 +468,7 @@ async def test_run_loop_check_once_raises_continues():
 
 
 async def test_run_loop_cancelled_during_sleep():
-    checker, bot, _ = _make_checker(poll_interval_seconds=10.0)
+    checker, _, _ = _make_checker(poll_interval_seconds=10.0)
     checker.check_once = AsyncMock(return_value=[])
 
     task = asyncio.create_task(checker.run_loop())
@@ -480,7 +479,7 @@ async def test_run_loop_cancelled_during_sleep():
 
 
 async def test_run_loop_cancelled_during_check():
-    checker, bot, _ = _make_checker(poll_interval_seconds=10.0)
+    checker, _, _ = _make_checker(poll_interval_seconds=10.0)
 
     async def slow_check():
         await asyncio.sleep(5)
