@@ -28,12 +28,35 @@ For onboarding, configuration, environment variables, and operations, see [READM
 
 ## System overview
 
-Echo is a WhatsApp memory and follow-up layer. It uses two WhatsApp channels:
+The implementation documented in this file is the current **Adult Echo** system. It is a WhatsApp memory and follow-up layer and remains the production foundation for the next product phase.
+
+Echo uses two WhatsApp channels:
 
 - **Echo Bot** (360dialog WhatsApp Business API) — the conversational interface. Users chat with Echo here: onboarding, name setup, digest replies, scheduling commands, feedback.
 - **User's WhatsApp** (Green API) — Echo acts on the user's behalf here: reads incoming/outgoing messages, sends scheduled messages from the user's own number.
 
 The user links their WhatsApp to Echo via OTP-based onboarding. Once linked, Echo ingests messages, runs delayed LLM analysis after a quiet period, and maintains a version-fenced "waiting for me" state per chat. A morning digest surfaces pending conversations; a token-authenticated mini web app lets the user act on them.
+
+### Family-safety expansion
+
+The target architecture adds **Echo Kids** and **Parent Safety** on top of the same ingestion and runtime foundation. It does not introduce a second backend or duplicate WhatsApp ingestion.
+
+Target shape:
+
+```text
+WhatsApp stream
+    ↓
+normalize / dedupe / persist
+    ↓
+quiet interval + stable snapshot
+    ↓
+    ├── responsibility analysis  → personal Echo utility
+    └── safety analysis          → risk observations / episodes → guardian alerts
+```
+
+A parent and a child remain normal Echo users with their own WhatsApp connections. Family relationships, consent, safety observations, risk episodes, and guardian alerts are additive domain concepts.
+
+The detailed target design and phased migration plan live in [Echo_MVP_HLD_Roadmap_v3.md](Echo_MVP_HLD_Roadmap_v3.md). This document continues to describe **what exists today** unless a section is explicitly marked as target architecture.
 
 ### High-level data flow
 
