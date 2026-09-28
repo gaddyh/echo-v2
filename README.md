@@ -1,10 +1,19 @@
 # Echo v2
 
-> Echo remembers what needs to happen next in your WhatsApp conversations.
+> Echo is a conversational intelligence layer over WhatsApp.
 
-Echo is a WhatsApp memory and follow-up layer that tracks who's waiting for a reply, sends a morning digest of pending conversations, and lets you schedule messages to be sent later from your own WhatsApp number.
+The current production codebase is the mature **Adult Echo** foundation: a WhatsApp memory and follow-up assistant that tracks who's waiting for a reply, sends a morning digest of pending conversations, and lets users schedule messages from their own WhatsApp number.
 
-**Main goal:** surface every conversation where someone is waiting for you, so nothing falls through the cracks. The morning digest is the primary touchpoint; the waiting-list mini web app lets you act on items without leaving the browser.
+The product is now expanding — **not being rewritten** — into a family model with two additional surfaces:
+
+- **Echo Kids** — the same useful WhatsApp memory/follow-up assistant, adapted for younger users.
+- **Parent Safety** — contextual safety monitoring that derives risk signals and alerts without turning the child's WhatsApp into a parent-readable chat archive.
+
+All existing ingestion, scheduling, runtime, evaluation, feedback, transcription, observability, and reliability code remains part of the platform.
+
+For the target product architecture and phased roadmap, see [Echo_MVP_HLD_Roadmap_v3.md](Echo_MVP_HLD_Roadmap_v3.md).
+
+**Current Adult Echo goal:** surface every conversation where someone is waiting for you, so nothing falls through the cracks.
 
 ## How it works
 
