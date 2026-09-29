@@ -28,7 +28,6 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field, field_validator
 
-from echo_v2.app.landing_page import LANDING_PAGE
 from echo_v2.app.landing_page_echo_guard import LANDING_PAGE as GUARD_LANDING_PAGE
 from echo_v2.persistence.identity import PhoneParseError, normalize_phone_e164
 from echo_v2.persistence.waitlist import WaitlistRepository
@@ -126,7 +125,7 @@ def build_landing_router(
                 f'<div class="counter">🔥 {count} כבר ברשימה</div>'
             )
         html = (
-            LANDING_PAGE
+            GUARD_LANDING_PAGE
             .replace("{{COUNTER}}", counter_html)
             .replace("{{BASE_URL}}", base_url.rstrip("/"))
         )
@@ -158,12 +157,20 @@ def build_landing_router(
     @router.post("/api/waitlist")
     async def waitlist_signup(body: WaitlistRequest, request: Request) -> JSONResponse:
         client_ip = request.client.host if request.client else "unknown"
+        _logger.info(
+            "waitlist: signup request from %s — name=%r phone=%r wtp=%r "
+            "children_count=%r children_ages=%r",
+            client_ip, body.name, body.phone, body.wtp,
+            body.children_count, body.children_ages,
+        )
         if not _check_rate_limit(client_ip):
+            _logger.warning("waitlist: rate limited %s", client_ip)
             raise HTTPException(status_code=429, detail="rate limited")
 
         try:
             phone_e164 = normalize_phone_e164(body.phone)
         except PhoneParseError:
+            _logger.warning("waitlist: invalid phone %r", body.phone)
             raise HTTPException(status_code=422, detail="invalid phone number")
 
         inserted = await waitlist_repo.add(
@@ -174,10 +181,11 @@ def build_landing_router(
         # Duplicates get the same response as new signups — the endpoint
         # must not leak whether a number is already on the list.
         if inserted:
-            _logger.info("waitlist: new signup")
+            _logger.info("waitlist: new signup stored for %r (%s)", body.name, phone_e164)
             if notifier is None:
                 _logger.warning("waitlist: notifier is None (ECHO_OWNER_PHONE not set?)")
             else:
+                _logger.info("waitlist: calling notifier for %r (%s)", body.name, phone_e164)
                 try:
                     await notifier.notify(
                         name=body.name,
@@ -186,8 +194,11 @@ def build_landing_router(
                         children_count=body.children_count,
                         children_ages=body.children_ages,
                     )
+                    _logger.info("waitlist: notifier returned without error for %r", body.name)
                 except Exception:
-                    _logger.exception("waitlist: notifier failed")
+                    _logger.exception("waitlist: notifier failed for %r (%s)", body.name, phone_e164)
+        else:
+            _logger.info("waitlist: duplicate signup for %s (notifier skipped)", phone_e164)
         return JSONResponse(
             content={"status": "ok"},
             headers={**_security_headers(), "Cache-Control": "no-store"},

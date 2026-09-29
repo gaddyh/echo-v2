@@ -83,11 +83,16 @@ class Dialog360WaitlistNotifier:
                 f"WTP: {wtp_label}"
             )
         _logger.info(
-            "waitlist: notifying owner %s about new signup %s (%s)",
+            "waitlist: notifying owner %s about new signup %s (%s) "
+            "[children_count=%r children_ages=%r wtp=%r]",
             self._owner_phone, name, phone,
+            children_count, children_ages, willingness_to_pay,
         )
         try:
             msg_id = await self._bot.send_text(self._owner_phone, text)
             _logger.info("waitlist: notified owner, msg_id=%s", msg_id)
-        except Exception:
-            _logger.exception("waitlist: failed to notify owner")
+        except Exception as exc:
+            _logger.exception(
+                "waitlist: failed to notify owner %s (type=%s)",
+                self._owner_phone, type(exc).__name__,
+            )
