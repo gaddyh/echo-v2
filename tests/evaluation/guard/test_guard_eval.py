@@ -184,6 +184,7 @@ def _print_report(
         and sr.decision_pass
         and sr.signals_pass
         and sr.categories_pass
+        and (sr.alert_pass is None or sr.alert_pass)
     )
     errors = sum(
         1 for cr in case_results for sr in cr.snapshots if sr.error is not None
