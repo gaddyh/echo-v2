@@ -46,6 +46,7 @@ _RATE_LIMIT_WINDOW = 60  # seconds
 _COUNTER_DISPLAY_THRESHOLD = 25
 
 _OG_IMAGE_PATH = Path(__file__).parent / "static" / "og.png"
+_OG_GUARD_IMAGE_PATH = Path(__file__).parent / "static" / "og-guard-v1.png"
 
 
 class WaitlistRequest(BaseModel):
@@ -150,6 +151,16 @@ def build_landing_router(
             raise HTTPException(status_code=404, detail="not found")
         return FileResponse(
             _OG_IMAGE_PATH,
+            media_type="image/png",
+            headers={"Cache-Control": "public, max-age=86400"},
+        )
+
+    @router.get("/og-guard-v1.png")
+    async def og_guard_image() -> FileResponse:
+        if not _OG_GUARD_IMAGE_PATH.exists():
+            raise HTTPException(status_code=404, detail="not found")
+        return FileResponse(
+            _OG_GUARD_IMAGE_PATH,
             media_type="image/png",
             headers={"Cache-Control": "public, max-age=86400"},
         )
