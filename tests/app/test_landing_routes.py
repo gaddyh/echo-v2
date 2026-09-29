@@ -34,6 +34,7 @@ async def test_landing_page_serves_html():
     assert "text/html" in resp.headers.get("content-type", "")
     assert "Echo Guard" in resp.text
     assert "פיילוט" in resp.text
+    assert 'src="/og-guard-v1.png"' in resp.text
     # Security headers.
     assert resp.headers.get("x-content-type-options") == "nosniff"
     assert "default-src 'self'" in resp.headers.get("content-security-policy", "")
