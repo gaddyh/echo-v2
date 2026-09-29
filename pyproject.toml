@@ -48,6 +48,7 @@ dev = [
     "websockets>=12",
     "fastapi>=0.110",
     "SQLAlchemy>=2.0.30",
+    "greenlet>=3.0.0",
     "psycopg[binary]>=3.1.20",
     "alembic>=1.13.3",
     "python-dotenv>=1.0.1",

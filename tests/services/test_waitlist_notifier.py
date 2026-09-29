@@ -58,6 +58,43 @@ async def test_notify_swallows_bot_failure():
     await notifier.notify(name="דנה", phone="+972546610653")
 
 
+async def test_notify_echo_guard_format():
+    """Echo Guard signups (children_count present) get the pilot message."""
+    bot = _FakeBot()
+    notifier = Dialog360WaitlistNotifier(
+        bot=bot, owner_phone="0546610653",
+    )
+    await notifier.notify(
+        name="דני כהן",
+        phone="+972501234567",
+        children_count="3",
+        children_ages="8, 11, 14",
+    )
+    assert len(bot.sent) == 1
+    _, text = bot.sent[0]
+    assert "Echo Guard" in text
+    assert "דני כהן" in text
+    assert "+972501234567" in text
+    assert "ילדים: 3" in text
+    assert "גילאים: 8, 11, 14" in text
+    # WTP line must NOT appear in the Echo Guard format.
+    assert "WTP" not in text
+
+
+async def test_notify_echo_guard_without_ages_shows_dash():
+    bot = _FakeBot()
+    notifier = Dialog360WaitlistNotifier(
+        bot=bot, owner_phone="0546610653",
+    )
+    await notifier.notify(
+        name="דני",
+        phone="+972501234567",
+        children_count="2",
+    )
+    _, text = bot.sent[0]
+    assert "גילאים: —" in text
+
+
 def test_invalid_owner_phone_raises():
     import pytest as _pytest
 

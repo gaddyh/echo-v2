@@ -40,6 +40,8 @@ class WaitlistNotifier(Protocol):
         name: str,
         phone: str,
         willingness_to_pay: str | None = None,
+        children_count: str | None = None,
+        children_ages: str | None = None,
     ) -> None: ...
 
 
@@ -61,14 +63,25 @@ class Dialog360WaitlistNotifier:
         name: str,
         phone: str,
         willingness_to_pay: str | None = None,
+        children_count: str | None = None,
+        children_ages: str | None = None,
     ) -> None:
-        wtp_label = _WTP_LABELS.get(willingness_to_pay or "", "—")
-        text = (
-            f"הצטרף חדש לרשימת ההמתנה:\n"
-            f"שם: {name}\n"
-            f"טלפון: {phone}\n"
-            f"WTP: {wtp_label}"
-        )
+        if children_count is not None:
+            text = (
+                "🛡️ Echo Guard — נרשם חדש לפיילוט\n"
+                f"שם: {name}\n"
+                f"טלפון: {phone}\n"
+                f"ילדים: {children_count}\n"
+                f"גילאים: {children_ages or '—'}"
+            )
+        else:
+            wtp_label = _WTP_LABELS.get(willingness_to_pay or "", "—")
+            text = (
+                f"הצטרף חדש לרשימת ההמתנה:\n"
+                f"שם: {name}\n"
+                f"טלפון: {phone}\n"
+                f"WTP: {wtp_label}"
+            )
         _logger.info(
             "waitlist: notifying owner %s about new signup %s (%s)",
             self._owner_phone, name, phone,
