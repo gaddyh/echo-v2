@@ -13,7 +13,7 @@ dependencies = []
 
 [project.optional-dependencies]
 green = ["httpx>=0.27", "websockets>=12"]
-web = ["fastapi>=0.110", "uvicorn[standard]>=0.30"]
+web = ["fastapi==0.141.1", "uvicorn[standard]>=0.30"]
 db = [
     "SQLAlchemy>=2.0.30",
     "greenlet>=3.0.0",
@@ -26,7 +26,7 @@ db = [
 prod = [
     "httpx>=0.27",
     "websockets>=12",
-    "fastapi>=0.110",
+    "fastapi==0.141.1",
     "uvicorn[standard]>=0.30",
     "SQLAlchemy>=2.0.30",
     "greenlet>=3.0.0",
@@ -46,7 +46,7 @@ dev = [
     "mypy>=1.10",
     "httpx>=0.27",
     "websockets>=12",
-    "fastapi>=0.110",
+    "fastapi==0.141.1",
     "SQLAlchemy>=2.0.30",
     "greenlet>=3.0.0",
     "psycopg[binary]>=3.1.20",
@@ -65,8 +65,9 @@ markers = [
     "eval: evaluation harness — runs real LLM API calls, not part of normal suite",
     "eval_soc: SOC family evaluation harness — runs real LLM API calls, not part of normal suite",
     "eval_casual: casual-question evaluation harness — runs real LLM API calls, not part of normal suite",
+    "eval_guard: Guard evaluation harness — runs real LLM API calls, not part of normal suite",
 ]
-addopts = "-m 'not eval and not eval_soc and not eval_casual'"
+addopts = "-m 'not eval and not eval_soc and not eval_casual and not eval_guard'"
 
 [tool.coverage.run]
 branch = true
