@@ -46,7 +46,9 @@ _RATE_LIMIT_WINDOW = 60  # seconds
 _COUNTER_DISPLAY_THRESHOLD = 25
 
 _OG_IMAGE_PATH = Path(__file__).parent / "static" / "og.png"
-_OG_GUARD_IMAGE_PATH = Path(__file__).parent / "static" / "og-guard-v1.png"
+# The source asset has no extension but is a valid PNG; keep the public URL
+# versioned so future artwork can use og-guard-v2.png without cache ambiguity.
+_OG_GUARD_IMAGE_PATH = Path(__file__).parent / "static" / "og.guard"
 
 
 class WaitlistRequest(BaseModel):

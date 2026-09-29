@@ -203,6 +203,16 @@ async def test_og_image_endpoint_serves_png():
     assert resp.content[:8] == b"\x89PNG\r\n\x1a\n"
 
 
+async def test_guard_og_image_endpoint_serves_png():
+    app, _ = _make_app()
+    async with _client(app) as client:
+        resp = await client.get("/og-guard-v1.png")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "image/png"
+    assert resp.content[:8] == b"\x89PNG\r\n\x1a\n"
+    assert len(resp.content) > 1_000_000
+
+
 # --- Notifier ----------------------------------------------------------------
 
 
