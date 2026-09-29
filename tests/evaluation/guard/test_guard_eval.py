@@ -34,6 +34,11 @@ import time
 
 import pytest
 
+from echo_v2.services.guard_alert_policy import (
+    ChildContext,
+    ConversationContext,
+    DefaultAlertPolicy,
+)
 from echo_v2.services.guard_analyzer import (
     GUARD_ANALYZER_VERSION,
     GUARD_PROMPT_VERSION,
@@ -97,12 +102,27 @@ def _check_categories(
 def _check_alert(
     actual_should_alert: bool | None, expected_should_alert: bool | None
 ) -> bool | None:
-    """Check alert policy. Returns None if expected is not specified."""
+    """Check policy output against the policy gold label."""
     if expected_should_alert is None:
         return None
     if actual_should_alert is None:
         return False
     return actual_should_alert == expected_should_alert
+
+
+def _analysis_pass(snapshot_result: SnapshotResult) -> bool:
+    """Whether the detection-only analyzer assertions pass."""
+    return (
+        snapshot_result.error is None
+        and snapshot_result.decision_pass
+        and snapshot_result.signals_pass
+        and snapshot_result.categories_pass
+    )
+
+
+def _policy_pass(snapshot_result: SnapshotResult) -> bool:
+    """Whether the separate deterministic policy assertion passes."""
+    return snapshot_result.alert_pass is None or snapshot_result.alert_pass
 
 
 @pytest.fixture
@@ -122,6 +142,7 @@ async def _run_case(
 ) -> GuardCaseResult:
     """Run all snapshots for one case, return a GuardCaseResult."""
     case_result = GuardCaseResult(case=case)
+    policy = DefaultAlertPolicy()
     for snapshot in case.snapshots:
         prefix = _build_prefix(case, snapshot.after_message_id)
         conv = GuardAnalysisInput(
@@ -143,14 +164,19 @@ async def _run_case(
             categories_pass = _check_categories(
                 result.categories, snapshot.required_categories
             )
-            alert_pass = _check_alert(result.should_alert, snapshot.should_alert)
+            policy_alert = policy.should_alert(
+                analysis=result,
+                child_context=ChildContext(),
+                conversation_context=ConversationContext(),
+            )
+            alert_pass = _check_alert(policy_alert, snapshot.should_alert)
             case_result.snapshots.append(
                 SnapshotResult(
                     snapshot=snapshot,
                     actual_decision=result.decision,
                     actual_signals=result.signals,
                     actual_categories=result.categories,
-                    actual_should_alert=result.should_alert,
+                    actual_should_alert=policy_alert,
                     decision_pass=decision_pass,
                     signals_pass=signals_pass,
                     categories_pass=categories_pass,
@@ -180,11 +206,13 @@ def _print_report(
         1
         for cr in case_results
         for sr in cr.snapshots
-        if sr.error is None
-        and sr.decision_pass
-        and sr.signals_pass
-        and sr.categories_pass
-        and (sr.alert_pass is None or sr.alert_pass)
+        if _analysis_pass(sr) and _policy_pass(sr)
+    )
+    analyzer_passed = sum(
+        1 for cr in case_results for sr in cr.snapshots if _analysis_pass(sr)
+    )
+    policy_passed = sum(
+        1 for cr in case_results for sr in cr.snapshots if _policy_pass(sr)
     )
     errors = sum(
         1 for cr in case_results for sr in cr.snapshots if sr.error is not None
@@ -194,9 +222,10 @@ def _print_report(
     print("  Guard Evaluation Report")
     print("=" * 80)
     print(f"\n  Total snapshots: {total}")
-    print(f"  Passed:          {passed}")
-    print(f"  Errors:          {errors}")
-    print(f"  Accuracy:        {accuracy:.1%}")
+    print(f"  Analyzer pass:   {analyzer_passed}/{total} ({analyzer_passed / total:.1%})")
+    print(f"  Policy pass:     {policy_passed}/{total} ({policy_passed / total:.1%})")
+    print(f"  End-to-end pass:  {passed}/{total} ({accuracy:.1%})")
+    print(f"  Errors:           {errors}")
     print()
 
     # Per-snapshot table.
@@ -215,13 +244,7 @@ def _print_report(
                 status = "ERR"
             else:
                 actual_str = sr.actual_decision or "?"
-                alert_ok = sr.alert_pass is None or sr.alert_pass
-                if (
-                    sr.decision_pass
-                    and sr.signals_pass
-                    and sr.categories_pass
-                    and alert_ok
-                ):
+                if _analysis_pass(sr) and _policy_pass(sr):
                     status = "PASS"
                 else:
                     status = "FAIL"
@@ -250,12 +273,7 @@ def _print_report(
         for cr in case_results
         for sr in cr.snapshots
         if sr.error is not None
-        or not (
-            sr.decision_pass
-            and sr.signals_pass
-            and sr.categories_pass
-            and (sr.alert_pass is None or sr.alert_pass)
-        )
+        or not (_analysis_pass(sr) and _policy_pass(sr))
     ]
     if failures:
         print("\n  --- Failures Detail ---\n")
@@ -311,18 +329,20 @@ async def _run_eval_suite(
 
     total_snapshots = sum(len(cr.snapshots) for cr in case_results)
     passed_snapshots = sum(
+        1 for cr in case_results for sr in cr.snapshots if _analysis_pass(sr)
+    )
+    end_to_end_passed = sum(
         1
         for cr in case_results
         for sr in cr.snapshots
-        if sr.error is None
-        and sr.decision_pass
-        and sr.signals_pass
-        and sr.categories_pass
-        and (sr.alert_pass is None or sr.alert_pass)
+        if _analysis_pass(sr) and _policy_pass(sr)
     )
-    accuracy = passed_snapshots / total_snapshots if total_snapshots else 0.0
+    analyzer_accuracy = passed_snapshots / total_snapshots if total_snapshots else 0.0
+    end_to_end_accuracy = (
+        end_to_end_passed / total_snapshots if total_snapshots else 0.0
+    )
 
-    _print_report(case_results, accuracy)
+    _print_report(case_results, end_to_end_accuracy)
 
     model = os.environ.get(
         "GUARD_LLM_MODEL", os.environ.get("LLM_MODEL_NAME", "gpt-4.1")
@@ -336,8 +356,8 @@ async def _run_eval_suite(
     )
     print(f"  → tests/evaluation/results/{run_id}_guard_{label.lower().replace(' ', '_')}/")
 
-    assert accuracy >= min_accuracy, (
-        f"{label} snapshot accuracy {accuracy:.1%} "
+    assert analyzer_accuracy >= min_accuracy, (
+        f"{label} analyzer accuracy {analyzer_accuracy:.1%} "
         f"below threshold {min_accuracy:.1%}"
     )
 

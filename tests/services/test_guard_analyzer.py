@@ -18,9 +18,13 @@ from echo_v2.services.guard_analyzer import (
 )
 
 
-def _response(content: str) -> SimpleNamespace:
+def _response(content: str, parsed: GuardLLMOutput | None = None) -> SimpleNamespace:
     return SimpleNamespace(
-        choices=[SimpleNamespace(message=SimpleNamespace(content=content))]
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content=content, parsed=parsed)
+            )
+        ]
     )
 
 
@@ -32,12 +36,10 @@ def _conversation() -> GuardAnalysisInput:
     )
 
 
-def test_guard_output_schema_is_strict_and_requires_alert() -> None:
+def test_guard_output_schema_is_strict_and_detection_only() -> None:
     schema = GuardLLMOutput.model_json_schema()
 
     assert schema["additionalProperties"] is False
-    assert "should_alert" in schema["required"]
-    assert schema["properties"]["should_alert"]["type"] == "boolean"
     assert schema["properties"]["decision"]["enum"] == [
         "none",
         "watch",
@@ -52,19 +54,11 @@ def test_guard_output_schema_is_strict_and_requires_alert() -> None:
     ]
 
 
-def test_parse_guard_output_rejects_string_boolean() -> None:
-    with pytest.raises(AnalysisError, match="Invalid Guard output"):
-        _parse_llm_output(
-            '{"decision":"none","signals":[],"categories":[],'
-            '"should_alert":"false","confidence":0.9,"reason":"ok"}'
-        )
-
-
 def test_parse_guard_output_rejects_unknown_fields() -> None:
     with pytest.raises(AnalysisError, match="Invalid Guard output"):
         _parse_llm_output(
             '{"decision":"none","signals":[],"categories":[],'
-            '"should_alert":false,"confidence":0.9,"reason":"ok",'
+            '"confidence":0.9,"reason":"ok",'
             '"summary":"unexpected"}'
         )
 
@@ -72,22 +66,28 @@ def test_parse_guard_output_rejects_unknown_fields() -> None:
 def test_parse_guard_output_deduplicates_signals_and_categories() -> None:
     result = _parse_llm_output(
         '{"decision":"concerning","signals":["secrecy","secrecy"],'
-        '"categories":["bullying","bullying"],"should_alert":true,'
+        '"categories":["bullying","bullying"],'
         '"confidence":0.9,"reason":"pattern"}'
     )
 
     assert result.signals == ("secrecy",)
     assert result.categories == ("bullying",)
-    assert result.should_alert is True
 
 
 @pytest.mark.asyncio
 async def test_analyzer_requests_strict_json_schema() -> None:
     client = MagicMock()
-    client.chat.completions.create = AsyncMock(
+    client.chat.completions.parse = AsyncMock(
         return_value=_response(
             '{"decision":"none","signals":[],"categories":[],'
-            '"should_alert":false,"confidence":1.0,"reason":"ok"}'
+            '"confidence":1.0,"reason":"ok"}',
+            parsed=GuardLLMOutput(
+                decision="none",
+                signals=[],
+                categories=[],
+                confidence=1.0,
+                reason="ok",
+            ),
         )
     )
     analyzer = LLMGuardAnalyzer(client=client, model="gpt-test")
@@ -95,9 +95,5 @@ async def test_analyzer_requests_strict_json_schema() -> None:
     result, _raw = await analyzer.analyze_with_raw(_conversation())
 
     assert result.decision == "none"
-    assert result.should_alert is False
-    request = client.chat.completions.create.call_args.kwargs
-    response_format = request["response_format"]
-    assert response_format["type"] == "json_schema"
-    assert response_format["json_schema"]["strict"] is True
-    assert response_format["json_schema"]["schema"]["additionalProperties"] is False
+    request = client.chat.completions.parse.call_args.kwargs
+    assert request["response_format"] is GuardLLMOutput

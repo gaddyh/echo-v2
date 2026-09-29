@@ -1,7 +1,7 @@
 """LLM-based Guard analyzer (stub).
 
-Takes a slice of a child's conversation and asks the LLM to assess the
-safety level at that point in time. Returns a :class:`GuardResult` with
+Takes a slice of a child's conversation and asks the LLM to assess what
+is happening and how serious it is. Returns a :class:`GuardAnalysis` with
 one of four decisions — ``none``, ``watch``, ``concerning``, ``urgent`` —
 plus the signals and categories that justify it.
 
@@ -26,7 +26,6 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
-    StrictBool,
     StrictStr,
     ValidationError,
 )
@@ -34,11 +33,11 @@ from pydantic import (
 __all__ = [
     "AnalysisError",
     "ChatCompletionClient",
+    "GuardAnalysis",
     "GuardAnalysisInput",
     "GuardAnalyzer",
     "GuardCategory",
     "GuardLLMOutput",
-    "GuardResult",
     "GuardSignal",
     "LLMGuardAnalyzer",
 ]
@@ -46,7 +45,7 @@ __all__ = [
 _logger = logging.getLogger("echo_v2.services.guard_analyzer")
 
 # Bump when the prompt or output contract changes.
-GUARD_PROMPT_VERSION = "v0.1-structured-output"
+GUARD_PROMPT_VERSION = "v0.2-cumulative-signals-alert-threshold"
 
 # Bump when the analysis pipeline changes.
 GUARD_ANALYZER_VERSION = "2026-09-29.0"
@@ -86,7 +85,6 @@ class GuardLLMOutput(BaseModel):
     decision: Decision
     signals: list[GuardSignal]
     categories: list[GuardCategory]
-    should_alert: StrictBool
     confidence: float = Field(ge=0.0, le=1.0)
     reason: StrictStr
 
@@ -111,29 +109,16 @@ class GuardAnalysisInput:
 
 
 @dataclass(frozen=True)
-class GuardResult:
-    """Result of a Guard analysis.
+class GuardAnalysis:
+    """Detection-only result produced by the Guard analyzer.
 
-    Attributes:
-        decision: One of ``none``, ``watch``, ``concerning``, ``urgent``.
-        signals: Detected risk signals (e.g. ``"secrecy"``,
-            ``"location_request"``, ``"bullying"``).
-        categories: High-level categories (e.g. ``"suspicious_contact"``,
-            ``"bullying"``).
-        should_alert: Whether the AlertPolicy should fire an alert now.
-            Independent of ``decision`` — e.g. ``concerning`` may not
-            alert if the policy wants to see a pattern over time.
-        confidence: Model confidence 0.0–1.0.
-        reason: One short sentence explaining the decision.
-        model: Model name used.
-        prompt_version: Prompt version used.
-        analyzer_version: Analyzer version used.
+    Alerting is deliberately not part of this result. A separate
+    :class:`AlertPolicy` evaluates this analysis against product context.
     """
 
     decision: Decision
     signals: tuple[str, ...] = ()
     categories: tuple[str, ...] = ()
-    should_alert: bool = False
     confidence: float = 0.0
     reason: str = ""
     model: str = ""
@@ -154,7 +139,7 @@ class ChatCompletionClient(Protocol):
 class GuardAnalyzer(Protocol):
     """Protocol for Guard analyzers."""
 
-    async def analyze(self, conversation: GuardAnalysisInput) -> GuardResult:
+    async def analyze(self, conversation: GuardAnalysisInput) -> GuardAnalysis:
         raise NotImplementedError
 
 
@@ -166,15 +151,13 @@ IN TIME — i.e. given everything said so far.
 
 Answer with exactly one of four decisions:
 
-- "none": No concern. Normal friendly chat, banter, or harmless exchange.
-- "watch": Mild concern worth monitoring. Something slightly off but not \
-yet clearly dangerous. E.g. an unknown contact mentioning offline \
-knowledge of the child.
-- "concerning": Clear concern. A pattern of risky behavior is forming. \
-E.g. an unknown contact asking about the child's location/routine, \
-repeated harassment, or pressure for secrecy.
-- "urgent": Immediate danger. E.g. a stranger requesting a secret \
-in-person meeting, explicit threats, or grooming at an advanced stage.
+- "none": No meaningful concern. Normal friendly chat, banter, or harmless \
+exchange.
+- "watch": One early or mild signal. Monitor only; the evidence is not yet \
+a meaningful pattern.
+- "concerning": A meaningful pattern exists. The conversation warrants \
+attention, but severity is distinct from any notification policy.
+- "urgent": An immediate or imminent safety concern.
 
 Also output:
 - "signals": A list of detected risk signals. Common signals include: \
@@ -184,33 +167,27 @@ Also output:
 - "categories": High-level categories this conversation falls into, if \
 any. The canonical categories are: "suspicious_contact", "bullying", \
 "sexual_harassment", "threats". May be empty for "none" decisions.
-- "should_alert": A boolean. Whether an alert should be sent to the \
-parent NOW based on this conversation. This is an independent decision \
-from "decision" — "watch" usually does NOT alert, and even \
-"concerning" may not alert if the concern is not yet actionable. \
-Reserve "should_alert": true for cases where a parent genuinely needs \
-to be notified right now.
 - "confidence": 0.0–1.0.
-- "reason": One short sentence (in Hebrew or English) explaining the \
-decision based on the conversation so far.
+- "reason": One short sentence (in Hebrew or English) explaining what \
+is happening and why the decision is appropriate.
 
 Rules:
 - Base your decision on the FULL conversation up to this point, not just \
 the last message.
-- Do NOT alert on a plain "hey" — the whole point is to catch \
-escalation, not to flag every unknown contact.
+- Signals are cumulative across the entire conversation prefix. Once a \
+signal is established, retain it in later outputs unless later messages \
+clearly disprove it. Add newly established signals; do not replace prior \
+signals with only the newest signal.
+- Keep this analysis detection-only: describe what is happening and how \
+serious it is. Do not decide whether a parent should be notified.
 - Friendly banter with mutual engagement (emojis, reciprocal teasing) \
 is "none", not "bullying". Look for power imbalance, distress, or \
 exclusion.
-- "should_alert" is independent of "decision". A "concerning" decision \
-does not automatically mean "should_alert": true — only alert when the \
-situation is actionable enough that a parent should see it now.
 - Return ONLY a JSON object, no explanation outside the JSON.
 
 Output format (JSON only):
 {"decision": "<none|watch|concerning|urgent>", \
 "signals": ["..."], "categories": ["..."], \
-"should_alert": <true|false>, \
 "confidence": <0.0-1.0>, "reason": "<one short sentence>"}
 """
 
@@ -237,14 +214,14 @@ class LLMGuardAnalyzer:
         # GPT-5+ reasoning models only support the default temperature.
         self._is_reasoning_model = model.startswith(("gpt-5", "gpt-6", "o"))
 
-    async def analyze(self, conversation: GuardAnalysisInput) -> GuardResult:
-        """Run analysis and return a :class:`GuardResult`."""
+    async def analyze(self, conversation: GuardAnalysisInput) -> GuardAnalysis:
+        """Run analysis and return a :class:`GuardAnalysis`."""
         result, _raw = await self._analyze_core(conversation)
         return result
 
     async def analyze_with_raw(
         self, conversation: GuardAnalysisInput
-    ) -> tuple[GuardResult, str]:
+    ) -> tuple[GuardAnalysis, str]:
         """Run analysis and return ``(result, raw_llm_response)``.
 
         Intended for evaluation harnesses that need to persist full traces.
@@ -253,10 +230,10 @@ class LLMGuardAnalyzer:
 
     async def _analyze_core(
         self, conversation: GuardAnalysisInput
-    ) -> tuple[GuardResult, str]:
+    ) -> tuple[GuardAnalysis, str]:
         if not conversation.messages:
             return (
-                GuardResult(
+                GuardAnalysis(
                     decision="none",
                     confidence=1.0,
                     reason="No messages to analyze.",
@@ -275,14 +252,7 @@ class LLMGuardAnalyzer:
                 {"role": "system", "content": _SYSTEM_PROMPT},
                 {"role": "user", "content": user_msg},
             ],
-            "response_format": {
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "guard_analysis",
-                    "strict": True,
-                    "schema": GuardLLMOutput.model_json_schema(),
-                },
-            },
+            "response_format": GuardLLMOutput,
         }
         if self._is_reasoning_model:
             request_kwargs["max_completion_tokens"] = 4000
@@ -291,24 +261,19 @@ class LLMGuardAnalyzer:
             request_kwargs["max_completion_tokens"] = 400
 
         try:
-            response = await self._client.chat.completions.create(**request_kwargs)
+            response = await self._client.chat.completions.parse(**request_kwargs)
         except Exception as exc:
             _logger.warning("Guard analyzer API error: %s", exc)
             raise AnalysisError(f"LLM request failed: {exc}") from exc
 
-        raw_output = response.choices[0].message.content or ""
-        result = _parse_llm_output(raw_output)
-        result = GuardResult(
-            decision=result.decision,
-            signals=result.signals,
-            categories=result.categories,
-            should_alert=result.should_alert,
-            confidence=result.confidence,
-            reason=result.reason,
-            model=self._model,
-            prompt_version=self._prompt_version,
-            analyzer_version=GUARD_ANALYZER_VERSION,
-        )
+        message = response.choices[0].message
+        raw_output = message.content or ""
+        parsed = message.parsed
+        if parsed is None:
+            raise AnalysisError("Guard LLM returned no parsed analysis")
+        if not isinstance(parsed, GuardLLMOutput):
+            raise AnalysisError("Guard LLM returned an unexpected parsed output")
+        result = _analysis_from_output(parsed, self._model, self._prompt_version)
         return result, raw_output
 
 
@@ -320,7 +285,7 @@ def _build_user_message(conversation: GuardAnalysisInput) -> str:
     return "Conversation:\n" + "\n".join(lines)
 
 
-def _parse_llm_output(raw: str) -> GuardResult:
+def _parse_llm_output(raw: str) -> GuardAnalysis:
     """Parse and strictly validate the LLM's structured JSON output."""
     raw = raw.strip()
     # Keep compatibility with providers that wrap JSON in markdown fences.
@@ -333,11 +298,22 @@ def _parse_llm_output(raw: str) -> GuardResult:
     except (ValueError, ValidationError) as exc:
         raise AnalysisError(f"Invalid Guard output: {exc}") from exc
 
-    return GuardResult(
+    return _analysis_from_output(output)
+
+
+def _analysis_from_output(
+    output: GuardLLMOutput,
+    model: str = "",
+    prompt_version: str = "",
+) -> GuardAnalysis:
+    """Convert validated structured output into the application result."""
+    return GuardAnalysis(
         decision=output.decision,
         signals=tuple(dict.fromkeys(signal.value for signal in output.signals)),
         categories=tuple(dict.fromkeys(category.value for category in output.categories)),
-        should_alert=output.should_alert,
         confidence=output.confidence,
         reason=output.reason,
+        model=model,
+        prompt_version=prompt_version,
+        analyzer_version=GUARD_ANALYZER_VERSION,
     )
