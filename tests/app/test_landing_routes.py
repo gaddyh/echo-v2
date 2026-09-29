@@ -32,8 +32,8 @@ async def test_landing_page_serves_html():
         resp = await client.get("/")
     assert resp.status_code == 200
     assert "text/html" in resp.headers.get("content-type", "")
-    assert "Echo" in resp.text
-    assert "רשימת המתנה" in resp.text
+    assert "Echo Guard" in resp.text
+    assert "פיילוט" in resp.text
     # Security headers.
     assert resp.headers.get("x-content-type-options") == "nosniff"
     assert "default-src 'self'" in resp.headers.get("content-security-policy", "")
@@ -175,7 +175,7 @@ async def test_landing_page_has_og_tags_and_scarcity():
     assert 'og:image' in html
     assert '{{BASE_URL}}' not in html  # template substituted
     # Scarcity messaging is always present.
-    assert "50 מקומות" in html
+    assert "50 המקומות" in html
     # Counter is hidden below the display threshold.
     assert "{{COUNTER}}" not in html
     assert "כבר ברשימה" not in html

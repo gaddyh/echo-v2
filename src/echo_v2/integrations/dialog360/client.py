@@ -353,10 +353,22 @@ class Dialog360Client:
         _logger.info("provider=dialog360 operation=%s status_code=%s", operation, status)
 
         if status == 429:
+            _logger.warning(
+                "provider=dialog360 operation=%s status_code=429 body=%s",
+                operation, _safe_json(response),
+            )
             raise RetryableError(f"rate limited during {operation}")
         if 500 <= status < 600:
+            _logger.warning(
+                "provider=dialog360 operation=%s status_code=%s body=%s",
+                operation, status, _safe_json(response),
+            )
             raise IndeterminateError(f"dialog360 {operation} returned HTTP {status}")
         if 400 <= status < 500:
+            _logger.warning(
+                "provider=dialog360 operation=%s status_code=%s body=%s",
+                operation, status, _safe_json(response),
+            )
             raise PermanentError(f"dialog360 {operation} returned HTTP {status}")
 
         body = _safe_json(response)
