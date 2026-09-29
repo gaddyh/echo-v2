@@ -272,6 +272,17 @@ section { padding: 76px 0; }
   color: var(--muted);
   font-size: 1.18rem;
 }
+.parent-disclaimer {
+  max-width: 780px;
+  margin: 22px auto 0;
+  padding: 14px 18px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--muted);
+  font-size: 0.92rem;
+  text-align: center;
+}
 
 /* --- pattern explanation --- */
 .scenario {
@@ -678,6 +689,9 @@ section { padding: 76px 0; }
           <p>ניסיון לזהות כשהשיחה עוברת מביטוי רגעי לדפוס שמצריך תשומת לב.</p>
         </div>
       </div>
+      <p class="parent-disclaimer">
+        Echo Guard הוא כלי עזר להורים — הוא לא מחליף שיחה, שיקול דעת או עזרה מקצועית.
+      </p>
     </section>
 
     <section id="connect">
