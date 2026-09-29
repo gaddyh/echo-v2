@@ -1,41 +1,37 @@
-# Guard Evaluation Baseline
+# Guard Analyzer Baseline
 
-This file records the first reproducible Guard baseline after introducing
-Pydantic structured output and enum-backed signals/categories.
+This baseline is for the LLM Guard analyzer only. The analyzer detects what
+is happening, severity, categories, and cumulative signals. It does not decide
+whether a parent should be notified.
 
-## Run metadata
+Notification behavior is defined separately by `DefaultAlertPolicy` and tested
+with deterministic policy fixtures in `guard_policy_cases.py`.
 
-- **Run ID:** `20260929_222102`
+## Analyzer baseline
+
+- **Run ID:** `20260929_235627`
 - **Model:** `gpt-4.1`
-- **Prompt version:** `v0.1-structured-output`
+- **Prompt version:** `v0.2-cumulative-signals-alert-threshold`
 - **Cases:** 3
 - **Snapshots:** 9
 - **Errors:** 0
-- **Passing snapshots:** 7/9
-- **Snapshot accuracy:** 77.8%
+- **Analyzer:** 8/9 (88.9%)
 - **Command:** `pytest -m eval_guard -v -s`
 
-## Results
+The one miss was a stochastic signal omission at `m5` of
+`unknown_contact_escalation_001`: the model returned `routine_probing` but
+omitted `location_request`. A subsequent run should be compared against this
+baseline; the analyzer eval is intentionally not coupled to policy behavior.
 
-| Case | Snapshot | Expected decision | Actual decision | Signals | Categories | Alert | Status |
-|---|---:|---|---|---|---|---|---|
-| `unknown_contact_escalation_001` | `m2` | `none` | `none` | pass | pass | pass | PASS |
-| `unknown_contact_escalation_001` | `m3` | `watch` | `watch` | pass | pass | pass | PASS |
-| `unknown_contact_escalation_001` | `m5` | `concerning` | `concerning` | pass | pass | pass | PASS |
-| `unknown_contact_escalation_001` | `m7` | `concerning\|urgent` | `concerning` | **missing `location_request`** | pass | pass | FAIL |
-| `unknown_contact_escalation_001` | `m8` | `urgent` | `urgent` | pass | pass | pass | PASS |
-| `teasing_vs_bullying_001_negative` | `m5` | `none` | `none` | pass | pass | pass | PASS |
-| `teasing_vs_bullying_002_positive` | `m2` | `none\|watch` | `watch` | pass | pass | pass | PASS |
-| `teasing_vs_bullying_002_positive` | `m5` | `watch\|concerning` | `concerning` | pass | pass | **expected false, got true** | FAIL |
-| `teasing_vs_bullying_002_positive` | `m7` | `concerning` | `concerning` | pass | pass | pass | PASS |
+## Policy verification
 
-## Known gaps
+The deterministic policy cases are run without an LLM:
 
-1. `location_request` is not preserved at `m7` after being detected at `m5`.
-2. The bullying case alerts too early at `m5`; the expected policy is to monitor
-   the emerging pattern without alerting until exclusion is established at `m7`.
+- `watch` → no alert
+- developing bullying → no alert
+- established bullying with exclusion → alert
+- actionable suspicious contact → alert
+- `urgent` → alert
+- previously alerted concerning case → suppressed
 
-This baseline is intentionally checked in as a compact semantic summary. The
-full raw LLM response and generated report remain in the ignored local results
-folder:
-`tests/evaluation/results/20260929_222102_guard_all/`.
+The policy gold is maintained separately from the analyzer golden cases.
