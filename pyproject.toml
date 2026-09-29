@@ -65,8 +65,9 @@ markers = [
     "eval: evaluation harness — runs real LLM API calls, not part of normal suite",
     "eval_soc: SOC family evaluation harness — runs real LLM API calls, not part of normal suite",
     "eval_casual: casual-question evaluation harness — runs real LLM API calls, not part of normal suite",
+    "eval_guard: Guard evaluation harness — runs real LLM API calls, not part of normal suite",
 ]
-addopts = "-m 'not eval and not eval_soc and not eval_casual'"
+addopts = "-m 'not eval and not eval_soc and not eval_casual and not eval_guard'"
 
 [tool.coverage.run]
 branch = true
