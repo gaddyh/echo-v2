@@ -5,11 +5,11 @@ safety level at that point in time. Returns a :class:`GuardResult` with
 one of four decisions — ``none``, ``watch``, ``concerning``, ``urgent`` —
 plus the signals and categories that justify it.
 
-This is a minimal stub: a single LLM call with a straightforward system
-prompt. It exists so the Guard eval harness can run end-to-end. The real
-analyzer will likely add prompt versioning, tracing, a summary rewriter,
-and an alert policy — but the output contract (decision + signals +
-categories) is expected to stay stable.
+This is an initial analyzer: a single LLM call with a strict structured
+output contract. It exists so the Guard eval harness can run end-to-end.
+The analyzer will likely add prompt versioning, tracing, a summary rewriter,
+and a separate alert policy, but the semantic output contract is expected
+to stay stable.
 
 The OpenAI client is injected (not created per-call) so it can be wrapped
 with ``langsmith.wrappers.wrap_openai`` for automatic LLM tracing.
@@ -17,31 +17,78 @@ with ``langsmith.wrappers.wrap_openai`` for automatic LLM tracing.
 
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, Literal, Protocol
+
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictStr,
+    ValidationError,
+)
 
 __all__ = [
     "AnalysisError",
     "ChatCompletionClient",
     "GuardAnalysisInput",
     "GuardAnalyzer",
+    "GuardCategory",
+    "GuardLLMOutput",
     "GuardResult",
+    "GuardSignal",
     "LLMGuardAnalyzer",
 ]
 
 _logger = logging.getLogger("echo_v2.services.guard_analyzer")
 
 # Bump when the prompt or output contract changes.
-GUARD_PROMPT_VERSION = "v0-stub"
+GUARD_PROMPT_VERSION = "v0.1-structured-output"
 
 # Bump when the analysis pipeline changes.
 GUARD_ANALYZER_VERSION = "2026-09-29.0"
 
 Decision = Literal["none", "watch", "concerning", "urgent"]
 
-_VALID_DECISIONS: frozenset[str] = frozenset({"none", "watch", "concerning", "urgent"})
+
+class GuardSignal(str, Enum):
+    """Canonical risk signals emitted by the Guard analyzer."""
+
+    OFFLINE_KNOWLEDGE = "offline_knowledge"
+    LOCATION_REQUEST = "location_request"
+    ROUTINE_PROBING = "routine_probing"
+    SECRECY = "secrecy"
+    MEETING_REQUEST = "meeting_request"
+    REPEATED_HARASSMENT = "repeated_harassment"
+    EXCLUSION = "exclusion"
+    BULLYING = "bullying"
+    THREAT = "threat"
+    GROOMING = "grooming"
+
+
+class GuardCategory(str, Enum):
+    """Canonical high-level risk categories emitted by Guard."""
+
+    SUSPICIOUS_CONTACT = "suspicious_contact"
+    BULLYING = "bullying"
+    SEXUAL_HARASSMENT = "sexual_harassment"
+    THREATS = "threats"
+
+
+class GuardLLMOutput(BaseModel):
+    """Strict, structured output contract returned by the Guard LLM."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    decision: Decision
+    signals: list[GuardSignal]
+    categories: list[GuardCategory]
+    should_alert: StrictBool
+    confidence: float = Field(ge=0.0, le=1.0)
+    reason: StrictStr
 
 
 @dataclass(frozen=True)
@@ -133,9 +180,9 @@ Also output:
 - "signals": A list of detected risk signals. Common signals include: \
 "offline_knowledge", "location_request", "routine_probing", "secrecy", \
 "meeting_request", "repeated_harassment", "exclusion", "bullying", \
-"threat", "grooming". You may use other signal names if needed.
+"threat", "grooming". Use only these canonical signal names.
 - "categories": High-level categories this conversation falls into, if \
-any. Common categories: "suspicious_contact", "bullying", \
+any. The canonical categories are: "suspicious_contact", "bullying", \
 "sexual_harassment", "threats". May be empty for "none" decisions.
 - "should_alert": A boolean. Whether an alert should be sent to the \
 parent NOW based on this conversation. This is an independent decision \
@@ -228,6 +275,14 @@ class LLMGuardAnalyzer:
                 {"role": "system", "content": _SYSTEM_PROMPT},
                 {"role": "user", "content": user_msg},
             ],
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "guard_analysis",
+                    "strict": True,
+                    "schema": GuardLLMOutput.model_json_schema(),
+                },
+            },
         }
         if self._is_reasoning_model:
             request_kwargs["max_completion_tokens"] = 4000
@@ -266,37 +321,23 @@ def _build_user_message(conversation: GuardAnalysisInput) -> str:
 
 
 def _parse_llm_output(raw: str) -> GuardResult:
-    """Parse and validate the LLM's JSON output."""
+    """Parse and strictly validate the LLM's structured JSON output."""
     raw = raw.strip()
-    # Strip markdown code fences if present.
+    # Keep compatibility with providers that wrap JSON in markdown fences.
     if raw.startswith("```"):
         raw = raw.split("\n", 1)[-1] if "\n" in raw else raw[3:]
         raw = raw.removesuffix("```").strip()
 
     try:
-        data = json.loads(raw)
-    except (json.JSONDecodeError, ValueError) as exc:
-        raise AnalysisError(f"Invalid JSON from LLM: {exc}") from exc
-
-    decision_raw = data.get("decision", "")
-    if decision_raw not in _VALID_DECISIONS:
-        raise AnalysisError(
-            f"Invalid decision '{decision_raw}'. "
-            f"Expected one of {sorted(_VALID_DECISIONS)}."
-        )
-    decision: Decision = decision_raw
-
-    signals = tuple(str(s) for s in data.get("signals", []))
-    categories = tuple(str(c) for c in data.get("categories", []))
-    should_alert = bool(data.get("should_alert", False))
-    confidence = float(data.get("confidence", 0.0))
-    reason = str(data.get("reason", ""))
+        output = GuardLLMOutput.model_validate_json(raw, strict=True)
+    except (ValueError, ValidationError) as exc:
+        raise AnalysisError(f"Invalid Guard output: {exc}") from exc
 
     return GuardResult(
-        decision=decision,
-        signals=signals,
-        categories=categories,
-        should_alert=should_alert,
-        confidence=confidence,
-        reason=reason,
+        decision=output.decision,
+        signals=tuple(dict.fromkeys(signal.value for signal in output.signals)),
+        categories=tuple(dict.fromkeys(category.value for category in output.categories)),
+        should_alert=output.should_alert,
+        confidence=output.confidence,
+        reason=output.reason,
     )
