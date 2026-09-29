@@ -306,6 +306,19 @@ section { padding: 76px 0; }
   font-weight: 800;
 }
 
+/* --- visual story --- */
+.story-visual {
+  padding-top: 18px;
+}
+.story-visual img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
 /* --- categories --- */
 .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
 .card {
@@ -637,28 +650,13 @@ section { padding: 76px 0; }
       </div>
     </section>
 
-    <section>
-      <h2 class="section-title">לא כל הודעה היא בעיה. לפעמים הדפוס הוא הבעיה.</h2>
-      <p class="section-lead">
-        Echo Guard לא מחפש מילה אחת “אסורה”. הוא מסתכל על רצף, הקשר והצטברות של סימנים.
-      </p>
-
-      <div class="scenario">
-        <div>
-          <h2>הודעה תמימה יכולה להפוך למשהו אחר לגמרי.</h2>
-          <p>
-            כשהשיחה מתחילה להצטבר לכיוון של מיקום, סודיות, לחץ או הטרדה —
-            זה הרגע שבו כדאי לדעת.
-          </p>
-        </div>
-        <div class="thread">
-          <div class="bubble in">ראיתי אותך ליד הבית ספר.</div>
-          <div class="bubble in">אני יודע שאת בדרך כלל יוצאת מהשער האחורי.</div>
-          <div class="bubble in">מתי את לבד שם?</div>
-          <div class="bubble in">ואל תספרי להורים עדיין.</div>
-          <div class="flag">איש קשר לא מוכר + ידע על השגרה + בירור מיקום + סודיות → התראה</div>
-        </div>
-      </div>
+    <section class="story-visual">
+      <img
+        src="/og-guard-v1.png"
+        alt="Echo Guard — רשת ביטחון חכמה ל-WhatsApp של הילדים"
+        width="1734"
+        height="907"
+      >
     </section>
 
     <section>

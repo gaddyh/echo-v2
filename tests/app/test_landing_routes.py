@@ -34,6 +34,7 @@ async def test_landing_page_serves_html():
     assert "text/html" in resp.headers.get("content-type", "")
     assert "Echo Guard" in resp.text
     assert "פיילוט" in resp.text
+    assert 'src="/og-guard-v1.png"' in resp.text
     # Security headers.
     assert resp.headers.get("x-content-type-options") == "nosniff"
     assert "default-src 'self'" in resp.headers.get("content-security-policy", "")
@@ -201,6 +202,16 @@ async def test_og_image_endpoint_serves_png():
     assert resp.status_code == 200
     assert resp.headers["content-type"] == "image/png"
     assert resp.content[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+async def test_guard_og_image_endpoint_serves_png():
+    app, _ = _make_app()
+    async with _client(app) as client:
+        resp = await client.get("/og-guard-v1.png")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "image/png"
+    assert resp.content[:8] == b"\x89PNG\r\n\x1a\n"
+    assert len(resp.content) > 1_000_000
 
 
 # --- Notifier ----------------------------------------------------------------
