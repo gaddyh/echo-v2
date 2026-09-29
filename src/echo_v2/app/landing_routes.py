@@ -47,8 +47,8 @@ _COUNTER_DISPLAY_THRESHOLD = 25
 
 _OG_IMAGE_PATH = Path(__file__).parent / "static" / "og.png"
 # The source asset has no extension but is a valid PNG; keep the public URL
-# versioned so future artwork can use og-guard-v2.png without cache ambiguity.
-_OG_GUARD_IMAGE_PATH = Path(__file__).parent / "static" / "og.guard"
+# versioned so future artwork can use og-guard-v3.png without cache ambiguity.
+_OG_GUARD_IMAGE_PATH = Path(__file__).parent / "static" / "og.guard.png"
 
 
 class WaitlistRequest(BaseModel):
@@ -157,7 +157,7 @@ def build_landing_router(
             headers={"Cache-Control": "public, max-age=86400"},
         )
 
-    @router.get("/og-guard-v1.png")
+    @router.get("/og-guard-v2.png")
     async def og_guard_image() -> FileResponse:
         if not _OG_GUARD_IMAGE_PATH.exists():
             raise HTTPException(status_code=404, detail="not found")

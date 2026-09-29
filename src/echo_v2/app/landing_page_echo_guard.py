@@ -30,14 +30,14 @@ LANDING_PAGE = r"""<!DOCTYPE html>
 <meta property="og:title" content="Echo Guard — לדעת לפני שזה מסלים">
 <meta property="og:description" content="אם משהו מסוכן מתחיל בוואטסאפ של הילד — כדאי לדעת לפני שהוא מסלים.">
 <meta property="og:url" content="{{BASE_URL}}/">
-<meta property="og:image" content="{{BASE_URL}}/og-guard-v1.png">
+<meta property="og:image" content="{{BASE_URL}}/og-guard-v2.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta property="og:locale" content="he_IL">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Echo Guard — לדעת לפני שזה מסלים">
 <meta name="twitter:description" content="הגנה חכמה ל-WhatsApp של הילדים — בלי לקרוא כל הודעה ובלי לחכות שיהיה מאוחר.">
-<meta name="twitter:image" content="{{BASE_URL}}/og-guard-v1.png">
+<meta name="twitter:image" content="{{BASE_URL}}/og-guard-v2.png">
 <style>
 :root {
   --bg: #f7fbff;
@@ -652,7 +652,7 @@ section { padding: 76px 0; }
 
     <section class="story-visual">
       <img
-        src="/og-guard-v1.png"
+        src="/og-guard-v2.png"
         alt="Echo Guard — רשת ביטחון חכמה ל-WhatsApp של הילדים"
         width="1734"
         height="907"
