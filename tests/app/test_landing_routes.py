@@ -210,7 +210,8 @@ async def test_notifier_fires_on_new_signup():
     calls: list[dict] = []
 
     class FakeNotifier:
-        async def notify(self, *, name, phone, willingness_to_pay=None):
+        async def notify(self, *, name, phone, willingness_to_pay=None,
+                         children_count=None, children_ages=None):
             calls.append(
                 {"name": name, "phone": phone, "wtp": willingness_to_pay}
             )
@@ -238,7 +239,8 @@ async def test_notifier_silent_on_duplicate():
     calls: list[dict] = []
 
     class FakeNotifier:
-        async def notify(self, *, name, phone, willingness_to_pay=None):
+        async def notify(self, *, name, phone, willingness_to_pay=None,
+                         children_count=None, children_ages=None):
             calls.append({"name": name})
 
     repo = InMemoryWaitlistRepository()
@@ -260,7 +262,8 @@ async def test_notifier_silent_on_duplicate():
 
 async def test_notifier_failure_does_not_break_signup():
     class BoomNotifier:
-        async def notify(self, *, name, phone, willingness_to_pay=None):
+        async def notify(self, *, name, phone, willingness_to_pay=None,
+                         children_count=None, children_ages=None):
             raise RuntimeError("boom")
 
     repo = InMemoryWaitlistRepository()
@@ -275,3 +278,37 @@ async def test_notifier_failure_does_not_break_signup():
     assert resp.status_code == 200
     signups = await repo.list_all()
     assert len(signups) == 1
+
+
+async def test_notifier_receives_echo_guard_children_fields():
+    """Echo Guard signups pass children_count/ages through to the notifier."""
+    calls: list[dict] = []
+
+    class FakeNotifier:
+        async def notify(self, *, name, phone, willingness_to_pay=None,
+                         children_count=None, children_ages=None):
+            calls.append({
+                "name": name, "phone": phone, "wtp": willingness_to_pay,
+                "children_count": children_count,
+                "children_ages": children_ages,
+            })
+
+    repo = InMemoryWaitlistRepository()
+    app = FastAPI()
+    app.include_router(
+        build_landing_router(waitlist_repo=repo, notifier=FakeNotifier())
+    )
+    async with _client(app) as client:
+        resp = await client.post(
+            "/api/waitlist",
+            json={
+                "name": "דני כהן",
+                "phone": "0546610653",
+                "children_count": "3",
+                "children_ages": "8, 11, 14",
+            },
+        )
+    assert resp.status_code == 200
+    assert len(calls) == 1
+    assert calls[0]["children_count"] == "3"
+    assert calls[0]["children_ages"] == "8, 11, 14"

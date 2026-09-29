@@ -29,6 +29,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field, field_validator
 
 from echo_v2.app.landing_page import LANDING_PAGE
+from echo_v2.app.landing_page_echo_guard import LANDING_PAGE as GUARD_LANDING_PAGE
 from echo_v2.persistence.identity import PhoneParseError, normalize_phone_e164
 from echo_v2.persistence.waitlist import WaitlistRepository
 from echo_v2.services.waitlist_notifier import WaitlistNotifier
@@ -55,6 +56,14 @@ class WaitlistRequest(BaseModel):
     phone: str = Field(..., min_length=6, max_length=20, description="Phone number")
     wtp: Literal["free", "under_30", "30_70", "70_120", "120_plus"] | None = Field(
         None, description="Optional willingness-to-pay signal"
+    )
+    # Echo Guard pilot fields (optional — only sent from the /guard landing page).
+    # Not yet persisted; used only to format the owner's WhatsApp notification.
+    children_count: str | None = Field(
+        None, max_length=16, description="Echo Guard: number of children to enroll"
+    )
+    children_ages: str | None = Field(
+        None, max_length=120, description="Echo Guard: free-text ages of children"
     )
 
     @field_validator("name")
@@ -123,6 +132,19 @@ def build_landing_router(
         )
         return HTMLResponse(content=html, headers=_security_headers())
 
+    @router.get("/guard", response_class=HTMLResponse)
+    async def guard_landing() -> HTMLResponse:
+        count = await waitlist_repo.count()
+        counter_html = ""
+        if count >= _COUNTER_DISPLAY_THRESHOLD:
+            counter_html = f'<div class="counter">🔥 {count} כבר ברשימה</div>'
+        html = (
+            GUARD_LANDING_PAGE
+            .replace("{{COUNTER}}", counter_html)
+            .replace("{{BASE_URL}}", base_url.rstrip("/"))
+        )
+        return HTMLResponse(content=html, headers=_security_headers())
+
     @router.get("/og.png")
     async def og_image() -> FileResponse:
         if not _OG_IMAGE_PATH.exists():
@@ -161,6 +183,8 @@ def build_landing_router(
                         name=body.name,
                         phone=phone_e164,
                         willingness_to_pay=body.wtp,
+                        children_count=body.children_count,
+                        children_ages=body.children_ages,
                     )
                 except Exception:
                     _logger.exception("waitlist: notifier failed")
