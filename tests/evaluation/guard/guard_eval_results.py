@@ -1,4 +1,4 @@
-"""Persist Guard evaluation results as JSON and Markdown."""
+"""Persist Guard analyzer evaluation results as JSON and Markdown."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from tests.evaluation.guard.guard_cases import Decision, ExpectedSnapshot, GuardEvalCase
+from tests.evaluation.guard.guard_cases import Decision, GuardEvalCase
 
 __all__ = ["GuardCaseResult", "SnapshotResult", "save_guard_eval_run"]
 
@@ -23,17 +23,15 @@ _SHORT: dict[Decision, str] = {
 
 @dataclass
 class SnapshotResult:
-    """Combined analyzer and policy result at one snapshot point."""
+    """Result of running the analyzer at one snapshot point."""
 
-    snapshot: ExpectedSnapshot
+    after_message_id: str
     actual_decision: Decision | None = None
     actual_signals: tuple[str, ...] = ()
     actual_categories: tuple[str, ...] = ()
-    actual_should_alert: bool | None = None
     decision_pass: bool = False
     signals_pass: bool = False
     categories_pass: bool = True
-    alert_pass: bool | None = None
     error: str | None = None
     latency_ms: float | None = None
     raw_response: str = ""
@@ -41,18 +39,23 @@ class SnapshotResult:
 
 @dataclass
 class GuardCaseResult:
-    """Result of running all snapshots for one case."""
+    """Result of running all analyzer snapshots for one case."""
 
     case: GuardEvalCase
     snapshots: list[SnapshotResult] = field(default_factory=list)
 
 
-def _generate_run_id() -> str:
-    return datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+def _analysis_pass(result: SnapshotResult) -> bool:
+    return (
+        result.error is None
+        and result.decision_pass
+        and result.signals_pass
+        and result.categories_pass
+    )
 
 
-def _latency_stats(snapshot_results: list[SnapshotResult]) -> dict[str, float | None]:
-    latencies = [sr.latency_ms for sr in snapshot_results if sr.latency_ms is not None]
+def _latency_stats(results: list[SnapshotResult]) -> dict[str, float | None]:
+    latencies = [result.latency_ms for result in results if result.latency_ms is not None]
     if not latencies:
         return {"avg_ms": None, "p95_ms": None, "min_ms": None, "max_ms": None}
     ordered = sorted(latencies)
@@ -65,70 +68,52 @@ def _latency_stats(snapshot_results: list[SnapshotResult]) -> dict[str, float | 
     }
 
 
-def _analysis_pass(sr: SnapshotResult) -> bool:
-    return (
-        sr.error is None
-        and sr.decision_pass
-        and sr.signals_pass
-        and sr.categories_pass
-    )
-
-
-def _policy_pass(sr: SnapshotResult) -> bool:
-    return sr.alert_pass is None or sr.alert_pass
-
-
-def _snapshot_to_dict(case: GuardEvalCase, sr: SnapshotResult) -> dict[str, object]:
+def _snapshot_to_dict(case: GuardEvalCase, result: SnapshotResult) -> dict[str, object]:
     prefix_length = next(
         (index + 1 for index, message in enumerate(case.messages)
-         if message.id == sr.snapshot.after_message_id),
+         if message.id == result.after_message_id),
         len(case.messages),
     )
+    expected = next(
+        snapshot for snapshot in case.snapshots
+        if snapshot.after_message_id == result.after_message_id
+    )
     return {
-        "after_message_id": sr.snapshot.after_message_id,
+        "after_message_id": result.after_message_id,
         "prefix_length": prefix_length,
         "expected": {
-            "acceptable_decisions": list(sr.snapshot.acceptable_decisions),
-            "required_categories": list(sr.snapshot.required_categories),
-            "required_signals": list(sr.snapshot.required_signals),
-            "forbidden_signals": list(sr.snapshot.forbidden_signals),
-            "should_alert": sr.snapshot.should_alert,
+            "acceptable_decisions": list(expected.acceptable_decisions),
+            "required_categories": list(expected.required_categories),
+            "required_signals": list(expected.required_signals),
+            "forbidden_signals": list(expected.forbidden_signals),
         },
         "actual": {
-            "decision": sr.actual_decision,
-            "signals": list(sr.actual_signals),
-            "categories": list(sr.actual_categories),
-            "should_alert": sr.actual_should_alert,
+            "decision": result.actual_decision,
+            "signals": list(result.actual_signals),
+            "categories": list(result.actual_categories),
         },
-        "pass": {
-            "analyzer": _analysis_pass(sr),
-            "policy": _policy_pass(sr),
-            "end_to_end": _analysis_pass(sr) and _policy_pass(sr),
-        },
-        "error": sr.error,
-        "latency_ms": sr.latency_ms,
-        "raw_response": sr.raw_response,
+        "pass": _analysis_pass(result),
+        "error": result.error,
+        "latency_ms": result.latency_ms,
+        "raw_response": result.raw_response,
     }
 
 
 def _flatten(case_results: list[GuardCaseResult]) -> list[SnapshotResult]:
-    return [sr for case in case_results for sr in case.snapshots]
+    return [result for case in case_results for result in case.snapshots]
 
 
-def _build_json_output(
+def _build_report(
     run_id: str,
     label: str,
     model: str,
-    case_results: list[GuardCaseResult],
     prompt_version: str,
-) -> dict[str, object]:
-    snapshots = _flatten(case_results)
-    analyzer_passed = sum(_analysis_pass(sr) for sr in snapshots)
-    policy_passed = sum(_policy_pass(sr) for sr in snapshots)
-    end_to_end_passed = sum(_analysis_pass(sr) and _policy_pass(sr) for sr in snapshots)
-    total = len(snapshots)
-    errors = sum(sr.error is not None for sr in snapshots)
-    return {
+    case_results: list[GuardCaseResult],
+) -> tuple[dict[str, object], str]:
+    results = _flatten(case_results)
+    total = len(results)
+    passed = sum(_analysis_pass(result) for result in results)
+    output = {
         "run_id": run_id,
         "label": label,
         "model": model,
@@ -137,14 +122,10 @@ def _build_json_output(
         "summary": {
             "total_cases": len(case_results),
             "total_snapshots": total,
-            "analyzer_passed": analyzer_passed,
-            "policy_passed": policy_passed,
-            "end_to_end_passed": end_to_end_passed,
-            "analyzer_accuracy": analyzer_passed / total if total else 0.0,
-            "policy_accuracy": policy_passed / total if total else 0.0,
-            "end_to_end_accuracy": end_to_end_passed / total if total else 0.0,
-            "errors": errors,
-            "latency": _latency_stats(snapshots),
+            "passed_snapshots": passed,
+            "analyzer_accuracy": passed / total if total else 0.0,
+            "errors": sum(result.error is not None for result in results),
+            "latency": _latency_stats(results),
         },
         "cases": [
             {
@@ -153,54 +134,46 @@ def _build_json_output(
                 "source": case.case.source,
                 "notes": case.case.notes,
                 "messages": [
-                    {"id": m.id, "sender": m.sender, "text": m.text}
-                    for m in case.case.messages
+                    {"id": message.id, "sender": message.sender, "text": message.text}
+                    for message in case.case.messages
                 ],
-                "snapshots": [_snapshot_to_dict(case.case, sr) for sr in case.snapshots],
+                "snapshots": [
+                    _snapshot_to_dict(case.case, result)
+                    for result in case.snapshots
+                ],
             }
             for case in case_results
         ],
     }
 
-
-def _build_markdown_report(
-    run_id: str,
-    label: str,
-    model: str,
-    case_results: list[GuardCaseResult],
-    prompt_version: str,
-) -> str:
-    snapshots = _flatten(case_results)
-    total = len(snapshots)
-    analyzer_passed = sum(_analysis_pass(sr) for sr in snapshots)
-    policy_passed = sum(_policy_pass(sr) for sr in snapshots)
-    end_to_end_passed = sum(_analysis_pass(sr) and _policy_pass(sr) for sr in snapshots)
     lines = [
-        f"# Guard Evaluation Report — {label}",
+        f"# Guard Analyzer Evaluation Report — {label}",
         "",
         f"- **Run ID:** `{run_id}`",
         f"- **Model:** `{model}`",
         f"- **Prompt:** `{prompt_version}`",
-        f"- **Total snapshots:** {total}",
-        f"- **Analyzer:** {analyzer_passed}/{total} ({analyzer_passed / total:.1%})" if total else "- **Analyzer:** 0/0",
-        f"- **Policy:** {policy_passed}/{total} ({policy_passed / total:.1%})" if total else "- **Policy:** 0/0",
-        f"- **End-to-end:** {end_to_end_passed}/{total} ({end_to_end_passed / total:.1%})" if total else "- **End-to-end:** 0/0",
+        f"- **Snapshots:** {total}",
+        f"- **Analyzer pass:** {passed}/{total} ({passed / total:.1%})" if total else "- **Analyzer pass:** 0/0",
         "",
-        "| Case | After | Expected | Actual | Analyzer | Policy | Status |",
-        "|---|---|---|---|---|---|---|",
+        "| Case | After | Expected | Actual | Decision | Signals | Categories | Status |",
+        "|---|---|---|---|---|---|---|---|",
     ]
     for case in case_results:
-        for sr in case.snapshots:
-            actual = _SHORT.get(sr.actual_decision, "ERR") if sr.actual_decision else "ERR"
-            analyzer = "PASS" if _analysis_pass(sr) else "FAIL"
-            policy = "PASS" if _policy_pass(sr) else "FAIL"
-            status = "PASS" if _analysis_pass(sr) and _policy_pass(sr) else "FAIL"
-            expected = "|".join(sr.snapshot.acceptable_decisions)
-            lines.append(
-                f"| {case.case.case_id} | {sr.snapshot.after_message_id} | "
-                f"{expected} | {actual} | {analyzer} | {policy} | {status} |"
+        for result in case.snapshots:
+            expected = next(
+                snapshot for snapshot in case.case.snapshots
+                if snapshot.after_message_id == result.after_message_id
             )
-    return "\n".join(lines) + "\n"
+            lines.append(
+                f"| {case.case.case_id} | {result.after_message_id} | "
+                f"{'|'.join(expected.acceptable_decisions)} | "
+                f"{_SHORT.get(result.actual_decision, 'ERR') if result.actual_decision else 'ERR'} | "
+                f"{'PASS' if result.decision_pass else 'FAIL'} | "
+                f"{'PASS' if result.signals_pass else 'FAIL'} | "
+                f"{'PASS' if result.categories_pass else 'FAIL'} | "
+                f"{'PASS' if _analysis_pass(result) else 'FAIL'} |"
+            )
+    return output, "\n".join(lines) + "\n"
 
 
 def save_guard_eval_run(
@@ -209,16 +182,13 @@ def save_guard_eval_run(
     case_results: list[GuardCaseResult],
     prompt_version: str = "",
 ) -> str:
-    """Save a Guard eval run and return its run ID."""
-    run_id = _generate_run_id()
+    """Save an analyzer-only Guard eval run and return its run ID."""
+    run_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     run_dir = _RESULTS_DIR / f"{run_id}_guard_{label.lower().replace(' ', '_')}"
     run_dir.mkdir(parents=True, exist_ok=True)
-    output = _build_json_output(run_id, label, model, case_results, prompt_version)
+    output, report = _build_report(run_id, label, model, prompt_version, case_results)
     (run_dir / "results.json").write_text(
         json.dumps(output, indent=2, ensure_ascii=False), encoding="utf-8"
     )
-    (run_dir / "report.md").write_text(
-        _build_markdown_report(run_id, label, model, case_results, prompt_version),
-        encoding="utf-8",
-    )
+    (run_dir / "report.md").write_text(report, encoding="utf-8")
     return run_id

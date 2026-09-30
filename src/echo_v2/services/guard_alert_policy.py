@@ -67,7 +67,7 @@ class DefaultAlertPolicy:
     ) -> bool:
         del child_context
 
-        if analysis.decision == "none" or analysis.decision == "watch":
+        if analysis.decision in {"none", "watch"}:
             return False
         if analysis.decision == "urgent":
             return True
