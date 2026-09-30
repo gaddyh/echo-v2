@@ -21,9 +21,14 @@ are NOT part of the normal test suite.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Literal
 
-Decision = Literal["none", "watch", "concerning", "urgent"]
+from echo_v2.services.guard_taxonomy import (
+    GuardCategory,
+    GuardDecision,
+    GuardSignal,
+)
+
+Decision = GuardDecision
 
 
 @dataclass(frozen=True)
@@ -40,6 +45,7 @@ class ExpectedSnapshot:
     acceptable_decisions: tuple[Decision, ...]
     required_categories: tuple[str, ...] = ()
     required_signals: tuple[str, ...] = ()
+    required_signal_any_of: tuple[str, ...] = ()
     forbidden_signals: tuple[str, ...] = ()
     # Later useful for evaluating AlertPolicy separately.
     should_alert: bool | None = None
@@ -112,28 +118,31 @@ UNKNOWN_CONTACT_ESCALATION = GuardEvalCase(
     snapshots=(
         ExpectedSnapshot(
             after_message_id="m2",
-            acceptable_decisions=("none",),
+            acceptable_decisions=(GuardDecision.NONE,),
         ),
         ExpectedSnapshot(
             after_message_id="m3",
-            acceptable_decisions=("watch",),
-            required_signals=("offline_knowledge",),
+            acceptable_decisions=(GuardDecision.WATCH,),
+            required_signals=(GuardSignal.OFFLINE_KNOWLEDGE,),
         ),
         ExpectedSnapshot(
             after_message_id="m5",
-            acceptable_decisions=("concerning",),
-            required_categories=("suspicious_contact",),
-            required_signals=("location_request", "routine_probing"),
+            acceptable_decisions=(GuardDecision.CONCERNING,),
+            required_categories=(GuardCategory.SUSPICIOUS_CONTACT,),
+            required_signals=(
+                GuardSignal.OFFLINE_KNOWLEDGE,
+                GuardSignal.ROUTINE_PROBING,
+            ),
         ),
         ExpectedSnapshot(
             after_message_id="m7",
-            acceptable_decisions=("concerning", "urgent"),
-            required_signals=("secrecy",),
+            acceptable_decisions=(GuardDecision.CONCERNING, GuardDecision.URGENT),
+            required_signals=(GuardSignal.SECRECY_REQUEST,),
         ),
         ExpectedSnapshot(
             after_message_id="m8",
-            acceptable_decisions=("urgent",),
-            required_signals=("secrecy", "meeting_request"),
+            acceptable_decisions=(GuardDecision.URGENT,),
+            required_signals=(GuardSignal.SECRECY_REQUEST, GuardSignal.MEETING_REQUEST),
         ),
     ),
 )
@@ -160,8 +169,12 @@ TEASING = GuardEvalCase(
     snapshots=(
         ExpectedSnapshot(
             after_message_id="m5",
-            acceptable_decisions=("none",),
-            forbidden_signals=("bullying", "threat"),
+            acceptable_decisions=(GuardDecision.NONE,),
+            forbidden_signals=(
+                GuardSignal.REPEATED_TARGETING,
+                GuardSignal.GROUP_PILE_ON,
+                GuardSignal.THREAT,
+            ),
         ),
     ),
     source="SOC-adapted",
@@ -184,18 +197,29 @@ BULLYING = GuardEvalCase(
     snapshots=(
         ExpectedSnapshot(
             after_message_id="m2",
-            acceptable_decisions=("none", "watch"),
+            acceptable_decisions=(GuardDecision.NONE, GuardDecision.WATCH),
         ),
         ExpectedSnapshot(
             after_message_id="m5",
-            acceptable_decisions=("watch", "concerning"),
-            required_signals=("repeated_harassment",),
+            acceptable_decisions=(GuardDecision.WATCH, GuardDecision.CONCERNING),
+            required_signals=(GuardSignal.INSULT_OR_HUMILIATION,),
+            required_signal_any_of=(
+                GuardSignal.REPEATED_TARGETING,
+                GuardSignal.GROUP_PILE_ON,
+            ),
         ),
         ExpectedSnapshot(
             after_message_id="m7",
-            acceptable_decisions=("concerning",),
-            required_categories=("bullying",),
-            required_signals=("repeated_harassment", "exclusion"),
+            acceptable_decisions=(GuardDecision.CONCERNING,),
+            required_categories=(GuardCategory.BULLYING,),
+            required_signals=(
+                GuardSignal.INSULT_OR_HUMILIATION,
+                GuardSignal.EXCLUSION,
+            ),
+            required_signal_any_of=(
+                GuardSignal.REPEATED_TARGETING,
+                GuardSignal.GROUP_PILE_ON,
+            ),
         ),
     ),
     source="SynBullying-style",

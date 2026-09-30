@@ -11,6 +11,7 @@ from echo_v2.services.guard_analyzer import (
     AnalysisError,
     GuardAnalysisInput,
     GuardCategory,
+    GuardDecision,
     GuardLLMOutput,
     GuardMessage,
     GuardSignal,
@@ -39,7 +40,7 @@ def _conversation() -> GuardAnalysisInput:
 
 def _output(**overrides: object) -> GuardLLMOutput:
     values: dict[str, object] = {
-        "decision": "none",
+        "decision": GuardDecision.NONE,
         "signals": [],
         "categories": [],
         "evidence_message_ids": [],
@@ -56,11 +57,8 @@ def test_guard_output_schema_is_strict_and_detection_only() -> None:
     assert schema["additionalProperties"] is False
     assert "evidence_message_ids" in schema["required"]
     assert schema["properties"]["evidence_message_ids"]["items"]["type"] == "string"
-    assert schema["properties"]["decision"]["enum"] == [
-        "none",
-        "watch",
-        "concerning",
-        "urgent",
+    assert schema["$defs"]["GuardDecision"]["enum"] == [
+        decision.value for decision in GuardDecision
     ]
     assert schema["$defs"]["GuardSignal"]["enum"] == [
         signal.value for signal in GuardSignal
@@ -81,12 +79,13 @@ def test_parse_guard_output_rejects_unknown_fields() -> None:
 
 def test_parse_guard_output_deduplicates_signals_and_categories() -> None:
     result = _parse_llm_output(
-        '{"decision":"concerning","signals":["secrecy","secrecy"],'
+        '{"decision":"concerning","signals":["repeated_targeting",'
+        '"repeated_targeting"],'
         '"categories":["bullying","bullying"],"evidence_message_ids":[], '
         '"confidence":0.9,"reason":"pattern"}'
     )
 
-    assert result.signals == ("secrecy",)
+    assert result.signals == ("repeated_targeting",)
     assert result.categories == ("bullying",)
     assert result.evidence_message_ids == ()
 

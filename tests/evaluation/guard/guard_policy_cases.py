@@ -10,6 +10,11 @@ from dataclasses import dataclass, field
 
 from echo_v2.services.guard_alert_policy import ChildContext, ConversationContext
 from echo_v2.services.guard_analyzer import GuardAnalysis
+from echo_v2.services.guard_taxonomy import (
+    GuardCategory,
+    GuardDecision,
+    GuardSignal,
+)
 
 __all__ = ["GUARD_POLICY_CASES", "GuardPolicyCase"]
 
@@ -26,45 +31,45 @@ class GuardPolicyCase:
 GUARD_POLICY_CASES: tuple[GuardPolicyCase, ...] = (
     GuardPolicyCase(
         case_id="watch_never_alerts",
-        analysis=GuardAnalysis(decision="watch", signals=("secrecy",)),
+        analysis=GuardAnalysis(decision=GuardDecision.WATCH, signals=(GuardSignal.SECRECY_REQUEST,)),
     ),
     GuardPolicyCase(
         case_id="developing_bullying_does_not_alert",
         analysis=GuardAnalysis(
-            decision="concerning",
-            categories=("bullying",),
-            signals=("repeated_harassment",),
+            decision=GuardDecision.CONCERNING,
+            categories=(GuardCategory.BULLYING,),
+            signals=(GuardSignal.REPEATED_TARGETING,),
         ),
     ),
     GuardPolicyCase(
         case_id="established_bullying_alerts",
         analysis=GuardAnalysis(
-            decision="concerning",
-            categories=("bullying",),
-            signals=("repeated_harassment", "exclusion"),
+            decision=GuardDecision.CONCERNING,
+            categories=(GuardCategory.BULLYING,),
+            signals=(GuardSignal.REPEATED_TARGETING, GuardSignal.GROUP_PILE_ON),
         ),
         expected_should_alert=True,
     ),
     GuardPolicyCase(
         case_id="actionable_suspicious_contact_alerts",
         analysis=GuardAnalysis(
-            decision="concerning",
-            categories=("suspicious_contact",),
-            signals=("location_request",),
+            decision=GuardDecision.CONCERNING,
+            categories=(GuardCategory.SUSPICIOUS_CONTACT,),
+            signals=(GuardSignal.LOCATION_REQUEST,),
         ),
         expected_should_alert=True,
     ),
     GuardPolicyCase(
         case_id="urgent_alerts",
-        analysis=GuardAnalysis(decision="urgent"),
+        analysis=GuardAnalysis(decision=GuardDecision.URGENT),
         expected_should_alert=True,
     ),
     GuardPolicyCase(
         case_id="prior_concerning_alert_is_suppressed",
         analysis=GuardAnalysis(
-            decision="concerning",
-            categories=("suspicious_contact",),
-            signals=("meeting_request",),
+            decision=GuardDecision.CONCERNING,
+            categories=(GuardCategory.SUSPICIOUS_CONTACT,),
+            signals=(GuardSignal.MEETING_REQUEST,),
         ),
         conversation_context=ConversationContext(prior_alert_sent=True),
     ),

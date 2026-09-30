@@ -8,16 +8,17 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
+from echo_v2.services.guard_taxonomy import GuardDecision
 from tests.evaluation.guard.guard_cases import Decision, GuardEvalCase
 
 __all__ = ["GuardCaseResult", "SnapshotResult", "save_guard_eval_run"]
 
 _RESULTS_DIR = Path(__file__).resolve().parent.parent / "results"
-_SHORT: dict[Decision, str] = {
-    "none": "NONE",
-    "watch": "WATCH",
-    "concerning": "CONCERN",
-    "urgent": "URGENT",
+_SHORT: dict[GuardDecision, str] = {
+    GuardDecision.NONE: "NONE",
+    GuardDecision.WATCH: "WATCH",
+    GuardDecision.CONCERNING: "CONCERN",
+    GuardDecision.URGENT: "URGENT",
 }
 
 
@@ -32,6 +33,7 @@ class SnapshotResult:
     actual_evidence_message_ids: tuple[str, ...] = ()
     decision_pass: bool = False
     signals_pass: bool = False
+    any_signal_pass: bool = True
     categories_pass: bool = True
     error: str | None = None
     latency_ms: float | None = None
@@ -51,6 +53,7 @@ def _analysis_pass(result: SnapshotResult) -> bool:
         result.error is None
         and result.decision_pass
         and result.signals_pass
+        and result.any_signal_pass
         and result.categories_pass
     )
 
@@ -83,9 +86,10 @@ def _snapshot_to_dict(case: GuardEvalCase, result: SnapshotResult) -> dict[str, 
         "after_message_id": result.after_message_id,
         "prefix_length": prefix_length,
         "expected": {
-            "acceptable_decisions": list(expected.acceptable_decisions),
+            "acceptable_decisions": [decision.value for decision in expected.acceptable_decisions],
             "required_categories": list(expected.required_categories),
             "required_signals": list(expected.required_signals),
+            "required_signal_any_of": list(expected.required_signal_any_of),
             "forbidden_signals": list(expected.forbidden_signals),
         },
         "actual": {
@@ -94,7 +98,12 @@ def _snapshot_to_dict(case: GuardEvalCase, result: SnapshotResult) -> dict[str, 
             "categories": list(result.actual_categories),
             "evidence_message_ids": list(result.actual_evidence_message_ids),
         },
-        "pass": _analysis_pass(result),
+        "pass": {
+            "analyzer": _analysis_pass(result),
+            "required_signals": result.signals_pass,
+            "required_signal_any_of": result.any_signal_pass,
+            "categories": result.categories_pass,
+        },
         "error": result.error,
         "latency_ms": result.latency_ms,
         "raw_response": result.raw_response,
@@ -168,7 +177,7 @@ def _build_report(
             )
             lines.append(
                 f"| {case.case.case_id} | {result.after_message_id} | "
-                f"{'|'.join(expected.acceptable_decisions)} | "
+                f"{'|'.join(decision.value for decision in expected.acceptable_decisions)} | "
                 f"{_SHORT.get(result.actual_decision, 'ERR') if result.actual_decision else 'ERR'} | "
                 f"{','.join(result.actual_evidence_message_ids) or '-'} | "
                 f"{'PASS' if result.decision_pass else 'FAIL'} | "
