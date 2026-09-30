@@ -19,8 +19,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import Any, Literal, Protocol
+from typing import Any, Protocol
 
 from pydantic import (
     BaseModel,
@@ -30,6 +29,14 @@ from pydantic import (
     ValidationError,
 )
 
+from echo_v2.services.guard_taxonomy import (
+    GUARD_TAXONOMY_VERSION,
+    GuardCategory,
+    GuardDecision,
+    GuardSignal,
+    validate_category_signal_relationships,
+)
+
 __all__ = [
     "AnalysisError",
     "ChatCompletionClient",
@@ -37,6 +44,7 @@ __all__ = [
     "GuardAnalysisInput",
     "GuardAnalyzer",
     "GuardCategory",
+    "GuardDecision",
     "GuardLLMOutput",
     "GuardMessage",
     "GuardSignal",
@@ -46,36 +54,15 @@ __all__ = [
 _logger = logging.getLogger("echo_v2.services.guard_analyzer")
 
 # Bump when the prompt or output contract changes.
-GUARD_PROMPT_VERSION = "v0.4-realtime-snapshot"
+GUARD_PROMPT_VERSION = "v0.5-mvp-taxonomy"
 
 # Bump when the analysis pipeline changes.
 GUARD_ANALYZER_VERSION = "2026-09-29.0"
 
-Decision = Literal["none", "watch", "concerning", "urgent"]
+Decision = GuardDecision
 
-
-class GuardSignal(str, Enum):
-    """Canonical risk signals emitted by the Guard analyzer."""
-
-    OFFLINE_KNOWLEDGE = "offline_knowledge"
-    LOCATION_REQUEST = "location_request"
-    ROUTINE_PROBING = "routine_probing"
-    SECRECY = "secrecy"
-    MEETING_REQUEST = "meeting_request"
-    REPEATED_HARASSMENT = "repeated_harassment"
-    EXCLUSION = "exclusion"
-    BULLYING = "bullying"
-    THREAT = "threat"
-    GROOMING = "grooming"
-
-
-class GuardCategory(str, Enum):
-    """Canonical high-level risk categories emitted by Guard."""
-
-    SUSPICIOUS_CONTACT = "suspicious_contact"
-    BULLYING = "bullying"
-    SEXUAL_HARASSMENT = "sexual_harassment"
-    THREATS = "threats"
+_SIGNAL_NAMES = ", ".join(signal.value for signal in GuardSignal)
+_CATEGORY_NAMES = ", ".join(category.value for category in GuardCategory)
 
 
 class GuardLLMOutput(BaseModel):
@@ -136,6 +123,7 @@ class GuardAnalysis:
     model: str = ""
     prompt_version: str = ""
     analyzer_version: str = ""
+    taxonomy_version: str = GUARD_TAXONOMY_VERSION
 
 
 class AnalysisError(Exception):
@@ -155,7 +143,7 @@ class GuardAnalyzer(Protocol):
         raise NotImplementedError
 
 
-_SYSTEM_PROMPT = """\
+_SYSTEM_PROMPT = f"""\
 You are a child-safety conversation analyzer. You receive a WhatsApp \
 conversation between a child and one or more other participants. Your \
 job is to assess the safety level of the conversation AT THIS POINT \
@@ -173,12 +161,10 @@ attention, but severity is distinct from any notification policy.
 
 Also output:
 - "signals": A list of detected risk signals. Common signals include: \
-"offline_knowledge", "location_request", "routine_probing", "secrecy", \
-"meeting_request", "repeated_harassment", "exclusion", "bullying", \
-"threat", "grooming". Use only these canonical signal names.
+{_SIGNAL_NAMES}. Use only these canonical signal names.
 - "categories": High-level categories this conversation falls into, if \
-any. The canonical categories are: "suspicious_contact", "bullying", \
-"sexual_harassment", "threats". May be empty for "none" decisions.
+any. The canonical categories are: {_CATEGORY_NAMES}. May be empty for \
+"none" decisions.
 - "confidence": 0.0–1.0.
 - "evidence_message_ids": IDs of the messages that support the analysis. \
 Use only IDs present in the conversation; use an empty list when there is \
@@ -204,10 +190,10 @@ exclusion.
 - Return ONLY a JSON object, no explanation outside the JSON.
 
 Output format (JSON only):
-{"decision": "<none|watch|concerning|urgent>", \
+{{"decision": "<none|watch|concerning|urgent>", \
 "signals": ["..."], "categories": ["..."], \
 "evidence_message_ids": ["..."], \
-"confidence": <0.0-1.0>, "reason": "<one short sentence>"}
+"confidence": <0.0-1.0>, "reason": "<one short sentence>"}}
 """
 
 
@@ -257,7 +243,7 @@ class LLMGuardAnalyzer:
         if not conversation.messages:
             return (
                 GuardAnalysis(
-                    decision="none",
+                    decision=GuardDecision.NONE,
                     confidence=1.0,
                     reason="No messages to analyze.",
                     model=self._model,
@@ -357,6 +343,11 @@ def _analysis_from_output(
     valid_message_ids: tuple[str, ...] = (),
 ) -> GuardAnalysis:
     """Convert validated structured output into the application result."""
+    try:
+        validate_category_signal_relationships(output.categories, output.signals)
+    except ValueError as exc:
+        raise AnalysisError(str(exc)) from exc
+
     evidence_ids = tuple(output.evidence_message_ids)
     if len(evidence_ids) != len(set(evidence_ids)):
         raise AnalysisError("Guard output contains duplicate evidence message IDs")
@@ -376,4 +367,5 @@ def _analysis_from_output(
         model=model,
         prompt_version=prompt_version,
         analyzer_version=GUARD_ANALYZER_VERSION,
+        taxonomy_version=GUARD_TAXONOMY_VERSION,
     )

@@ -10,7 +10,8 @@ signal state is defined separately by `GuardSignalLedger`.
 
 ## Analyzer baseline
 
-- **Prompt version:** `v0.4-realtime-snapshot`
+- **Prompt version:** `v0.5-mvp-taxonomy`
+- **Taxonomy version:** `v1`
 - **Cases:** 3
 - **Snapshots:** 9
 - **Errors:** 0
@@ -18,27 +19,31 @@ signal state is defined separately by `GuardSignalLedger`.
 
 ## Three-run stability baseline
 
-- **Run IDs:** `20260930_011021`, `20260930_011041`, `20260930_011059`
+- **Run IDs:** `20260930_202602`, `20260930_202629`, `20260930_202656`
 - **Runs:** 3
-- **Run results:** 8/9 (88.9%), 9/9 (100.0%), 8/9 (88.9%)
-- **Aggregate:** 25/27 (92.6%)
+- **Run results:** 9/9 (100.0%), 9/9 (100.0%), 9/9 (100.0%)
+- **Aggregate:** 27/27 (100.0%)
 - **Errors:** 0
 
 The analyzer gold is snapshot-local. A later snapshot does not require the
 LLM to repeat a signal that the ledger already retains; the analyzer reports
 what the current input supports, while the ledger owns cumulative state.
 
+The gold supports semantic alternatives where the exact decomposition is
+ambiguous. For example, bullying `m5` requires `insult_or_humiliation` and
+accepts either `repeated_targeting` or `group_pile_on`.
+
 | Case | Snapshot | Passes | Signal pass | Category pass | Evidence observed | Observed behavior |
 |---|---:|---:|---:|---:|---|---|
 | `unknown_contact_escalation_001` | `m2` | 3/3 | 3/3 | 3/3 | `-`: 3/3 | `none` consistently |
 | `unknown_contact_escalation_001` | `m3` | 3/3 | 3/3 | 3/3 | `m3`: 3/3 | `watch` + `offline_knowledge` |
-| `unknown_contact_escalation_001` | `m5` | 1/3 | 1/3 | 3/3 | `m3,m5`: 3/3 | current location/routine signals remain somewhat unstable |
-| `unknown_contact_escalation_001` | `m7` | 3/3 | 3/3 | 3/3 | `m3,m5,m7`: 3/3 | current `secrecy` snapshot is stable |
-| `unknown_contact_escalation_001` | `m8` | 3/3 | 3/3 | 3/3 | `m3,m5,m7,m8`: 3/3 | `urgent` consistently |
+| `unknown_contact_escalation_001` | `m5` | 3/3 | 3/3 | 3/3 | `m3,m5`: 3/3 | `offline_knowledge` + `routine_probing` |
+| `unknown_contact_escalation_001` | `m7` | 3/3 | 3/3 | 3/3 | `m3,m5,m7`: 3/3 | `secrecy_request` consistently |
+| `unknown_contact_escalation_001` | `m8` | 3/3 | 3/3 | 3/3 | `m3,m5,m7,m8`: 3/3 | `urgent` + meeting escalation |
 | `teasing_vs_bullying_001_negative` | `m5` | 3/3 | 3/3 | 3/3 | `-`: 3/3 | `none` consistently |
 | `teasing_vs_bullying_002_positive` | `m2` | 3/3 | 3/3 | 3/3 | `m1,m2`: 3/3 | `watch` consistently |
-| `teasing_vs_bullying_002_positive` | `m5` | 3/3 | 3/3 | 3/3 | `m1,m2,m3,m4,m5`: 3/3 | harassment detected consistently |
-| `teasing_vs_bullying_002_positive` | `m7` | 3/3 | 3/3 | 3/3 | `m1,m2,m3,m4,m5,m6,m7`: 3/3 | exclusion detected consistently |
+| `teasing_vs_bullying_002_positive` | `m5` | 3/3 | 3/3 | 3/3 | `m1,m2,m3,m4,m5`: 3/3 | insult + targeting/pile-on |
+| `teasing_vs_bullying_002_positive` | `m7` | 3/3 | 3/3 | 3/3 | `m1,m2,m3,m4,m5,m6,m7`: 3/3 | insult + exclusion + targeting/pile-on |
 
 Evidence IDs are displayed in the terminal report, aggregate stability table,
 JSON, and Markdown run reports. Full message text remains in saved JSON for

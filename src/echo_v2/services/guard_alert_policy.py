@@ -13,6 +13,11 @@ from typing import Protocol
 
 from echo_v2.services.guard_analyzer import GuardAnalysis
 from echo_v2.services.guard_signal_ledger import GuardSignalState
+from echo_v2.services.guard_taxonomy import (
+    GuardCategory,
+    GuardDecision,
+    GuardSignal,
+)
 
 __all__ = [
     "AlertPolicy",
@@ -70,29 +75,47 @@ class DefaultAlertPolicy:
     ) -> bool:
         del child_context
 
-        if analysis.decision in {"none", "watch"}:
+        if analysis.decision in {GuardDecision.NONE, GuardDecision.WATCH}:
             return False
-        if analysis.decision == "urgent":
+        if analysis.decision == GuardDecision.URGENT:
             return True
         if conversation_context.prior_alert_sent:
             return False
         if conversation_context.quiet_hours:
             return False
 
-        signals = set(signal_state.active_signals if signal_state else analysis.signals)
-        categories = set(
-            signal_state.active_categories if signal_state else analysis.categories
-        )
+        signals = {
+            GuardSignal(signal)
+            for signal in (signal_state.active_signals if signal_state else analysis.signals)
+        }
+        categories = {
+            GuardCategory(category)
+            for category in (
+                signal_state.active_categories
+                if signal_state
+                else analysis.categories
+            )
+        }
 
         suspicious_contact_is_actionable = (
-            "suspicious_contact" in categories
-            and bool(signals & {"location_request", "meeting_request"})
+            GuardCategory.SUSPICIOUS_CONTACT in categories
+            and bool(
+                signals
+                & {GuardSignal.LOCATION_REQUEST, GuardSignal.MEETING_REQUEST}
+            )
         )
         bullying_is_established = (
-            "bullying" in categories
-            and {"repeated_harassment", "exclusion"} <= signals
+            GuardCategory.BULLYING in categories
+            and {
+                GuardSignal.REPEATED_TARGETING,
+                GuardSignal.GROUP_PILE_ON,
+            }
+            <= signals
         )
-        explicit_threat = "threats" in categories and "threat" in signals
+        explicit_threat = (
+            GuardCategory.HARASSMENT_OR_COERCION in categories
+            and GuardSignal.THREAT in signals
+        )
 
         return (
             suspicious_contact_is_actionable

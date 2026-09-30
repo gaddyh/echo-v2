@@ -93,6 +93,10 @@ def _check_categories(actual: tuple[str, ...], required: tuple[str, ...]) -> boo
     return all(category in set(actual) for category in required)
 
 
+def _check_any_signal(actual: tuple[str, ...], acceptable: tuple[str, ...]) -> bool:
+    return not acceptable or bool(set(actual) & set(acceptable))
+
+
 @pytest.fixture
 def analyzer() -> LLMGuardAnalyzer:
     from openai import AsyncOpenAI
@@ -131,6 +135,10 @@ async def _run_case(
                         analysis.signals,
                         snapshot.required_signals,
                         snapshot.forbidden_signals,
+                    ),
+                    any_signal_pass=_check_any_signal(
+                        analysis.signals,
+                        snapshot.required_signal_any_of,
                     ),
                     categories_pass=_check_categories(
                         analysis.categories,
@@ -177,7 +185,7 @@ def _print_single_run(run_number: int, case_results: list[GuardCaseResult]) -> N
         status = "PASS" if _analysis_pass(result) else "FAIL"
         print(
             f"    {case_id} @ {result.after_message_id}: "
-            f"{result.actual_decision or 'ERR'} {status} "
+            f"{result.actual_decision.value if result.actual_decision else 'ERR'} {status} "
             f"evidence={result.actual_evidence_message_ids} "
             f"signals={result.actual_signals}"
         )
@@ -202,7 +210,9 @@ def _aggregate_results(
                 entry = AggregateSnapshot(
                     case_id=case_id,
                     after_message_id=result.after_message_id,
-                    expected_decisions="|".join(expected.acceptable_decisions),
+                    expected_decisions="|".join(
+                        decision.value for decision in expected.acceptable_decisions
+                    ),
                 )
                 aggregate[key] = entry
             entry.total_runs += 1
@@ -212,7 +222,7 @@ def _aggregate_results(
             entry.category_passes += result.categories_pass
             entry.errors += result.error is not None
             if result.actual_decision and entry.decisions is not None:
-                entry.decisions[result.actual_decision] += 1
+                entry.decisions[result.actual_decision.value] += 1
             if entry.signals is not None:
                 entry.signals.update(result.actual_signals)
             if entry.evidence is not None:
