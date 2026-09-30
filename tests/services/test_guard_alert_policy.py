@@ -6,10 +6,10 @@ import pytest
 
 from echo_v2.services.guard_alert_policy import DefaultAlertPolicy
 from echo_v2.services.guard_analyzer import GuardAnalysis
+from echo_v2.services.guard_decision_policy import DefaultDecisionPolicy
 from echo_v2.services.guard_signal_ledger import GuardSignalLedger
 from echo_v2.services.guard_taxonomy import (
     GuardCategory,
-    GuardDecision,
     GuardSignal,
 )
 from tests.evaluation.guard.guard_policy_cases import GUARD_POLICY_CASES
@@ -23,6 +23,13 @@ def test_guard_policy(case) -> None:
         conversation_context=case.conversation_context,
     )
 
+    assert (
+        DefaultDecisionPolicy().decide(
+            signals=case.analysis.signals,
+            categories=case.analysis.categories,
+        )
+        is case.expected_decision
+    )
     assert actual is case.expected_should_alert
 
 
@@ -30,7 +37,6 @@ def test_policy_uses_accumulated_signals_when_latest_analysis_omits_one() -> Non
     ledger = GuardSignalLedger()
     ledger.update(
         GuardAnalysis(
-            decision=GuardDecision.CONCERNING,
             categories=(GuardCategory.SUSPICIOUS_CONTACT,),
             signals=(GuardSignal.LOCATION_REQUEST,),
             evidence_message_ids=("m5",),
@@ -38,7 +44,6 @@ def test_policy_uses_accumulated_signals_when_latest_analysis_omits_one() -> Non
     )
     state = ledger.update(
         GuardAnalysis(
-            decision=GuardDecision.CONCERNING,
             categories=(),
             signals=(GuardSignal.SECRECY_REQUEST,),
             evidence_message_ids=("m7",),
@@ -46,7 +51,7 @@ def test_policy_uses_accumulated_signals_when_latest_analysis_omits_one() -> Non
     )
 
     should_alert = DefaultAlertPolicy().should_alert(
-        analysis=GuardAnalysis(decision=GuardDecision.CONCERNING),
+        analysis=GuardAnalysis(),
         child_context=GUARD_POLICY_CASES[0].child_context,
         conversation_context=GUARD_POLICY_CASES[0].conversation_context,
         signal_state=state,

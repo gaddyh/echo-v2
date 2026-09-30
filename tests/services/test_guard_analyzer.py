@@ -11,7 +11,6 @@ from echo_v2.services.guard_analyzer import (
     AnalysisError,
     GuardAnalysisInput,
     GuardCategory,
-    GuardDecision,
     GuardLLMOutput,
     GuardMessage,
     GuardSignal,
@@ -40,7 +39,6 @@ def _conversation() -> GuardAnalysisInput:
 
 def _output(**overrides: object) -> GuardLLMOutput:
     values: dict[str, object] = {
-        "decision": GuardDecision.NONE,
         "signals": [],
         "categories": [],
         "evidence_message_ids": [],
@@ -57,9 +55,6 @@ def test_guard_output_schema_is_strict_and_detection_only() -> None:
     assert schema["additionalProperties"] is False
     assert "evidence_message_ids" in schema["required"]
     assert schema["properties"]["evidence_message_ids"]["items"]["type"] == "string"
-    assert schema["$defs"]["GuardDecision"]["enum"] == [
-        decision.value for decision in GuardDecision
-    ]
     assert schema["$defs"]["GuardSignal"]["enum"] == [
         signal.value for signal in GuardSignal
     ]
@@ -71,7 +66,7 @@ def test_guard_output_schema_is_strict_and_detection_only() -> None:
 def test_parse_guard_output_rejects_unknown_fields() -> None:
     with pytest.raises(AnalysisError, match="Invalid Guard output"):
         _parse_llm_output(
-            '{"decision":"none","signals":[],"categories":[],'
+            '{"signals":[],"categories":[],'
             '"evidence_message_ids":[],"confidence":0.9,"reason":"ok",'
             '"summary":"unexpected"}'
         )
@@ -79,7 +74,7 @@ def test_parse_guard_output_rejects_unknown_fields() -> None:
 
 def test_parse_guard_output_deduplicates_signals_and_categories() -> None:
     result = _parse_llm_output(
-        '{"decision":"concerning","signals":["repeated_targeting",'
+        '{"signals":["repeated_targeting",'
         '"repeated_targeting"],'
         '"categories":["bullying","bullying"],"evidence_message_ids":[], '
         '"confidence":0.9,"reason":"pattern"}'
@@ -96,7 +91,7 @@ async def test_analyzer_uses_pydantic_parse_path_and_evidence_ids() -> None:
     parsed = _output(evidence_message_ids=["m1"])
     client.chat.completions.parse = AsyncMock(
         return_value=_response(
-            '{"decision":"none","signals":[],"categories":[],'
+            '{"signals":[],"categories":[],'
             '"evidence_message_ids":["m1"],"confidence":1.0,"reason":"ok"}',
             parsed,
         )
@@ -105,7 +100,6 @@ async def test_analyzer_uses_pydantic_parse_path_and_evidence_ids() -> None:
 
     result, _raw = await analyzer.analyze_with_raw(_conversation())
 
-    assert result.decision == "none"
     assert result.evidence_message_ids == ("m1",)
     assert client.chat.completions.parse.call_args.kwargs["response_format"] is GuardLLMOutput
 

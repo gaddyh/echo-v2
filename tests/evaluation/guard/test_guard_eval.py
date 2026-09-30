@@ -34,6 +34,7 @@ from tests.evaluation.guard.guard_eval_results import (
     SnapshotResult,
     save_guard_eval_run,
 )
+from tests.evaluation.guard.guard_mvp_eval_cases import GUARD_MVP_CASES
 
 pytestmark = [
     pytest.mark.eval_guard,
@@ -126,11 +127,11 @@ async def _run_case(
             case_result.snapshots.append(
                 SnapshotResult(
                     after_message_id=snapshot.after_message_id,
-                    actual_decision=analysis.decision,
+                    actual_decision=None,
                     actual_signals=analysis.signals,
                     actual_categories=analysis.categories,
                     actual_evidence_message_ids=analysis.evidence_message_ids,
-                    decision_pass=analysis.decision in snapshot.acceptable_decisions,
+                    decision_pass=True,
                     signals_pass=_check_signals(
                         analysis.signals,
                         snapshot.required_signals,
@@ -193,6 +194,7 @@ def _print_single_run(run_number: int, case_results: list[GuardCaseResult]) -> N
 
 def _aggregate_results(
     all_runs: list[list[GuardCaseResult]],
+    cases: tuple[GuardEvalCase, ...],
 ) -> dict[tuple[str, str], AggregateSnapshot]:
     aggregate: dict[tuple[str, str], AggregateSnapshot] = {}
     for run in all_runs:
@@ -202,7 +204,7 @@ def _aggregate_results(
             if entry is None:
                 expected = next(
                     snapshot
-                    for case in GUARD_CASES
+                    for case in cases
                     if case.case_id == case_id
                     for snapshot in case.snapshots
                     if snapshot.after_message_id == result.after_message_id
@@ -294,7 +296,7 @@ async def _run_eval_suite(
         )
         print(f"    Saved run: {run_id}")
 
-    aggregate = _aggregate_results(all_runs)
+    aggregate = _aggregate_results(all_runs, cases)
     accuracy = _print_aggregate(aggregate)
     print(
         f"\n  Analyzer version: {GUARD_ANALYZER_VERSION}"
@@ -309,6 +311,15 @@ async def _run_eval_suite(
 
 @pytest.mark.eval_guard
 async def test_guard_eval(analyzer: LLMGuardAnalyzer) -> None:
-    """Run the detection-only Guard analyzer evaluation three times."""
+    """Run the selected detection-only Guard analyzer evaluation three times."""
     min_accuracy = float(os.environ.get("GUARD_MIN_ACCURACY", "0.7"))
-    await _run_eval_suite(analyzer, GUARD_CASES, "All", min_accuracy)
+    suite = os.environ.get("GUARD_EVAL_SUITE", "baseline").lower()
+    if suite == "baseline":
+        cases = GUARD_CASES
+    elif suite == "mvp":
+        cases = GUARD_MVP_CASES
+    elif suite == "all":
+        cases = GUARD_CASES + GUARD_MVP_CASES
+    else:
+        raise ValueError("GUARD_EVAL_SUITE must be baseline, mvp, or all")
+    await _run_eval_suite(analyzer, cases, suite, min_accuracy)

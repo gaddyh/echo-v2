@@ -70,7 +70,6 @@ class GuardLLMOutput(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    decision: Decision
     signals: list[GuardSignal]
     categories: list[GuardCategory]
     evidence_message_ids: list[StrictStr]
@@ -114,7 +113,6 @@ class GuardAnalysis:
     :class:`AlertPolicy` evaluates this analysis against product context.
     """
 
-    decision: Decision
     signals: tuple[str, ...] = ()
     categories: tuple[str, ...] = ()
     evidence_message_ids: tuple[str, ...] = ()
@@ -149,15 +147,8 @@ conversation between a child and one or more other participants. Your \
 job is to assess the safety level of the conversation AT THIS POINT \
 IN TIME — i.e. given everything said so far.
 
-Answer with exactly one of four decisions:
-
-- "none": No meaningful concern. Normal friendly chat, banter, or harmless \
-exchange.
-- "watch": One early or mild signal. Monitor only; the evidence is not yet \
-a meaningful pattern.
-- "concerning": A meaningful pattern exists. The conversation warrants \
-attention, but severity is distinct from any notification policy.
-- "urgent": An immediate or imminent safety concern.
+Analyze what is happening in the conversation and output the semantic 
+evidence for a separate deterministic severity policy.
 
 Also output:
 - "signals": A list of detected risk signals. Common signals include: \
@@ -190,8 +181,7 @@ exclusion.
 - Return ONLY a JSON object, no explanation outside the JSON.
 
 Output format (JSON only):
-{{"decision": "<none|watch|concerning|urgent>", \
-"signals": ["..."], "categories": ["..."], \
+{{"signals": ["..."], "categories": ["..."], \
 "evidence_message_ids": ["..."], \
 "confidence": <0.0-1.0>, "reason": "<one short sentence>"}}
 """
@@ -243,7 +233,6 @@ class LLMGuardAnalyzer:
         if not conversation.messages:
             return (
                 GuardAnalysis(
-                    decision=GuardDecision.NONE,
                     confidence=1.0,
                     reason="No messages to analyze.",
                     model=self._model,
@@ -358,7 +347,6 @@ def _analysis_from_output(
             + ", ".join(sorted(unknown_ids))
         )
     return GuardAnalysis(
-        decision=output.decision,
         signals=tuple(dict.fromkeys(signal.value for signal in output.signals)),
         categories=tuple(dict.fromkeys(category.value for category in output.categories)),
         evidence_message_ids=evidence_ids,
