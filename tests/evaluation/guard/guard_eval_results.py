@@ -29,6 +29,7 @@ class SnapshotResult:
     actual_decision: Decision | None = None
     actual_signals: tuple[str, ...] = ()
     actual_categories: tuple[str, ...] = ()
+    actual_evidence_message_ids: tuple[str, ...] = ()
     decision_pass: bool = False
     signals_pass: bool = False
     categories_pass: bool = True
@@ -91,6 +92,7 @@ def _snapshot_to_dict(case: GuardEvalCase, result: SnapshotResult) -> dict[str, 
             "decision": result.actual_decision,
             "signals": list(result.actual_signals),
             "categories": list(result.actual_categories),
+            "evidence_message_ids": list(result.actual_evidence_message_ids),
         },
         "pass": _analysis_pass(result),
         "error": result.error,
@@ -155,8 +157,8 @@ def _build_report(
         f"- **Snapshots:** {total}",
         f"- **Analyzer pass:** {passed}/{total} ({passed / total:.1%})" if total else "- **Analyzer pass:** 0/0",
         "",
-        "| Case | After | Expected | Actual | Decision | Signals | Categories | Status |",
-        "|---|---|---|---|---|---|---|---|",
+        "| Case | After | Expected | Actual | Evidence | Decision | Signals | Categories | Status |",
+        "|---|---|---|---|---|---|---|---|---|"
     ]
     for case in case_results:
         for result in case.snapshots:
@@ -168,6 +170,7 @@ def _build_report(
                 f"| {case.case.case_id} | {result.after_message_id} | "
                 f"{'|'.join(expected.acceptable_decisions)} | "
                 f"{_SHORT.get(result.actual_decision, 'ERR') if result.actual_decision else 'ERR'} | "
+                f"{','.join(result.actual_evidence_message_ids) or '-'} | "
                 f"{'PASS' if result.decision_pass else 'FAIL'} | "
                 f"{'PASS' if result.signals_pass else 'FAIL'} | "
                 f"{'PASS' if result.categories_pass else 'FAIL'} | "

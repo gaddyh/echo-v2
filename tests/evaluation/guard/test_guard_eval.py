@@ -25,6 +25,7 @@ from echo_v2.services.guard_analyzer import (
     GUARD_PROMPT_VERSION,
     AnalysisError,
     GuardAnalysisInput,
+    GuardMessage,
     LLMGuardAnalyzer,
 )
 from tests.evaluation.guard.guard_cases import GUARD_CASES, GuardEvalCase
@@ -56,21 +57,25 @@ class AggregateSnapshot:
     errors: int = 0
     decisions: Counter[str] | None = None
     signals: Counter[str] | None = None
+    evidence: Counter[str] | None = None
 
     def __post_init__(self) -> None:
         self.decisions = Counter()
         self.signals = Counter()
+        self.evidence = Counter()
 
 
 def _build_prefix(
     case: GuardEvalCase, after_message_id: str
-) -> list[tuple[str, str]]:
-    prefix: list[tuple[str, str]] = []
+) -> tuple[GuardMessage, ...]:
+    prefix: list[GuardMessage] = []
     for message in case.messages:
-        prefix.append((message.sender, message.text))
+        prefix.append(
+            GuardMessage(id=message.id, sender=message.sender, text=message.text)
+        )
         if message.id == after_message_id:
             break
-    return prefix
+    return tuple(prefix)
 
 
 def _check_signals(
@@ -120,6 +125,7 @@ async def _run_case(
                     actual_decision=analysis.decision,
                     actual_signals=analysis.signals,
                     actual_categories=analysis.categories,
+                    actual_evidence_message_ids=analysis.evidence_message_ids,
                     decision_pass=analysis.decision in snapshot.acceptable_decisions,
                     signals_pass=_check_signals(
                         analysis.signals,
@@ -172,6 +178,7 @@ def _print_single_run(run_number: int, case_results: list[GuardCaseResult]) -> N
         print(
             f"    {case_id} @ {result.after_message_id}: "
             f"{result.actual_decision or 'ERR'} {status} "
+            f"evidence={result.actual_evidence_message_ids} "
             f"signals={result.actual_signals}"
         )
 
@@ -208,6 +215,9 @@ def _aggregate_results(
                 entry.decisions[result.actual_decision] += 1
             if entry.signals is not None:
                 entry.signals.update(result.actual_signals)
+            if entry.evidence is not None:
+                evidence_key = ",".join(result.actual_evidence_message_ids) or "-"
+                entry.evidence[evidence_key] += 1
     return aggregate
 
 
@@ -224,7 +234,8 @@ def _print_aggregate(aggregate: dict[tuple[str, str], AggregateSnapshot]) -> flo
     print()
     header = (
         f"  {'Case':<40} {'After':<6} {'Pass':<7} {'Decisions':<24} "
-        f"{'Signal pass':<12} {'Category pass':<14} {'Observed signals'}"
+        f"{'Signal pass':<12} {'Category pass':<14} {'Evidence observed':<28} "
+        f"{'Observed signals'}"
     )
     print(header)
     print("  " + "-" * (len(header) - 2))
@@ -233,11 +244,16 @@ def _print_aggregate(aggregate: dict[tuple[str, str], AggregateSnapshot]) -> flo
             f"{decision}:{count}" for decision, count in sorted(entry.decisions.items())
         ) or "ERR"
         signals = ", ".join(sorted(entry.signals)) or "-"
+        evidence = "; ".join(
+            f"{ids}:{count}/{entry.total_runs}"
+            for ids, count in sorted(entry.evidence.items())
+        ) or "-"
         print(
             f"  {entry.case_id:<40} {entry.after_message_id:<6} "
             f"{entry.passed_runs}/{entry.total_runs:<5} {decisions:<24} "
             f"{entry.signal_passes}/{entry.total_runs:<10} "
-            f"{entry.category_passes}/{entry.total_runs:<12} {signals}"
+            f"{entry.category_passes}/{entry.total_runs:<12} "
+            f"{evidence:<28} {signals}"
         )
     return accuracy
 
