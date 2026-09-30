@@ -38,6 +38,7 @@ __all__ = [
     "GuardAnalyzer",
     "GuardCategory",
     "GuardLLMOutput",
+    "GuardMessage",
     "GuardSignal",
     "LLMGuardAnalyzer",
 ]
@@ -45,7 +46,7 @@ __all__ = [
 _logger = logging.getLogger("echo_v2.services.guard_analyzer")
 
 # Bump when the prompt or output contract changes.
-GUARD_PROMPT_VERSION = "v0.2-cumulative-signals-alert-threshold"
+GUARD_PROMPT_VERSION = "v0.3-cumulative-signals-evidence-ids"
 
 # Bump when the analysis pipeline changes.
 GUARD_ANALYZER_VERSION = "2026-09-29.0"
@@ -85,8 +86,18 @@ class GuardLLMOutput(BaseModel):
     decision: Decision
     signals: list[GuardSignal]
     categories: list[GuardCategory]
+    evidence_message_ids: list[StrictStr]
     confidence: float = Field(ge=0.0, le=1.0)
     reason: StrictStr
+
+
+@dataclass(frozen=True)
+class GuardMessage:
+    """Message with a stable ID that can be cited as evidence."""
+
+    id: str
+    sender: str
+    text: str
 
 
 @dataclass(frozen=True)
@@ -96,15 +107,15 @@ class GuardAnalysisInput:
     Attributes:
         child_id: Identifier for the child whose conversation is monitored.
         chat_id: Identifier for the chat.
-        messages: List of (sender, text) tuples. ``sender`` is a role label
-            such as ``"child"``, ``"other"``, ``"other_2"``.
+        messages: Messages with stable IDs. Sender is a role label such as
+            ``"child"``, ``"other"``, or ``"other_2"``.
         context: Optional non-message facts the analyzer may know
             (e.g. child age, known contacts).
     """
 
     child_id: str
     chat_id: str
-    messages: list[tuple[str, str]] = field(default_factory=list)
+    messages: tuple[GuardMessage, ...] = ()
     context: dict[str, object] = field(default_factory=dict)
 
 
@@ -119,6 +130,7 @@ class GuardAnalysis:
     decision: Decision
     signals: tuple[str, ...] = ()
     categories: tuple[str, ...] = ()
+    evidence_message_ids: tuple[str, ...] = ()
     confidence: float = 0.0
     reason: str = ""
     model: str = ""
@@ -168,6 +180,9 @@ Also output:
 any. The canonical categories are: "suspicious_contact", "bullying", \
 "sexual_harassment", "threats". May be empty for "none" decisions.
 - "confidence": 0.0–1.0.
+- "evidence_message_ids": IDs of the messages that support the analysis. \
+Use only IDs present in the conversation; use an empty list when there is \
+no meaningful concern.
 - "reason": One short sentence (in Hebrew or English) explaining what \
 is happening and why the decision is appropriate.
 
@@ -188,6 +203,7 @@ exclusion.
 Output format (JSON only):
 {"decision": "<none|watch|concerning|urgent>", \
 "signals": ["..."], "categories": ["..."], \
+"evidence_message_ids": ["..."], \
 "confidence": <0.0-1.0>, "reason": "<one short sentence>"}
 """
 
@@ -207,10 +223,14 @@ class LLMGuardAnalyzer:
         client: ChatCompletionClient,
         model: str = "gpt-4.1",
         prompt_version: str = GUARD_PROMPT_VERSION,
+        max_retries: int = 1,
     ) -> None:
+        if max_retries < 0:
+            raise ValueError("max_retries must be non-negative")
         self._client = client
         self._model = model
         self._prompt_version = prompt_version
+        self._max_retries = max_retries
         # GPT-5+ reasoning models only support the default temperature.
         self._is_reasoning_model = model.startswith(("gpt-5", "gpt-6", "o"))
 
@@ -260,28 +280,54 @@ class LLMGuardAnalyzer:
             request_kwargs["temperature"] = 0
             request_kwargs["max_completion_tokens"] = 400
 
-        try:
-            response = await self._client.chat.completions.parse(**request_kwargs)
-        except Exception as exc:
-            _logger.warning("Guard analyzer API error: %s", exc)
-            raise AnalysisError(f"LLM request failed: {exc}") from exc
-
-        message = response.choices[0].message
-        raw_output = message.content or ""
-        parsed = message.parsed
-        if parsed is None:
-            raise AnalysisError("Guard LLM returned no parsed analysis")
-        if not isinstance(parsed, GuardLLMOutput):
-            raise AnalysisError("Guard LLM returned an unexpected parsed output")
-        result = _analysis_from_output(parsed, self._model, self._prompt_version)
-        return result, raw_output
+        last_error: AnalysisError | None = None
+        for attempt in range(self._max_retries + 1):
+            try:
+                response = await self._client.chat.completions.parse(**request_kwargs)
+                message = response.choices[0].message
+                raw_output = message.content or ""
+                parsed = message.parsed
+                if parsed is None:
+                    raise AnalysisError("Guard LLM returned no parsed analysis")
+                if not isinstance(parsed, GuardLLMOutput):
+                    raise AnalysisError(
+                        "Guard LLM returned an unexpected parsed output"
+                    )
+                result = _analysis_from_output(
+                    parsed,
+                    self._model,
+                    self._prompt_version,
+                    tuple(message.id for message in conversation.messages),
+                )
+                return result, raw_output
+            except AnalysisError as exc:
+                last_error = exc
+                if attempt < self._max_retries:
+                    _logger.warning(
+                        "Guard analyzer invalid output; retrying (%d/%d): %s",
+                        attempt + 1,
+                        self._max_retries,
+                        exc,
+                    )
+            except Exception as exc:  # noqa: BLE001 - retry API/provider failures
+                last_error = AnalysisError(f"LLM request failed: {exc}")
+                if attempt < self._max_retries:
+                    _logger.warning(
+                        "Guard analyzer API error; retrying (%d/%d): %s",
+                        attempt + 1,
+                        self._max_retries,
+                        exc,
+                    )
+        assert last_error is not None
+        raise last_error
 
 
 def _build_user_message(conversation: GuardAnalysisInput) -> str:
     """Render the conversation as a readable transcript for the LLM."""
-    lines: list[str] = []
-    for sender, text in conversation.messages:
-        lines.append(f"{sender}: {text}")
+    lines = [
+        f"[{message.id}] {message.sender}: {message.text}"
+        for message in conversation.messages
+    ]
     return "Conversation:\n" + "\n".join(lines)
 
 
@@ -305,12 +351,23 @@ def _analysis_from_output(
     output: GuardLLMOutput,
     model: str = "",
     prompt_version: str = "",
+    valid_message_ids: tuple[str, ...] = (),
 ) -> GuardAnalysis:
     """Convert validated structured output into the application result."""
+    evidence_ids = tuple(output.evidence_message_ids)
+    if len(evidence_ids) != len(set(evidence_ids)):
+        raise AnalysisError("Guard output contains duplicate evidence message IDs")
+    unknown_ids = set(evidence_ids) - set(valid_message_ids)
+    if unknown_ids:
+        raise AnalysisError(
+            "Guard output cites unknown evidence message IDs: "
+            + ", ".join(sorted(unknown_ids))
+        )
     return GuardAnalysis(
         decision=output.decision,
         signals=tuple(dict.fromkeys(signal.value for signal in output.signals)),
         categories=tuple(dict.fromkeys(category.value for category in output.categories)),
+        evidence_message_ids=evidence_ids,
         confidence=output.confidence,
         reason=output.reason,
         model=model,
