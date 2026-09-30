@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from echo_v2.services.guard_analyzer import GuardAnalysis
+from echo_v2.services.guard_decision_policy import DefaultDecisionPolicy
 from echo_v2.services.guard_signal_ledger import GuardSignalState
 from echo_v2.services.guard_taxonomy import (
     GuardCategory,
@@ -74,10 +75,15 @@ class DefaultAlertPolicy:
         signal_state: GuardSignalState | None = None,
     ) -> bool:
         del child_context
+        decision = DefaultDecisionPolicy().decide(
+            signals=analysis.signals,
+            categories=analysis.categories,
+            signal_state=signal_state,
+        )
 
-        if analysis.decision in {GuardDecision.NONE, GuardDecision.WATCH}:
+        if decision in {GuardDecision.NONE, GuardDecision.WATCH}:
             return False
-        if analysis.decision == GuardDecision.URGENT:
+        if decision == GuardDecision.URGENT:
             return True
         if conversation_context.prior_alert_sent:
             return False
