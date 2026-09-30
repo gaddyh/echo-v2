@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from echo_v2.services.guard_analyzer import GuardAnalysis
+from echo_v2.services.guard_signal_ledger import GuardSignalState
 
 __all__ = [
     "AlertPolicy",
@@ -46,6 +47,7 @@ class AlertPolicy(Protocol):
         analysis: GuardAnalysis,
         child_context: ChildContext,
         conversation_context: ConversationContext,
+        signal_state: GuardSignalState | None = None,
     ) -> bool:
         raise NotImplementedError
 
@@ -64,6 +66,7 @@ class DefaultAlertPolicy:
         analysis: GuardAnalysis,
         child_context: ChildContext,
         conversation_context: ConversationContext,
+        signal_state: GuardSignalState | None = None,
     ) -> bool:
         del child_context
 
@@ -76,8 +79,10 @@ class DefaultAlertPolicy:
         if conversation_context.quiet_hours:
             return False
 
-        signals = set(analysis.signals)
-        categories = set(analysis.categories)
+        signals = set(signal_state.active_signals if signal_state else analysis.signals)
+        categories = set(
+            signal_state.active_categories if signal_state else analysis.categories
+        )
 
         suspicious_contact_is_actionable = (
             "suspicious_contact" in categories

@@ -46,7 +46,7 @@ __all__ = [
 _logger = logging.getLogger("echo_v2.services.guard_analyzer")
 
 # Bump when the prompt or output contract changes.
-GUARD_PROMPT_VERSION = "v0.3-cumulative-signals-evidence-ids"
+GUARD_PROMPT_VERSION = "v0.4-realtime-snapshot"
 
 # Bump when the analysis pipeline changes.
 GUARD_ANALYZER_VERSION = "2026-09-29.0"
@@ -187,12 +187,15 @@ no meaningful concern.
 is happening and why the decision is appropriate.
 
 Rules:
-- Base your decision on the FULL conversation up to this point, not just \
-the last message.
-- Signals are cumulative across the entire conversation prefix. Once a \
-signal is established, retain it in later outputs unless later messages \
-clearly disprove it. Add newly established signals; do not replace prior \
-signals with only the newest signal.
+- Analyze this input as a realtime snapshot of what is supported by the \
+conversation prefix at this moment. Use the full input, not only the last \
+message.
+- Report the signals currently supported by the messages in this input. Do \
+not maintain state across analyzer calls; the caller maintains cumulative \
+signal state separately.
+- Do not infer that a signal remains active merely because it appeared in a \
+previous analyzer result. Cite the message IDs that support the current \
+snapshot.
 - Keep this analysis detection-only: describe what is happening and how \
 serious it is. Do not decide whether a parent should be notified.
 - Friendly banter with mutual engagement (emojis, reciprocal teasing) \
