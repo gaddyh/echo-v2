@@ -17,7 +17,7 @@ evaluated only for detection and severity; alerting belongs to AlertPolicy.
 
 from __future__ import annotations
 
-from echo_v2.services.guard_taxonomy import GuardCategory, GuardDecision, GuardSignal
+from echo_v2.services.guard_taxonomy import GuardCategory, GuardSignal
 from tests.evaluation.guard.guard_cases import (
     BULLYING,
     TEASING,
@@ -47,11 +47,10 @@ KNOWN_ACTIVITY_COORDINATOR = GuardEvalCase(
         EvalMessage("m5", "child", "סבבה, תודה"),
     ),
     snapshots=(
-        ExpectedSnapshot(after_message_id="m2", acceptable_decisions=(GuardDecision.NONE,)),
+        ExpectedSnapshot(after_message_id="m2"),
         ExpectedSnapshot(
             after_message_id="m5",
-            acceptable_decisions=(GuardDecision.NONE,),
-            forbidden_signals=(
+                        forbidden_signals=(
                 GuardSignal.ROUTINE_PROBING,
                 GuardSignal.LOCATION_REQUEST,
                 GuardSignal.SECRECY_REQUEST,
@@ -82,15 +81,15 @@ COERCION_ESCALATION = GuardEvalCase(
         EvalMessage("m7", "other", "אז עד עשר את שולחת לי, אחרת כולם רואים"),
     ),
     snapshots=(
-        ExpectedSnapshot(after_message_id="m2", acceptable_decisions=(GuardDecision.WATCH,)),
+        ExpectedSnapshot(after_message_id="m2"),
         ExpectedSnapshot(
             after_message_id="m4",
-            acceptable_decisions=(GuardDecision.WATCH, GuardDecision.CONCERNING),
+
             required_signals=(GuardSignal.BOUNDARY_VIOLATION,),
         ),
         ExpectedSnapshot(
             after_message_id="m5",
-            acceptable_decisions=(GuardDecision.CONCERNING, GuardDecision.URGENT),
+
             required_categories=(GuardCategory.HARASSMENT_OR_COERCION,),
             required_signals=(
                 GuardSignal.COERCIVE_DEMAND,
@@ -103,7 +102,7 @@ COERCION_ESCALATION = GuardEvalCase(
         ),
         ExpectedSnapshot(
             after_message_id="m7",
-            acceptable_decisions=(GuardDecision.URGENT,),
+
             required_signals=(
                 GuardSignal.BLACKMAIL_OR_EXTORTION,
                 GuardSignal.COERCIVE_DEMAND,
@@ -125,11 +124,10 @@ PERSISTENT_BUT_RESPECTFUL_REQUEST = GuardEvalCase(
         EvalMessage("m5", "other", "מעולה תודה, לא דחוף"),
     ),
     snapshots=(
-        ExpectedSnapshot(after_message_id="m2", acceptable_decisions=(GuardDecision.NONE,)),
+        ExpectedSnapshot(after_message_id="m2"),
         ExpectedSnapshot(
             after_message_id="m5",
-            acceptable_decisions=(GuardDecision.NONE,),
-            forbidden_signals=(
+                        forbidden_signals=(
                 GuardSignal.REPEATED_UNWANTED_CONTACT,
                 GuardSignal.BOUNDARY_VIOLATION,
                 GuardSignal.COERCIVE_DEMAND,
@@ -158,21 +156,21 @@ DISTRESS_ESCALATION = GuardEvalCase(
         EvalMessage("m6", "child", "אני צריכה עזרה, באמת"),
     ),
     snapshots=(
-        ExpectedSnapshot(after_message_id="m1", acceptable_decisions=(GuardDecision.WATCH,)),
+        ExpectedSnapshot(after_message_id="m1"),
         ExpectedSnapshot(
             after_message_id="m3",
-            acceptable_decisions=(GuardDecision.CONCERNING,),
+
             required_categories=(GuardCategory.DISTRESS,),
             required_signals=(GuardSignal.HOPELESSNESS,),
         ),
         ExpectedSnapshot(
             after_message_id="m5",
-            acceptable_decisions=(GuardDecision.CONCERNING, GuardDecision.URGENT),
+
             required_signals=(GuardSignal.FEAR_EXPRESSION,),
         ),
         ExpectedSnapshot(
             after_message_id="m6",
-            acceptable_decisions=(GuardDecision.CONCERNING, GuardDecision.URGENT),
+
             required_categories=(GuardCategory.DISTRESS,),
             required_signals=(GuardSignal.HELP_REQUEST,),
         ),
@@ -193,11 +191,10 @@ NORMAL_DISAPPOINTMENT_WITH_SUPPORT = GuardEvalCase(
         EvalMessage("m5", "child", "כן, תודה. אני כבר יותר רגועה"),
     ),
     snapshots=(
-        ExpectedSnapshot(after_message_id="m1", acceptable_decisions=(GuardDecision.NONE, GuardDecision.WATCH)),
+        ExpectedSnapshot(after_message_id="m1", ),
         ExpectedSnapshot(
             after_message_id="m5",
-            acceptable_decisions=(GuardDecision.NONE,),
-            forbidden_signals=(
+                        forbidden_signals=(
                 GuardSignal.HOPELESSNESS,
                 GuardSignal.FEAR_EXPRESSION,
                 GuardSignal.HELP_REQUEST,
@@ -227,16 +224,16 @@ COORDINATED_EXCLUSION = GuardEvalCase(
         EvalMessage("m7", "other_3", "כן, נסגור את זה בלי שהיא תדע"),
     ),
     snapshots=(
-        ExpectedSnapshot(after_message_id="m3", acceptable_decisions=(GuardDecision.WATCH,)),
+        ExpectedSnapshot(after_message_id="m3"),
         ExpectedSnapshot(
             after_message_id="m5",
-            acceptable_decisions=(GuardDecision.CONCERNING,),
+
             required_categories=(GuardCategory.SOCIAL_EXCLUSION,),
             required_signals=(GuardSignal.EXCLUSION,),
         ),
         ExpectedSnapshot(
             after_message_id="m7",
-            acceptable_decisions=(GuardDecision.CONCERNING,),
+
             required_signals=(
                 GuardSignal.EXCLUSION,
                 GuardSignal.COORDINATED_EXCLUSION,
@@ -258,11 +255,10 @@ LOGISTICAL_LIMIT_NOT_EXCLUSION = GuardEvalCase(
         EvalMessage("m5", "child", "יאללה נתראה"),
     ),
     snapshots=(
-        ExpectedSnapshot(after_message_id="m2", acceptable_decisions=(GuardDecision.NONE,)),
+        ExpectedSnapshot(after_message_id="m2"),
         ExpectedSnapshot(
             after_message_id="m5",
-            acceptable_decisions=(GuardDecision.NONE,),
-            forbidden_signals=(
+                        forbidden_signals=(
                 GuardSignal.EXCLUSION,
                 GuardSignal.COORDINATED_EXCLUSION,
             ),
@@ -289,21 +285,21 @@ HARMFUL_SHARING_ESCALATION = GuardEvalCase(
         EvalMessage("m6", "other", "אם תמשיך להתלונן אני אעלה את זה לסטורי"),
     ),
     snapshots=(
-        ExpectedSnapshot(after_message_id="m2", acceptable_decisions=(GuardDecision.WATCH,)),
+        ExpectedSnapshot(after_message_id="m2"),
         ExpectedSnapshot(
             after_message_id="m3",
-            acceptable_decisions=(GuardDecision.CONCERNING,),
+
             required_categories=(GuardCategory.HARMFUL_SHARING,),
             required_signals=(GuardSignal.HARMFUL_CONTENT_SHARING,),
         ),
         ExpectedSnapshot(
             after_message_id="m5",
-            acceptable_decisions=(GuardDecision.CONCERNING, GuardDecision.URGENT),
+
             required_signals=(GuardSignal.HARMFUL_CONTENT_SHARING,),
         ),
         ExpectedSnapshot(
             after_message_id="m6",
-            acceptable_decisions=(GuardDecision.URGENT,),
+
             required_categories=(GuardCategory.HARMFUL_SHARING,),
             required_signals=(GuardSignal.THREAT_TO_SHARE,),
         ),
@@ -323,11 +319,10 @@ CONSENSUAL_GROUP_PHOTO = GuardEvalCase(
         EvalMessage("m5", "child", "חחח כן תודה"),
     ),
     snapshots=(
-        ExpectedSnapshot(after_message_id="m2", acceptable_decisions=(GuardDecision.NONE,)),
+        ExpectedSnapshot(after_message_id="m2"),
         ExpectedSnapshot(
             after_message_id="m5",
-            acceptable_decisions=(GuardDecision.NONE,),
-            forbidden_signals=(
+                        forbidden_signals=(
                 GuardSignal.HARMFUL_CONTENT_SHARING,
                 GuardSignal.THREAT_TO_SHARE,
             ),

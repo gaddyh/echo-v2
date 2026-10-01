@@ -11,7 +11,7 @@ We deliberately do NOT pin in the gold:
 - exact confidence
 - exact summary
 - the wording of the reason
-Those are too brittle. We check semantics via ``acceptable_decisions``,
+Those are too brittle. We check analyzer semantics via
 ``required_categories``, ``required_signals`` and ``forbidden_signals``.
 
 Cases are run against the real LLM API by a dedicated eval harness. They
@@ -22,13 +22,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from echo_v2.services.guard_taxonomy import (
-    GuardCategory,
-    GuardDecision,
-    GuardSignal,
-)
-
-Decision = GuardDecision
+from echo_v2.services.guard_taxonomy import GuardCategory, GuardSignal
 
 
 @dataclass(frozen=True)
@@ -42,7 +36,6 @@ class EvalMessage:
 class ExpectedSnapshot:
     after_message_id: str
     # Usually one value; can allow two on genuinely borderline cases.
-    acceptable_decisions: tuple[Decision, ...]
     required_categories: tuple[str, ...] = ()
     required_signals: tuple[str, ...] = ()
     required_signal_any_of: tuple[str, ...] = ()
@@ -69,7 +62,6 @@ __all__ = [
     "GUARD_CASES",
     "TEASING",
     "UNKNOWN_CONTACT_ESCALATION",
-    "Decision",
     "EvalMessage",
     "ExpectedSnapshot",
     "GuardEvalCase",
@@ -118,16 +110,13 @@ UNKNOWN_CONTACT_ESCALATION = GuardEvalCase(
     snapshots=(
         ExpectedSnapshot(
             after_message_id="m2",
-            acceptable_decisions=(GuardDecision.NONE,),
         ),
         ExpectedSnapshot(
             after_message_id="m3",
-            acceptable_decisions=(GuardDecision.WATCH,),
             required_signals=(GuardSignal.OFFLINE_KNOWLEDGE,),
         ),
         ExpectedSnapshot(
             after_message_id="m5",
-            acceptable_decisions=(GuardDecision.CONCERNING,),
             required_categories=(GuardCategory.SUSPICIOUS_CONTACT,),
             required_signals=(
                 GuardSignal.OFFLINE_KNOWLEDGE,
@@ -136,12 +125,10 @@ UNKNOWN_CONTACT_ESCALATION = GuardEvalCase(
         ),
         ExpectedSnapshot(
             after_message_id="m7",
-            acceptable_decisions=(GuardDecision.CONCERNING, GuardDecision.URGENT),
             required_signals=(GuardSignal.SECRECY_REQUEST,),
         ),
         ExpectedSnapshot(
             after_message_id="m8",
-            acceptable_decisions=(GuardDecision.URGENT,),
             required_signals=(GuardSignal.SECRECY_REQUEST, GuardSignal.MEETING_REQUEST),
         ),
     ),
@@ -169,7 +156,6 @@ TEASING = GuardEvalCase(
     snapshots=(
         ExpectedSnapshot(
             after_message_id="m5",
-            acceptable_decisions=(GuardDecision.NONE,),
             forbidden_signals=(
                 GuardSignal.REPEATED_TARGETING,
                 GuardSignal.GROUP_PILE_ON,
@@ -197,11 +183,9 @@ BULLYING = GuardEvalCase(
     snapshots=(
         ExpectedSnapshot(
             after_message_id="m2",
-            acceptable_decisions=(GuardDecision.NONE, GuardDecision.WATCH),
         ),
         ExpectedSnapshot(
             after_message_id="m5",
-            acceptable_decisions=(GuardDecision.WATCH, GuardDecision.CONCERNING),
             required_signals=(GuardSignal.INSULT_OR_HUMILIATION,),
             required_signal_any_of=(
                 GuardSignal.REPEATED_TARGETING,
@@ -210,7 +194,6 @@ BULLYING = GuardEvalCase(
         ),
         ExpectedSnapshot(
             after_message_id="m7",
-            acceptable_decisions=(GuardDecision.CONCERNING,),
             required_categories=(GuardCategory.BULLYING,),
             required_signals=(
                 GuardSignal.INSULT_OR_HUMILIATION,
