@@ -29,6 +29,7 @@ from echo_v2.services.guard_analyzer import (
     LLMGuardAnalyzer,
 )
 from tests.evaluation.guard.guard_cases import GUARD_CASES, GuardEvalCase
+from tests.evaluation.guard.guard_comprehensive_baseline import ALL_CASES
 from tests.evaluation.guard.guard_eval_results import (
     GuardCaseResult,
     SnapshotResult,
@@ -213,7 +214,8 @@ def _aggregate_results(
                     case_id=case_id,
                     after_message_id=result.after_message_id,
                     expected_decisions="|".join(
-                        decision.value for decision in expected.acceptable_decisions
+                        decision.value if hasattr(decision, "value") else decision
+                        for decision in expected.acceptable_decisions
                     ),
                 )
                 aggregate[key] = entry
@@ -320,6 +322,10 @@ async def test_guard_eval(analyzer: LLMGuardAnalyzer) -> None:
         cases = GUARD_MVP_CASES
     elif suite == "all":
         cases = GUARD_CASES + GUARD_MVP_CASES
+    elif suite == "comprehensive":
+        cases = ALL_CASES
     else:
-        raise ValueError("GUARD_EVAL_SUITE must be baseline, mvp, or all")
+        raise ValueError(
+            "GUARD_EVAL_SUITE must be baseline, mvp, comprehensive, or all"
+        )
     await _run_eval_suite(analyzer, cases, suite, min_accuracy)
