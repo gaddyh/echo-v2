@@ -86,7 +86,10 @@ def _snapshot_to_dict(case: GuardEvalCase, result: SnapshotResult) -> dict[str, 
         "after_message_id": result.after_message_id,
         "prefix_length": prefix_length,
         "expected": {
-            "acceptable_decisions": [decision.value for decision in expected.acceptable_decisions],
+            "acceptable_decisions": [
+                decision.value if hasattr(decision, "value") else decision
+                for decision in expected.acceptable_decisions
+            ],
             "required_categories": list(expected.required_categories),
             "required_signals": list(expected.required_signals),
             "required_signal_any_of": list(expected.required_signal_any_of),
@@ -177,7 +180,7 @@ def _build_report(
             )
             lines.append(
                 f"| {case.case.case_id} | {result.after_message_id} | "
-                f"{'|'.join(decision.value for decision in expected.acceptable_decisions)} | "
+                f"{'|'.join(decision.value if hasattr(decision, 'value') else decision for decision in expected.acceptable_decisions)} | "
                 f"{_SHORT.get(result.actual_decision, 'ERR') if result.actual_decision else 'ERR'} | "
                 f"{','.join(result.actual_evidence_message_ids) or '-'} | "
                 f"{'PASS' if result.decision_pass else 'FAIL'} | "
