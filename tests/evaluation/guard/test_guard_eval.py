@@ -50,19 +50,15 @@ pytestmark = [
 class AggregateSnapshot:
     case_id: str
     after_message_id: str
-    expected_decisions: str
     total_runs: int = 0
     passed_runs: int = 0
-    decision_passes: int = 0
     signal_passes: int = 0
     category_passes: int = 0
     errors: int = 0
-    decisions: Counter[str] | None = None
     signals: Counter[str] | None = None
     evidence: Counter[str] | None = None
 
     def __post_init__(self) -> None:
-        self.decisions = Counter()
         self.signals = Counter()
         self.evidence = Counter()
 
@@ -128,11 +124,9 @@ async def _run_case(
             case_result.snapshots.append(
                 SnapshotResult(
                     after_message_id=snapshot.after_message_id,
-                    actual_decision=None,
                     actual_signals=analysis.signals,
                     actual_categories=analysis.categories,
                     actual_evidence_message_ids=analysis.evidence_message_ids,
-                    decision_pass=True,
                     signals_pass=_check_signals(
                         analysis.signals,
                         snapshot.required_signals,
@@ -164,7 +158,6 @@ async def _run_case(
 def _analysis_pass(result: SnapshotResult) -> bool:
     return (
         result.error is None
-        and result.decision_pass
         and result.signals_pass
         and result.categories_pass
     )
@@ -186,8 +179,7 @@ def _print_single_run(run_number: int, case_results: list[GuardCaseResult]) -> N
     for case_id, result in _flatten(case_results):
         status = "PASS" if _analysis_pass(result) else "FAIL"
         print(
-            f"    {case_id} @ {result.after_message_id}: "
-            f"{result.actual_decision.value if result.actual_decision else 'ERR'} {status} "
+            f"    {case_id} @ {result.after_message_id}: {status} "
             f"evidence={result.actual_evidence_message_ids} "
             f"signals={result.actual_signals}"
         )
@@ -203,30 +195,16 @@ def _aggregate_results(
             key = (case_id, result.after_message_id)
             entry = aggregate.get(key)
             if entry is None:
-                expected = next(
-                    snapshot
-                    for case in cases
-                    if case.case_id == case_id
-                    for snapshot in case.snapshots
-                    if snapshot.after_message_id == result.after_message_id
-                )
                 entry = AggregateSnapshot(
                     case_id=case_id,
                     after_message_id=result.after_message_id,
-                    expected_decisions="|".join(
-                        decision.value if hasattr(decision, "value") else decision
-                        for decision in expected.acceptable_decisions
-                    ),
                 )
                 aggregate[key] = entry
             entry.total_runs += 1
             entry.passed_runs += _analysis_pass(result)
-            entry.decision_passes += result.decision_pass
             entry.signal_passes += result.signals_pass
             entry.category_passes += result.categories_pass
             entry.errors += result.error is not None
-            if result.actual_decision and entry.decisions is not None:
-                entry.decisions[result.actual_decision.value] += 1
             if entry.signals is not None:
                 entry.signals.update(result.actual_signals)
             if entry.evidence is not None:
@@ -254,9 +232,6 @@ def _print_aggregate(aggregate: dict[tuple[str, str], AggregateSnapshot]) -> flo
     print(header)
     print("  " + "-" * (len(header) - 2))
     for entry in aggregate.values():
-        decisions = ", ".join(
-            f"{decision}:{count}" for decision, count in sorted(entry.decisions.items())
-        ) or "ERR"
         signals = ", ".join(sorted(entry.signals)) or "-"
         evidence = "; ".join(
             f"{ids}:{count}/{entry.total_runs}"
@@ -264,7 +239,7 @@ def _print_aggregate(aggregate: dict[tuple[str, str], AggregateSnapshot]) -> flo
         ) or "-"
         print(
             f"  {entry.case_id:<40} {entry.after_message_id:<6} "
-            f"{entry.passed_runs}/{entry.total_runs:<5} {decisions:<24} "
+            f"{entry.passed_runs}/{entry.total_runs:<5} "
             f"{entry.signal_passes}/{entry.total_runs:<10} "
             f"{entry.category_passes}/{entry.total_runs:<12} "
             f"{evidence:<28} {signals}"

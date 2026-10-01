@@ -46,7 +46,6 @@ def snap(
 ) -> ExpectedSnapshot:
     return ExpectedSnapshot(
         after_message_id=after,
-        acceptable_decisions=(),
         required_categories=categories,
         required_signals=signals,
         required_signal_any_of=any_signals,

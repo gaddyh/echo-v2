@@ -1,8 +1,8 @@
 # Guard Evaluation Guide
 
 This directory contains the Guard analyzer evaluation dataset, the
-LLM-backed analyzer harness, deterministic alert-policy cases, and recorded
-baselines.
+LLM-backed analyzer harness, deterministic decision- and alert-policy cases,
+and recorded baselines.
 
 The evaluation is intentionally split into layers:
 
@@ -13,17 +13,21 @@ conversation snapshot
 GuardAnalyzer (LLM)
         |
         v
-GuardAnalysis          <- what is happening now?
+GuardAnalysis          <- semantic evidence: what signals are present?
         |
         v
 GuardSignalLedger      <- cumulative state across snapshots
         |
         v
+DefaultDecisionPolicy  <- what severity follows from the evidence?
+        |
+        v
 AlertPolicy            <- should a parent be notified?
 ```
 
-The LLM interprets conversation language. Deterministic code owns cumulative
-state and notification policy.
+The LLM interprets conversation language and extracts semantic evidence.
+Deterministic code owns cumulative state, severity decisions, and notification
+policy.
 
 ## Quick start
 
@@ -50,16 +54,17 @@ The harness requires `OPENAI_API_KEY`. The model can be overridden with
 | File | Purpose |
 |---|---|
 | `guard_cases.py` | Conversation fixtures and analyzer gold snapshots |
-| `guard_policy_cases.py` | Direct deterministic AlertPolicy fixtures |
+| `guard_policy_cases.py` | Direct deterministic decision- and alert-policy fixtures |
 | `test_guard_eval.py` | Three-run LLM analyzer harness and aggregate report |
 | `guard_eval_results.py` | JSON and Markdown persistence for each run |
 | `BASELINE.md` | Current frozen analyzer and policy baseline |
 | `../../services/guard_analyzer.py` | LLM analyzer, schema, prompt, and parsing |
 | `../../services/guard_signal_ledger.py` | Cumulative signal state |
+| `../../services/guard_decision_policy.py` | Deterministic severity decision policy |
 | `../../services/guard_alert_policy.py` | Deterministic notification policy |
 | `../../tests/services/test_guard_analyzer.py` | Analyzer contract tests |
 | `../../tests/services/test_guard_signal_ledger.py` | Ledger state tests |
-| `../../tests/services/test_guard_alert_policy.py` | Policy tests |
+| `../../tests/services/test_guard_alert_policy.py` | Decision- and notification-policy tests |
 
 Generated run directories are written under `tests/evaluation/results/` and
 are ignored by Git. They contain raw model responses and should be treated as
@@ -69,13 +74,12 @@ local debugging artifacts.
 
 `GuardAnalyzer` is detection-only. It answers:
 
-> What is happening in the conversation snapshot, and how serious is it?
+> What semantic signals and categories are supported by this conversation snapshot?
 
-The structured result is:
+The structured result contains evidence for downstream deterministic policies:
 
 ```python
 GuardAnalysis(
-    decision="none | watch | concerning | urgent",
     categories=(...),
     signals=(...),
     evidence_message_ids=(...),
@@ -84,15 +88,25 @@ GuardAnalysis(
 )
 ```
 
-It does **not** return `should_alert`. Alerting is owned by
-`DefaultAlertPolicy`.
+It does **not** return a severity `decision` or `should_alert`. The analyzer
+reports evidence only; `DefaultDecisionPolicy` derives the severity decision,
+and `DefaultAlertPolicy` decides whether a parent should be notified.
 
-### Decisions
+### Decision policy
 
-- `none`: No meaningful concern.
-- `watch`: One early or mild signal; monitor only.
-- `concerning`: A meaningful pattern exists.
-- `urgent`: An immediate or imminent safety concern.
+`DefaultDecisionPolicy` derives one of these decisions from the current
+analysis, or from the cumulative `GuardSignalState` when one is supplied:
+
+- `none`: No active signals.
+- `watch`: One early, mild, or ambiguous signal.
+- `concerning`: At least two active signals or an active category establishes a
+  meaningful pattern.
+- `urgent`: Immediate or imminent risk, including self-harm, blackmail, or the
+  combination of secrecy and a meeting request.
+
+The decision is policy output, not LLM output and not a field in
+`GuardAnalysis`. This keeps severity thresholds deterministic and lets them
+evolve independently from the analyzer prompt.
 
 ### Categories
 
@@ -101,9 +115,11 @@ families:
 
 ```text
 suspicious_contact
+harassment_or_coercion
+distress
 bullying
-sexual_harassment
-threats
+social_exclusion
+harmful_sharing
 ```
 
 ### Signals
@@ -112,15 +128,27 @@ Signals are canonical enum values:
 
 ```text
 offline_knowledge
-location_request
+personal_information_request
 routine_probing
-secrecy
+location_request
+secrecy_request
 meeting_request
-repeated_harassment
-exclusion
-bullying
+repeated_unwanted_contact
+boundary_violation
 threat
-grooming
+coercive_demand
+blackmail_or_extortion
+help_request
+fear_expression
+hopelessness
+self_harm_expression
+repeated_targeting
+insult_or_humiliation
+group_pile_on
+exclusion
+coordinated_exclusion
+harmful_content_sharing
+threat_to_share
 ```
 
 Signals currently represent presence/absence. They do not have individual
@@ -191,17 +219,20 @@ Message IDs are stable within a case and are used for prefixes and evidence.
 @dataclass(frozen=True)
 class ExpectedSnapshot:
     after_message_id: str
-    acceptable_decisions: tuple[Decision, ...]
     required_categories: tuple[str, ...] = ()
     required_signals: tuple[str, ...] = ()
+    required_signal_any_of: tuple[str, ...] = ()
     forbidden_signals: tuple[str, ...] = ()
 ```
 
 A snapshot is evaluated after the message identified by
 `after_message_id`. The analyzer sees the entire prefix through that message.
+The snapshot gold checks semantic evidence only; severity is derived separately
+by `DefaultDecisionPolicy` from the analysis or ledger state.
 
 The analyzer gold intentionally does **not** include:
 
+- a severity decision;
 - exact confidence;
 - exact reason wording;
 - summary wording;
@@ -218,13 +249,13 @@ family has five checkpoints; the second is a contrast pair.
 
 Case: `unknown_contact_escalation_001`
 
-| Snapshot | Conversation development | Analyzer expectation |
+| Snapshot | Conversation development | Analyzer evidence expectation |
 |---|---|---|
-| `m2` | Harmless greeting | `none` |
-| `m3` | Unknown contact demonstrates offline knowledge | `watch`, `offline_knowledge` |
-| `m5` | Contact probes where/how the child waits after school | `concerning`, `suspicious_contact`, `location_request`, `routine_probing` |
-| `m7` | Contact asks for secrecy from parents | `concerning` or `urgent`, `secrecy` |
-| `m8` | Contact proposes meeting at the location | `urgent`, `meeting_request`, `secrecy` |
+| `m2` | Harmless greeting | no signals or categories |
+| `m3` | Unknown contact demonstrates offline knowledge | `offline_knowledge` |
+| `m5` | Contact probes where/how the child waits after school | `suspicious_contact`, `offline_knowledge`, `routine_probing` |
+| `m7` | Contact asks for secrecy from parents | `secrecy_request` |
+| `m8` | Contact proposes meeting at the location | `meeting_request`, `secrecy_request` |
 
 The analyzer gold is snapshot-local. At `m7`, it does not require the LLM to
 repeat `location_request`; the ledger is responsible for retaining the
@@ -249,7 +280,6 @@ This is a contrast pair designed to detect false positives.
 Friends use reciprocal joking, emojis, and mutual engagement. Expected:
 
 ```text
-none
 no bullying signal
 no threat signal
 ```
@@ -258,11 +288,11 @@ no threat signal
 
 The conversation develops from insults to repeated harassment and exclusion:
 
-| Snapshot | Conversation development | Analyzer expectation |
+| Snapshot | Conversation development | Analyzer evidence expectation |
 |---|---|---|
-| `m2` | Child asks them to stop | `none` or `watch` |
-| `m5` | Repeated harassment is established | `watch` or `concerning`, `repeated_harassment` |
-| `m7` | Group exclusion is explicit | `concerning`, `bullying`, `repeated_harassment`, `exclusion` |
+| `m2` | Child asks them to stop | no required signal |
+| `m5` | Repeated harassment is established | `insult_or_humiliation` plus `repeated_targeting` or `group_pile_on` |
+| `m7` | Group exclusion is explicit | `bullying`, `insult_or_humiliation`, `exclusion`, plus `repeated_targeting` or `group_pile_on` |
 
 The contrast is more important than any isolated insult. Friendly mutual
 banter should not be classified as bullying solely because it contains rude
@@ -270,13 +300,7 @@ words.
 
 ## What the analyzer eval checks
 
-For every snapshot, the harness checks:
-
-### Decision
-
-The actual decision must belong to `acceptable_decisions`.
-
-Multiple acceptable decisions are allowed for genuinely borderline points.
+For every snapshot, the harness checks semantic evidence:
 
 ### Required categories
 
@@ -305,7 +329,6 @@ runs every snapshot three times by default.
 For each run it prints:
 
 - case and snapshot;
-- actual decision;
 - pass/fail status;
 - evidence IDs;
 - observed signals.
@@ -313,13 +336,15 @@ For each run it prints:
 The aggregate report prints:
 
 - total run-snapshots;
-- aggregate accuracy;
+- aggregate analyzer accuracy;
 - pass count per snapshot, such as `3/3` or `1/3`;
-- observed decision distribution;
 - signal pass count;
 - category pass count;
 - evidence ID combinations and their frequencies;
 - observed signal union.
+
+Severity decisions are not part of this LLM report. Evaluate them with the
+separate deterministic decision-policy fixtures.
 
 Interpretation example:
 
@@ -358,25 +383,38 @@ Absence from a later analyzer result is not treated as a contradiction. An
 explicit signal-retraction contract may be added later if the product defines
 what disproves a previously observed signal.
 
-## Alert policy evaluation
+## Decision and alert-policy evaluation
 
-Policy evaluation is deterministic and does not call the LLM. Its fixtures
-live in `guard_policy_cases.py`.
+Decision and alert-policy evaluation is deterministic and does not call the
+LLM. Its fixtures live in `guard_policy_cases.py`.
 
-Initial policy behavior:
+`DefaultDecisionPolicy` first derives severity from semantic evidence:
+
+```text
+no active signals -> none
+one active signal -> watch
+two or more active signals, or any active category -> concerning
+self-harm, blackmail, or secrecy + meeting request -> urgent
+```
+
+`DefaultAlertPolicy` then decides whether to notify a parent:
 
 ```text
 none -> no alert
 watch -> no alert
 urgent -> alert
 developing bullying -> no alert
-established bullying + exclusion -> alert
-actionable suspicious contact -> alert
-prior concerning alert -> suppress duplicate
+established bullying (repeated targeting + group pile-on) -> alert
+actionable suspicious contact (location or meeting request) -> alert
+explicit threat in harassment/coercion -> alert
+prior concerning alert or quiet hours -> suppress duplicate
 ```
 
-The policy should consume the current analysis plus the derived ledger state,
-not only the latest raw analyzer output.
+Urgent decisions alert immediately; prior-alert and quiet-hours suppression
+apply to concerning decisions. `DefaultDecisionPolicy` should consume the
+current analysis plus the derived ledger state, not only the latest raw
+analyzer output. `DefaultAlertPolicy` owns notification context and should
+not be confused with severity decision policy.
 
 ## Malformed output and retry behavior
 
@@ -398,12 +436,11 @@ tests without making API calls.
 
 1. Add stable `EvalMessage` IDs.
 2. Add one or more snapshot checkpoints.
-3. Keep analyzer gold limited to decision, categories, and snapshot-local
-   signals.
-4. Do not add `should_alert` to analyzer snapshots.
-5. Add separate `GuardPolicyCase` fixtures if notification behavior needs
-   testing.
-6. Run the three-run eval and compare against `BASELINE.md`.
+3. Keep analyzer gold limited to categories and snapshot-local signals.
+4. Do not add severity decisions or `should_alert` to analyzer snapshots.
+5. Add separate `GuardPolicyCase` fixtures when decision or notification
+   behavior needs testing.
+6. Run the three-run analyzer eval and compare against `BASELINE.md`.
 7. Include the model, prompt version, analyzer version, and run IDs in any
    baseline update.
 
