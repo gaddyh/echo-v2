@@ -47,7 +47,6 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 from langsmith import traceable
 from langsmith.run_helpers import get_current_run_tree
 
-from echo_v2.integrations.green.provisioner import GreenProvisioner
 from echo_v2.observability.privacy import correlation_id
 from echo_v2.persistence.identity import PhoneParseError, normalize_phone_e164
 from echo_v2.persistence.whatsapp_connections import (
@@ -62,6 +61,7 @@ from echo_v2.ports.whatsapp import (
     PairingOutcome,
     ProviderCredentials,
     WhatsAppEventSubscription,
+    WhatsAppProvisioner,
 )
 
 if TYPE_CHECKING:
@@ -254,8 +254,8 @@ class OnboardingService:
         bot: BotChannel,
         user_repo: UserRepository,
         connection_repo: WhatsAppConnectionRepository,
-        provisioner: GreenProvisioner,
-        green_client: GreenClient,  # GreenClient — avoid circular import
+        provisioner: WhatsAppProvisioner,
+        green_client: GreenClient | None = None,
         webhook_base_url: str,
         poll_interval: float = 5.0,
         poll_max_attempts: int = 60,
@@ -276,6 +276,11 @@ class OnboardingService:
         # Authorization poll tasks, keyed by user_id. Ensures at most one poll
         # per user even on repeated "הצג QR" clicks.
         self._poll_tasks: dict[str, asyncio.Task[None]] = {}
+
+    def _require_green_client(self) -> GreenClient:
+        if self._green_client is None:
+            raise RuntimeError("Green client is required for Green onboarding paths")
+        return self._green_client
 
     def _trace_funnel_event(self, event: str, user_id: str | None = None) -> None:
         """Record an onboarding funnel event without blocking the webhook."""
@@ -571,11 +576,8 @@ class OnboardingService:
             if self._pool:
                 self._pool.request_refill()
 
-            # Wait until notAuthorized (ready for pairing).
-            api_token = created.credentials.data.decode("utf-8")
-            ready = await self._wait_until_ready(
-                created.ref.provider_connection_id, api_token,
-            )
+            # Wait until the provider reports that pairing can begin.
+            ready = await self._wait_until_ready(created.ref)
             if not ready:
                 await self._user_repo.update_onboarding_status(user_id, "failed")
                 await self._bot.send_text(
@@ -680,6 +682,9 @@ class OnboardingService:
         click), so the poll is started with ``pairing_already_sent=True``
         to avoid sending a duplicate QR when it sees ``notAuthorized``.
         """
+        if conn.ref.provider != "green":
+            await self._send_provider_qr_and_poll(user_id, phone, conn)
+            return
         api_token = conn.credentials.data.decode("utf-8")
         sent = await self._send_pairing_qr(
             user_id, phone, conn.ref, api_token,
@@ -692,6 +697,78 @@ class OnboardingService:
             user_id, phone, conn.ref.provider_connection_id, api_token,
             pairing_already_sent=True,
         )
+
+    async def _send_provider_qr_and_poll(
+        self,
+        user_id: str,
+        phone: str,
+        conn: StoredConnection,
+    ) -> None:
+        """Send a provider-neutral QR and poll provider-neutral status."""
+        result = await self._provisioner.get_pairing_qr(conn.ref)
+        if result.outcome is PairingOutcome.ALREADY_AUTHORIZED:
+            await self.handle_connection_established(user_id, phone)
+            return
+        if result.outcome is not PairingOutcome.QR_READY or result.qr is None:
+            await self._user_repo.update_onboarding_status(user_id, "failed")
+            await self._bot.send_text(
+                phone,
+                "מצטער, לא הצלחתי לקבל קוד QR. נסה שוב מאוחר יותר.",
+            )
+            return
+        try:
+            await self._bot.send_image(
+                phone,
+                image_bytes=base64.b64decode(result.qr.image_base64),
+                mime_type="image/png",
+                caption=_QR_CAPTION,
+            )
+        except Exception:
+            _logger.exception("onboarding: failed to send Baileys QR")
+            await self._user_repo.update_onboarding_status(user_id, "failed")
+            return
+        self._trace_funnel_event("qr_shown", user_id)
+        self._ensure_provider_poll_task(user_id, phone, conn.ref)
+
+    def _ensure_provider_poll_task(
+        self,
+        user_id: str,
+        phone: str,
+        connection: ConnectionRef,
+    ) -> None:
+        existing = self._poll_tasks.get(user_id)
+        if existing is not None and not existing.done():
+            return
+        self._poll_tasks[user_id] = asyncio.create_task(
+            self._poll_provider_status(user_id, phone, connection)
+        )
+
+    async def _poll_provider_status(
+        self,
+        user_id: str,
+        phone: str,
+        connection: ConnectionRef,
+    ) -> None:
+        for _ in range(self._poll_max_attempts):
+            try:
+                snapshot = await self._provisioner.get_status(connection)
+                await self._connection_repo.update_status(
+                    connection, snapshot.status, snapshot.provider_raw_status
+                )
+                if snapshot.status is ConnectionStatus.CONNECTED:
+                    await self.handle_connection_established(user_id, phone)
+                    return
+                if snapshot.status in (
+                    ConnectionStatus.PAIRING_REQUIRED,
+                    ConnectionStatus.CONNECTING,
+                    ConnectionStatus.PROVISIONING,
+                ):
+                    await asyncio.sleep(self._poll_interval)
+                    continue
+            except Exception:
+                _logger.info("onboarding: provider status poll failed", exc_info=True)
+            await asyncio.sleep(self._poll_interval)
+        await self._bot.send_text(phone, _OTP_TIMED_OUT)
 
     def _ensure_poll_task(
         self,
@@ -722,37 +799,34 @@ class OnboardingService:
         )
 
     async def _wait_until_ready(
-        self, id_instance: str, api_token: str,
+        self,
+        connection: ConnectionRef | str,
+        api_token: str | None = None,
     ) -> bool:
-        """Poll getStateInstance until ``notAuthorized``.
+        """Poll provider-neutral status until pairing is required or connected.
 
-        Returns ``True`` on ``notAuthorized``. Returns ``False`` on timeout
-        or ``authorized`` (an authorized instance is not a fresh slot).
-
-        A 401 immediately after ``createInstance`` is a Green propagation
-        delay (the instance exists but Green's auth hasn't propagated yet),
-        NOT a permanent auth error. So we keep polling through all exceptions
-        until the timeout.
+        The string/token form remains as a compatibility shim for existing
+        Green-focused tests and callers; new providers use ``ConnectionRef``.
         """
         for _ in range(self._poll_max_attempts):
             try:
-                state = await self._green_client.get_state_instance(
-                    id_instance, api_token,
-                )
-                if state == "notAuthorized":
-                    return True
-                if state == "authorized":
-                    _logger.warning(
-                        "onboarding: instance %s authorized during warmup "
-                        "(not a fresh slot)", id_instance,
+                if isinstance(connection, ConnectionRef):
+                    snapshot = await self._provisioner.get_status(connection)
+                    if snapshot.status in (
+                        ConnectionStatus.PAIRING_REQUIRED,
+                        ConnectionStatus.CONNECTED,
+                    ):
+                        return snapshot.status is ConnectionStatus.PAIRING_REQUIRED
+                elif self._green_client is not None and api_token is not None:
+                    state = await self._require_green_client().get_state_instance(
+                        connection, api_token,
                     )
-                    return False
+                    if state == "notAuthorized":
+                        return True
+                    if state == "authorized":
+                        return False
             except Exception:
-                _logger.debug(
-                    "onboarding: transient getStateInstance error for %s, keep polling",
-                    id_instance,
-                    exc_info=True,
-                )
+                _logger.debug("onboarding: transient readiness status error", exc_info=True)
             await asyncio.sleep(self._poll_interval)
         return False
 
@@ -809,7 +883,7 @@ class OnboardingService:
 
         for attempt in range(self._poll_max_attempts):
             try:
-                state = await self._green_client.get_state_instance(
+                state = await self._require_green_client().get_state_instance(
                     id_instance,
                     api_token,
                 )
@@ -1071,7 +1145,7 @@ class OnboardingService:
 
         # Check Green API state — it's the source of truth.
         try:
-            state = await self._green_client.get_state_instance(
+            state = await self._require_green_client().get_state_instance(
                 conn.ref.provider_connection_id,
                 api_token,
             )
@@ -1099,7 +1173,7 @@ class OnboardingService:
 
         phone_int = int(phone.lstrip("+"))
         try:
-            code = await self._green_client.get_authorization_code(
+            code = await self._require_green_client().get_authorization_code(
                 conn.ref.provider_connection_id,
                 api_token,
                 phone_int,
@@ -1132,7 +1206,7 @@ class OnboardingService:
         by the caller).
         """
         try:
-            raw = await self._green_client.get_qr_ws(
+            raw = await self._require_green_client().get_qr_ws(
                 conn_ref.provider_connection_id,
                 api_token,
             )
@@ -1188,7 +1262,7 @@ class OnboardingService:
         """
         phone_int = int(phone.lstrip("+"))
         try:
-            code = await self._green_client.get_authorization_code(
+            code = await self._require_green_client().get_authorization_code(
                 conn_ref.provider_connection_id,
                 api_token,
                 phone_int,
@@ -1225,11 +1299,15 @@ class OnboardingService:
             _logger.warning("onboarding: no connection for user %s", user_id)
             return False
 
+        if conn.ref.provider != "green":
+            await self._send_provider_qr_and_poll(user_id, phone, conn)
+            return True
+
         api_token = conn.credentials.data.decode("utf-8")
 
         # Check Green API state — it's the source of truth.
         try:
-            state = await self._green_client.get_state_instance(
+            state = await self._require_green_client().get_state_instance(
                 conn.ref.provider_connection_id,
                 api_token,
             )

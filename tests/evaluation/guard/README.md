@@ -46,16 +46,29 @@ runs when needed:
 GUARD_EVAL_RUNS=5 .venv/bin/python -m pytest -m eval_guard -v -s
 ```
 
-The harness requires `OPENAI_API_KEY`. The model can be overridden with
+The first run after changing gold or matcher semantics should be report-only:
+
+```bash
+GUARD_EVAL_REPORT_ONLY=1 GUARD_EVAL_SUITE=comprehensive \
+  GUARD_EVAL_RUNS=3 .venv/bin/python -m pytest -m eval_guard -v -s
+```
+
+Review the corrected results before choosing a new `GUARD_MIN_ACCURACY` value and
+freezing `BASELINE.md`. Until that run is completed, `BASELINE.md` remains the
+previous frozen baseline and must not be interpreted as a result for the new
+matcher or taxonomy. The harness requires `OPENAI_API_KEY`. The model can be overridden with
 `GUARD_LLM_MODEL` or `LLM_MODEL_NAME`.
 
 ## Current files
 
 | File | Purpose |
 |---|---|
-| `guard_cases.py` | Conversation fixtures and analyzer gold snapshots |
+| `guard_cases.py` | Conversation fixtures, snapshot gold, and fixture validation |
+| `guard_mvp_eval_cases.py` | Development cases used for prompt iteration |
+| `guard_comprehensive_baseline.py` | Held-out regression cases and combined suites |
 | `guard_policy_cases.py` | Direct deterministic decision- and alert-policy fixtures |
-| `test_guard_eval.py` | Three-run LLM analyzer harness and aggregate report |
+| `test_guard_eval.py` | Multi-run LLM analyzer harness and aggregate report |
+| `test_guard_eval_contract.py` | API-free matcher and fixture-integrity tests |
 | `guard_eval_results.py` | JSON and Markdown persistence for each run |
 | `BASELINE.md` | Current frozen analyzer and policy baseline |
 | `../../services/guard_analyzer.py` | LLM analyzer, schema, prompt, and parsing |
@@ -110,11 +123,11 @@ evolve independently from the analyzer prompt.
 
 ### Categories
 
-The current taxonomy is intentionally small and frozen for the initial
-families:
+The current taxonomy is intentionally small for the initial families:
 
 ```text
 suspicious_contact
+child_sexual_exploitation
 harassment_or_coercion
 distress
 bullying
@@ -133,6 +146,11 @@ routine_probing
 location_request
 secrecy_request
 meeting_request
+age_deception
+sexual_solicitation
+intimate_image_request
+sexual_coercion
+off_platform_migration
 repeated_unwanted_contact
 boundary_violation
 threat
@@ -164,8 +182,9 @@ Rules:
 - every cited ID must exist in the input snapshot;
 - duplicate evidence IDs are rejected;
 - evidence IDs are displayed in terminal, JSON, and Markdown reports;
-- evidence is explanatory and is not currently a separate pass/fail gold
-  criterion;
+- non-clean analyses must include at least one valid evidence ID;
+- evidence is checked for presence and required IDs, while semantic evidence
+  quality is reviewed in the report;
 - raw message text is not printed in summary tables, but is retained in the
   ignored JSON run artifact for debugging.
 
@@ -222,28 +241,36 @@ class ExpectedSnapshot:
     required_categories: tuple[str, ...] = ()
     required_signals: tuple[str, ...] = ()
     required_signal_any_of: tuple[str, ...] = ()
+    forbidden_categories: tuple[str, ...] = ()
     forbidden_signals: tuple[str, ...] = ()
+    required_evidence_message_ids: tuple[str, ...] = ()
+    expected_decision: str | None = None
+    expect_clean: bool = False
 ```
 
 A snapshot is evaluated after the message identified by
 `after_message_id`. The analyzer sees the entire prefix through that message.
-The snapshot gold checks semantic evidence only; severity is derived separately
-by `DefaultDecisionPolicy` from the analysis or ledger state.
+The gold checks analyzer semantics and metadata quality; severity is derived
+separately by `DefaultDecisionPolicy` from the same analysis or ledger state.
+The LLM is never graded on a generated decision field.
 
-The analyzer gold intentionally does **not** include:
+The analyzer gold intentionally does **not** include an LLM-generated severity
+decision. The harness derives a decision deterministically with
+`DefaultDecisionPolicy` from the same analysis and can assert
+`expected_decision` separately.
 
-- a severity decision;
-- exact confidence;
-- exact reason wording;
-- summary wording;
-- `should_alert`.
-
-Those are brittle or belong to another layer.
+The harness checks that confidence is finite and within the schema range, that
+reason is non-empty, and that non-clean analyses cite evidence. It does not pin
+exact confidence values or exact reason wording. `expect_clean=True` is strict:
+the derived decision must be `none`, categories and signals must both be empty,
+and evidence IDs must be empty.
 
 ## Current analyzer families
 
-There are currently three conversation cases across two families. The first
-family has five checkpoints; the second is a contrast pair.
+The evaluation contains MVP development cases and held-out regression cases
+covering suspicious contact, harassment/coercion, distress, bullying,
+social exclusion, harmful sharing, and child sexual exploitation. Cases use
+snapshot checkpoints and benign/adversarial contrast pairs.
 
 ### Family 1: `unknown_contact_escalation`
 
@@ -298,9 +325,26 @@ The contrast is more important than any isolated insult. Friendly mutual
 banter should not be classified as bullying solely because it contains rude
 words.
 
+### Family 3: `child_sexual_exploitation`
+
+The child-exploitation cases cover two private-chat trajectories:
+
+- explicit age contradiction, off-platform migration, intimate-image request,
+  sexual solicitation, and meeting escalation;
+- intimate-image request, refusal, sexual coercion, threat to share, and
+  blackmail/sextortion escalation.
+
+`age_deception` is required only when the transcript itself contains a
+contradictory age claim. The fixtures do not assume that the analyzer knows a
+participant's age from metadata. The held-out set also includes group intimate
+content sharing, mention-based pile-on, coordinated side-group exclusion, and
+an adversarial instruction that attempts to force `none` during a real
+sextortion pattern.
+
 ## What the analyzer eval checks
 
-For every snapshot, the harness checks semantic evidence:
+For every snapshot, the harness checks analyzer output and deterministic
+policy derivation:
 
 ### Required categories
 
@@ -311,15 +355,23 @@ analysis.
 
 Every signal in `required_signals` must be present in the actual analysis.
 
-### Forbidden signals
+### Forbidden categories and signals
 
-No signal in `forbidden_signals` may be present.
+No category in `forbidden_categories` or signal in `forbidden_signals` may be
+present.
 
-### Evidence
+### Clean snapshots
 
-Evidence IDs are validated structurally against the input. They are shown in
-reports, but are intentionally not yet a semantic pass/fail assertion. This
-lets us inspect evidence quality before freezing evidence-specific gold.
+When `expect_clean=True`, the result must have `decision=none`, no categories,
+no signals, and no evidence IDs. This is the required representation for
+strict benign/OOS checkpoints.
+
+### Evidence, confidence, and reason
+
+Evidence IDs are validated against the input. Non-clean analyses must cite at
+least one evidence ID, confidence must be finite and within `0.0..1.0`, and
+reason must be non-empty. Exact confidence and reason wording are not frozen;
+reports retain them for review.
 
 ## Three-run evaluation and stability
 
@@ -330,21 +382,24 @@ For each run it prints:
 
 - case and snapshot;
 - pass/fail status;
-- evidence IDs;
-- observed signals.
+- derived deterministic decision;
+- confidence and evidence IDs;
+- observed signals and categories.
 
 The aggregate report prints:
 
 - total run-snapshots;
 - aggregate analyzer accuracy;
 - pass count per snapshot, such as `3/3` or `1/3`;
-- signal pass count;
-- category pass count;
+- signal and any-of pass counts;
+- category and clean-result pass counts;
+- evidence and deterministic-decision pass counts;
 - evidence ID combinations and their frequencies;
 - observed signal union.
 
-Severity decisions are not part of this LLM report. Evaluate them with the
-separate deterministic decision-policy fixtures.
+The report includes the deterministic decision derived from each analysis, but
+that decision is not an LLM output. Parent notification remains separate and is
+evaluated with the deterministic alert-policy fixtures.
 
 Interpretation example:
 
@@ -435,25 +490,33 @@ tests without making API calls.
 ## How to add a case
 
 1. Add stable `EvalMessage` IDs.
-2. Add one or more snapshot checkpoints.
-3. Keep analyzer gold limited to categories and snapshot-local signals.
-4. Do not add severity decisions or `should_alert` to analyzer snapshots.
-5. Add separate `GuardPolicyCase` fixtures when decision or notification
-   behavior needs testing.
-6. Run the three-run analyzer eval and compare against `BASELINE.md`.
-7. Include the model, prompt version, analyzer version, and run IDs in any
+2. Add one or more chronological snapshot checkpoints.
+3. Use `expect_clean=True` for strict benign/OOS snapshots.
+4. Keep analyzer gold on categories, signals, evidence, confidence validity,
+   and reason presence; do not add an LLM severity decision.
+5. Use `expected_decision` only for the deterministic `DefaultDecisionPolicy`
+   result derived from the same analysis.
+6. Add separate `GuardPolicyCase` fixtures when notification behavior needs
+   testing.
+7. Run corrected evaluations in report-only mode first, inspect failures, then
+   choose the threshold and update `BASELINE.md`.
+8. Include the model, prompt version, analyzer version, and run IDs in any
    baseline update.
 
 Prefer scenario families and contrast pairs over isolated toxic messages.
 
 ## Current limitations
 
-- Only two analyzer families are covered.
-- Emotional distress and self-harm are not yet in the taxonomy or dataset.
-- Group chats, media, voice, screenshots, slang, and mixed-language coverage
-  are limited.
-- Evidence IDs are validated and displayed but not semantically scored yet.
+- Cases are still synthetic Hebrew adaptations rather than a production-labeled
+  WhatsApp corpus.
+- Group, media, voice, screenshots, timestamps, replies, forwarding, slang, and
+  mixed-language coverage remain limited; `EvalMessage` currently models only
+  sender, stable ID, and text.
+- Trusted private/group/contact metadata is stored on fixtures but is not
+  rendered into the analyzer prompt; no gold may rely on that metadata.
+- Evidence is checked for valid/present IDs, while semantic evidence quality is
+  still reviewed manually from reports.
 - The ledger has no explicit signal-retraction lifecycle yet.
 - Signal strength is not modeled; signals are present or absent.
 - The analyzer and policy are evaluated separately; a full end-to-end LLM →
-  ledger → policy evaluation is deferred.
+  ledger → decision → alert evaluation is deferred.

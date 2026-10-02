@@ -45,6 +45,9 @@ from echo_v2.app.webhooks.green import (
 from echo_v2.app.webhooks.green import (
     build_router as build_green_router,
 )
+from echo_v2.integrations.baileys.client import BaileysClient
+from echo_v2.integrations.baileys.provisioner import BaileysProvisioner
+from echo_v2.integrations.baileys.settings import load_settings as load_baileys_settings
 from echo_v2.integrations.dialog360.client import Dialog360Client
 from echo_v2.integrations.dialog360.events import Dialog360EventAdapter
 from echo_v2.integrations.dialog360.settings import Dialog360Settings
@@ -56,6 +59,7 @@ from echo_v2.persistence.compose import build_postgres_repos
 from echo_v2.persistence.conversation_state import InMemoryConversationStateRepository
 from echo_v2.persistence.settings import load_db_settings
 from echo_v2.persistence.user_resolver import PostgresUserResolver
+from echo_v2.ports.whatsapp import WhatsAppProvisioner
 from echo_v2.services.chat_analysis_worker import (
     ChatAnalysisProcessor,
     ChatAnalysisWorker,
@@ -161,10 +165,21 @@ def create_app() -> FastAPI:
     from echo_v2.services.onboarding import OnboardingService
 
     user_repo = PostgresUserRepository(repos.session_factory)
-    provisioner = GreenProvisioner(
-        client=green_client,
-        credential_resolver=repos.connections,
-    )
+    whatsapp_provider = os.environ.get("WHATSAPP_PROVIDER", "green").lower()
+    baileys_client: BaileysClient | None = None
+    provisioner: WhatsAppProvisioner
+    green_provisioner: GreenProvisioner | None = None
+    if whatsapp_provider == "baileys":
+        baileys_client = BaileysClient(load_baileys_settings())
+        provisioner = BaileysProvisioner(baileys_client)
+    elif whatsapp_provider == "green":
+        green_provisioner = GreenProvisioner(
+            client=green_client,
+            credential_resolver=repos.connections,
+        )
+        provisioner = green_provisioner
+    else:
+        raise ValueError(f"unsupported WHATSAPP_PROVIDER: {whatsapp_provider}")
     webhook_base_url = os.environ.get(
         "ECHO_WEBHOOK_BASE_URL",
         "https://i-me.onrender.com",
@@ -175,9 +190,10 @@ def create_app() -> FastAPI:
     # instances on demand, the current behavior).
     pool_size = int(os.environ.get("GREEN_INSTANCE_POOL_SIZE", "1"))
     pool: GreenInstancePool | None = None
-    if pool_size > 0:
+    if whatsapp_provider == "green" and pool_size > 0:
+        assert green_provisioner is not None
         pool = GreenInstancePool(
-            provisioner=provisioner,
+            provisioner=green_provisioner,
             green_client=green_client,
             repo=repos.green_instance_pool,
             connection_repo=repos.connections,
@@ -583,6 +599,9 @@ def create_app() -> FastAPI:
         if pool is not None:
             await pool.aclose()
             _logger.info("instance pool closed")
+
+        if baileys_client is not None:
+            await baileys_client.aclose()
 
         # Close the shared OpenAI client.
         try:
