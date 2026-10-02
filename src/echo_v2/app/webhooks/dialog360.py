@@ -31,6 +31,7 @@ from langsmith import traceable
 
 from echo_v2.app.webhooks.inbox import InMemoryWebhookInbox, WebhookInbox
 from echo_v2.integrations.dialog360.events import Dialog360EventAdapter
+from echo_v2.observability.privacy import correlation_id
 from echo_v2.observability.sanitizers import (
     safe_webhook_inputs,
     safe_webhook_output,
@@ -42,6 +43,13 @@ from echo_v2.services.scheduling_flow import SchedulingFlowService
 __all__ = ["build_router"]
 
 _logger = logging.getLogger("echo_v2.app.webhooks.dialog360")
+
+
+def _safe_correlation_id(value: str) -> str:
+    try:
+        return correlation_id(value)
+    except RuntimeError:
+        return "unavailable"
 
 
 def build_router(
@@ -160,11 +168,20 @@ def build_router(
         # Parse the webhook into a canonical BotEvent.
         event = parse_adapter.parse(payload)
         if event is None:
+            _logger.info("dialog360 webhook ignored payload")
             return {"status": "ignored"}
+
+        _logger.info(
+            "dialog360 webhook parsed event_id=%s type=%s phone_hash=%s",
+            event.event_id,
+            event.type.value,
+            _safe_correlation_id(event.user_phone),
+        )
 
         # Claim the event in the persistent inbox. Returns False if already
         # processed (true duplicate) or currently processing.
         if not await inbox_store.claim(event.event_id):
+            _logger.info("dialog360 webhook duplicate event type=%s", event.type.value)
             return {"status": "duplicate"}
 
         # Process the event. On success → mark processed (terminal). On
@@ -179,6 +196,11 @@ def build_router(
             raise
         else:
             await inbox_store.succeed(event.event_id)
+            _logger.info(
+                "dialog360 webhook completed type=%s phone_hash=%s",
+                event.type.value,
+                _safe_correlation_id(event.user_phone),
+            )
 
         return {"status": "received"}
 
