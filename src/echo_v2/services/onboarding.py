@@ -73,6 +73,14 @@ __all__ = ["OnboardingContext", "OnboardingService", "UserRepository"]
 
 _logger = logging.getLogger("echo_v2.services.onboarding")
 
+
+def _safe_correlation_id(value: str) -> str:
+    try:
+        return correlation_id(value)
+    except RuntimeError:
+        return "unavailable"
+
+
 _DEFAULT_TIMEZONE = "Asia/Jerusalem"
 _DEFAULT_NAME = "חבר"
 
@@ -288,7 +296,7 @@ class OnboardingService:
         async def emit() -> None:
             run_tree = get_current_run_tree()
             if run_tree is not None and user_id is not None:
-                run_tree.add_metadata({"user_id_hash": correlation_id(user_id)})
+                run_tree.add_metadata({"user_id_hash": _safe_correlation_id(user_id)})
 
         asyncio.create_task(emit())
 
@@ -329,6 +337,13 @@ class OnboardingService:
         - Anything else → send_introduction
         """
         phone = event.user_phone
+        phone_hash = _safe_correlation_id(phone)
+        _logger.info(
+            "onboarding unknown event type=%s phone_hash=%s button_id=%s",
+            event.type.value,
+            phone_hash,
+            event.button_id,
+        )
 
         if event.type is BotEventType.BUTTON_REPLY:
             if event.button_id == "onboarding:start":
@@ -402,6 +417,8 @@ class OnboardingService:
             _logger.warning("onboarding: invalid phone number format")
             return
 
+        phone_hash = _safe_correlation_id(normalized)
+        _logger.info("onboarding start phone_hash=%s", phone_hash)
         existing = await self._user_repo.get_by_phone(normalized)
         if existing is not None:
             user_id, onboarding_status, name = existing
@@ -474,6 +491,11 @@ class OnboardingService:
             return False
 
         # Store the name (still pending — not active until authorized).
+        _logger.info(
+            "onboarding name received user_hash=%s name_length=%d",
+            _safe_correlation_id(ctx.user_id),
+            len(clean_name),
+        )
         await self._user_repo.update_first_name(ctx.user_id, clean_name)
         self._trace_funnel_event("name_entered", ctx.user_id)
 
@@ -514,8 +536,15 @@ class OnboardingService:
         If a connection already exists (re-click), re-send QR or "still
         preparing" depending on connection status.
         """
+        user_hash = _safe_correlation_id(user_id)
         self._trace_funnel_event("pairing_start", user_id)
         existing = await self._connection_repo.get_by_user(user_id)
+        _logger.info(
+            "onboarding pairing start user_hash=%s existing=%s provider=%s",
+            user_hash,
+            existing is not None,
+            existing.ref.provider if existing is not None else None,
+        )
         if existing is not None:
             # Connection already exists — re-send QR or "still preparing".
             if existing.status == ConnectionStatus.PROVISIONING:
@@ -555,6 +584,7 @@ class OnboardingService:
         On failure: mark user ``failed`` + send failure message.
         """
         try:
+            _logger.info("onboarding provisioning started user_hash=%s", _safe_correlation_id(user_id))
             webhook_token = secrets.token_urlsafe(32)
             webhook_url = f"{self._webhook_base_url}/webhooks/whatsapp/green"
             config = ConnectionConfig(
@@ -563,6 +593,12 @@ class OnboardingService:
                 subscriptions=WhatsAppEventSubscription(),
             )
             created = await self._provisioner.create_connection(config)
+            _logger.info(
+                "onboarding provisioning created user_hash=%s provider=%s connection_hash=%s",
+                _safe_correlation_id(user_id),
+                created.ref.provider,
+                _safe_correlation_id(created.ref.provider_connection_id),
+            )
             token_hash = hashlib.sha256(webhook_token.encode("utf-8")).digest()
 
             # Save immediately as PROVISIONING (reduces double-create window).
@@ -705,6 +741,12 @@ class OnboardingService:
         conn: StoredConnection,
     ) -> None:
         """Send a provider-neutral QR and poll provider-neutral status."""
+        _logger.info(
+            "onboarding QR requested user_hash=%s provider=%s connection_hash=%s",
+            _safe_correlation_id(user_id),
+            conn.ref.provider,
+            _safe_correlation_id(conn.ref.provider_connection_id),
+        )
         result = await self._provisioner.get_pairing_qr(conn.ref)
         if result.outcome is PairingOutcome.ALREADY_AUTHORIZED:
             await self.handle_connection_established(user_id, phone)
@@ -728,6 +770,7 @@ class OnboardingService:
             await self._user_repo.update_onboarding_status(user_id, "failed")
             return
         self._trace_funnel_event("qr_shown", user_id)
+        _logger.info("onboarding QR sent user_hash=%s", _safe_correlation_id(user_id))
         self._ensure_provider_poll_task(user_id, phone, conn.ref)
 
     def _ensure_provider_poll_task(
@@ -752,6 +795,12 @@ class OnboardingService:
         for _ in range(self._poll_max_attempts):
             try:
                 snapshot = await self._provisioner.get_status(connection)
+                _logger.info(
+                    "onboarding provider status user_hash=%s status=%s raw=%s",
+                    _safe_correlation_id(user_id),
+                    snapshot.status.value,
+                    snapshot.provider_raw_status,
+                )
                 await self._connection_repo.update_status(
                     connection, snapshot.status, snapshot.provider_raw_status
                 )
@@ -768,6 +817,10 @@ class OnboardingService:
             except Exception:
                 _logger.info("onboarding: provider status poll failed", exc_info=True)
             await asyncio.sleep(self._poll_interval)
+        _logger.warning(
+            "onboarding provider status poll timed out user_hash=%s",
+            _safe_correlation_id(user_id),
+        )
         await self._bot.send_text(phone, _OTP_TIMED_OUT)
 
     def _ensure_poll_task(
@@ -1003,6 +1056,10 @@ class OnboardingService:
         Idempotent: if onboarding is already ``active``, skip.
         """
         self._trace_funnel_event("authorized", user_id)
+        _logger.info(
+            "onboarding connection established user_hash=%s",
+            _safe_correlation_id(user_id),
+        )
         existing = await self._user_repo.get_by_phone(phone)
         if existing is not None:
             _uid, onboarding_status, name = existing

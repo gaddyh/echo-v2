@@ -40,11 +40,19 @@ from echo_v2.bot.commands import (
     ResponsibilityList,
     ResponsibilitySnooze,
 )
+from echo_v2.observability.privacy import correlation_id
 from echo_v2.ports.bot import BotEvent
 
 __all__ = ["BotCommandRouter", "CommandHandlers", "FlowRegistry", "OnboardingEntry"]
 
 _logger = logging.getLogger("echo_v2.bot.router")
+
+
+def _safe_correlation_id(value: str) -> str:
+    try:
+        return correlation_id(value)
+    except RuntimeError:
+        return "unavailable"
 
 
 class CommandHandlers(Protocol):
@@ -162,20 +170,38 @@ class BotCommandRouter:
 
     async def route(self, event: BotEvent) -> None:
         """Route an incoming bot event to the appropriate handler."""
+        phone_hash = _safe_correlation_id(event.user_phone)
+        _logger.info(
+            "bot event received type=%s phone_hash=%s button_id=%s",
+            event.type.value,
+            phone_hash,
+            event.button_id,
+        )
         # 1. Resolve actor.
         user_info = await self._user_resolver.resolve(event.user_phone)
 
         # 2. Unknown → onboarding entry (consent / intro).
         if user_info is None:
+            _logger.info("bot onboarding route=unknown phone_hash=%s", phone_hash)
             await self._onboarding.handle_unknown_event(event)
             return
 
         # 3. Parse explicit command.
         command = self._parser.parse(event)
+        _logger.info(
+            "bot route=known phone_hash=%s command=%s",
+            phone_hash,
+            type(command).__name__ if command is not None else None,
+        )
 
         # 4. If command → dispatch.
         if command is not None:
             await self._dispatch_command(command, event)
+            _logger.info(
+                "bot command completed phone_hash=%s command=%s",
+                phone_hash,
+                type(command).__name__,
+            )
             return
 
         # 5. If no command → active stateful flow.
@@ -185,9 +211,11 @@ class BotCommandRouter:
                 event, user_id,
             )
             if handled:
+                _logger.info("bot route=active_flow phone_hash=%s", phone_hash)
                 return
 
         # 6. Fallback (scheduling flow handles generic text).
+        _logger.info("bot route=fallback phone_hash=%s", phone_hash)
         await self._fallback(event)
 
     async def _dispatch_command(
