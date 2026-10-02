@@ -21,9 +21,18 @@ class SnapshotResult:
     actual_signals: tuple[str, ...] = ()
     actual_categories: tuple[str, ...] = ()
     actual_evidence_message_ids: tuple[str, ...] = ()
+    actual_confidence: float = 0.0
+    actual_reason: str = ""
+    actual_decision: str = "none"
     signals_pass: bool = False
     any_signal_pass: bool = True
     categories_pass: bool = True
+    forbidden_categories_pass: bool = True
+    evidence_pass: bool = False
+    confidence_pass: bool = False
+    reason_pass: bool = False
+    clean_pass: bool = True
+    decision_pass: bool = True
     error: str | None = None
     latency_ms: float | None = None
     raw_response: str = ""
@@ -43,6 +52,11 @@ def _analysis_pass(result: SnapshotResult) -> bool:
         and result.signals_pass
         and result.any_signal_pass
         and result.categories_pass
+        and result.forbidden_categories_pass
+        and result.evidence_pass
+        and result.confidence_pass
+        and result.reason_pass
+        and result.clean_pass
     )
 
 
@@ -77,18 +91,31 @@ def _snapshot_to_dict(case: GuardEvalCase, result: SnapshotResult) -> dict[str, 
             "required_categories": list(expected.required_categories),
             "required_signals": list(expected.required_signals),
             "required_signal_any_of": list(expected.required_signal_any_of),
+            "forbidden_categories": list(expected.forbidden_categories),
             "forbidden_signals": list(expected.forbidden_signals),
+            "required_evidence_message_ids": list(expected.required_evidence_message_ids),
+            "expected_decision": expected.expected_decision,
+            "expect_clean": expected.expect_clean,
         },
         "actual": {
             "signals": list(result.actual_signals),
             "categories": list(result.actual_categories),
             "evidence_message_ids": list(result.actual_evidence_message_ids),
+            "confidence": result.actual_confidence,
+            "reason": result.actual_reason,
+            "decision": result.actual_decision,
         },
         "pass": {
             "analyzer": _analysis_pass(result),
             "required_signals": result.signals_pass,
             "required_signal_any_of": result.any_signal_pass,
             "categories": result.categories_pass,
+            "forbidden_categories": result.forbidden_categories_pass,
+            "evidence": result.evidence_pass,
+            "confidence": result.confidence_pass,
+            "reason": result.reason_pass,
+            "clean": result.clean_pass,
+            "decision": result.decision_pass,
         },
         "error": result.error,
         "latency_ms": result.latency_ms,
@@ -152,13 +179,14 @@ def _build_report(
         f"- **Snapshots:** {total}",
         f"- **Analyzer pass:** {passed}/{total} ({passed / total:.1%})" if total else "- **Analyzer pass:** 0/0",
         "",
-        "| Case | After | Evidence | Signals | Categories | Status |",
-        "|---|---|---|---|---|---|"
+        "| Case | After | Decision | Confidence | Evidence | Signals | Categories | Status |",
+        "|---|---|---:|---:|---|---|---|---|"
     ]
     for case in case_results:
         for result in case.snapshots:
             lines.append(
                 f"| {case.case.case_id} | {result.after_message_id} | "
+                f"{result.actual_decision} | {result.actual_confidence:.2f} | "
                 f"{','.join(result.actual_evidence_message_ids) or '-'} | "
                 f"{result.actual_signals} | {result.actual_categories} | "
                 f"{'PASS' if _analysis_pass(result) else 'FAIL'} |"

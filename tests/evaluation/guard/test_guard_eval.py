@@ -1,8 +1,8 @@
 """Multi-run LLM evaluation harness for the Guard analyzer.
 
-This eval tests detection only: severity, categories, and cumulative signals.
-Notification behavior belongs to the deterministic AlertPolicy tests and is
-not evaluated here.
+This eval tests LLM detection semantics and derives severity separately through
+DefaultDecisionPolicy. Notification behavior belongs to deterministic policy
+tests and is not evaluated here.
 
 The suite runs three times by default to make model variance visible. Override
 with ``GUARD_EVAL_RUNS`` when needed::
@@ -13,6 +13,7 @@ with ``GUARD_EVAL_RUNS`` when needed::
 
 from __future__ import annotations
 
+import math
 import os
 import time
 from collections import Counter
@@ -28,11 +29,18 @@ from echo_v2.services.guard_analyzer import (
     GuardMessage,
     LLMGuardAnalyzer,
 )
-from tests.evaluation.guard.guard_cases import GUARD_CASES, GuardEvalCase
+from echo_v2.services.guard_decision_policy import DefaultDecisionPolicy
+from tests.evaluation.guard.guard_cases import (
+    GUARD_CASES,
+    ExpectedSnapshot,
+    GuardEvalCase,
+    validate_guard_cases,
+)
 from tests.evaluation.guard.guard_comprehensive_baseline import ALL_CASES
 from tests.evaluation.guard.guard_eval_results import (
     GuardCaseResult,
     SnapshotResult,
+    _analysis_pass,
     save_guard_eval_run,
 )
 from tests.evaluation.guard.guard_mvp_eval_cases import GUARD_MVP_CASES
@@ -53,7 +61,11 @@ class AggregateSnapshot:
     total_runs: int = 0
     passed_runs: int = 0
     signal_passes: int = 0
+    any_signal_passes: int = 0
     category_passes: int = 0
+    clean_passes: int = 0
+    evidence_passes: int = 0
+    decision_passes: int = 0
     errors: int = 0
     signals: Counter[str] | None = None
     evidence: Counter[str] | None = None
@@ -87,12 +99,59 @@ def _check_signals(
     )
 
 
-def _check_categories(actual: tuple[str, ...], required: tuple[str, ...]) -> bool:
-    return all(category in set(actual) for category in required)
+def _check_categories(
+    actual: tuple[str, ...],
+    required: tuple[str, ...],
+    forbidden: tuple[str, ...],
+) -> tuple[bool, bool]:
+    actual_set = set(actual)
+    return (
+        all(category in actual_set for category in required),
+        not bool(actual_set & set(forbidden)),
+    )
 
 
 def _check_any_signal(actual: tuple[str, ...], acceptable: tuple[str, ...]) -> bool:
     return not acceptable or bool(set(actual) & set(acceptable))
+
+
+def _check_evidence(
+    actual_signals: tuple[str, ...],
+    actual_categories: tuple[str, ...],
+    actual_evidence: tuple[str, ...],
+    expected: ExpectedSnapshot,
+) -> bool:
+    evidence_set = set(actual_evidence)
+    return (
+        set(expected.required_evidence_message_ids) <= evidence_set
+        and (
+            expected.expect_clean
+            and not actual_evidence
+            or not (actual_signals or actual_categories)
+            or bool(actual_evidence)
+        )
+    )
+
+
+def _check_clean(
+    analysis_signals: tuple[str, ...],
+    analysis_categories: tuple[str, ...],
+    evidence_message_ids: tuple[str, ...],
+    decision: str,
+    expected: ExpectedSnapshot,
+) -> bool:
+    if not expected.expect_clean:
+        return True
+    return (
+        decision == "none"
+        and not analysis_signals
+        and not analysis_categories
+        and not evidence_message_ids
+    )
+
+
+def _check_confidence(confidence: float) -> bool:
+    return math.isfinite(confidence) and 0.0 <= confidence <= 1.0
 
 
 @pytest.fixture
@@ -121,12 +180,24 @@ async def _run_case(
         started = time.perf_counter()
         try:
             analysis, raw = await analyzer.analyze_with_raw(conversation)
+            actual_decision = DefaultDecisionPolicy().decide(
+                signals=analysis.signals,
+                categories=analysis.categories,
+            )
+            categories_pass, forbidden_categories_pass = _check_categories(
+                analysis.categories,
+                snapshot.required_categories,
+                snapshot.forbidden_categories,
+            )
             case_result.snapshots.append(
                 SnapshotResult(
                     after_message_id=snapshot.after_message_id,
                     actual_signals=analysis.signals,
                     actual_categories=analysis.categories,
                     actual_evidence_message_ids=analysis.evidence_message_ids,
+                    actual_confidence=analysis.confidence,
+                    actual_reason=analysis.reason,
+                    actual_decision=actual_decision.value,
                     signals_pass=_check_signals(
                         analysis.signals,
                         snapshot.required_signals,
@@ -136,9 +207,26 @@ async def _run_case(
                         analysis.signals,
                         snapshot.required_signal_any_of,
                     ),
-                    categories_pass=_check_categories(
+                    categories_pass=categories_pass,
+                    forbidden_categories_pass=forbidden_categories_pass,
+                    evidence_pass=_check_evidence(
+                        analysis.signals,
                         analysis.categories,
-                        snapshot.required_categories,
+                        analysis.evidence_message_ids,
+                        snapshot,
+                    ),
+                    confidence_pass=_check_confidence(analysis.confidence),
+                    reason_pass=bool(analysis.reason.strip()),
+                    clean_pass=_check_clean(
+                        analysis.signals,
+                        analysis.categories,
+                        analysis.evidence_message_ids,
+                        actual_decision.value,
+                        snapshot,
+                    ),
+                    decision_pass=(
+                        snapshot.expected_decision is None
+                        or actual_decision.value == snapshot.expected_decision
                     ),
                     latency_ms=(time.perf_counter() - started) * 1000,
                     raw_response=raw,
@@ -153,14 +241,6 @@ async def _run_case(
                 )
             )
     return case_result
-
-
-def _analysis_pass(result: SnapshotResult) -> bool:
-    return (
-        result.error is None
-        and result.signals_pass
-        and result.categories_pass
-    )
 
 
 def _flatten(case_results: list[GuardCaseResult]) -> list[tuple[str, SnapshotResult]]:
@@ -203,7 +283,11 @@ def _aggregate_results(
             entry.total_runs += 1
             entry.passed_runs += _analysis_pass(result)
             entry.signal_passes += result.signals_pass
-            entry.category_passes += result.categories_pass
+            entry.any_signal_passes += result.any_signal_pass
+            entry.category_passes += result.categories_pass and result.forbidden_categories_pass
+            entry.clean_passes += result.clean_pass
+            entry.evidence_passes += result.evidence_pass
+            entry.decision_passes += result.decision_pass
             entry.errors += result.error is not None
             if entry.signals is not None:
                 entry.signals.update(result.actual_signals)
@@ -225,9 +309,9 @@ def _print_aggregate(aggregate: dict[tuple[str, str], AggregateSnapshot]) -> flo
     print("  Stability means how many of the runs passed each snapshot.")
     print()
     header = (
-        f"  {'Case':<40} {'After':<6} {'Pass':<7} {'Decisions':<24} "
-        f"{'Signal pass':<12} {'Category pass':<14} {'Evidence observed':<28} "
-        f"{'Observed signals'}"
+        f"  {'Case':<40} {'After':<6} {'Pass':<7} {'Any':<7} "
+        f"{'Category':<10} {'Clean':<8} {'Evidence':<9} {'Decision':<10} "
+        f"{'Evidence observed':<28} {'Observed signals'}"
     )
     print(header)
     print("  " + "-" * (len(header) - 2))
@@ -240,8 +324,11 @@ def _print_aggregate(aggregate: dict[tuple[str, str], AggregateSnapshot]) -> flo
         print(
             f"  {entry.case_id:<40} {entry.after_message_id:<6} "
             f"{entry.passed_runs}/{entry.total_runs:<5} "
-            f"{entry.signal_passes}/{entry.total_runs:<10} "
-            f"{entry.category_passes}/{entry.total_runs:<12} "
+            f"{entry.any_signal_passes}/{entry.total_runs:<5} "
+            f"{entry.category_passes}/{entry.total_runs:<8} "
+            f"{entry.clean_passes}/{entry.total_runs:<6} "
+            f"{entry.evidence_passes}/{entry.total_runs:<7} "
+            f"{entry.decision_passes}/{entry.total_runs:<8} "
             f"{evidence:<28} {signals}"
         )
     return accuracy
@@ -275,15 +362,18 @@ async def _run_eval_suite(
 
     aggregate = _aggregate_results(all_runs, cases)
     accuracy = _print_aggregate(aggregate)
+    report_only = os.environ.get("GUARD_EVAL_REPORT_ONLY", "0") == "1"
     print(
         f"\n  Analyzer version: {GUARD_ANALYZER_VERSION}"
         f"\n  Prompt version:   {GUARD_PROMPT_VERSION}"
         f"\n  Runs:             {run_count}"
+        f"\n  Report only:      {report_only}"
     )
-    assert accuracy >= min_accuracy, (
-        f"{label} aggregate analyzer accuracy {accuracy:.1%} "
-        f"below threshold {min_accuracy:.1%}"
-    )
+    if not report_only:
+        assert accuracy >= min_accuracy, (
+            f"{label} aggregate analyzer accuracy {accuracy:.1%} "
+            f"below threshold {min_accuracy:.1%}"
+        )
 
 
 @pytest.mark.eval_guard
@@ -293,14 +383,13 @@ async def test_guard_eval(analyzer: LLMGuardAnalyzer) -> None:
     suite = os.environ.get("GUARD_EVAL_SUITE", "baseline").lower()
     if suite == "baseline":
         cases = GUARD_CASES
-    elif suite == "mvp":
+    elif suite == "mvp" or suite == "all":
         cases = GUARD_MVP_CASES
-    elif suite == "all":
-        cases = GUARD_CASES + GUARD_MVP_CASES
     elif suite == "comprehensive":
         cases = ALL_CASES
     else:
         raise ValueError(
             "GUARD_EVAL_SUITE must be baseline, mvp, comprehensive, or all"
         )
+    validate_guard_cases(cases)
     await _run_eval_suite(analyzer, cases, suite, min_accuracy)

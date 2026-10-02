@@ -26,6 +26,7 @@ class GuardDecision(str, Enum):
 
 class GuardCategory(str, Enum):
     SUSPICIOUS_CONTACT = "suspicious_contact"
+    CHILD_SEXUAL_EXPLOITATION = "child_sexual_exploitation"
     HARASSMENT_OR_COERCION = "harassment_or_coercion"
     DISTRESS = "distress"
     BULLYING = "bullying"
@@ -40,6 +41,11 @@ class GuardSignal(str, Enum):
     LOCATION_REQUEST = "location_request"
     SECRECY_REQUEST = "secrecy_request"
     MEETING_REQUEST = "meeting_request"
+    AGE_DECEPTION = "age_deception"
+    SEXUAL_SOLICITATION = "sexual_solicitation"
+    INTIMATE_IMAGE_REQUEST = "intimate_image_request"
+    SEXUAL_COERCION = "sexual_coercion"
+    OFF_PLATFORM_MIGRATION = "off_platform_migration"
     REPEATED_UNWANTED_CONTACT = "repeated_unwanted_contact"
     BOUNDARY_VIOLATION = "boundary_violation"
     THREAT = "threat"
@@ -67,6 +73,20 @@ CATEGORY_SIGNALS: dict[GuardCategory, frozenset[GuardSignal]] = {
             GuardSignal.LOCATION_REQUEST,
             GuardSignal.SECRECY_REQUEST,
             GuardSignal.MEETING_REQUEST,
+        }
+    ),
+    GuardCategory.CHILD_SEXUAL_EXPLOITATION: frozenset(
+        {
+            GuardSignal.AGE_DECEPTION,
+            GuardSignal.SEXUAL_SOLICITATION,
+            GuardSignal.INTIMATE_IMAGE_REQUEST,
+            GuardSignal.SEXUAL_COERCION,
+            GuardSignal.OFF_PLATFORM_MIGRATION,
+            GuardSignal.SECRECY_REQUEST,
+            GuardSignal.LOCATION_REQUEST,
+            GuardSignal.MEETING_REQUEST,
+            GuardSignal.THREAT_TO_SHARE,
+            GuardSignal.BLACKMAIL_OR_EXTORTION,
         }
     ),
     GuardCategory.HARASSMENT_OR_COERCION: frozenset(

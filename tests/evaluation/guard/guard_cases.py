@@ -12,7 +12,9 @@ We deliberately do NOT pin in the gold:
 - exact summary
 - the wording of the reason
 Those are too brittle. We check analyzer semantics via
-``required_categories``, ``required_signals`` and ``forbidden_signals``.
+``required_categories``, ``required_signals``, evidence quality, and
+``forbidden_categories``/``forbidden_signals``. Severity is derived separately
+by deterministic policy.
 
 Cases are run against the real LLM API by a dedicated eval harness. They
 are NOT part of the normal test suite.
@@ -22,7 +24,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from echo_v2.services.guard_taxonomy import GuardCategory, GuardSignal
+from echo_v2.services.guard_taxonomy import (
+    CATEGORY_SIGNALS,
+    GuardCategory,
+    GuardDecision,
+    GuardSignal,
+)
 
 
 @dataclass(frozen=True)
@@ -39,9 +46,11 @@ class ExpectedSnapshot:
     required_categories: tuple[str, ...] = ()
     required_signals: tuple[str, ...] = ()
     required_signal_any_of: tuple[str, ...] = ()
+    forbidden_categories: tuple[str, ...] = ()
     forbidden_signals: tuple[str, ...] = ()
-    # Later useful for evaluating AlertPolicy separately.
-    should_alert: bool | None = None
+    required_evidence_message_ids: tuple[str, ...] = ()
+    expected_decision: str | None = None
+    expect_clean: bool = False
 
 
 @dataclass(frozen=True)
@@ -57,6 +66,120 @@ class GuardEvalCase:
     notes: str = ""
 
 
+def validate_guard_case(case: GuardEvalCase) -> None:
+    """Validate snapshot gold before an API-backed evaluation runs."""
+    message_ids = tuple(message.id for message in case.messages)
+    if len(message_ids) != len(set(message_ids)):
+        raise ValueError(f"{case.case_id}: message IDs must be unique")
+    message_positions = {message_id: index for index, message_id in enumerate(message_ids)}
+    seen_snapshots: set[str] = set()
+    previous_position = -1
+
+    for snapshot in case.snapshots:
+        after_message_id = snapshot.after_message_id
+        if after_message_id not in message_positions:
+            raise ValueError(
+                f"{case.case_id}: unknown snapshot message ID {after_message_id!r}"
+            )
+        if after_message_id in seen_snapshots:
+            raise ValueError(
+                f"{case.case_id}: duplicate snapshot for {after_message_id!r}"
+            )
+        position = message_positions[after_message_id]
+        if position <= previous_position:
+            raise ValueError(
+                f"{case.case_id}: snapshots must be in chronological order"
+            )
+        seen_snapshots.add(after_message_id)
+        previous_position = position
+
+        required_signals = set(snapshot.required_signals)
+        forbidden_signals = set(snapshot.forbidden_signals)
+        if required_signals & forbidden_signals:
+            raise ValueError(
+                f"{case.case_id} @ {after_message_id}: required and forbidden signals overlap"
+            )
+        if snapshot.required_signal_any_of:
+            if len(snapshot.required_signal_any_of) != len(
+                set(snapshot.required_signal_any_of)
+            ):
+                raise ValueError(
+                    f"{case.case_id} @ {after_message_id}: any-of signals must be unique"
+                )
+            if set(snapshot.required_signal_any_of) & forbidden_signals:
+                raise ValueError(
+                    f"{case.case_id} @ {after_message_id}: any-of signal is forbidden"
+                )
+
+        required_categories = set(snapshot.required_categories)
+        forbidden_categories = set(snapshot.forbidden_categories)
+        if required_categories & forbidden_categories:
+            raise ValueError(
+                f"{case.case_id} @ {after_message_id}: required and forbidden categories overlap"
+            )
+        if snapshot.expected_decision is not None:
+            try:
+                GuardDecision(snapshot.expected_decision)
+            except ValueError as exc:
+                raise ValueError(
+                    f"{case.case_id} @ {after_message_id}: unknown decision "
+                    f"{snapshot.expected_decision!r}"
+                ) from exc
+        if snapshot.expect_clean and (
+            required_categories
+            or required_signals
+            or snapshot.required_signal_any_of
+            or snapshot.required_evidence_message_ids
+            or (
+                snapshot.expected_decision is not None
+                and GuardDecision(snapshot.expected_decision) is not GuardDecision.NONE
+            )
+        ):
+            raise ValueError(
+                f"{case.case_id} @ {after_message_id}: clean snapshot has positive requirements"
+            )
+
+        if not set(snapshot.required_evidence_message_ids) <= set(message_ids):
+            raise ValueError(
+                f"{case.case_id} @ {after_message_id}: required evidence ID is unknown"
+            )
+
+        possible_support = required_signals | set(snapshot.required_signal_any_of)
+        for category in required_categories:
+            try:
+                category_signals = CATEGORY_SIGNALS[GuardCategory(category)]
+            except ValueError as exc:
+                raise ValueError(
+                    f"{case.case_id} @ {after_message_id}: unknown category {category!r}"
+                ) from exc
+            if not category_signals & {
+                GuardSignal(signal) for signal in possible_support
+            }:
+                raise ValueError(
+                    f"{case.case_id} @ {after_message_id}: category {category!r} "
+                    "has no required or acceptable supporting signal"
+                )
+
+        for signal in required_signals | forbidden_signals | set(
+            snapshot.required_signal_any_of
+        ):
+            try:
+                GuardSignal(signal)
+            except ValueError as exc:
+                raise ValueError(
+                    f"{case.case_id} @ {after_message_id}: unknown signal {signal!r}"
+                ) from exc
+
+
+def validate_guard_cases(cases: tuple[GuardEvalCase, ...]) -> None:
+    """Validate all cases and reject duplicate case IDs."""
+    case_ids = [case.case_id for case in cases]
+    if len(case_ids) != len(set(case_ids)):
+        raise ValueError("Guard case IDs must be unique")
+    for case in cases:
+        validate_guard_case(case)
+
+
 __all__ = [
     "BULLYING",
     "GUARD_CASES",
@@ -65,6 +188,8 @@ __all__ = [
     "EvalMessage",
     "ExpectedSnapshot",
     "GuardEvalCase",
+    "validate_guard_case",
+    "validate_guard_cases",
 ]
 
 
@@ -110,6 +235,7 @@ UNKNOWN_CONTACT_ESCALATION = GuardEvalCase(
     snapshots=(
         ExpectedSnapshot(
             after_message_id="m2",
+            expect_clean=True,
         ),
         ExpectedSnapshot(
             after_message_id="m3",
@@ -156,6 +282,7 @@ TEASING = GuardEvalCase(
     snapshots=(
         ExpectedSnapshot(
             after_message_id="m5",
+            expect_clean=True,
             forbidden_signals=(
                 GuardSignal.REPEATED_TARGETING,
                 GuardSignal.GROUP_PILE_ON,
