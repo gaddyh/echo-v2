@@ -622,19 +622,30 @@ class OnboardingService:
                 )
                 return
 
-            # Update to PAIRING_REQUIRED and ask user to click for QR.
+            # Update to PAIRING_REQUIRED. Baileys can deliver the QR in the
+            # same connect action; Green retains its explicit show-QR button.
             await self._connection_repo.update_status(
                 created.ref,
                 ConnectionStatus.PAIRING_REQUIRED,
                 "notAuthorized",
             )
-            await self._bot.send_buttons(
-                phone, body_text=_READY_FOR_QR, buttons=[_SHOW_QR_BUTTON],
-            )
-            _logger.info(
-                "onboarding: instance ready for user %s, awaiting show_qr click",
-                user_id,
-            )
+            if created.ref.provider == "baileys":
+                connection = await self._connection_repo.get_by_user(user_id)
+                if connection is None:
+                    raise RuntimeError("created Baileys connection was not persisted")
+                await self._send_provider_qr_and_poll(user_id, phone, connection)
+                _logger.info(
+                    "onboarding: Baileys QR started after connect user_hash=%s",
+                    _safe_correlation_id(user_id),
+                )
+            else:
+                await self._bot.send_buttons(
+                    phone, body_text=_READY_FOR_QR, buttons=[_SHOW_QR_BUTTON],
+                )
+                _logger.info(
+                    "onboarding: instance ready for user %s, awaiting show_qr click",
+                    user_id,
+                )
         except Exception:
             _logger.exception("onboarding: _prepare_instance failed for %s", user_id)
             await self._user_repo.update_onboarding_status(user_id, "failed")
