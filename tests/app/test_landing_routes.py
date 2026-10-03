@@ -33,7 +33,10 @@ async def test_landing_page_serves_html():
     assert resp.status_code == 200
     assert "text/html" in resp.headers.get("content-type", "")
     assert "Too much WhatsApp?" in resp.text
-    assert "Join the early access list" in resp.text
+    assert "Join early access" in resp.text
+    assert "Early access · $4.95/month when activated" in resp.text
+    assert "Connect in under a minute" in resp.text
+    assert "Scan a QR code just like WhatsApp Web" in resp.text
     assert 'id="waitlist-form"' in resp.text
     assert 'action="/api/waitlist"' not in resp.text
     # Security headers.
