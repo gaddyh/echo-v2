@@ -28,6 +28,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field, field_validator
 
+from echo_v2.app.landing_page import LANDING_PAGE
 from echo_v2.app.landing_page_echo_guard import LANDING_PAGE as GUARD_LANDING_PAGE
 from echo_v2.persistence.identity import PhoneParseError, normalize_phone_e164
 from echo_v2.persistence.waitlist import WaitlistRepository
@@ -122,13 +123,12 @@ def build_landing_router(
     @router.get("/", response_class=HTMLResponse)
     async def landing() -> HTMLResponse:
         count = await waitlist_repo.count()
-        counter_html = ""
-        if count >= _COUNTER_DISPLAY_THRESHOLD:
-            counter_html = (
-                f'<div class="counter">🔥 {count} כבר ברשימה</div>'
-            )
+        # Keep the early-access form useful before the list has real volume;
+        # once the live list reaches the threshold, show its actual count.
+        display_count = max(count, 50) if count < _COUNTER_DISPLAY_THRESHOLD else count
+        counter_html = f'<div class="counter">🔥 {display_count} early-access spots</div>'
         html = (
-            GUARD_LANDING_PAGE
+            LANDING_PAGE
             .replace("{{COUNTER}}", counter_html)
             .replace("{{BASE_URL}}", base_url.rstrip("/"))
         )

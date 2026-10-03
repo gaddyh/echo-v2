@@ -1,12 +1,14 @@
 """HTML for the public landing page.
 
-Self-contained HTML with inline CSS+JS (no build step, no external
-dependencies), matching the visual language of the waiting-list mini app.
-``dir="rtl"``, Hebrew-first. Contains a waitlist signup form (name +
-phone) that POSTs to ``/api/waitlist``.
+The editable landing-page source lives in the repository root at
+``landing4.html``. It is loaded here so the FastAPI route can expose the same
+page through the package API while retaining the no-build-step HTML/CSS/JS.
+The page contains a waitlist signup form that POSTs to ``/api/waitlist``.
 """
 
 from __future__ import annotations
+
+from pathlib import Path
 
 __all__ = ["LANDING_PAGE"]
 
@@ -908,3 +910,8 @@ function showError(msg) {
 </body>
 </html>
 """
+
+# Keep the editable design in the repository root while exposing it through
+# the package API used by the FastAPI route.
+_LANDING4_PATH = Path(__file__).resolve().parents[3] / "landing4.html"
+LANDING_PAGE = _LANDING4_PATH.read_text(encoding="utf-8")

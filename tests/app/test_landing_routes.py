@@ -32,9 +32,10 @@ async def test_landing_page_serves_html():
         resp = await client.get("/")
     assert resp.status_code == 200
     assert "text/html" in resp.headers.get("content-type", "")
-    assert "Echo Guard" in resp.text
-    assert "פיילוט" in resp.text
-    assert 'src="/og-guard-v2.png"' in resp.text
+    assert "Too much WhatsApp?" in resp.text
+    assert "Join the early access list" in resp.text
+    assert 'id="waitlist-form"' in resp.text
+    assert 'action="/api/waitlist"' not in resp.text
     # Security headers.
     assert resp.headers.get("x-content-type-options") == "nosniff"
     assert "default-src 'self'" in resp.headers.get("content-security-policy", "")
@@ -166,6 +167,15 @@ async def test_waitlist_signup_rejects_invalid_wtp():
     assert resp.status_code == 422
 
 
+async def test_guard_landing_page_remains_available():
+    app, _ = _make_app()
+    async with _client(app) as client:
+        resp = await client.get("/guard")
+    assert resp.status_code == 200
+    assert "Echo Guard" in resp.text
+    assert 'src="/og-guard-v2.png"' in resp.text
+
+
 async def test_landing_page_has_og_tags_and_scarcity():
     app, _ = _make_app()
     async with _client(app) as client:
@@ -175,11 +185,12 @@ async def test_landing_page_has_og_tags_and_scarcity():
     assert 'og:title' in html
     assert 'og:image' in html
     assert '{{BASE_URL}}' not in html  # template substituted
-    # Scarcity messaging is always present.
-    assert "50 המקומות" in html
-    # Counter is hidden below the display threshold.
+    # Scarcity messaging and the waitlist form are always present.
+    assert "Early access is limited" in html
+    assert "Join the waitlist" in html
+    # The landing page uses 50 as the default counter before live volume exists.
     assert "{{COUNTER}}" not in html
-    assert "כבר ברשימה" not in html
+    assert "50 early-access spots" in html
 
 
 async def test_landing_page_shows_counter_above_threshold():
@@ -192,7 +203,7 @@ async def test_landing_page_shows_counter_above_threshold():
         await repo.add(name=f"u{i}", phone_number=f"+97250100{i:04d}")
     async with _client(app) as client:
         resp = await client.get("/")
-    assert "כבר ברשימה" in resp.text
+    assert "25 early-access spots" in resp.text
 
 
 async def test_og_image_endpoint_serves_png():
