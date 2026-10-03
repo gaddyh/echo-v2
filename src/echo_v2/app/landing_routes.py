@@ -38,9 +38,14 @@ __all__ = ["build_landing_router"]
 
 _logger = logging.getLogger("echo_v2.app.landing_routes")
 
-# Rate limit: max signup attempts per IP per window.
-_RATE_LIMIT_MAX = 10
-_RATE_LIMIT_WINDOW = 60  # seconds
+# Public waitlist abuse controls. These are process-local limits; production
+# deployments with multiple instances should move them to shared storage.
+_IP_SHORT_LIMIT = 5
+_IP_SHORT_WINDOW = 10 * 60  # 10 minutes
+_IP_DAILY_LIMIT = 20
+_IP_DAILY_WINDOW = 24 * 60 * 60
+_PHONE_LIMIT = 2
+_PHONE_WINDOW = 60 * 60  # 1 hour
 
 # The live counter is shown only once the list is at least this long —
 # an empty counter hurts conversion more than no counter.
@@ -94,19 +99,45 @@ def build_landing_router(
     """
     router = APIRouter()
 
-    # In-memory rate limiter: client_ip -> [timestamp, ...].
-    _rate_limiter: dict[str, list[float]] = {}
+    # In-memory limiter state. Each list contains timestamps for accepted
+    # attempts and is pruned when that key is checked.
+    _ip_attempts: dict[str, list[float]] = {}
+    _phone_attempts: dict[str, list[float]] = {}
 
-    def _check_rate_limit(client_ip: str) -> bool:
+    def _check_rate_limits(client_ip: str, phone_e164: str) -> str | None:
         now = time.time()
-        window_start = now - _RATE_LIMIT_WINDOW
-        hits = [t for t in _rate_limiter.get(client_ip, []) if t > window_start]
-        if len(hits) >= _RATE_LIMIT_MAX:
-            _rate_limiter[client_ip] = hits
-            return False
-        hits.append(now)
-        _rate_limiter[client_ip] = hits
-        return True
+        ip_hits = [
+            timestamp
+            for timestamp in _ip_attempts.get(client_ip, [])
+            if timestamp > now - _IP_DAILY_WINDOW
+        ]
+        phone_hits = [
+            timestamp
+            for timestamp in _phone_attempts.get(phone_e164, [])
+            if timestamp > now - _PHONE_WINDOW
+        ]
+        short_ip_hits = [
+            timestamp for timestamp in ip_hits if timestamp > now - _IP_SHORT_WINDOW
+        ]
+
+        if len(short_ip_hits) >= _IP_SHORT_LIMIT:
+            return "ip short window limit exceeded"
+        if len(ip_hits) >= _IP_DAILY_LIMIT:
+            return "ip daily limit exceeded"
+        if len(phone_hits) >= _PHONE_LIMIT:
+            return "phone limit exceeded"
+
+        _ip_attempts[client_ip] = [*ip_hits, now]
+        _phone_attempts[phone_e164] = [*phone_hits, now]
+        return None
+
+    def _client_ip(request: Request) -> str:
+        forwarded_for = request.headers.get("x-forwarded-for")
+        if forwarded_for:
+            # Render/Cloudflare put the original client first. Ignore any
+            # extra values rather than allowing unbounded header input in logs.
+            return forwarded_for.split(",", 1)[0].strip()[:128] or "unknown"
+        return request.client.host if request.client else "unknown"
 
     def _security_headers() -> dict[str, str]:
         return {
@@ -169,22 +200,29 @@ def build_landing_router(
 
     @router.post("/api/waitlist")
     async def waitlist_signup(body: WaitlistRequest, request: Request) -> JSONResponse:
-        client_ip = request.client.host if request.client else "unknown"
-        _logger.info(
-            "waitlist: signup request from %s — name=%r phone=%r wtp=%r "
-            "children_count=%r children_ages=%r",
-            client_ip, body.name, body.phone, body.wtp,
-            body.children_count, body.children_ages,
-        )
-        if not _check_rate_limit(client_ip):
-            _logger.warning("waitlist: rate limited %s", client_ip)
-            raise HTTPException(status_code=429, detail="rate limited")
-
+        client_ip = _client_ip(request)
+        cf_ray = request.headers.get("cf-ray", "-")[:128]
         try:
             phone_e164 = normalize_phone_e164(body.phone)
         except PhoneParseError:
-            _logger.warning("waitlist: invalid phone %r", body.phone)
+            _logger.warning(
+                "waitlist: invalid phone from ip=%s cf_ray=%s", client_ip, cf_ray
+            )
             raise HTTPException(status_code=422, detail="invalid phone number")
+
+        _logger.info(
+            "waitlist: signup request ip=%s cf_ray=%s name=%r phone=%r wtp=%r "
+            "children_count=%r children_ages=%r",
+            client_ip, cf_ray, body.name, phone_e164, body.wtp,
+            body.children_count, body.children_ages,
+        )
+        rate_limit_reason = _check_rate_limits(client_ip, phone_e164)
+        if rate_limit_reason is not None:
+            _logger.warning(
+                "waitlist: rate limited reason=%s ip=%s phone=%s cf_ray=%s",
+                rate_limit_reason, client_ip, phone_e164, cf_ray,
+            )
+            raise HTTPException(status_code=429, detail="rate limited")
 
         inserted = await waitlist_repo.add(
             name=body.name,
