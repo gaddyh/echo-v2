@@ -419,6 +419,34 @@
       line-height: 1.5;
     }
 
+    .connection {
+      padding: 0 0 88px;
+    }
+
+    .connection-card {
+      max-width: 680px;
+      margin: 0 auto;
+      padding: 30px 34px;
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      background: var(--card);
+      box-shadow: var(--shadow);
+      text-align: center;
+    }
+
+    .connection-card h2 {
+      color: var(--dark);
+      font-size: clamp(26px, 4vw, 36px);
+      line-height: 1.1;
+      letter-spacing: -0.035em;
+    }
+
+    .connection-card p {
+      max-width: 540px;
+      margin: 10px auto 0;
+      color: var(--text-secondary);
+    }
+
     /* FINAL CTA */
 
     .final-wrap {
@@ -617,7 +645,7 @@
 
       <nav>
         <div class="logo">ECHO</div>
-        <a class="nav-button" href="#start">Get Echo</a>
+        <a class="nav-button" href="#start">Join early access</a>
       </nav>
 
       <div class="hero-content">
@@ -638,11 +666,11 @@
         </p>
 
         <a class="hero-cta" href="#start">
-          Get Echo for $4.95/month →
+          Join early access →
         </a>
 
         <div class="hero-note">
-          Keep using WhatsApp exactly like you already do.
+          Early access · $4.95/month when activated
         </div>
 
       </div>
@@ -809,6 +837,15 @@
   </section>
 
 
+  <section class="connection">
+    <div class="container">
+      <div class="connection-card">
+        <h2>Connect in under a minute</h2>
+        <p>Scan a QR code just like WhatsApp Web. No password required. You can disconnect Echo anytime from WhatsApp → Linked Devices.</p>
+      </div>
+    </div>
+  </section>
+
   <section class="final-wrap container" id="start">
 
     <div class="final">
@@ -835,7 +872,7 @@
         <div id="waitlist-form-view">
           <div class="counter">Early access is limited</div>
           {{COUNTER}}
-          <h2>Get Echo before everyone else</h2>
+          <h2>Try Echo early</h2>
           <p>Leave your name and WhatsApp number. We'll message you when your spot is ready.</p>
           <form class="waitlist-form" id="waitlist-form">
             <input type="text" id="wl-name" placeholder="Full name" maxlength="80" autocomplete="name" required />
