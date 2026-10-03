@@ -37,6 +37,7 @@ async def test_landing_page_serves_html():
     assert "Early access · $4.95/month when activated" in resp.text
     assert "Connect in under a minute" in resp.text
     assert "Scan a QR code just like WhatsApp Web" in resp.text
+    assert "Try Echo early" in resp.text
     assert 'id="waitlist-form"' in resp.text
     assert 'action="/api/waitlist"' not in resp.text
     # Security headers.
