@@ -60,6 +60,9 @@ from echo_v2.persistence.conversation_state import InMemoryConversationStateRepo
 from echo_v2.persistence.settings import load_db_settings
 from echo_v2.persistence.user_resolver import PostgresUserResolver
 from echo_v2.ports.whatsapp import WhatsAppProvisioner
+from echo_v2.services.baileys_connection_state_consumer import (
+    BaileysConnectionStateConsumer,
+)
 from echo_v2.services.chat_analysis_worker import (
     ChatAnalysisProcessor,
     ChatAnalysisWorker,
@@ -235,6 +238,7 @@ def create_app() -> FastAPI:
         event_sink=LoggingEventSink(),
         bot_channel=d360_client,
         send_validator=snooze_validator,
+        baileys_event_repo=repos.baileys_events,
     )
 
     # --- time parser (regex first, LLM fallback) --------------------------
@@ -264,6 +268,21 @@ def create_app() -> FastAPI:
         lease_seconds=float(os.environ.get("SCHEDULER_LEASE_SECONDS", "300")),
         poll_interval_seconds=float(os.environ.get("SCHEDULER_POLL_INTERVAL", "5")),
     )
+
+    baileys_event_consumer: BaileysConnectionStateConsumer | None = None
+    if os.environ.get("BAILEYS_EVENT_CONSUMER_ENABLED", "false").lower() in (
+        "1", "true", "yes"
+    ):
+        baileys_event_consumer = BaileysConnectionStateConsumer(
+            repos.baileys_events,
+            poll_interval_seconds=float(
+                os.environ.get("BAILEYS_EVENT_POLL_INTERVAL_MS", "1000")
+            )
+            / 1000,
+            batch_size=int(os.environ.get("BAILEYS_EVENT_BATCH_SIZE", "50")),
+            lease_seconds=int(os.environ.get("BAILEYS_EVENT_LEASE_SECONDS", "60")),
+            max_attempts=int(os.environ.get("BAILEYS_EVENT_MAX_ATTEMPTS", "10")),
+        )
 
     # --- chat ingestion (saves messages + manages analysis queue) ----------
     # Build the Echo bot's own chat_id once, early, so ingestion, the
@@ -519,12 +538,13 @@ def create_app() -> FastAPI:
     snooze_worker_task: asyncio.Task[None] | None = None
     alert_checker_task: asyncio.Task[None] | None = None
     pool_warmup_task: asyncio.Task[None] | None = None
+    baileys_event_consumer_task: asyncio.Task[None] | None = None
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         nonlocal scheduler_task, analysis_worker_task, digest_worker_task
         nonlocal snooze_worker_task, alert_checker_task
-        nonlocal pool_warmup_task
+        nonlocal pool_warmup_task, baileys_event_consumer_task
         # Startup: recover stale actions + start scheduler loop.
         try:
             recovered = await scheduler.recover()
@@ -534,6 +554,11 @@ def create_app() -> FastAPI:
             _logger.exception("scheduler recovery failed on startup")
         scheduler_task = asyncio.create_task(scheduler.run_loop())
         _logger.info("scheduler loop started")
+        if baileys_event_consumer is not None:
+            baileys_event_consumer_task = asyncio.create_task(
+                baileys_event_consumer.run_loop()
+            )
+            _logger.info("Baileys event consumer loop started")
 
         # Start instance pool warm-up in the background (non-blocking).
         # Early users fall to the slow path if the pool isn't warm yet.
@@ -559,6 +584,13 @@ def create_app() -> FastAPI:
         yield
 
         # Shutdown: cancel the loops.
+        if baileys_event_consumer_task is not None:
+            baileys_event_consumer_task.cancel()
+            try:
+                await baileys_event_consumer_task
+            except asyncio.CancelledError:
+                pass
+            _logger.info("Baileys event consumer loop stopped")
         if alert_checker_task is not None:
             alert_checker_task.cancel()
             try:

@@ -99,6 +99,7 @@ class SchedulingService:
         event_sink: EventSink | None = None,
         bot_channel: BotChannel | None = None,
         send_validator: Any | None = None,
+        baileys_event_repo: Any | None = None,
     ) -> None:
         self._action_repo = action_repo
         self._connection_repo = connection_repo
@@ -107,6 +108,7 @@ class SchedulingService:
         self._event_sink = event_sink or NO_OP_SINK
         self._bot_channel = bot_channel
         self._send_validator = send_validator
+        self._baileys_event_repo = baileys_event_repo
 
     async def create(
         self,
@@ -322,7 +324,10 @@ class SchedulingService:
                 buttons=buttons,
             )
 
-        idempotency_key = f"bot:send:{action.user_id}:{action.id}"
+        idempotency_key = str(
+            action.payload.get("idempotency_key")
+            or f"bot:send:{action.user_id}:{action.id}"
+        )
         context = RunContext(operation_name="scheduled_bot_send")
 
         try:
@@ -343,6 +348,11 @@ class SchedulingService:
             raise
 
         provider_message_id = result.value
+        baileys_event_id = action.payload.get("baileys_event_id")
+        if self._baileys_event_repo is not None and baileys_event_id:
+            await self._baileys_event_repo.mark_notification_sent(
+                str(baileys_event_id)
+            )
         await self._action_repo.mark_succeeded(
             action.id,
             {"sent": True, "provider_message_id": provider_message_id},

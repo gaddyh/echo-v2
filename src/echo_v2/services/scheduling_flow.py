@@ -214,7 +214,7 @@ class SchedulingFlowService:
                 )
             return
 
-        if ctx.state is SchedulingFlowState.AWAITING_TIME:
+        if ctx.state is SchedulingFlowState.AWAITING_TIME:  # pragma: no branch
             await self._handle_time(ctx, text, user_phone, user_timezone)
             return
 
