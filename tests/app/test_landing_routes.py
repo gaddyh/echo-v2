@@ -61,10 +61,10 @@ async def test_waitlist_signup_success():
 
 
 async def test_waitlist_signup_normalizes_phone_variants():
-    """0546610653, 972546610653, +972546610653 all collapse to one row."""
+    """Equivalent phone formats collapse to one row."""
     app, repo = _make_app()
     async with _client(app) as client:
-        for phone in ["0546610653", "972546610653", "+972-54-661-0653"]:
+        for phone in ["0546610653", "972546610653"]:
             resp = await client.post(
                 "/api/waitlist",
                 json={"name": "דנה", "phone": phone},
@@ -114,18 +114,77 @@ async def test_waitlist_missing_fields_return_422():
     assert resp.status_code == 422
 
 
-async def test_waitlist_rate_limit():
+async def test_waitlist_rate_limit_per_ip_short_window():
     app, _ = _make_app()
     async with _client(app) as client:
-        # 10 allowed per window; the 11th is rejected.
-        for i in range(10):
+        for i in range(5):
             resp = await client.post(
                 "/api/waitlist",
-                json={"name": "דנה", "phone": f"05012345{i:02d}"},
+                headers={"x-forwarded-for": "203.0.113.10"},
+                json={"name": "דנה", "phone": f"+9725466106{i:02d}"},
             )
-            assert resp.status_code in (200, 422)
+            assert resp.status_code == 200
         resp = await client.post(
-            "/api/waitlist", json={"name": "דנה", "phone": "0509999999"},
+            "/api/waitlist",
+            headers={"x-forwarded-for": "203.0.113.10"},
+            json={"name": "דנה", "phone": "+972546611099"},
+        )
+    assert resp.status_code == 429
+
+
+async def test_waitlist_rate_limit_uses_forwarded_ip():
+    app, _ = _make_app()
+    async with _client(app) as client:
+        for i in range(5):
+            resp = await client.post(
+                "/api/waitlist",
+                headers={"x-forwarded-for": "203.0.113.11"},
+                json={"name": "דנה", "phone": f"+9725466106{i:02d}"},
+            )
+            assert resp.status_code == 200
+        resp = await client.post(
+            "/api/waitlist",
+            headers={"x-forwarded-for": "203.0.113.12"},
+            json={"name": "דנה", "phone": "+972546611099"},
+        )
+    assert resp.status_code == 200
+
+
+async def test_waitlist_rate_limit_per_phone():
+    app, _ = _make_app()
+    async with _client(app) as client:
+        for name in ["דנה", "אחר"]:
+            resp = await client.post(
+                "/api/waitlist",
+                json={"name": name, "phone": "0546610653"},
+            )
+            assert resp.status_code == 200
+        resp = await client.post(
+            "/api/waitlist", json={"name": "שלישי", "phone": "0546610653"},
+        )
+    assert resp.status_code == 429
+
+
+async def test_waitlist_rate_limit_per_ip_daily(monkeypatch):
+    from echo_v2.app import landing_routes
+
+    now = 1_000_000.0
+    monkeypatch.setattr(landing_routes.time, "time", lambda: now)
+    app, _ = _make_app()
+    async with _client(app) as client:
+        for i in range(20):
+            if i and i % 5 == 0:
+                now += 601
+            resp = await client.post(
+                "/api/waitlist",
+                headers={"x-forwarded-for": "203.0.113.13"},
+                json={"name": "דנה", "phone": f"+9725466106{i:02d}"},
+            )
+            assert resp.status_code == 200
+        resp = await client.post(
+            "/api/waitlist",
+            headers={"x-forwarded-for": "203.0.113.13"},
+            json={"name": "דנה", "phone": "+972546611099"},
         )
     assert resp.status_code == 429
 
