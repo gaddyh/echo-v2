@@ -47,6 +47,7 @@ from sqlalchemy.types import (
 )
 
 __all__ = [
+    "BaileysConnectorEventProcessingRow",
     "Base",
     "BotWebhookEventRow",
     "ChatMuteRow",
@@ -188,6 +189,43 @@ class ProviderWebhookEventRow(Base):
         TIMESTAMP(timezone=True),
         nullable=False,
         server_default=func.now(),
+    )
+
+
+# --- baileys_connector_event_processing ------------------------------------
+
+
+class BaileysConnectorEventProcessingRow(Base):
+    """Echo-owned claim and side-effect ledger for connector state events."""
+
+    __tablename__ = "baileys_connector_event_processing"
+
+    event_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    inbox_id: Mapped[int] = mapped_column(nullable=False, unique=True)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default="claimed")
+    claimed_by: Mapped[str | None] = mapped_column(Text, nullable=True)
+    claimed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    attempt_count: Mapped[int] = mapped_column(nullable=False, server_default="0")
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    processed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    notification_state: Mapped[str] = mapped_column(Text, nullable=False, server_default="none")
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('claimed','processed','failed')",
+            name="baileys_event_processing_status_check",
+        ),
+        CheckConstraint(
+            "notification_state IN ('none','pending','sent')",
+            name="baileys_event_processing_notification_check",
+        ),
+        Index(
+            "ix_baileys_event_processing_claim",
+            "status",
+            "claimed_at",
+        ),
     )
 
 

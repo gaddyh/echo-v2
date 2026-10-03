@@ -14,6 +14,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from echo_v2.app.webhooks.inbox import PostgresWebhookInbox
+from echo_v2.persistence.baileys_events import BaileysEventRepository
 from echo_v2.persistence.credential_cipher import (
     CredentialCipher,
     IdentityCredentialCipher,
@@ -67,6 +68,7 @@ class PostgresRepos:
     """Standalone Postgres repositories + a UoW factory."""
 
     connections: PostgresWhatsAppConnectionRepository
+    baileys_events: BaileysEventRepository
     green_instance_pool: PostgresGreenInstancePoolRepository
     webhooks: PostgresWebhookDedupStore
     state_webhooks: PostgresStateWebhookRepository
@@ -107,6 +109,7 @@ def build_postgres_repos(settings: DBSettings) -> PostgresRepos:
         cipher = IdentityCredentialCipher()
 
     connections = PostgresWhatsAppConnectionRepository(factory, cipher)
+    baileys_events = BaileysEventRepository(factory)
     green_instance_pool = PostgresGreenInstancePoolRepository(factory, cipher)
     webhooks = PostgresWebhookDedupStore(factory)
     state_webhooks = PostgresStateWebhookRepository(factory)
@@ -134,6 +137,7 @@ def build_postgres_repos(settings: DBSettings) -> PostgresRepos:
 
     return PostgresRepos(
         connections=connections,
+        baileys_events=baileys_events,
         green_instance_pool=green_instance_pool,
         webhooks=webhooks,
         state_webhooks=state_webhooks,

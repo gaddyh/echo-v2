@@ -36,6 +36,20 @@ async def test_baileys_provisioner_satisfies_port_protocol():
     await client.aclose()
 
 
+async def test_create_rejects_missing_id():
+    client = BaileysClient(
+        BaileysSettings("http://connector", "secret"),
+        httpx.AsyncClient(
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(201, json={"status": "provisioning"})
+            )
+        ),
+    )
+    with pytest.raises(ValueError, match="connection_id"):
+        await BaileysProvisioner(client).create_connection(_config())
+    await client.aclose()
+
+
 async def test_create_uses_opaque_id_and_empty_credentials():
     client = BaileysClient(
         BaileysSettings("http://connector", "secret"),
@@ -86,6 +100,28 @@ async def test_unknown_status_maps_to_unknown(raw):
         ConnectionRef("baileys", "c1")
     )
     assert snapshot.status is ConnectionStatus.UNKNOWN
+    await client.aclose()
+
+
+async def test_empty_qr_is_a_timeout_and_lifecycle_calls_delegate():
+    responses = iter([
+        {"outcome": "qr_ready"},
+        {},
+        {},
+    ])
+    client = BaileysClient(
+        BaileysSettings("http://connector", "secret"),
+        httpx.AsyncClient(
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(204) if request.method == "POST" else httpx.Response(200, json=next(responses))
+            )
+        ),
+    )
+    provisioner = BaileysProvisioner(client)
+    ref = ConnectionRef("baileys", "c1")
+    assert (await provisioner.get_pairing_qr(ref)).outcome is PairingOutcome.TIMEOUT
+    await provisioner.unpair(ref)
+    await provisioner.delete_connection(ref)
     await client.aclose()
 
 
