@@ -29,7 +29,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field, field_validator
 
 from echo_v2.app.landing_page import LANDING_PAGE
-from echo_v2.app.landing_page_echo_guard import LANDING_PAGE as GUARD_LANDING_PAGE
+from echo_v2.app.landing_page_echo_guard_clean import LANDING_PAGE as GUARD_LANDING_PAGE
 from echo_v2.persistence.identity import PhoneParseError, normalize_phone_e164
 from echo_v2.persistence.waitlist import WaitlistRepository
 from echo_v2.services.waitlist_notifier import WaitlistNotifier
