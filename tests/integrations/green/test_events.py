@@ -254,6 +254,27 @@ def test_parse_video_message_populates_media_fields():
     assert event.media_file_name == "clip.mp4"
 
 
+def test_parse_placeholder_media_url_is_ignored():
+    payload = _base(
+        "incomingMessageReceived",
+        chatId="9725@c.us",
+        idMessage="m-placeholder",
+        messageData={
+            "typeMessage": "documentMessage",
+            "fileMessageData": {
+                "downloadUrl": "{{SWE002}}",
+                "mimeType": "application/pdf",
+                "fileName": "report.pdf",
+            },
+        },
+    )
+    event = GreenEventAdapter().parse(payload)
+    assert isinstance(event, ProviderMessageEvent)
+    assert event.media_download_url is None
+    assert event.media_mime_type == "application/pdf"
+    assert event.media_file_name == "report.pdf"
+
+
 def test_parse_text_message_has_no_media_fields():
     payload = _base(
         "incomingMessageReceived",

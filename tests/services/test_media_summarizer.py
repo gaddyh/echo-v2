@@ -154,6 +154,13 @@ async def test_download_media_rejects_oversized(MockClient: MagicMock):
         await download_media("http://example.com/big.jpeg")
 
 
+async def test_download_media_rejects_non_http_url():
+    from echo_v2.services.media_summarizer import MediaSummaryError
+
+    with pytest.raises(MediaSummaryError, match="absolute HTTP"):
+        await download_media("{{SWE002}}")
+
+
 # --- summarize_image_bytes --------------------------------------------------
 
 

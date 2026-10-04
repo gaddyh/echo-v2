@@ -34,6 +34,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
+from urllib.parse import urlparse
 
 import httpx
 
@@ -304,6 +305,9 @@ async def download_media(
     http_client: httpx.AsyncClient | None = None,
 ) -> bytes:
     """Download a media file from a direct URL, capped at ``_MAX_DOWNLOAD_BYTES``."""
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise MediaSummaryError("media download URL must be an absolute HTTP(S) URL")
     owns_client = http_client is None
     client = http_client or httpx.AsyncClient(timeout=120, follow_redirects=True)
     try:
