@@ -26,6 +26,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import urlparse
 
 from echo_v2.integrations.green.models import map_state
 from echo_v2.ports.whatsapp import (
@@ -285,8 +286,16 @@ def _extract_media_metadata(
     if not isinstance(file_data, dict):
         return None, None, None
 
+    download_url = file_data.get("downloadUrl")
+    if not isinstance(download_url, str):
+        download_url = None
+    else:
+        parsed = urlparse(download_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            _logger.warning("provider=green invalid media download URL ignored")
+            download_url = None
     return (
-        str(file_data["downloadUrl"]) if file_data.get("downloadUrl") else None,
+        download_url,
         str(file_data["mimeType"]) if file_data.get("mimeType") else None,
         str(file_data["fileName"]) if file_data.get("fileName") else None,
     )
