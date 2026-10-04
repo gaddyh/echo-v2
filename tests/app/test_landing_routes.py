@@ -256,6 +256,25 @@ async def test_landing_page_has_og_tags_and_scarcity():
     assert "50 early-access spots" in html
 
 
+async def test_landing_page_serves_hebrew_for_israeli_country_header():
+    app, _ = _make_app()
+    async with _client(app) as client:
+        resp = await client.get("/", headers={"CF-IPCountry": "IL"})
+    assert resp.status_code == 200
+    assert '<html lang="he" dir="rtl">' in resp.text
+    assert "🔥 כבר 50 אנשים ברשימה" in resp.text
+    assert "Too Much WhatsApp?" not in resp.text
+
+
+async def test_landing_page_falls_back_to_english_without_country_header():
+    app, _ = _make_app()
+    async with _client(app) as client:
+        resp = await client.get("/", headers={"CF-IPCountry": "US"})
+    assert resp.status_code == 200
+    assert '<html lang="en">' in resp.text
+    assert "50 early-access spots" in resp.text
+
+
 async def test_landing_page_shows_counter_above_threshold():
     """When the list crosses the threshold, the live counter appears."""
     from echo_v2.app import landing_routes
