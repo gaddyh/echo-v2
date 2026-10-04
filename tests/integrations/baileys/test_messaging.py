@@ -31,3 +31,18 @@ async def test_send_message_delegates_provider_connection_id() -> None:
     assert client.calls == [
         ("connection-1", "15551234567@s.whatsapp.net", "hello")
     ]
+
+
+async def test_send_message_translates_green_phone_jid() -> None:
+    client = FakeBaileysClient()
+    messaging = BaileysMessaging(client)  # type: ignore[arg-type]
+
+    await messaging.send_message(
+        ConnectionRef("baileys", "connection-1"),
+        "15551234567@c.us",
+        "hello",
+    )
+
+    assert client.calls == [
+        ("connection-1", "15551234567@s.whatsapp.net", "hello")
+    ]
