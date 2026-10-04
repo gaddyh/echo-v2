@@ -13,12 +13,12 @@ The service is the trust-critical core of Step 1 (Scheduled). It:
 * Records terminal status (SUCCEEDED / FAILED / INDETERMINATE) and the
   provider message id for delivery tracking.
 
-The idempotency key is ``green:send:{user_id}:{action_id}``. This is the
+The idempotency key is ``whatsapp:send:{user_id}:{action_id}``. This is the
 *logical message identity*: all retries/restarts of the same scheduled
 action use the same key. If the send already succeeded, the idempotency
 store short-circuits and returns the cached ``provider_message_id``
-without calling Green again. If the previous attempt was indeterminate,
-the store replays the indeterminate outcome (raises
+without calling the provider again. If the previous attempt was
+indeterminate, the store replays the indeterminate outcome (raises
 :class:`IndeterminateError`) — we do not blindly retry.
 """
 
@@ -182,7 +182,7 @@ class SchedulingService:
     async def execute(self, action: ScheduledAction) -> str:
         """Execute a scheduled action.
 
-        For ``SEND_WHATSAPP_MESSAGE``: resolves the user's Green connection,
+        For ``SEND_WHATSAPP_MESSAGE``: resolves the user's WhatsApp connection,
         runs the send via ``runtime.execute(EXTERNAL_WRITE)`` with idempotency.
 
         For ``SEND_BOT_MESSAGE``: sends a reminder via the bot channel
@@ -192,13 +192,13 @@ class SchedulingService:
         Raises ``ValueError`` for unsupported action types.
         """
         if action.type is ScheduledActionType.SEND_WHATSAPP_MESSAGE:
-            return await self._execute_green_send(action)
+            return await self._execute_whatsapp_send(action)
         if action.type is ScheduledActionType.SEND_BOT_MESSAGE:
             return await self._execute_bot_send(action)
         raise ValueError(f"unsupported action type: {action.type}")
 
-    async def _execute_green_send(self, action: ScheduledAction) -> str:
-        """Execute a Green API WhatsApp message send with idempotency."""
+    async def _execute_whatsapp_send(self, action: ScheduledAction) -> str:
+        """Execute a provider-neutral WhatsApp message send with idempotency."""
         # Resolve the user's WhatsApp connection at execution time.
         conn = await self._connection_repo.get_by_user(action.user_id)
         if conn is None:
@@ -218,7 +218,7 @@ class SchedulingService:
             chat_id=chat_id,
             message=message,
         )
-        idempotency_key = f"green:send:{action.user_id}:{action.id}"
+        idempotency_key = f"whatsapp:send:{action.user_id}:{action.id}"
         context = RunContext(operation_name="scheduled_send")
 
         try:

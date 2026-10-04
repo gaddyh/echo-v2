@@ -332,7 +332,7 @@ async def test_idempotency_key_includes_user_and_action_id():
     await service._action_repo.save(action)
     await service.execute(action)
 
-    cached = await idempotency.get("green:send:user-1:act-xyz")
+    cached = await idempotency.get("whatsapp:send:user-1:act-xyz")
     assert cached is not None
     assert cached.value == "MSG_1"
 

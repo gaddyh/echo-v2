@@ -46,6 +46,7 @@ from echo_v2.app.webhooks.green import (
     build_router as build_green_router,
 )
 from echo_v2.integrations.baileys.client import BaileysClient, BaileysMediaUrlResolver
+from echo_v2.integrations.baileys.messaging import BaileysMessaging
 from echo_v2.integrations.baileys.provisioner import BaileysProvisioner
 from echo_v2.integrations.baileys.settings import load_settings as load_baileys_settings
 from echo_v2.integrations.dialog360.client import Dialog360Client
@@ -59,7 +60,7 @@ from echo_v2.persistence.compose import build_postgres_repos
 from echo_v2.persistence.conversation_state import InMemoryConversationStateRepository
 from echo_v2.persistence.settings import load_db_settings
 from echo_v2.persistence.user_resolver import PostgresUserResolver
-from echo_v2.ports.whatsapp import WhatsAppProvisioner
+from echo_v2.ports.whatsapp import WhatsAppMessaging, WhatsAppProvisioner
 from echo_v2.services.baileys_connection_state_consumer import (
     BaileysConnectionStateConsumer,
 )
@@ -150,33 +151,27 @@ def create_app() -> FastAPI:
     ensure_hash_key_or_fail()
     openai_client, raw_openai_client = _build_openai_client()
 
-    # --- Green (user's WhatsApp — sends scheduled messages) ---------------
-    green_settings = load_green_settings()
-    green_client = GreenClient(settings=green_settings)
-    green_messaging = GreenMessaging(
-        client=green_client,
-        credential_resolver=repos.connections,
-    )
-
-    # --- 360dialog (Echo Business Bot — conversational interface) ---------
-    d360_settings = Dialog360Settings()
-    d360_client = Dialog360Client(settings=d360_settings)
-
-    # --- onboarding service (OTP-based WhatsApp onboarding) ---------------
+    # --- provider clients (user's WhatsApp — sends scheduled messages) -----
     from echo_v2.integrations.green.provisioner import GreenProvisioner
-    from echo_v2.persistence.user_repository import PostgresUserRepository
-    from echo_v2.services.green_instance_pool import GreenInstancePool
-    from echo_v2.services.onboarding import OnboardingService
 
-    user_repo = PostgresUserRepository(repos.session_factory)
+    # Provider selection is needed by both onboarding and scheduled sends.
     whatsapp_provider = os.environ.get("WHATSAPP_PROVIDER", "green").lower()
+    green_client: GreenClient | None = None
     baileys_client: BaileysClient | None = None
+    messaging: WhatsAppMessaging
     provisioner: WhatsAppProvisioner
     green_provisioner: GreenProvisioner | None = None
     if whatsapp_provider == "baileys":
         baileys_client = BaileysClient(load_baileys_settings())
+        messaging = BaileysMessaging(baileys_client)
         provisioner = BaileysProvisioner(baileys_client)
     elif whatsapp_provider == "green":
+        green_settings = load_green_settings()
+        green_client = GreenClient(settings=green_settings)
+        messaging = GreenMessaging(
+            client=green_client,
+            credential_resolver=repos.connections,
+        )
         green_provisioner = GreenProvisioner(
             client=green_client,
             credential_resolver=repos.connections,
@@ -184,6 +179,17 @@ def create_app() -> FastAPI:
         provisioner = green_provisioner
     else:
         raise ValueError(f"unsupported WHATSAPP_PROVIDER: {whatsapp_provider}")
+
+    # --- 360dialog (Echo Business Bot — conversational interface) ---------
+    d360_settings = Dialog360Settings()
+    d360_client = Dialog360Client(settings=d360_settings)
+
+    # --- onboarding service (OTP-based WhatsApp onboarding) ---------------
+    from echo_v2.persistence.user_repository import PostgresUserRepository
+    from echo_v2.services.green_instance_pool import GreenInstancePool
+    from echo_v2.services.onboarding import OnboardingService
+
+    user_repo = PostgresUserRepository(repos.session_factory)
     webhook_base_url = os.environ.get(
         "ECHO_WEBHOOK_BASE_URL",
         "https://i-me.onrender.com",
@@ -196,6 +202,7 @@ def create_app() -> FastAPI:
     pool: GreenInstancePool | None = None
     if whatsapp_provider == "green" and pool_size > 0:
         assert green_provisioner is not None
+        assert green_client is not None
         pool = GreenInstancePool(
             provisioner=green_provisioner,
             green_client=green_client,
@@ -234,7 +241,7 @@ def create_app() -> FastAPI:
     scheduling_service = SchedulingService(
         action_repo=repos.scheduled_actions,
         connection_repo=repos.connections,
-        messaging=green_messaging,
+        messaging=messaging,
         idempotency_store=idempotency_store,
         event_sink=LoggingEventSink(),
         bot_channel=d360_client,
