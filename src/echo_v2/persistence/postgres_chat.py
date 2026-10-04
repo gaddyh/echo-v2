@@ -383,10 +383,20 @@ class PostgresChatStateRepository:
                         "updated_at": datetime.now(timezone.utc),
                         **({"chat_name": chat_name} if chat_name else {}),
                     },
+                    where=ChatRow.last_message_at <= observed_at,
                 )
                 .returning(ChatRow)
             )
-            row = (await session.execute(stmt)).scalar_one()
+            row = (await session.execute(stmt)).scalar_one_or_none()
+            if row is None:
+                row = (
+                    await session.execute(
+                        select(ChatRow).where(
+                            ChatRow.user_id == user_id,
+                            ChatRow.chat_id == chat_id,
+                        )
+                    )
+                ).scalar_one()
             return self._row_to_domain(row)
 
     async def list_due(self, now: datetime, *, limit: int = 20) -> list[ChatState]:
@@ -677,6 +687,7 @@ class PostgresIngestionRepository:
                             "updated_at": datetime.now(timezone.utc),
                             **({"chat_name": chat_name} if chat_name else {}),
                         },
+                        where=ChatRow.last_message_at <= observed_at,
                     )
                 )
                 await session.execute(chat_stmt)

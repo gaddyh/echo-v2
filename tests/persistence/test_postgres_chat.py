@@ -163,6 +163,34 @@ async def test_chat_upsert_increments_activity_version(chat_state_repo, session_
     assert chat2.activity_version == 2
 
 
+async def test_chat_upsert_does_not_move_head_backward(
+    chat_state_repo, session_factory
+):
+    user_id = await insert_user(session_factory)
+    newest = datetime(2026, 9, 10, 12, 10, tzinfo=timezone.utc)
+    older = datetime(2026, 9, 10, 12, 0, tzinfo=timezone.utc)
+
+    first = await chat_state_repo.upsert_on_message(
+        user_id=user_id,
+        chat_id="972501234567@c.us",
+        direction=MessageDirection.INBOUND,
+        observed_at=newest,
+        next_analysis_at=newest + timedelta(minutes=5),
+    )
+    second = await chat_state_repo.upsert_on_message(
+        user_id=user_id,
+        chat_id="972501234567@c.us",
+        direction=MessageDirection.OUTBOUND,
+        observed_at=older,
+        next_analysis_at=older + timedelta(minutes=5),
+    )
+
+    assert second.activity_version == first.activity_version
+    assert second.last_message_at == newest
+    assert second.last_direction is MessageDirection.INBOUND
+    assert second.next_analysis_at == newest + timedelta(minutes=5)
+
+
 async def test_chat_upsert_outbound_after_inbound_schedules_analysis(
     chat_state_repo, session_factory
 ):

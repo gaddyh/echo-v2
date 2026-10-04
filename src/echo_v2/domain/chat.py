@@ -75,15 +75,15 @@ class Message:
 class ChatState:
     """Compact per-chat state that also serves as the analysis queue.
 
-    ``activity_version`` increments on every new message. ``next_analysis_at``
-    is set to ``now + quiet_period`` on inbound messages and ``None`` on
-    outbound (cancelling pending analysis). The worker polls for chats
-    where ``next_analysis_at <= now()`` and ``activity_version >
-    last_processed_version``.
+    ``activity_version`` increments when a new message advances the chat
+    head. ``next_analysis_at`` is set to the latest provider message
+    timestamp plus the quiet period for both inbound and outbound messages.
+    Older out-of-order messages are persisted but do not move the chat head.
+    The worker polls chats where ``next_analysis_at <= now()`` and
+    ``activity_version > last_processed_version``.
 
-    ``last_message_at`` uses ingestion time (``now()``), not the
-    provider-reported timestamp — out-of-order webhook handling is
-    deferred until we observe it in practice.
+    ``last_message_at`` is the provider-reported timestamp of the latest
+    message, not ingestion/consumption time.
     """
 
     user_id: str

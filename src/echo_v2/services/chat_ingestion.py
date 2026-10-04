@@ -14,10 +14,10 @@ them can never leave a message without a version bump.
 
 The service owns the business logic:
 
-* Computing ``next_analysis_at`` from ``quiet_period`` + direction.
-  Both inbound and outbound schedule analysis after the quiet period —
-  direction alone does not determine resolution. The LLM decides whether
-  the waiting state persists.
+* Computing ``next_analysis_at`` from the provider message timestamp plus
+  ``quiet_period``. Both inbound and outbound schedule analysis after the
+  quiet period — direction alone does not determine resolution. The LLM
+  decides whether the waiting state persists.
 * Filtering private/group chats (``private_only`` flag, default
   ``True`` — Green ``chat_id`` suffix ``@c.us`` = private, ``@g.us`` =
   group).
@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 
 from echo_v2.persistence.chat_repositories import IngestionRepository
 from echo_v2.ports.whatsapp import ProviderMessageEvent
@@ -95,11 +95,12 @@ class ChatIngestionService:
         if self._private_only and is_group:
             return False
 
-        now = datetime.now(timezone.utc)
+        message_time = event.timestamp
         # Both inbound and outbound schedule analysis after the quiet
         # period. Direction alone does not determine resolution — the
-        # LLM decides whether the waiting state persists.
-        next_analysis_at = now + timedelta(seconds=self._quiet_period)
+        # LLM decides whether the waiting state persists. Use provider time,
+        # not consumption time, so replayed events do not extend the debounce.
+        next_analysis_at = message_time + timedelta(seconds=self._quiet_period)
 
         from echo_v2.domain.chat import Message
 
@@ -126,7 +127,7 @@ class ChatIngestionService:
         return await self._ingestion_repo.ingest_if_new(
             message=message,
             direction=event.direction,
-            observed_at=now,
+            observed_at=message_time,
             next_analysis_at=next_analysis_at,
             chat_name=event.chat_name,
         )

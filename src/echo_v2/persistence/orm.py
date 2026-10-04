@@ -517,11 +517,11 @@ class MessageRow(Base):
 class ChatRow(Base):
     """Compact per-chat state that also serves as the analysis queue.
 
-    ``activity_version`` increments on every new message.
-    ``next_analysis_at`` is set to ``now + quiet_period`` on inbound
-    messages and ``NULL`` on outbound (cancelling pending analysis).
-    The worker polls for chats where ``next_analysis_at <= now()`` and
-    ``activity_version > last_processed_version``.
+    ``activity_version`` increments when a new message advances the chat
+    head. ``next_analysis_at`` is derived from the latest provider message
+    timestamp plus the quiet period for both directions. Older out-of-order
+    messages do not move the chat head. The worker polls for chats where
+    ``next_analysis_at <= now()`` and ``activity_version > last_processed_version``.
 
     Keyed by ``(user_id, chat_id)`` — sufficient for POC (one Green
     connection per user). ``connection_id`` stays in ``messages`` for

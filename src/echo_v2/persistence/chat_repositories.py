@@ -374,7 +374,7 @@ class InMemoryChatStateRepository:
                 last_processed_version=0,
                 chat_name=chat_name,
             )
-        else:
+        elif observed_at >= existing.last_message_at:
             chat = ChatState(
                 user_id=user_id,
                 chat_id=chat_id,
@@ -385,6 +385,8 @@ class InMemoryChatStateRepository:
                 last_processed_version=existing.last_processed_version,
                 chat_name=chat_name or existing.chat_name,
             )
+        else:
+            chat = existing
         self._chats[key] = chat
         return chat
 
