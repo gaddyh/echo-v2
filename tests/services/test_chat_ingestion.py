@@ -27,6 +27,7 @@ def _make_event(
     provider_message_id: str = "msg-1",
     direction: MessageDirection = MessageDirection.INBOUND,
     text: str = "hello",
+    timestamp: datetime = datetime(2026, 9, 10, 12, 0, 0, tzinfo=timezone.utc),
 ) -> ProviderMessageEvent:
     return ProviderMessageEvent(
         event_id=f"incomingMessageReceived:green:conn1:{provider_message_id}",
@@ -35,7 +36,7 @@ def _make_event(
         provider_message_id=provider_message_id,
         direction=direction,
         source=None,
-        timestamp=datetime(2026, 9, 10, 12, 0, 0, tzinfo=timezone.utc),
+        timestamp=timestamp,
         kind=MessageKind.TEXT,
         text=text,
     )
@@ -80,23 +81,19 @@ async def test_inbound_new_message_saves_and_schedules():
     assert chat.next_analysis_at is not None
 
 
-async def test_inbound_next_analysis_at_is_now_plus_quiet_period():
+async def test_inbound_next_analysis_at_uses_message_timestamp():
     service = _make_service(quiet_period_seconds=600)
-    event = _make_event()
+    message_time = datetime(2026, 9, 10, 12, 0, 0, tzinfo=timezone.utc)
+    event = _make_event(timestamp=message_time)
 
-    before = datetime.now(timezone.utc)
     await service.ingest_message(
         event, user_id="user-1", connection_id="conn-uuid-1"
     )
-    after = datetime.now(timezone.utc)
 
     chat = await service._chat_state_repo.get("user-1", "972501234567@c.us")
     assert chat is not None
-    assert chat.next_analysis_at is not None
-    # next_analysis_at should be ~now + 600s
-    min_expected = before + timedelta(seconds=600)
-    max_expected = after + timedelta(seconds=600)
-    assert min_expected <= chat.next_analysis_at <= max_expected
+    assert chat.last_message_at == message_time
+    assert chat.next_analysis_at == message_time + timedelta(seconds=600)
 
 
 # --- Duplicate message -----------------------------------------------------
@@ -148,6 +145,59 @@ async def test_outbound_message_schedules_analysis():
     assert chat.next_analysis_at is not None  # outbound also schedules
 
 
+async def test_older_new_message_is_persisted_without_moving_chat_head():
+    service = _make_service(quiet_period_seconds=300)
+    newest_time = datetime(2026, 9, 10, 12, 10, tzinfo=timezone.utc)
+    older_time = datetime(2026, 9, 10, 12, 0, tzinfo=timezone.utc)
+
+    await service.ingest_message(
+        _make_event(provider_message_id="newest", timestamp=newest_time),
+        user_id="user-1",
+        connection_id="conn-uuid-1",
+    )
+    first = await service._chat_state_repo.get("user-1", "972501234567@c.us")
+    assert first is not None
+
+    assert await service.ingest_message(
+        _make_event(provider_message_id="late", timestamp=older_time),
+        user_id="user-1",
+        connection_id="conn-uuid-1",
+    ) is True
+
+    chat = await service._chat_state_repo.get("user-1", "972501234567@c.us")
+    assert chat is not None
+    assert chat.activity_version == first.activity_version
+    assert chat.last_message_at == newest_time
+    assert chat.next_analysis_at == newest_time + timedelta(minutes=5)
+    stored = await service._message_repo.list_recent_for_chat(
+        user_id="user-1", chat_id="972501234567@c.us"
+    )
+    assert {message.provider_message_id for message in stored} == {"newest", "late"}
+
+
+async def test_newer_message_moves_chat_head_from_older_message():
+    service = _make_service(quiet_period_seconds=300)
+    older_time = datetime(2026, 9, 10, 12, 0, tzinfo=timezone.utc)
+    newer_time = datetime(2026, 9, 10, 12, 10, tzinfo=timezone.utc)
+
+    await service.ingest_message(
+        _make_event(provider_message_id="older", timestamp=older_time),
+        user_id="user-1",
+        connection_id="conn-uuid-1",
+    )
+    await service.ingest_message(
+        _make_event(provider_message_id="newer", timestamp=newer_time),
+        user_id="user-1",
+        connection_id="conn-uuid-1",
+    )
+
+    chat = await service._chat_state_repo.get("user-1", "972501234567@c.us")
+    assert chat is not None
+    assert chat.activity_version == 2
+    assert chat.last_message_at == newer_time
+    assert chat.next_analysis_at == newer_time + timedelta(minutes=5)
+
+
 # --- Private-only filtering ------------------------------------------------
 
 
@@ -195,8 +245,14 @@ async def test_second_inbound_moves_next_analysis_at_forward():
     """A second inbound message increments the version and pushes
     next_analysis_at forward."""
     service = _make_service(quiet_period_seconds=300)
-    event1 = _make_event(provider_message_id="msg-1")
-    event2 = _make_event(provider_message_id="msg-2")
+    event1 = _make_event(
+        provider_message_id="msg-1",
+        timestamp=datetime(2026, 9, 10, 12, 0, tzinfo=timezone.utc),
+    )
+    event2 = _make_event(
+        provider_message_id="msg-2",
+        timestamp=datetime(2026, 9, 10, 12, 1, tzinfo=timezone.utc),
+    )
 
     await service.ingest_message(
         event1, user_id="user-1", connection_id="conn-uuid-1"
