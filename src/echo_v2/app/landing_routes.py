@@ -52,6 +52,7 @@ _PHONE_WINDOW = 60 * 60  # 1 hour
 _COUNTER_DISPLAY_THRESHOLD = 25
 
 _OG_IMAGE_PATH = Path(__file__).parent / "static" / "og.png"
+_HEBREW_LANDING_PATH = Path(__file__).resolve().parents[3] / "root" / "he" / "index.html"
 # The source asset has no extension but is a valid PNG; keep the public URL
 # versioned so future artwork can use og-guard-v3.png without cache ambiguity.
 _OG_GUARD_IMAGE_PATH = Path(__file__).parent / "static" / "og.guard.png"
@@ -152,15 +153,29 @@ def build_landing_router(
         }
 
     @router.get("/", response_class=HTMLResponse)
-    async def landing() -> HTMLResponse:
+    async def landing(request: Request) -> HTMLResponse:
+        raw_country = request.headers.get("cf-ipcountry", "").strip().upper()
+        country = raw_country[:16] if raw_country.isalnum() else "invalid"
+        language = "he" if country == "IL" else "en"
+        _logger.info(
+            "landing request: country=%s cf_ray_present=%s language=%s",
+            country or "missing",
+            bool(request.headers.get("cf-ray")),
+            language,
+        )
+
         count = await waitlist_repo.count()
         # Keep the early-access form useful before the list has real volume;
         # once the live list reaches the threshold, show its actual count.
         display_count = max(count, 50) if count < _COUNTER_DISPLAY_THRESHOLD else count
-        counter_html = f'<div class="counter">🔥 {display_count} early-access spots</div>'
+        if language == "he":
+            counter_html = f'<div class="counter">🔥 כבר {display_count} אנשים ברשימה</div>'
+            page = _HEBREW_LANDING_PATH.read_text(encoding="utf-8")
+        else:
+            counter_html = f'<div class="counter">🔥 {display_count} early-access spots</div>'
+            page = LANDING_PAGE
         html = (
-            LANDING_PAGE
-            .replace("{{COUNTER}}", counter_html)
+            page.replace("{{COUNTER}}", counter_html)
             .replace("{{BASE_URL}}", base_url.rstrip("/"))
         )
         return HTMLResponse(content=html, headers=_security_headers())
