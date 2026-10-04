@@ -39,6 +39,39 @@ async def test_client_calls_connector_with_bearer_and_paths():
     await client.aclose()
 
 
+async def test_send_message_posts_text_and_returns_provider_id() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"provider_message_id": "baileys-msg-1"})
+
+    client = _client(handler)
+    assert (
+        await client.send_message("c1", "15551234567@s.whatsapp.net", "hello")
+        == "baileys-msg-1"
+    )
+    assert requests[0].url.path == "/connections/c1/messages"
+    assert requests[0].read() == (
+        b'{"chat_id":"15551234567@s.whatsapp.net","message":"hello"}'
+    )
+    await client.aclose()
+
+
+async def test_send_message_rejects_missing_provider_id() -> None:
+    client = _client(lambda request: httpx.Response(200, json={}))
+    with pytest.raises(PermanentError, match="provider_message_id"):
+        await client.send_message("c1", "chat", "hello")
+    await client.aclose()
+
+
+async def test_send_message_server_error_is_indeterminate() -> None:
+    client = _client(lambda request: httpx.Response(500))
+    with pytest.raises(IndeterminateError):
+        await client.send_message("c1", "chat", "hello")
+    await client.aclose()
+
+
 async def test_get_media_url_and_resolver_use_reference() -> None:
     requests: list[httpx.Request] = []
 

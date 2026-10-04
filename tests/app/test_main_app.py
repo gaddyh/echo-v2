@@ -88,6 +88,20 @@ def test_create_app_returns_fastapi_instance(monkeypatch, postgres_url):
     assert isinstance(app, FastAPI)
 
 
+def test_create_app_baileys_provider_does_not_require_green_credentials(
+    monkeypatch, postgres_url
+):
+    _set_required_env(monkeypatch, postgres_url)
+    monkeypatch.setenv("WHATSAPP_PROVIDER", "baileys")
+    monkeypatch.setenv("BAILEYS_CONNECTOR_TOKEN", "dummy-baileys-token")
+    monkeypatch.delenv("GREEN_API_PARTNER_TOKEN", raising=False)
+
+    from echo_v2.app.main import create_app
+
+    app = create_app()
+    assert isinstance(app, FastAPI)
+
+
 def test_create_app_has_expected_routes(monkeypatch, postgres_url):
     """create_app() registers all expected routes."""
     _set_required_env(monkeypatch, postgres_url)

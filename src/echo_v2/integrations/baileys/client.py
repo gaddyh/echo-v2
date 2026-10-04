@@ -71,6 +71,27 @@ class BaileysClient:
             "GET", f"/connections/{connection_id}/qr", operation="get_qr",
         )
 
+    async def send_message(
+        self,
+        connection_id: str,
+        chat_id: str,
+        message: str,
+    ) -> str:
+        """Send a text message through the connected WhatsApp device."""
+        data = await self._request_json(
+            "POST",
+            f"/connections/{connection_id}/messages",
+            operation="send_message",
+            json_body={"chat_id": chat_id, "message": message},
+            write=True,
+        )
+        provider_message_id = data.get("provider_message_id")
+        if not isinstance(provider_message_id, str) or not provider_message_id:
+            raise BaileysConnectorError(
+                "Baileys connector response missing provider_message_id"
+            )
+        return provider_message_id
+
     async def get_media_url(self, connection_id: str, media_reference: str) -> str:
         data = await self._request_json(
             "GET",

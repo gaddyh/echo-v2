@@ -21,7 +21,7 @@ honors the same token contract, so runtime tests exercise the real protocol.
 
 Idempotency keys are treated as opaque strings by the runtime. Callers are
 responsible for globally meaningful, namespaced keys, e.g.
-``green:send:{user_id}:{logical_message_id}``. The critical word is *logical
+``whatsapp:send:{user_id}:{logical_message_id}``. The critical word is *logical
 message ID*, not request attempt ID: all retries/restarts of the same logical
 send must use the same key. Unrelated operations must not share a key.
 
