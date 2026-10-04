@@ -8,6 +8,7 @@ import uuid
 import pytest
 from sqlalchemy import text
 
+from echo_v2.integrations.baileys.events import BaileysMessageEvent
 from echo_v2.persistence.baileys_events import BaileysEventRepository
 from echo_v2.ports.whatsapp import ConnectionStatus
 
@@ -59,6 +60,7 @@ async def test_consumer_claims_updates_and_enqueues_once(
     connector_id = str(uuid.uuid4())
     event_id = f"state:{connector_id}:42"
     payload = {
+        "schema_version": 1,
         "event_type": "connection_state",
         "event_id": event_id,
         "provider": "baileys",
@@ -186,3 +188,66 @@ async def test_consumer_claims_updates_and_enqueues_once(
         await session.commit()
     connected_claim = (await repository.claim_batch("worker-3", batch_size=50, lease_seconds=60))[0]
     assert await repository.process_claimed_event(connected_claim, notification_message="reauth") is False
+
+
+async def test_message_event_claim_and_connection_resolution(session_factory, clean_db):
+    await _create_connector_tables(session_factory)
+    user_id = str(uuid.uuid4())
+    connection_id = str(uuid.uuid4())
+    connector_id = str(uuid.uuid4())
+    event_id = f"message:{connector_id}:message:in"
+    payload = {
+        "schema_version": 1,
+        "event_type": "message",
+        "event_id": event_id,
+        "provider": "baileys",
+        "connection_id": connector_id,
+        "chat_id": "15551234567@s.whatsapp.net",
+        "is_group": False,
+        "provider_message_id": "message",
+        "direction": "inbound",
+        "source": None,
+        "timestamp": "2026-10-03T00:00:00Z",
+        "kind": "text",
+        "text": "hello",
+    }
+    async with session_factory() as session:
+        await session.execute(
+            text("INSERT INTO users(id, phone_number, onboarding_status) VALUES (:id, :phone, 'active')"),
+            {"id": user_id, "phone": "972500000002"},
+        )
+        await session.execute(
+            text(
+                """
+                INSERT INTO whatsapp_connections(
+                    id, user_id, provider, provider_connection_id, credentials,
+                    webhook_token_hash, connection_status, provider_raw_status
+                ) VALUES(:id, :user_id, 'baileys', :provider_id, :credentials, :hash, 'connected', 'open')
+                """
+            ),
+            {"id": connection_id, "user_id": user_id, "provider_id": connector_id, "credentials": b"", "hash": b""},
+        )
+        await session.execute(
+            text("INSERT INTO whatsapp_connector.connections(id, status) VALUES (:id, 'connected')"),
+            {"id": connector_id},
+        )
+        await session.execute(
+            text(
+                """
+                INSERT INTO whatsapp_connector.event_inbox(event_id, connection_id, event_type, payload)
+                VALUES (:event_id, :connection_id, 'message', CAST(:payload AS jsonb))
+                """
+            ),
+            {"event_id": event_id, "connection_id": connector_id, "payload": json.dumps(payload)},
+        )
+        await session.commit()
+
+    repository = BaileysEventRepository(session_factory)
+    claimed = await repository.claim_batch(
+        "message-worker", batch_size=10, lease_seconds=60, event_type="message"
+    )
+    assert len(claimed) == 1
+    envelope = claimed[0].event
+    event = BaileysMessageEvent.from_payload(envelope.payload)
+    assert await repository.resolve_message_user(event) == (user_id, connection_id)
+    assert await repository.complete_claimed_event(claimed[0]) is True

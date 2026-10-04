@@ -7,16 +7,31 @@ from typing import Any
 
 import httpx
 
+from echo_v2.domain.chat import Message
 from echo_v2.integrations.baileys.settings import BaileysSettings
 from echo_v2.runtime.errors import IndeterminateError, PermanentError, RetryableError
 
-__all__ = ["BaileysClient", "BaileysConnectorError"]
+__all__ = ["BaileysClient", "BaileysConnectorError", "BaileysMediaUrlResolver"]
 
 _logger = logging.getLogger("echo_v2.baileys.client")
 
 
 class BaileysConnectorError(PermanentError):
     """A connector response that cannot be recovered by retrying."""
+
+
+class BaileysMediaUrlResolver:
+    def __init__(self, client: BaileysClient) -> None:
+        self._client = client
+
+    async def resolve(self, message: Message) -> str | None:
+        reference = message.media_reference
+        if reference is None:
+            return None
+        parts = reference.split(":", 2)
+        if len(parts) != 3 or parts[0] != "baileys":
+            raise BaileysConnectorError("invalid Baileys media reference")
+        return await self._client.get_media_url(parts[1], reference)
 
 
 class BaileysClient:
@@ -56,6 +71,18 @@ class BaileysClient:
             "GET", f"/connections/{connection_id}/qr", operation="get_qr",
         )
 
+    async def get_media_url(self, connection_id: str, media_reference: str) -> str:
+        data = await self._request_json(
+            "GET",
+            f"/connections/{connection_id}/media-url",
+            operation="get_media_url",
+            query_params={"reference": media_reference},
+        )
+        url = data.get("media_download_url")
+        if not isinstance(url, str) or not url:
+            raise BaileysConnectorError("Baileys connector returned an empty media URL")
+        return url
+
     async def unpair(self, connection_id: str) -> None:
         await self._request_json(
             "POST", f"/connections/{connection_id}/unpair", operation="unpair",
@@ -75,6 +102,7 @@ class BaileysClient:
         *,
         operation: str,
         json_body: dict[str, Any] | None = None,
+        query_params: dict[str, str] | None = None,
         write: bool = False,
         allow_empty: bool = False,
     ) -> dict[str, Any]:
@@ -84,6 +112,7 @@ class BaileysClient:
                 method,
                 url,
                 headers={"Authorization": f"Bearer {self._settings.internal_api_token}"},
+                params=query_params,
                 json=json_body,
             )
         except (httpx.TimeoutException, httpx.NetworkError) as exc:

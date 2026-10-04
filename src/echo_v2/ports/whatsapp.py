@@ -278,6 +278,8 @@ class ProviderMessageEvent:
     sender_id: str | None = None
     sender_name: str | None = None
     chat_name: str | None = None
+    is_group: bool | None = None
+    media_reference: str | None = None
     media_download_url: str | None = None
     media_mime_type: str | None = None
     media_file_name: str | None = None

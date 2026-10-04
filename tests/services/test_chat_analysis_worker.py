@@ -866,6 +866,43 @@ async def test_safe_process_chat_inputs_returns_hashes_when_chat_present():
 # --- _transcribe_audio_messages defensive None check (line 344) --------------
 
 
+class _MediaResolver:
+    def __init__(self, *, fail: bool = False) -> None:
+        self.fail = fail
+        self.calls: list[str] = []
+
+    async def resolve(self, message: Message) -> str | None:
+        self.calls.append(message.id)
+        if self.fail:
+            raise RuntimeError("expired")
+        return "https://connector.test/refreshed"
+
+
+async def test_refresh_media_urls_updates_reference_and_handles_failure():
+    repo = InMemoryMessageRepository()
+    analyzer = MagicMock()
+    resolver = _MediaResolver()
+    processor = ChatAnalysisProcessor(
+        message_repo=repo,
+        analyzer=analyzer,
+        media_url_resolver=resolver,
+    )
+    message = _make_audio_msg(media_reference="baileys:c1:audio-1", media_download_url=None)
+    await processor._refresh_media_urls([message])
+    assert message.media_download_url == "https://connector.test/refreshed"
+    assert resolver.calls == [message.id]
+
+    failed = _MediaResolver(fail=True)
+    processor = ChatAnalysisProcessor(
+        message_repo=repo,
+        analyzer=analyzer,
+        media_url_resolver=failed,
+    )
+    message = _make_audio_msg(media_reference="baileys:c1:audio-2", media_download_url=None)
+    await processor._refresh_media_urls([message])
+    assert message.media_download_url is None
+
+
 async def test_transcribe_audio_messages_warns_when_transcriber_none():
     """_transcribe_audio_messages logs warning when transcriber is None (defensive)."""
     repo = InMemoryMessageRepository()

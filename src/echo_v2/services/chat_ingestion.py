@@ -87,8 +87,12 @@ class ChatIngestionService:
         if event.chat_id in self._excluded_chat_ids:
             return False
 
-        # Skip group chats if configured for private only.
-        if self._private_only and not event.chat_id.endswith("@c.us"):
+        # Prefer provider-supplied classification. The suffix fallback keeps
+        # older Green events compatible without rewriting provider chat IDs.
+        is_group = event.is_group
+        if is_group is None:
+            is_group = event.chat_id.endswith("@g.us")
+        if self._private_only and is_group:
             return False
 
         now = datetime.now(timezone.utc)
@@ -107,11 +111,13 @@ class ChatIngestionService:
             provider_message_id=event.provider_message_id,
             direction=event.direction,
             sender_id=event.sender_id,
+            source=event.source,
             sender_name=event.sender_name,
             chat_name=event.chat_name,
             timestamp=event.timestamp,
             message_type=event.kind.value,
             text=event.text,
+            media_reference=event.media_reference,
             media_download_url=event.media_download_url,
             media_mime_type=event.media_mime_type,
             media_file_name=event.media_file_name,

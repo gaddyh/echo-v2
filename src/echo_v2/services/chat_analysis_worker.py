@@ -108,6 +108,11 @@ class ConversationInput:
 
 
 @runtime_checkable
+class MediaUrlResolver(Protocol):
+    async def resolve(self, message: Message) -> str | None: ...
+
+
+@runtime_checkable
 class AnalysisProcessor(Protocol):
     """Hook for chat analysis.
 
@@ -207,6 +212,7 @@ class ChatAnalysisProcessor:
         max_no_outbound: int = 20,
         transcriber: Transcriber | None = None,
         media_summarizer: MediaSummarizer | None = None,
+        media_url_resolver: MediaUrlResolver | None = None,
     ) -> None:
         self._messages = message_repo
         self._analyzer = analyzer
@@ -214,6 +220,7 @@ class ChatAnalysisProcessor:
         self._max_no_outbound = max_no_outbound
         self._transcriber = transcriber
         self._media_summarizer = media_summarizer
+        self._media_url_resolver = media_url_resolver
 
     async def process(
         self,
@@ -227,6 +234,9 @@ class ChatAnalysisProcessor:
             context_messages=self._context_messages,
             max_no_outbound=self._max_no_outbound,
         )
+
+        if self._media_url_resolver is not None:
+            await self._refresh_media_urls(messages)
 
         # Lazy media processing: transcribe audio and summarize
         # image/video/document messages that have a download URL but no
@@ -305,6 +315,19 @@ class ChatAnalysisProcessor:
             conversation_snapshot=conversation_snapshot,
             conversation_input=conversation,
         )
+
+    async def _refresh_media_urls(self, messages: list[Message]) -> None:
+        if self._media_url_resolver is None:
+            return
+        for message in messages:
+            if not message.media_reference:
+                continue
+            try:
+                url = await self._media_url_resolver.resolve(message)
+                if url:
+                    message.media_download_url = url
+            except Exception as exc:  # noqa: BLE001 - media is best-effort
+                _logger.warning("media URL refresh failed for message %s: %s", message.id, exc)
 
     async def _transcribe_audio_messages(self, messages: list[Message]) -> list[Message]:
         """Transcribe audio messages that have a download URL but no text.

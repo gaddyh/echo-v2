@@ -45,7 +45,7 @@ from echo_v2.app.webhooks.green import (
 from echo_v2.app.webhooks.green import (
     build_router as build_green_router,
 )
-from echo_v2.integrations.baileys.client import BaileysClient
+from echo_v2.integrations.baileys.client import BaileysClient, BaileysMediaUrlResolver
 from echo_v2.integrations.baileys.provisioner import BaileysProvisioner
 from echo_v2.integrations.baileys.settings import load_settings as load_baileys_settings
 from echo_v2.integrations.dialog360.client import Dialog360Client
@@ -63,6 +63,7 @@ from echo_v2.ports.whatsapp import WhatsAppProvisioner
 from echo_v2.services.baileys_connection_state_consumer import (
     BaileysConnectionStateConsumer,
 )
+from echo_v2.services.baileys_message_consumer import BaileysMessageConsumer
 from echo_v2.services.chat_analysis_worker import (
     ChatAnalysisProcessor,
     ChatAnalysisWorker,
@@ -309,6 +310,22 @@ def create_app() -> FastAPI:
         onboarding_service=onboarding_service,
     )
 
+    baileys_message_consumer: BaileysMessageConsumer | None = None
+    if os.environ.get("BAILEYS_MESSAGE_CONSUMER_ENABLED", "false").lower() in (
+        "1", "true", "yes"
+    ):
+        baileys_message_consumer = BaileysMessageConsumer(
+            repos.baileys_events,
+            ingestion_service,
+            poll_interval_seconds=float(
+                os.environ.get("BAILEYS_MESSAGE_POLL_INTERVAL_MS", "1000")
+            )
+            / 1000,
+            batch_size=int(os.environ.get("BAILEYS_MESSAGE_BATCH_SIZE", "50")),
+            lease_seconds=int(os.environ.get("BAILEYS_MESSAGE_LEASE_SECONDS", "60")),
+            max_attempts=int(os.environ.get("BAILEYS_MESSAGE_MAX_ATTEMPTS", "10")),
+        )
+
     # --- chat analysis worker (NOT started by default — CHAT_ANALYSIS_ENABLED)
     from echo_v2.services.media_summarizer import OpenAIMediaSummarizer
     from echo_v2.services.summary_rewriter import SummaryRewriter
@@ -323,6 +340,11 @@ def create_app() -> FastAPI:
 
     media_summarizer = OpenAIMediaSummarizer(client=openai_client)
     _logger.info("media summarizer built: %s", type(media_summarizer).__name__)
+    media_url_resolver = (
+        BaileysMediaUrlResolver(baileys_client)
+        if baileys_client is not None
+        else None
+    )
 
     summary_rewriter = SummaryRewriter(
         client=openai_client,
@@ -345,6 +367,7 @@ def create_app() -> FastAPI:
         max_no_outbound=20,
         transcriber=transcriber,
         media_summarizer=media_summarizer,
+        media_url_resolver=media_url_resolver,
     )
     from echo_v2.services.analysis_judge import AnalysisJudge
 
@@ -539,12 +562,14 @@ def create_app() -> FastAPI:
     alert_checker_task: asyncio.Task[None] | None = None
     pool_warmup_task: asyncio.Task[None] | None = None
     baileys_event_consumer_task: asyncio.Task[None] | None = None
+    baileys_message_consumer_task: asyncio.Task[None] | None = None
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         nonlocal scheduler_task, analysis_worker_task, digest_worker_task
         nonlocal snooze_worker_task, alert_checker_task
         nonlocal pool_warmup_task, baileys_event_consumer_task
+        nonlocal baileys_message_consumer_task
         # Startup: recover stale actions + start scheduler loop.
         try:
             recovered = await scheduler.recover()
@@ -559,6 +584,11 @@ def create_app() -> FastAPI:
                 baileys_event_consumer.run_loop()
             )
             _logger.info("Baileys event consumer loop started")
+        if baileys_message_consumer is not None:
+            baileys_message_consumer_task = asyncio.create_task(
+                baileys_message_consumer.run_loop()
+            )
+            _logger.info("Baileys message consumer loop started")
 
         # Start instance pool warm-up in the background (non-blocking).
         # Early users fall to the slow path if the pool isn't warm yet.
@@ -591,6 +621,13 @@ def create_app() -> FastAPI:
             except asyncio.CancelledError:
                 pass
             _logger.info("Baileys event consumer loop stopped")
+        if baileys_message_consumer_task is not None:
+            baileys_message_consumer_task.cancel()
+            try:
+                await baileys_message_consumer_task
+            except asyncio.CancelledError:
+                pass
+            _logger.info("Baileys message consumer loop stopped")
         if alert_checker_task is not None:
             alert_checker_task.cancel()
             try:
