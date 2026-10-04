@@ -55,6 +55,9 @@ __all__ = [
     "ChatRow",
     "ContactRow",
     "GreenInstancePoolRow",
+    "GuardAnalysisResultRow",
+    "GuardChatStateRow",
+    "GuardianChildLinkRow",
     "IdempotencyOperationRow",
     "MessageRow",
     "ProviderWebhookEventRow",
@@ -568,6 +571,149 @@ class ChatRow(Base):
         Index(
             "ix_chats_next_analysis_at",
             "next_analysis_at",
+        ),
+    )
+
+
+# --- guardian_child_links ---------------------------------------------------
+
+
+class GuardianChildLinkRow(Base):
+    """Manual guardian-to-child activation state for Guard."""
+
+    __tablename__ = "guardian_child_links"
+
+    id: Mapped[str] = mapped_column(
+        Uuid, primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    guardian_user_id: Mapped[str] = mapped_column(
+        Uuid, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    child_user_id: Mapped[str] = mapped_column(
+        Uuid, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    child_consented_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    safety_enabled_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "guardian_user_id", "child_user_id", name="guardian_child_links_pair_key"
+        ),
+        CheckConstraint(
+            "status IN ('active', 'revoked')",
+            name="guardian_child_links_status_check",
+        ),
+        Index("ix_guardian_child_links_child_status", "child_user_id", "status"),
+    )
+
+
+# --- guard_chat_state -------------------------------------------------------
+
+
+class GuardChatStateRow(Base):
+    """Independent Guard analysis queue state."""
+
+    __tablename__ = "guard_chat_state"
+
+    child_user_id: Mapped[str] = mapped_column(
+        Uuid, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    chat_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    activity_version: Mapped[int] = mapped_column(nullable=False, server_default=text("0"))
+    last_message_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False)
+    last_analyzed_version: Mapped[int] = mapped_column(nullable=False, server_default=text("0"))
+    last_decision: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default="none"
+    )
+    last_analysis_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    pending_since: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    next_analysis_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    chat_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_group: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "last_decision IN ('none', 'watch', 'concerning', 'urgent')",
+            name="guard_chat_state_decision_check",
+        ),
+        Index("ix_guard_chat_state_next_analysis_at", "next_analysis_at"),
+    )
+
+
+# --- guard_analysis_results -----------------------------------------------
+
+
+class GuardAnalysisResultRow(Base):
+    """Immutable Guard observation."""
+
+    __tablename__ = "guard_analysis_results"
+
+    id: Mapped[str] = mapped_column(
+        Uuid, primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    child_user_id: Mapped[str] = mapped_column(
+        Uuid, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    connection_id: Mapped[str] = mapped_column(
+        Uuid, ForeignKey("whatsapp_connections.id", ondelete="CASCADE"), nullable=False
+    )
+    chat_id: Mapped[str] = mapped_column(Text, nullable=False)
+    target_version: Mapped[int] = mapped_column(nullable=False)
+    signals: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    categories: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    confidence: Mapped[float] = mapped_column(nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    evidence_message_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    decision: Mapped[str] = mapped_column(Text, nullable=False)
+    model: Mapped[str] = mapped_column(Text, nullable=False)
+    prompt_version: Mapped[str] = mapped_column(Text, nullable=False)
+    analyzer_version: Mapped[str] = mapped_column(Text, nullable=False)
+    taxonomy_version: Mapped[str] = mapped_column(Text, nullable=False)
+    diagnostics: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "child_user_id",
+            "chat_id",
+            "target_version",
+            "analyzer_version",
+            name="guard_analysis_results_version_key",
+        ),
+        CheckConstraint(
+            "decision IN ('none', 'watch', 'concerning', 'urgent')",
+            name="guard_analysis_results_decision_check",
+        ),
+        Index(
+            "ix_guard_analysis_results_child_chat_created",
+            "child_user_id",
+            "chat_id",
+            "created_at",
         ),
     )
 

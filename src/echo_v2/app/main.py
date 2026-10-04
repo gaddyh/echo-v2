@@ -304,12 +304,18 @@ def create_app() -> FastAPI:
     excluded_chat_ids = frozenset({bot_chat_id})
     _logger.info("Echo bot chat excluded from analysis: %s", bot_chat_id)
 
+    guard_shadow_enabled = os.environ.get("GUARD_SHADOW_ENABLED", "false").lower() in (
+        "1", "true", "yes"
+    )
     ingestion_service = ChatIngestionService(
         repos.ingestion,
         quiet_period_seconds=float(os.environ.get("CHAT_QUIET_PERIOD_SECONDS", "300")),
         private_only=os.environ.get("CHAT_PRIVATE_ONLY", "true").lower()
         in ("1", "true", "yes"),
         excluded_chat_ids=excluded_chat_ids,
+        child_link_repo=repos.guardian_child_links,
+        guard_chat_state_repo=repos.guard_chat_state,
+        guard_shadow_enabled=guard_shadow_enabled,
     )
     chat_dispatcher = ChatEventDispatcher(
         ingestion_service=ingestion_service,
@@ -334,6 +340,9 @@ def create_app() -> FastAPI:
         )
 
     # --- chat analysis worker (NOT started by default — CHAT_ANALYSIS_ENABLED)
+    from echo_v2.services.guard_analysis import GuardAnalysisProcessor
+    from echo_v2.services.guard_analysis_worker import GuardAnalysisWorker
+    from echo_v2.services.guard_analyzer import LLMGuardAnalyzer
     from echo_v2.services.media_summarizer import OpenAIMediaSummarizer
     from echo_v2.services.summary_rewriter import SummaryRewriter
     from echo_v2.services.transcription_factory import build_transcriber
@@ -388,6 +397,23 @@ def create_app() -> FastAPI:
         commit_repo=repos.analysis_commit,
         poll_interval_seconds=float(os.environ.get("CHAT_ANALYSIS_POLL_INTERVAL", "60")),
         judge=judge,
+        excluded_chat_ids=excluded_chat_ids,
+    )
+    guard_analyzer = LLMGuardAnalyzer(
+        client=openai_client,
+        model=os.environ.get("GUARD_LLM_MODEL_NAME", os.environ.get("LLM_MODEL_NAME", "gpt-4.1")),
+    )
+    guard_processor = GuardAnalysisProcessor(
+        message_repo=repos.messages,
+        analyzer=guard_analyzer,
+        analysis_repo=repos.guard_analysis_results,
+        signal_window_hours=float(os.environ.get("GUARD_SIGNAL_WINDOW_HOURS", "24")),
+    )
+    guard_worker = GuardAnalysisWorker(
+        state_repo=repos.guard_chat_state,
+        processor=guard_processor,
+        commit_repo=repos.guard_analysis_commit,
+        poll_interval_seconds=float(os.environ.get("GUARD_ANALYSIS_POLL_INTERVAL", "10")),
         excluded_chat_ids=excluded_chat_ids,
     )
     chat_analysis_enabled = os.environ.get("CHAT_ANALYSIS_ENABLED", "false").lower() in (
@@ -564,6 +590,7 @@ def create_app() -> FastAPI:
     # --- FastAPI app with lifespan (scheduler + worker start/stop with app) --
     scheduler_task: asyncio.Task[None] | None = None
     analysis_worker_task: asyncio.Task[None] | None = None
+    guard_worker_task: asyncio.Task[None] | None = None
     digest_worker_task: asyncio.Task[None] | None = None
     snooze_worker_task: asyncio.Task[None] | None = None
     alert_checker_task: asyncio.Task[None] | None = None
@@ -573,7 +600,7 @@ def create_app() -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        nonlocal scheduler_task, analysis_worker_task, digest_worker_task
+        nonlocal scheduler_task, analysis_worker_task, guard_worker_task, digest_worker_task
         nonlocal snooze_worker_task, alert_checker_task
         nonlocal pool_warmup_task, baileys_event_consumer_task
         nonlocal baileys_message_consumer_task
@@ -607,6 +634,9 @@ def create_app() -> FastAPI:
         if chat_analysis_enabled:
             analysis_worker_task = asyncio.create_task(analysis_worker.run_loop())
             _logger.info("chat analysis worker loop started")
+            if guard_shadow_enabled:
+                guard_worker_task = asyncio.create_task(guard_worker.run_loop())
+                _logger.info("Guard shadow analysis worker loop started")
 
         # Start digest worker only if explicitly enabled.
         if digest_enabled:
@@ -649,6 +679,13 @@ def create_app() -> FastAPI:
             except asyncio.CancelledError:
                 pass
             _logger.info("digest worker loop stopped")
+        if guard_worker_task is not None:
+            guard_worker_task.cancel()
+            try:
+                await guard_worker_task
+            except asyncio.CancelledError:
+                pass
+            _logger.info("Guard shadow analysis worker loop stopped")
         if analysis_worker_task is not None:
             analysis_worker_task.cancel()
             try:

@@ -42,6 +42,12 @@ from echo_v2.persistence.postgres_feedback import (
     PostgresWaitingForMeActionRepository,
     PostgresWaitingForMeFeedbackRepository,
 )
+from echo_v2.persistence.postgres_guard import (
+    PostgresGuardAnalysisCommitRepository,
+    PostgresGuardAnalysisRepository,
+    PostgresGuardChatStateRepository,
+    PostgresGuardianChildLinkRepository,
+)
 from echo_v2.persistence.postgres_idempotency import PostgresIdempotencyStore
 from echo_v2.persistence.postgres_scheduled_actions import (
     PostgresScheduledActionRepository,
@@ -81,6 +87,10 @@ class PostgresRepos:
     wfm_results: PostgresWaitingForMeResultRepository
     wfm_active: PostgresWaitingForMeActiveRepository
     analysis_commit: PostgresAnalysisCommitRepository
+    guardian_child_links: PostgresGuardianChildLinkRepository
+    guard_chat_state: PostgresGuardChatStateRepository
+    guard_analysis_results: PostgresGuardAnalysisRepository
+    guard_analysis_commit: PostgresGuardAnalysisCommitRepository
     wfm_feedback: PostgresWaitingForMeFeedbackRepository
     wfm_actions: PostgresWaitingForMeActionRepository
     chat_mutes: PostgresChatMuteRepository
@@ -122,6 +132,10 @@ def build_postgres_repos(settings: DBSettings) -> PostgresRepos:
     wfm_results = PostgresWaitingForMeResultRepository(factory)
     wfm_active = PostgresWaitingForMeActiveRepository(factory)
     analysis_commit = PostgresAnalysisCommitRepository(factory)
+    guardian_child_links = PostgresGuardianChildLinkRepository(factory)
+    guard_chat_state = PostgresGuardChatStateRepository(factory)
+    guard_analysis_results = PostgresGuardAnalysisRepository(factory)
+    guard_analysis_commit = PostgresGuardAnalysisCommitRepository(factory)
     wfm_feedback = PostgresWaitingForMeFeedbackRepository(factory)
     wfm_actions = PostgresWaitingForMeActionRepository(factory)
     chat_mutes = PostgresChatMuteRepository(factory)
@@ -150,6 +164,10 @@ def build_postgres_repos(settings: DBSettings) -> PostgresRepos:
         wfm_results=wfm_results,
         wfm_active=wfm_active,
         analysis_commit=analysis_commit,
+        guardian_child_links=guardian_child_links,
+        guard_chat_state=guard_chat_state,
+        guard_analysis_results=guard_analysis_results,
+        guard_analysis_commit=guard_analysis_commit,
         wfm_feedback=wfm_feedback,
         wfm_actions=wfm_actions,
         chat_mutes=chat_mutes,

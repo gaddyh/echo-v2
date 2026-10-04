@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import Enum
 from typing import Any, Protocol, runtime_checkable
 
 from echo_v2.domain.chat import ChatState, Message
@@ -34,8 +35,18 @@ from echo_v2.domain.waiting_for_me import (
 )
 from echo_v2.ports.whatsapp import MessageDirection
 
+
+class AnalysisTarget(str, Enum):
+    """Which analysis queue owns a newly ingested message."""
+
+    WFM = "wfm"
+    GUARD = "guard"
+    NONE = "none"
+
+
 __all__ = [
     "AnalysisCommitRepository",
+    "AnalysisTarget",
     "ChatStateRepository",
     "InMemoryAnalysisCommitRepository",
     "InMemoryChatStateRepository",
@@ -290,14 +301,13 @@ class IngestionRepository(Protocol):
         observed_at: datetime,
         next_analysis_at: datetime | None,
         chat_name: str | None = None,
+        analysis_target: AnalysisTarget = AnalysisTarget.WFM,
     ) -> bool:
-        """Insert message + upsert chat state atomically.
+        """Insert message + update exactly the selected analysis queue atomically.
 
-        If the message is a duplicate (already exists by
-        ``(connection_id, provider_message_id)``), returns ``False``
-        and does NOT touch chat state. If new, inserts the message AND
-        upserts the chat state (incrementing ``activity_version``) in
-        one transaction.
+        If the message is a duplicate, returns ``False`` and updates no queue.
+        Otherwise exactly the selected queue is updated atomically with the
+        message insert.
         """
         ...
 
@@ -315,9 +325,11 @@ class InMemoryIngestionRepository:
         self,
         message_repo: InMemoryMessageRepository,
         chat_state_repo: InMemoryChatStateRepository,
+        guard_chat_state_repo: Any | None = None,
     ) -> None:
         self._message_repo = message_repo
         self._chat_state_repo = chat_state_repo
+        self._guard_chat_state = guard_chat_state_repo
 
     async def ingest_if_new(
         self,
@@ -327,18 +339,32 @@ class InMemoryIngestionRepository:
         observed_at: datetime,
         next_analysis_at: datetime | None,
         chat_name: str | None = None,
+        analysis_target: AnalysisTarget = AnalysisTarget.WFM,
     ) -> bool:
         inserted = await self._message_repo.save(message)
         if not inserted:
             return False
-        await self._chat_state_repo.upsert_on_message(
-            user_id=message.user_id,
-            chat_id=message.chat_id,
-            direction=direction,
-            observed_at=observed_at,
-            next_analysis_at=next_analysis_at,
-            chat_name=chat_name,
-        )
+        if analysis_target == AnalysisTarget.WFM:
+            await self._chat_state_repo.upsert_on_message(
+                user_id=message.user_id,
+                chat_id=message.chat_id,
+                direction=direction,
+                observed_at=observed_at,
+                next_analysis_at=next_analysis_at,
+                chat_name=chat_name,
+            )
+        elif analysis_target == AnalysisTarget.GUARD:
+            if self._guard_chat_state is None:
+                raise RuntimeError("Guard queue repository is not configured")
+            await self._guard_chat_state.upsert_on_message(
+                child_user_id=message.user_id,
+                chat_id=message.chat_id,
+                observed_at=observed_at,
+                next_analysis_at=next_analysis_at or observed_at,
+                pending_since=observed_at,
+                chat_name=chat_name,
+                is_group=message.chat_id.endswith("@g.us"),
+            )
         return True
 
 

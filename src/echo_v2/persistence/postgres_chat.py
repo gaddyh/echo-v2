@@ -30,9 +30,13 @@ from echo_v2.domain.waiting_for_me import (
     WaitingForMeDecision,
     WaitingForMeResult,
 )
-from echo_v2.persistence.chat_repositories import WaitingForMeResultEntry
+from echo_v2.persistence.chat_repositories import (
+    AnalysisTarget,
+    WaitingForMeResultEntry,
+)
 from echo_v2.persistence.orm import (
     ChatRow,
+    GuardChatStateRow,
     MessageRow,
     WaitingForMeActiveRow,
     WaitingForMeResultRow,
@@ -628,6 +632,7 @@ class PostgresIngestionRepository:
         observed_at: datetime,
         next_analysis_at: datetime | None,
         chat_name: str | None = None,
+        analysis_target: AnalysisTarget = AnalysisTarget.WFM,
     ) -> bool:
         async with self._session_factory() as session:
             try:
@@ -664,33 +669,72 @@ class PostgresIngestionRepository:
                     await session.rollback()
                     return False
 
-                # 2. Upsert chat state (increment activity_version).
-                chat_stmt = (
-                    pg_insert(ChatRow)
-                    .values(
-                        user_id=message.user_id,
-                        chat_id=message.chat_id,
-                        activity_version=1,
-                        last_message_at=observed_at,
-                        last_direction=direction.value,
-                        next_analysis_at=next_analysis_at,
-                        last_processed_version=0,
-                        chat_name=chat_name,
+                # 2. Update exactly one analysis queue.
+                if analysis_target == AnalysisTarget.WFM:
+                    queue_stmt = (
+                        pg_insert(ChatRow)
+                        .values(
+                            user_id=message.user_id,
+                            chat_id=message.chat_id,
+                            activity_version=1,
+                            last_message_at=observed_at,
+                            last_direction=direction.value,
+                            next_analysis_at=next_analysis_at,
+                            last_processed_version=0,
+                            chat_name=chat_name,
+                        )
+                        .on_conflict_do_update(
+                            index_elements=["user_id", "chat_id"],
+                            set_={
+                                "activity_version": ChatRow.activity_version + 1,
+                                "last_message_at": observed_at,
+                                "last_direction": direction.value,
+                                "next_analysis_at": next_analysis_at,
+                                "updated_at": datetime.now(timezone.utc),
+                                **({"chat_name": chat_name} if chat_name else {}),
+                            },
+                            where=ChatRow.last_message_at <= observed_at,
+                        )
                     )
-                    .on_conflict_do_update(
-                        index_elements=["user_id", "chat_id"],
-                        set_={
-                            "activity_version": ChatRow.activity_version + 1,
-                            "last_message_at": observed_at,
-                            "last_direction": direction.value,
-                            "next_analysis_at": next_analysis_at,
-                            "updated_at": datetime.now(timezone.utc),
-                            **({"chat_name": chat_name} if chat_name else {}),
-                        },
-                        where=ChatRow.last_message_at <= observed_at,
+                elif analysis_target == AnalysisTarget.GUARD:
+                    if next_analysis_at is None:
+                        raise ValueError("Guard ingestion requires a schedule")
+                    queue_stmt = (
+                        pg_insert(GuardChatStateRow)
+                        .values(
+                            child_user_id=message.user_id,
+                            chat_id=message.chat_id,
+                            activity_version=1,
+                            last_message_at=observed_at,
+                            last_analyzed_version=0,
+                            last_decision="none",
+                            pending_since=observed_at,
+                            next_analysis_at=next_analysis_at,
+                            chat_name=chat_name,
+                            is_group=message.chat_id.endswith("@g.us"),
+                        )
+                        .on_conflict_do_update(
+                            index_elements=["child_user_id", "chat_id"],
+                            set_={
+                                "activity_version": GuardChatStateRow.activity_version + 1,
+                                "last_message_at": observed_at,
+                                "pending_since": func.coalesce(
+                                    GuardChatStateRow.pending_since, observed_at
+                                ),
+                                "next_analysis_at": func.least(
+                                    GuardChatStateRow.next_analysis_at, next_analysis_at
+                                ),
+                                "updated_at": datetime.now(timezone.utc),
+                                **({"chat_name": chat_name} if chat_name else {}),
+                                "is_group": message.chat_id.endswith("@g.us"),
+                            },
+                            where=GuardChatStateRow.last_message_at <= observed_at,
+                        )
                     )
-                )
-                await session.execute(chat_stmt)
+                else:
+                    queue_stmt = None
+                if queue_stmt is not None:
+                    await session.execute(queue_stmt)
 
                 await session.commit()
                 return True
