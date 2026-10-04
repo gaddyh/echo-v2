@@ -5,18 +5,29 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from typing import Any, cast
 from uuid import NAMESPACE_URL, uuid5
 
-from sqlalchemy import text
+from sqlalchemy import CursorResult, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from echo_v2.integrations.baileys.events import BaileysConnectionStateEvent
-from echo_v2.ports.whatsapp import ConnectionStatus
+from echo_v2.integrations.baileys.events import (
+    BaileysConnectionStateEvent,
+)
+from echo_v2.ports.whatsapp import ConnectionStatus, ProviderMessageEvent
+
+
+@dataclass(frozen=True)
+class BaileysMessageEnvelope:
+    event_id: str
+    inbox_id: int
+    connection_id: str
+    payload: dict[str, Any]
 
 
 @dataclass(frozen=True)
 class ClaimedBaileysEvent:
-    event: BaileysConnectionStateEvent
+    event: Any
     worker_id: str
 
 
@@ -33,6 +44,7 @@ class BaileysEventRepository:
         batch_size: int,
         lease_seconds: int,
         max_attempts: int = 10,
+        event_type: str = "connection_state",
     ) -> list[ClaimedBaileysEvent]:
         now = datetime.now(timezone.utc)
         lease_cutoff = now - timedelta(seconds=lease_seconds)
@@ -43,7 +55,7 @@ class BaileysEventRepository:
                             """
                             SELECT e.id, e.event_id, e.payload
                               FROM whatsapp_connector.event_inbox e
-                             WHERE e.event_type = 'connection_state'
+                             WHERE e.event_type = :event_type
                                AND e.processed_at IS NULL
                                AND NOT EXISTS (
                                    SELECT 1
@@ -56,7 +68,7 @@ class BaileysEventRepository:
                              FOR UPDATE SKIP LOCKED
                             """
                         ),
-                        {"batch_size": batch_size},
+                        {"batch_size": batch_size, "event_type": event_type},
                     )
                 ).mappings().all()
                 claimed: list[ClaimedBaileysEvent] = []
@@ -98,15 +110,66 @@ class BaileysEventRepository:
                         payload = json.loads(payload)
                     if not isinstance(payload, dict):  # pragma: no cover - JSONB object contract
                         raise TypeError(f"invalid connector payload for {event_id}")
-                    claimed.append(
-                        ClaimedBaileysEvent(
-                            event=BaileysConnectionStateEvent.from_payload(
-                                payload, int(row["id"])
-                            ),
-                            worker_id=worker_id,
+                    if event_type == "message":
+                        event: BaileysConnectionStateEvent | BaileysMessageEnvelope = (
+                            BaileysMessageEnvelope(
+                                event_id=event_id,
+                                inbox_id=int(row["id"]),
+                                connection_id=str(payload.get("connection_id", "")),
+                                payload=payload,
+                            )
                         )
-                    )
+                    else:
+                        event = BaileysConnectionStateEvent.from_payload(
+                            payload, int(row["id"])
+                        )
+                    claimed.append(ClaimedBaileysEvent(event=event, worker_id=worker_id))
                 return claimed
+
+    async def resolve_message_user(self, event: ProviderMessageEvent) -> tuple[str, str] | None:
+        async with self._session_factory() as session:
+            result = await session.execute(
+                text(
+                    """
+                    SELECT c.id, c.user_id
+                      FROM whatsapp_connections c
+                     WHERE c.provider = 'baileys'
+                       AND c.provider_connection_id = :connection_id
+                    """
+                ),
+                {"connection_id": event.connection.provider_connection_id},
+            )
+            row = result.mappings().one_or_none()
+            if row is None:
+                return None
+            return str(row["user_id"]), str(row["id"])
+
+    async def complete_claimed_event(
+        self,
+        claimed: ClaimedBaileysEvent,
+    ) -> bool:
+        """Mark a non-state event processed while retaining claim fencing."""
+        now = datetime.now(timezone.utc)
+        async with self._session_factory() as session, session.begin():
+            result = cast(CursorResult[Any], await session.execute(
+                text(
+                    """
+                    UPDATE baileys_connector_event_processing
+                       SET status = 'processed', processed_at = :processed_at,
+                           notification_state = 'none', updated_at = :updated_at
+                     WHERE event_id = :event_id
+                       AND claimed_by = :worker_id
+                       AND status = 'claimed'
+                    """
+                ),
+                {
+                    "processed_at": now,
+                    "updated_at": now,
+                    "event_id": claimed.event.event_id,
+                    "worker_id": claimed.worker_id,
+                },
+            ))
+            return result.rowcount == 1
 
     async def process_claimed_event(
         self,
@@ -116,6 +179,8 @@ class BaileysEventRepository:
     ) -> bool:
         """Apply a state event and enqueue an idempotent notification atomically."""
         event = claimed.event
+        if not isinstance(event, BaileysConnectionStateEvent):
+            raise TypeError("connection-state processor received a message event")
         action_id = reauth_action_id(event.event_id)
         notification_key = reauth_notification_key(event.event_id)
         now = datetime.now(timezone.utc)

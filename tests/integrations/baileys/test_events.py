@@ -15,6 +15,7 @@ from echo_v2.ports.whatsapp import ConnectionStatus
 
 def _payload(**overrides: object) -> dict[str, object]:
     payload: dict[str, object] = {
+        "schema_version": 1,
         "event_type": "connection_state",
         "event_id": "state:connection:42",
         "provider": "baileys",
@@ -26,6 +27,15 @@ def _payload(**overrides: object) -> dict[str, object]:
     }
     payload.update(overrides)
     return payload
+
+
+def test_state_parser_rejects_unsupported_version_and_naive_timestamp() -> None:
+    with pytest.raises(ValueError, match="schema version"):
+        BaileysConnectionStateEvent.from_payload(_payload(schema_version=2), inbox_id=7)
+    with pytest.raises(ValueError, match="timezone"):
+        BaileysConnectionStateEvent.from_payload(
+            _payload(timestamp="2026-10-03T00:00:00"), inbox_id=7
+        )
 
 
 def test_parse_connection_state_event() -> None:
@@ -101,3 +111,104 @@ def test_rejects_unknown_status() -> None:
         BaileysConnectionStateEvent.from_payload(
             _payload(status="not_authorized"), inbox_id=7
         )
+
+
+def _message_payload(**overrides: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "schema_version": 1,
+        "event_type": "message",
+        "event_id": "message:connection:msg:in",
+        "provider": "baileys",
+        "connection_id": "connection",
+        "chat_id": "15551234567@s.whatsapp.net",
+        "is_group": False,
+        "provider_message_id": "msg",
+        "direction": "inbound",
+        "source": None,
+        "timestamp": "2026-10-03T00:00:00Z",
+        "kind": "audio",
+        "text": None,
+        "sender": {"canonical_id": "15551234567@s.whatsapp.net", "display_name": "Alice"},
+        "media_reference": "message:msg",
+        "media_download_url": "https://connector.test/media/connection/message%3Amsg?expires=1&signature=x",
+        "media_mime_type": "audio/ogg",
+        "media_file_name": "voice.ogg",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_parse_versioned_message_event() -> None:
+    from echo_v2.integrations.baileys.events import BaileysMessageEvent
+    from echo_v2.ports.whatsapp import MessageDirection, MessageKind
+
+    event = BaileysMessageEvent.from_payload(_message_payload())
+
+    assert event.connection.provider == "baileys"
+    assert event.direction is MessageDirection.INBOUND
+    assert event.kind is MessageKind.AUDIO
+    assert event.is_group is False
+    assert event.sender_id == "15551234567@s.whatsapp.net"
+    assert event.media_reference == "message:msg"
+    assert event.media_download_url is not None
+
+
+def test_parse_preserves_api_outbound_source() -> None:
+    from echo_v2.integrations.baileys.events import BaileysMessageEvent
+    from echo_v2.ports.whatsapp import MessageDirection, MessageSource
+
+    event = BaileysMessageEvent.from_payload(
+        _message_payload(direction="outbound", source="api", kind="text", text="sent")
+    )
+
+    assert event.direction is MessageDirection.OUTBOUND
+    assert event.source is MessageSource.API
+    assert event.text == "sent"
+
+
+@pytest.mark.parametrize("schema_version", [None, 2])
+def test_message_parser_rejects_unsupported_schema(schema_version: object) -> None:
+    from echo_v2.integrations.baileys.events import BaileysMessageEvent
+
+    with pytest.raises(ValueError, match="schema version"):
+        BaileysMessageEvent.from_payload(
+            _message_payload(schema_version=schema_version)
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("event_type", "connection_state"), ("provider", "green")],
+)
+def test_message_parser_rejects_wrong_envelope(field: str, value: object) -> None:
+    from echo_v2.integrations.baileys.events import BaileysMessageEvent
+
+    with pytest.raises(ValueError):
+        BaileysMessageEvent.from_payload(_message_payload(**{field: value}))
+
+
+def test_message_parser_rejects_invalid_optional_metadata() -> None:
+    from echo_v2.integrations.baileys.events import BaileysMessageEvent
+
+    for field in ("text", "chat_name", "media_reference", "media_download_url", "media_mime_type", "media_file_name"):
+        with pytest.raises(ValueError, match=field):
+            BaileysMessageEvent.from_payload(_message_payload(**{field: 1}))
+
+
+def test_message_parser_rejects_invalid_required_metadata() -> None:
+    from echo_v2.integrations.baileys.events import BaileysMessageEvent
+
+    for field, value in (
+        ("event_id", ""),
+        ("connection_id", None),
+        ("chat_id", 1),
+        ("provider_message_id", ""),
+        ("timestamp", "not-a-timestamp"),
+        ("direction", "sideways"),
+        ("source", "unknown"),
+        ("kind", "unknown"),
+        ("is_group", None),
+        ("sender", "invalid"),
+    ):
+        with pytest.raises((TypeError, ValueError)):
+            BaileysMessageEvent.from_payload(_message_payload(**{field: value}))

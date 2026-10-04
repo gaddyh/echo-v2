@@ -172,6 +172,7 @@ def _message_event(
         sender_id=str(sender_id) if sender_id else None,
         sender_name=str(sender_name) if sender_name else None,
         chat_name=str(chat_name) if chat_name else None,
+        is_group=str(chat_id).endswith('@g.us'),
         media_download_url=media_download_url,
         media_mime_type=media_mime_type,
         media_file_name=media_file_name,

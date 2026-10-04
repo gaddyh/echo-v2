@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 
-from echo_v2.ports.whatsapp import MessageDirection
+from echo_v2.ports.whatsapp import MessageDirection, MessageSource
 
 __all__ = [
     "ChatState",
@@ -59,11 +59,13 @@ class Message:
     provider_message_id: str
     direction: MessageDirection
     sender_id: str | None
+    source: MessageSource | None = None
     sender_name: str | None = None
     chat_name: str | None = None
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     message_type: str = "text"
     text: str | None = None
+    media_reference: str | None = None
     media_download_url: str | None = None
     media_mime_type: str | None = None
     media_file_name: str | None = None

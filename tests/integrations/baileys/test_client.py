@@ -3,8 +3,10 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from echo_v2.integrations.baileys.client import BaileysClient
+from echo_v2.domain.chat import Message
+from echo_v2.integrations.baileys.client import BaileysClient, BaileysMediaUrlResolver
 from echo_v2.integrations.baileys.settings import BaileysSettings
+from echo_v2.ports.whatsapp import MessageDirection
 from echo_v2.runtime.errors import IndeterminateError, PermanentError, RetryableError
 
 
@@ -34,6 +36,80 @@ async def test_client_calls_connector_with_bearer_and_paths():
     assert [request.url.path for request in requests] == [
         "/connections", "/connections/c1/status", "/connections/c1/unpair"
     ]
+    await client.aclose()
+
+
+async def test_get_media_url_and_resolver_use_reference() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"media_download_url": "https://media.test/signed"})
+
+    client = _client(handler)
+    reference = "baileys:c1:message-1"
+    assert await client.get_media_url("c1", reference) == "https://media.test/signed"
+    message = Message(
+        id="id",
+        user_id="user",
+        connection_id="db-connection",
+        chat_id="chat",
+        provider_message_id="message-1",
+        direction=MessageDirection.INBOUND,
+        sender_id=None,
+        media_reference=reference,
+    )
+    assert await BaileysMediaUrlResolver(client).resolve(message) == "https://media.test/signed"
+    assert requests[0].url.params["reference"] == reference
+    await client.aclose()
+
+
+async def test_media_url_resolver_returns_none_without_reference() -> None:
+    client = _client(lambda request: httpx.Response(200, json={}))
+    message = Message(
+        id="id",
+        user_id="user",
+        connection_id="db-connection",
+        chat_id="chat",
+        provider_message_id="message-1",
+        direction=MessageDirection.INBOUND,
+        sender_id=None,
+    )
+    assert await BaileysMediaUrlResolver(client).resolve(message) is None
+    await client.aclose()
+
+
+async def test_media_url_resolver_rejects_missing_url() -> None:
+    client = _client(lambda request: httpx.Response(200, json={}))
+    message = Message(
+        id="id",
+        user_id="user",
+        connection_id="db-connection",
+        chat_id="chat",
+        provider_message_id="message-1",
+        direction=MessageDirection.INBOUND,
+        sender_id=None,
+        media_reference="baileys:c1:message-1",
+    )
+    with pytest.raises(PermanentError, match="empty media URL"):
+        await BaileysMediaUrlResolver(client).resolve(message)
+    await client.aclose()
+
+
+async def test_media_url_resolver_rejects_invalid_reference() -> None:
+    client = _client(lambda request: httpx.Response(200, json={}))
+    message = Message(
+        id="id",
+        user_id="user",
+        connection_id="db-connection",
+        chat_id="chat",
+        provider_message_id="message-1",
+        direction=MessageDirection.INBOUND,
+        sender_id=None,
+        media_reference="invalid",
+    )
+    with pytest.raises(PermanentError, match="media reference"):
+        await BaileysMediaUrlResolver(client).resolve(message)
     await client.aclose()
 
 
