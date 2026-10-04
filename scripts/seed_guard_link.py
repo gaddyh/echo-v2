@@ -33,7 +33,10 @@ async def _run(args: argparse.Namespace) -> None:
     guardian_phone = normalize_phone_e164(args.guardian_phone)
     child_phone = normalize_phone_e164(args.child_phone)
     load_dotenv()
-    engine = create_async_engine(os.environ["DATABASE_URL"])
+    database_url = os.environ["DATABASE_URL"]
+    if database_url.startswith("postgresql://"):
+        database_url = database_url.replace("postgresql://", "postgresql+psycopg://", 1)
+    engine = create_async_engine(database_url)
     now = datetime.now(timezone.utc)
     async with engine.begin() as connection:
         rows = await connection.execute(
