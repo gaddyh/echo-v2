@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import StrEnum
+from enum import Enum
 from typing import Any
 
 from echo_v2.services.guard_taxonomy import GuardDecision
@@ -17,7 +17,7 @@ __all__ = [
 ]
 
 
-class GuardianChildLinkStatus(StrEnum):
+class GuardianChildLinkStatus(str, Enum):
     ACTIVE = "active"
     REVOKED = "revoked"
 

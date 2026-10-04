@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from enum import StrEnum
+from enum import Enum
 from typing import Any, Protocol, runtime_checkable
 
 from echo_v2.domain.chat import ChatState, Message
@@ -36,7 +36,7 @@ from echo_v2.domain.waiting_for_me import (
 from echo_v2.ports.whatsapp import MessageDirection
 
 
-class AnalysisTarget(StrEnum):
+class AnalysisTarget(str, Enum):
     """Which analysis queue owns a newly ingested message."""
 
     WFM = "wfm"
