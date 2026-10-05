@@ -10,6 +10,7 @@ from fastapi import APIRouter
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from echo_v2.app.guard_demo_page import GUARD_DEMO_PAGE
+from echo_v2.app.guard_demo_page_he import GUARD_DEMO_PAGE_HE
 
 __all__ = ["build_guard_demo_router"]
 
@@ -45,6 +46,10 @@ def build_guard_demo_router() -> APIRouter:
     @router.get("/demo/guard", response_class=HTMLResponse)
     async def guard_demo_page() -> HTMLResponse:
         return HTMLResponse(content=GUARD_DEMO_PAGE, headers=_headers())
+
+    @router.get("/demo/guard/he", response_class=HTMLResponse)
+    async def guard_demo_page_hebrew() -> HTMLResponse:
+        return HTMLResponse(content=GUARD_DEMO_PAGE_HE, headers=_headers())
 
     @router.get("/api/demo/guard")
     async def guard_demo_data() -> JSONResponse:

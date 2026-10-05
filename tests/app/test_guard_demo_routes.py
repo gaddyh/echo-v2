@@ -37,12 +37,27 @@ async def test_demo_page_serves_replay_shell_with_security_headers() -> None:
     assert "See danger emerge before it becomes obvious" in response.text
     assert 'id="start"' in response.text
     assert 'id="next"' in response.text
+    assert 'href="/demo/guard/he"' in response.text
     assert "function playNextSnapshot()" in response.text
     assert "state.snapshotIndex>=scenario.snapshots.length-1" in response.text
     assert response.headers["cache-control"] == "no-store"
     assert response.headers["referrer-policy"] == "no-referrer"
     assert response.headers["x-content-type-options"] == "nosniff"
     assert "default-src 'self'" in response.headers["content-security-policy"]
+
+
+@pytest.mark.asyncio
+async def test_hebrew_demo_page_serves_rtl_replay_shell() -> None:
+    async with _client(_make_app()) as client:
+        response = await client.get("/demo/guard/he")
+
+    assert response.status_code == 200
+    assert '<html lang="he" dir="rtl">' in response.text
+    assert "התחלת הדגמה" in response.text
+    assert "המצב הנוכחי" in response.text
+    assert 'href="/demo/guard"' in response.text
+    assert "function playNextSnapshot()" in response.text
+    assert response.headers["content-security-policy"].startswith("default-src 'self'")
 
 
 @pytest.mark.asyncio
