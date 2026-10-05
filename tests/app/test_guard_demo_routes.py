@@ -37,6 +37,8 @@ async def test_demo_page_serves_replay_shell_with_security_headers() -> None:
     assert "See danger emerge before it becomes obvious" in response.text
     assert 'id="start"' in response.text
     assert 'id="next"' in response.text
+    assert "function playNextSnapshot()" in response.text
+    assert "state.snapshotIndex>=scenario.snapshots.length-1" in response.text
     assert response.headers["cache-control"] == "no-store"
     assert response.headers["referrer-policy"] == "no-referrer"
     assert response.headers["x-content-type-options"] == "nosniff"
