@@ -16,7 +16,7 @@ from tests.evaluation.guard.guard_cases import (
 )
 from tests.evaluation.guard.guard_comprehensive_baseline import ALL_CASES
 from tests.evaluation.guard.guard_eval_results import SnapshotResult, _analysis_pass
-from tests.evaluation.guard.test_guard_eval import _check_clean
+from tests.evaluation.guard.test_guard_eval import _check_clean, _select_cases
 
 _VALID_CASE = GuardEvalCase(
     case_id="contract_case",
@@ -46,6 +46,20 @@ def test_any_of_requirement_is_part_of_analysis_pass() -> None:
     )
 
     assert not _analysis_pass(result)
+
+
+def test_case_filter_preserves_requested_order(monkeypatch: pytest.MonkeyPatch) -> None:
+    second = replace(_VALID_CASE, case_id="second_case")
+    monkeypatch.setenv("GUARD_EVAL_CASE_IDS", "second_case,contract_case")
+
+    assert _select_cases((_VALID_CASE, second)) == (second, _VALID_CASE)
+
+
+def test_case_filter_rejects_unknown_ids(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GUARD_EVAL_CASE_IDS", "missing_case")
+
+    with pytest.raises(ValueError, match="unknown case IDs"):
+        _select_cases((_VALID_CASE,))
 
 
 def test_clean_result_requires_empty_detection_and_none_decision() -> None:

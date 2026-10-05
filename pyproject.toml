@@ -85,7 +85,7 @@ show_missing = true
 where = ["src"]
 
 [tool.setuptools.package-data]
-echo_v2 = ["py.typed"]
+echo_v2 = ["py.typed", "app/static/*.json"]
 
 [tool.mypy]
 python_version = "3.13"
