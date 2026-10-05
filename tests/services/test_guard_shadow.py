@@ -185,7 +185,7 @@ async def test_guard_processor_replays_prior_observations_and_updates_decision()
         async def analyze(self, conversation):
             return GuardAnalysis(
                 signals=("secrecy_request",), categories=("suspicious_contact",),
-                evidence_message_ids=("m1",), confidence=0.9, reason="current",
+                evidence_message_ids=(), confidence=0.9, reason="current",
                 model="test", prompt_version="p", analyzer_version="a",
                 taxonomy_version="t",
             )
@@ -198,6 +198,7 @@ async def test_guard_processor_replays_prior_observations_and_updates_decision()
     assert prepared.record.diagnostics["cumulative_signals"] == [
         "meeting_request", "secrecy_request"
     ]
+    assert prepared.record.evidence_message_ids == ("m1",)
 
 
 async def test_guard_worker_commits_due_state() -> None:

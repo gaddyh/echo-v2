@@ -28,6 +28,9 @@ def _make_event(
     direction: MessageDirection = MessageDirection.INBOUND,
     text: str = "hello",
     timestamp: datetime = datetime(2026, 9, 10, 12, 0, 0, tzinfo=timezone.utc),
+    sender_name: str | None = None,
+    chat_name: str | None = None,
+    is_group: bool | None = None,
 ) -> ProviderMessageEvent:
     return ProviderMessageEvent(
         event_id=f"incomingMessageReceived:green:conn1:{provider_message_id}",
@@ -39,6 +42,9 @@ def _make_event(
         timestamp=timestamp,
         kind=MessageKind.TEXT,
         text=text,
+        sender_name=sender_name,
+        chat_name=chat_name,
+        is_group=is_group,
     )
 
 
@@ -63,6 +69,37 @@ def _make_service(
 
 
 # --- New inbound message ---------------------------------------------------
+
+
+async def test_private_inbound_sender_name_becomes_chat_name():
+    service = _make_service()
+    event = _make_event(sender_name="Sara Henquin")
+
+    await service.ingest_message(event, user_id="user-1", connection_id="conn-uuid-1")
+
+    message = await service._message_repo.get_latest_inbound(
+        user_id="user-1", chat_id="972501234567@c.us"
+    )
+    chat = await service._chat_state_repo.get("user-1", "972501234567@c.us")
+    assert message is not None
+    assert message.chat_name == "Sara Henquin"
+    assert chat is not None
+    assert chat.chat_name == "Sara Henquin"
+
+
+async def test_group_sender_name_does_not_become_chat_name():
+    service = _make_service(private_only=False)
+    event = _make_event(
+        chat_id="group@g.us", sender_name="Sara Henquin", is_group=True
+    )
+
+    await service.ingest_message(event, user_id="user-1", connection_id="conn-uuid-1")
+
+    message = await service._message_repo.get_latest_inbound(
+        user_id="user-1", chat_id="group@g.us"
+    )
+    assert message is not None
+    assert message.chat_name is None
 
 
 async def test_inbound_new_message_saves_and_schedules():
