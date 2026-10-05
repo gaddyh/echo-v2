@@ -24,7 +24,7 @@ GUARD_DEMO_PAGE = r'''<!doctype html>
   font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;line-height:1.5}
 button{font:inherit}button:focus-visible,summary:focus-visible{outline:3px solid #8fc2ff;outline-offset:3px}
 .wrap{width:min(1180px,calc(100% - 40px));margin:0 auto}.topbar{display:flex;justify-content:space-between;align-items:center;padding:26px 0 16px}
-.brand{font-size:1.35rem;font-weight:850;letter-spacing:-.04em}.brand span{color:var(--blue)}.eyebrow{color:var(--blue);font-size:.75rem;font-weight:800;letter-spacing:.12em;text-transform:uppercase}
+.brand{font-size:1.35rem;font-weight:850;letter-spacing:-.04em}.brand span{color:var(--blue)}.eyebrow{color:var(--blue);font-size:.75rem;font-weight:800;letter-spacing:.12em;text-transform:uppercase}.lang-switch{color:var(--blue);text-decoration:none;margin-left:6px}
 .muted{color:var(--muted)}.intro{max-width:760px;padding:66px 0 48px}.intro h1{font-size:clamp(2.5rem,7vw,5.6rem);line-height:.98;letter-spacing:-.065em;margin:14px 0 24px}.intro p{font-size:1.2rem;color:var(--muted);max-width:650px;margin:0 0 28px}.proof{display:flex;flex-wrap:wrap;gap:8px;margin-top:20px}.proof span{border:1px solid var(--line);border-radius:999px;padding:7px 11px;background:rgba(255,255,255,.72);color:var(--muted);font-size:.8rem;font-weight:700}
 .primary,.secondary{border:0;border-radius:13px;padding:13px 18px;font-weight:800;cursor:pointer;transition:transform .16s ease,box-shadow .16s ease}.primary{background:var(--blue);color:#fff;box-shadow:0 8px 20px rgba(38,132,255,.23)}.secondary{border:1px solid var(--line);background:#fff;color:var(--ink)}.primary:hover,.secondary:hover{transform:translateY(-1px)}button:disabled{cursor:not-allowed;opacity:.45;transform:none}
 .demo{padding:15px 0 48px}.demo-head{display:flex;justify-content:space-between;gap:20px;align-items:flex-end;margin-bottom:18px}.demo-head h1{font-size:clamp(1.7rem,3vw,2.6rem);line-height:1.05;letter-spacing:-.05em;margin:6px 0}.scenario-count{white-space:nowrap;color:var(--muted);font-size:.9rem}
@@ -40,7 +40,7 @@ button{font:inherit}button:focus-visible,summary:focus-visible{outline:3px solid
 </head>
 <body>
 <main class="wrap">
-  <header class="topbar"><div class="brand">echo<span>guard</span></div><div class="eyebrow">Snapshot replay</div></header>
+  <header class="topbar"><div class="brand">echo<span>guard</span></div><div class="eyebrow">Snapshot replay · <a class="lang-switch" href="/demo/guard/he">עברית</a></div></header>
   <section id="intro" class="intro">
     <div class="eyebrow">Based on the Guard evaluation suite</div>
     <h1>See danger emerge before it becomes obvious.</h1>
