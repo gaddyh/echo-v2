@@ -46,6 +46,14 @@ runs when needed:
 GUARD_EVAL_RUNS=5 .venv/bin/python -m pytest -m eval_guard -v -s
 ```
 
+For a focused run, keep the suite selection and provide comma-separated case IDs:
+
+```bash
+GUARD_EVAL_SUITE=mvp \
+GUARD_EVAL_CASE_IDS='unknown_contact_escalation_001,suspicious_contact_002_known_activity_coordinator_negative,teasing_vs_bullying_002_positive,distress_001_hopelessness_and_help_request_positive,child_sexual_exploitation_002_intimate_image_sextortion' \
+  .venv/bin/python -m pytest -m eval_guard -v -s
+```
+
 The first run after changing gold or matcher semantics should be report-only:
 
 ```bash

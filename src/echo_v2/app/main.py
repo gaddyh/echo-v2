@@ -558,6 +558,7 @@ def create_app() -> FastAPI:
 
     # --- waiting-list mini web app (service + router) -----------------------
     from echo_v2.app.guard_debug_routes import build_guard_debug_router
+    from echo_v2.app.guard_demo_routes import build_guard_demo_router
     from echo_v2.app.waiting_list_routes import build_waiting_list_router
     from echo_v2.services.debug_analysis_service import DebugAnalysisService
     from echo_v2.services.guard_review_service import GuardReviewService
@@ -599,6 +600,7 @@ def create_app() -> FastAPI:
     guard_debug_router = build_guard_debug_router(
         service=guard_review_service, token_service=token_service
     )
+    guard_demo_router = build_guard_demo_router()
 
     # --- FastAPI app with lifespan (scheduler + worker start/stop with app) --
     scheduler_task: asyncio.Task[None] | None = None
@@ -791,6 +793,7 @@ def create_app() -> FastAPI:
     # Waiting-list mini web app: token→cookie exchange + JSON API.
     app.include_router(waiting_list_router)
     app.include_router(guard_debug_router)
+    app.include_router(guard_demo_router)
 
     # Public landing page + waitlist signup.
     from echo_v2.app.landing_routes import build_landing_router

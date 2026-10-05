@@ -334,6 +334,30 @@ def _print_aggregate(aggregate: dict[tuple[str, str], AggregateSnapshot]) -> flo
     return accuracy
 
 
+def _select_cases(cases: tuple[GuardEvalCase, ...]) -> tuple[GuardEvalCase, ...]:
+    """Optionally narrow a suite to explicit case IDs for focused eval runs."""
+    raw_case_ids = os.environ.get("GUARD_EVAL_CASE_IDS", "").strip()
+    if not raw_case_ids:
+        return cases
+
+    requested = tuple(
+        dict.fromkeys(
+            case_id.strip()
+            for case_id in raw_case_ids.split(",")
+            if case_id.strip()
+        )
+    )
+    cases_by_id = {case.case_id: case for case in cases}
+    unknown = tuple(case_id for case_id in requested if case_id not in cases_by_id)
+    if unknown:
+        raise ValueError(
+            f"GUARD_EVAL_CASE_IDS contains unknown case IDs: {', '.join(unknown)}"
+        )
+    if not requested:
+        raise ValueError("GUARD_EVAL_CASE_IDS must contain at least one case ID")
+    return tuple(cases_by_id[case_id] for case_id in requested)
+
+
 async def _run_eval_suite(
     analyzer: LLMGuardAnalyzer,
     cases: tuple[GuardEvalCase, ...],
@@ -392,4 +416,5 @@ async def test_guard_eval(analyzer: LLMGuardAnalyzer) -> None:
             "GUARD_EVAL_SUITE must be baseline, mvp, comprehensive, or all"
         )
     validate_guard_cases(cases)
+    cases = _select_cases(cases)
     await _run_eval_suite(analyzer, cases, suite, min_accuracy)
