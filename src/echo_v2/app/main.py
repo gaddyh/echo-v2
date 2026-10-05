@@ -594,6 +594,7 @@ def create_app() -> FastAPI:
         links=repos.guardian_child_links,
         analyses=repos.guard_analysis_results,
         feedback=repos.guard_feedback,
+        messages=repos.messages,
     )
     guard_debug_router = build_guard_debug_router(
         service=guard_review_service, token_service=token_service

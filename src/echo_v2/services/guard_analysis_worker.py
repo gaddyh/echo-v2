@@ -74,6 +74,7 @@ class GuardAnalysisWorker:
             schedule_reason=chat.next_analysis_reason,
             pending_since=chat.pending_since,
             scheduled_for=chat.next_analysis_at,
+            chat_name=chat.chat_name,
         )
         status, result_id = await self._commit.commit_if_current(
             child_user_id=chat.child_user_id,

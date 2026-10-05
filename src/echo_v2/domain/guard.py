@@ -78,3 +78,4 @@ class GuardAnalysisRecord:
     schedule_reason: str | None = None
     pending_since: datetime | None = None
     scheduled_for: datetime | None = None
+    chat_name: str | None = None
