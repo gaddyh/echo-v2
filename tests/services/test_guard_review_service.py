@@ -26,10 +26,16 @@ pytestmark = pytest.mark.asyncio
 NOW = datetime(2026, 10, 5, 12, tzinfo=timezone.utc)
 
 
-def record(version: int, decision: GuardDecision, *, created: datetime) -> GuardAnalysisRecord:
+def record(
+    version: int,
+    decision: GuardDecision,
+    *,
+    created: datetime,
+    chat_name: str | None = "Shay Chat",
+) -> GuardAnalysisRecord:
     return GuardAnalysisRecord(
         id=f"result-{version}", child_user_id="child", connection_id="connection",
-        chat_id="chat@c.us", target_version=version, signals=("signal",), chat_name="Shay Chat",
+        chat_id="chat@c.us", target_version=version, signals=("signal",), chat_name=chat_name,
         categories=("category",), confidence=0.8, reason="reason",
         evidence_message_ids=(f"message-{version}",), decision=decision,
         model="model", prompt_version="prompt", analyzer_version="analyzer",
@@ -73,6 +79,16 @@ async def test_review_is_guardian_scoped_and_derives_progression() -> None:
     assert newest.scheduled_delay_seconds == 55
     assert newest.scheduler_lag_seconds == 5
     assert newest.evidence_messages[0].text == "Evidence 2"
+
+
+async def test_private_result_without_snapshot_name_uses_latest_sender_name() -> None:
+    message = Message(
+        id="message", user_id="child", connection_id="connection", chat_id="chat@c.us",
+        provider_message_id="provider", direction=MessageDirection.INBOUND, sender_id="sender",
+        sender_name="שרה חנקין", timestamp=NOW, text="שלום",
+    )
+    record_without_name = record(1, GuardDecision.WATCH, created=NOW, chat_name=None)
+    assert GuardReviewService._display_chat_name(record_without_name, {message.id: message}) == "שרה חנקין"
 
 
 async def test_filters_and_feedback_edits() -> None:

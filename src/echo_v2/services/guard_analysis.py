@@ -72,6 +72,13 @@ class GuardAnalysisProcessor:
             )
         current = await self._analyzer.analyze(conversation.input)
         state = ledger.update(current)
+        cumulative_evidence_ids = tuple(
+            dict.fromkeys(
+                message_id
+                for evidence_ids in state.evidence_by_signal.values()
+                for message_id in evidence_ids
+            )
+        )
         decision = DefaultDecisionPolicy().decide(
             signals=state.active_signals,
             categories=state.active_categories,
@@ -86,7 +93,7 @@ class GuardAnalysisProcessor:
             categories=current.categories,
             confidence=current.confidence,
             reason=current.reason,
-            evidence_message_ids=current.evidence_message_ids,
+            evidence_message_ids=cumulative_evidence_ids,
             decision=decision,
             model=current.model,
             prompt_version=current.prompt_version,

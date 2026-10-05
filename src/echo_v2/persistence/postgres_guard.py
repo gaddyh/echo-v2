@@ -136,7 +136,8 @@ class PostgresGuardChatStateRepository:
                         "next_analysis_reason": func.coalesce(
                             GuardChatStateRow.next_analysis_reason, next_analysis_reason
                         ),
-                        "chat_name": chat_name, "is_group": is_group,
+                        "chat_name": func.coalesce(chat_name, GuardChatStateRow.chat_name),
+                        "is_group": is_group,
                         "updated_at": datetime.now(timezone.utc),
                     },
                     where=GuardChatStateRow.last_message_at <= observed_at,

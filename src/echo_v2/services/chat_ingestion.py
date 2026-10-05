@@ -37,7 +37,7 @@ from echo_v2.persistence.guard_repositories import (
     GuardChatStateRepository,
     GuardianChildLinkRepository,
 )
-from echo_v2.ports.whatsapp import ProviderMessageEvent
+from echo_v2.ports.whatsapp import MessageDirection, ProviderMessageEvent
 from echo_v2.services.guard_schedule_policy import (
     GuardConversationState,
     GuardSchedulePolicy,
@@ -123,6 +123,13 @@ class ChatIngestionService:
             return False
 
         message_time = event.timestamp
+        effective_chat_name = event.chat_name
+        if (
+            not effective_chat_name
+            and not is_group
+            and event.direction is MessageDirection.INBOUND
+        ):
+            effective_chat_name = event.sender_name
         analysis_target = AnalysisTarget.GUARD if guard_enabled else AnalysisTarget.WFM
         if guard_enabled:
             previous_decision = (
@@ -171,7 +178,7 @@ class ChatIngestionService:
             sender_id=event.sender_id,
             source=event.source,
             sender_name=event.sender_name,
-            chat_name=event.chat_name,
+            chat_name=effective_chat_name,
             timestamp=event.timestamp,
             message_type=event.kind.value,
             text=event.text,
@@ -186,7 +193,7 @@ class ChatIngestionService:
             direction=event.direction,
             observed_at=message_time,
             next_analysis_at=next_analysis_at,
-            chat_name=event.chat_name,
+            chat_name=effective_chat_name,
             analysis_target=analysis_target,
             guard_schedule_reason=guard_schedule_reason,
         )

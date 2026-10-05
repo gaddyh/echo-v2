@@ -169,6 +169,22 @@ class GuardReviewService:
             and (date_to is None or (created is not None and created <= date_to))
         )
 
+    @staticmethod
+    def _display_chat_name(record: GuardAnalysisRecord, messages: dict[str, Message]) -> str | None:
+        if record.chat_name:
+            return record.chat_name
+        if record.chat_id.endswith("@g.us"):
+            return None
+        inbound = sorted(
+            (message for message in messages.values() if message.direction.value == "inbound"),
+            key=lambda message: message.timestamp,
+            reverse=True,
+        )
+        for message in inbound:
+            if message.chat_name or message.sender_name:
+                return message.chat_name or message.sender_name
+        return None
+
     @classmethod
     def _entry(
         cls, record: GuardAnalysisRecord, prior: GuardAnalysisRecord | None,
@@ -182,7 +198,7 @@ class GuardReviewService:
         lag = (created - scheduled).total_seconds() if created and scheduled else None
         return GuardReviewEntry(
             id=cls._result_id(record), child_user_id=record.child_user_id, chat_id=record.chat_id,
-            chat_name=record.chat_name, created_at=created.isoformat() if created else "", target_version=record.target_version,
+            chat_name=cls._display_chat_name(record, messages), created_at=created.isoformat() if created else "", target_version=record.target_version,
             previous_target_version=prior.target_version if prior else None,
             previous_decision=prior.decision.value if prior else None,
             decision=record.decision.value, categories=record.categories, signals=record.signals,
