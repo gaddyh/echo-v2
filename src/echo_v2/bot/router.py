@@ -28,6 +28,7 @@ from echo_v2.bot.commands import (
     BotCommandParser,
     Cancel,
     DigestOpen,
+    GuardOpen,
     ListDone,
     OnboardingCode,
     OnboardingConnect,
@@ -78,6 +79,8 @@ class CommandHandlers(Protocol):
     async def handle_responsibility_list(self, event: BotEvent) -> None: ...
 
     async def handle_digest_open(self, event: BotEvent) -> None: ...
+
+    async def handle_guard_open(self, event: BotEvent) -> None: ...
 
     async def handle_list_done(self, event: BotEvent) -> None: ...
 
@@ -243,6 +246,8 @@ class BotCommandRouter:
                 await self._handlers.handle_responsibility_list(event)
             case DigestOpen():
                 await self._handlers.handle_digest_open(event)
+            case GuardOpen():
+                await self._handlers.handle_guard_open(event)
             case ListDone():
                 await self._handlers.handle_list_done(event)
             case OnboardingCode():

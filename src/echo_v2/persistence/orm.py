@@ -55,6 +55,8 @@ __all__ = [
     "ChatRow",
     "ContactRow",
     "GreenInstancePoolRow",
+    "GuardAnalysisFeedbackEventRow",
+    "GuardAnalysisFeedbackRow",
     "GuardAnalysisResultRow",
     "GuardChatStateRow",
     "GuardianChildLinkRow",
@@ -645,6 +647,7 @@ class GuardChatStateRow(Base):
     next_analysis_at: Mapped[datetime | None] = mapped_column(
         TIMESTAMP(timezone=True), nullable=True
     )
+    next_analysis_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     chat_name: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_group: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
     created_at: Mapped[datetime] = mapped_column(
@@ -693,6 +696,9 @@ class GuardAnalysisResultRow(Base):
     analyzer_version: Mapped[str] = mapped_column(Text, nullable=False)
     taxonomy_version: Mapped[str] = mapped_column(Text, nullable=False)
     diagnostics: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    schedule_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    pending_since: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    scheduled_for: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
     )
@@ -716,6 +722,48 @@ class GuardAnalysisResultRow(Base):
             "created_at",
         ),
     )
+
+
+class GuardAnalysisFeedbackRow(Base):
+    __tablename__ = "guard_analysis_feedback"
+
+    result_id: Mapped[str] = mapped_column(
+        Uuid, ForeignKey("guard_analysis_results.id", ondelete="CASCADE"), primary_key=True
+    )
+    reviewer_user_id: Mapped[str] = mapped_column(
+        Uuid, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    label: Mapped[str] = mapped_column(Text, nullable=False)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class GuardAnalysisFeedbackEventRow(Base):
+    __tablename__ = "guard_analysis_feedback_events"
+
+    id: Mapped[str] = mapped_column(
+        Uuid, primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    result_id: Mapped[str] = mapped_column(
+        Uuid, ForeignKey("guard_analysis_results.id", ondelete="CASCADE"), nullable=False
+    )
+    reviewer_user_id: Mapped[str] = mapped_column(
+        Uuid, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    old_label: Mapped[str | None] = mapped_column(Text, nullable=True)
+    new_label: Mapped[str] = mapped_column(Text, nullable=False)
+    old_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    new_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    changed_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (Index("ix_guard_feedback_events_result_changed", "result_id", "changed_at"),)
 
 
 # --- waiting_for_me_results -------------------------------------------------

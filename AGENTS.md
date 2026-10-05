@@ -7,6 +7,15 @@
 - **Lint**: `.venv/bin/ruff check src tests`
 - **Type check**: `.venv/bin/mypy` (configured in `pyproject.toml` under `[tool.mypy]`, strict mode)
 
+### Test selection guidance
+
+- Do not run the entire suite for every local edit. Prefer the narrowest relevant test file or group during development.
+- Guard unit tests: `.venv/bin/python -m pytest 'tests/**/test_guard*.py' -q`
+- Guard review/persistence changes: include `tests/services/test_guard_review_service.py`, `tests/persistence/test_postgres_guard.py`, and `tests/persistence/test_postgres_guard_review.py`; the persistence tests start a Postgres Testcontainer and run migrations.
+- Real media E2E tests in `tests/services/test_media_e2e.py` call OpenAI, Modal, or external HTTP services when credentials and fixtures are present. Exclude them from routine local runs with: `.venv/bin/python -m pytest --ignore=tests/services/test_media_e2e.py -q`
+- Run `.venv/bin/python -m pytest --durations=30` when investigating slow tests.
+- Run the full suite before a PR or for broad changes. CI also runs the full suite on Python 3.10 and 3.13.
+
 ## Git workflow
 
 - Never push feature work directly to `main`.

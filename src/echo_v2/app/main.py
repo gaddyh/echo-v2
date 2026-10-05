@@ -553,11 +553,14 @@ def create_app() -> FastAPI:
         query_service=query_service,
         token_service=token_service,
         base_url=webhook_base_url,
+        guardian_child_links=repos.guardian_child_links,
     )
 
     # --- waiting-list mini web app (service + router) -----------------------
+    from echo_v2.app.guard_debug_routes import build_guard_debug_router
     from echo_v2.app.waiting_list_routes import build_waiting_list_router
     from echo_v2.services.debug_analysis_service import DebugAnalysisService
+    from echo_v2.services.guard_review_service import GuardReviewService
     from echo_v2.services.waiting_list_action_service import WaitingListActionService
 
     waiting_list_service = WaitingListActionService(
@@ -585,6 +588,15 @@ def create_app() -> FastAPI:
         waiting_list_service=waiting_list_service,
         bot_phone=bot_phone,
         debug_service=debug_service,
+    )
+    guard_review_service = GuardReviewService(
+        token_service=token_service,
+        links=repos.guardian_child_links,
+        analyses=repos.guard_analysis_results,
+        feedback=repos.guard_feedback,
+    )
+    guard_debug_router = build_guard_debug_router(
+        service=guard_review_service, token_service=token_service
     )
 
     # --- FastAPI app with lifespan (scheduler + worker start/stop with app) --
@@ -777,6 +789,7 @@ def create_app() -> FastAPI:
 
     # Waiting-list mini web app: token→cookie exchange + JSON API.
     app.include_router(waiting_list_router)
+    app.include_router(guard_debug_router)
 
     # Public landing page + waitlist signup.
     from echo_v2.app.landing_routes import build_landing_router

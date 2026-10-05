@@ -153,7 +153,9 @@ class ChatIngestionService:
                 )
             )
             next_analysis_at = schedule.analyze_at
+            guard_schedule_reason = schedule.reason
         else:
+            guard_schedule_reason = None
             # WFM retains its provider-time quiet-period semantics.
             next_analysis_at = message_time + timedelta(seconds=self._quiet_period)
 
@@ -186,4 +188,5 @@ class ChatIngestionService:
             next_analysis_at=next_analysis_at,
             chat_name=event.chat_name,
             analysis_target=analysis_target,
+            guard_schedule_reason=guard_schedule_reason,
         )

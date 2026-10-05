@@ -633,6 +633,7 @@ class PostgresIngestionRepository:
         next_analysis_at: datetime | None,
         chat_name: str | None = None,
         analysis_target: AnalysisTarget = AnalysisTarget.WFM,
+        guard_schedule_reason: str | None = None,
     ) -> bool:
         async with self._session_factory() as session:
             try:
@@ -710,6 +711,7 @@ class PostgresIngestionRepository:
                             last_decision="none",
                             pending_since=observed_at,
                             next_analysis_at=next_analysis_at,
+                            next_analysis_reason=guard_schedule_reason,
                             chat_name=chat_name,
                             is_group=message.chat_id.endswith("@g.us"),
                         )
@@ -723,6 +725,9 @@ class PostgresIngestionRepository:
                                 ),
                                 "next_analysis_at": func.least(
                                     GuardChatStateRow.next_analysis_at, next_analysis_at
+                                ),
+                                "next_analysis_reason": func.coalesce(
+                                    GuardChatStateRow.next_analysis_reason, guard_schedule_reason
                                 ),
                                 "updated_at": datetime.now(timezone.utc),
                                 **({"chat_name": chat_name} if chat_name else {}),

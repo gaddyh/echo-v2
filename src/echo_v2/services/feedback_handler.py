@@ -51,6 +51,7 @@ from echo_v2.persistence.contacts import ContactRepository
 from echo_v2.persistence.feedback_repositories import (
     ChatMuteRepository,
 )
+from echo_v2.persistence.guard_repositories import GuardianChildLinkRepository
 from echo_v2.ports.bot import BotChannel, BotEvent, BotEventType
 from echo_v2.services.feedback_service import (
     WaitingForMeActionService,
@@ -129,6 +130,7 @@ class FeedbackHandler:
         query_service: WaitingListQueryService,
         token_service: WaitingListTokenService | None = None,
         base_url: str = "",
+        guardian_child_links: GuardianChildLinkRepository | None = None,
     ) -> None:
         self._bot = bot
         self._action_service = action_service
@@ -143,6 +145,7 @@ class FeedbackHandler:
         self._query_service = query_service
         self._token_service = token_service
         self._base_url = base_url
+        self._guardian_child_links = guardian_child_links
 
     @traceable(
         name="wfm.feedback.handle",
@@ -274,6 +277,26 @@ class FeedbackHandler:
     async def handle_digest_open(self, event: BotEvent) -> None:
         """Handle 'סיכום חדש' — send the waiting-list link."""
         await self._handle_digest_request(event)
+
+    async def handle_guard_open(self, event: BotEvent) -> None:
+        """Issue a Guard review link only to guardians with active children."""
+        user_info = await self._user_resolver.resolve(event.user_phone)
+        if user_info is None or self._token_service is None or self._guardian_child_links is None:
+            return
+        user_id = user_info[0]
+        links = await self._guardian_child_links.list_active_for_guardian(user_id)
+        if not links:
+            return
+        try:
+            _session_id, raw_token = await self._token_service.issue(user_id)
+        except Exception:
+            _logger.exception("failed to issue Guard review token for user %s", user_id)
+            await self._bot.send_text(event.user_phone, "אירעה שגיאה. נסה שוב.")
+            return
+        await self._bot.send_text(
+            event.user_phone,
+            f"פותח מסך Guard Review\n{self._base_url}/q/guard/{raw_token}",
+        )
 
     async def handle_list_done(self, event: BotEvent) -> None:
         """Acknowledge 'סיימתי לעבור על רשימת ההמתנה'."""
