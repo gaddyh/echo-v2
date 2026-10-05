@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import replace
 from datetime import datetime, timezone
 
 from echo_v2.domain.guard import GuardChatState
@@ -68,11 +69,17 @@ class GuardAnalysisWorker:
             chat.chat_id,
             chat.activity_version,
         )
+        record = replace(
+            prepared.record,
+            schedule_reason=chat.next_analysis_reason,
+            pending_since=chat.pending_since,
+            scheduled_for=chat.next_analysis_at,
+        )
         status, result_id = await self._commit.commit_if_current(
             child_user_id=chat.child_user_id,
             chat_id=chat.chat_id,
             target_version=chat.activity_version,
-            record=prepared.record,
+            record=record,
         )
         _logger.info(
             "Guard analysis %s for %s/%s version=%d result=%s decision=%s",

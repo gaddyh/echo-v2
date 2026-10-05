@@ -63,6 +63,7 @@ def _make_handler(
     token_service=_NOT_SET,
     active_repo=None,
     base_url: str = "https://echo.example.com",
+    guardian_child_links=None,
 ) -> tuple[FeedbackHandler, object, object, object, object]:
     """Build a FeedbackHandler with mocked services and in-memory repos."""
     if user_resolver_return is _NOT_SET:
@@ -106,6 +107,7 @@ def _make_handler(
         query_service=query_service,
         token_service=token_service,
         base_url=base_url,
+        guardian_child_links=guardian_child_links,
     )
     return handler, action_service, bot, user_resolver, active_repo
 

@@ -35,10 +35,7 @@ class GuardianChildLink:
 
     @property
     def is_guard_enabled(self) -> bool:
-        return (
-            self.status == GuardianChildLinkStatus.ACTIVE
-            and self.safety_enabled_at is not None
-        )
+        return self.status == GuardianChildLinkStatus.ACTIVE and self.safety_enabled_at is not None
 
 
 @dataclass
@@ -52,6 +49,7 @@ class GuardChatState:
     last_analysis_at: datetime | None = None
     pending_since: datetime | None = None
     next_analysis_at: datetime | None = None
+    next_analysis_reason: str | None = None
     chat_name: str | None = None
     is_group: bool = False
     created_at: datetime | None = None
@@ -77,3 +75,6 @@ class GuardAnalysisRecord:
     created_at: datetime | None = None
     id: str | None = None
     diagnostics: dict[str, Any] = field(default_factory=dict)
+    schedule_reason: str | None = None
+    pending_since: datetime | None = None
+    scheduled_for: datetime | None = None

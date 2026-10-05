@@ -34,6 +34,7 @@ __all__ = [
     "BotCommandParser",
     "Cancel",
     "DigestOpen",
+    "GuardOpen",
     "ListDone",
     "OnboardingCode",
     "OnboardingConnect",
@@ -85,6 +86,11 @@ class DigestOpen:
 
 
 @dataclass(frozen=True)
+class GuardOpen:
+    """User sent 'guard' — send the internal Guard review link."""
+
+
+@dataclass(frozen=True)
 class ListDone:
     """User sent 'סיימתי לעבור על רשימת ההמתנה' — acknowledge review done."""
 
@@ -130,6 +136,7 @@ BotCommand = (
     | ResponsibilityDismiss
     | ResponsibilityList
     | DigestOpen
+    | GuardOpen
     | ListDone
     | OnboardingStart
     | OnboardingConnect
@@ -148,6 +155,7 @@ _CODE_KEYWORD = "קוד"
 _QR_KEYWORD = "qr"
 _DIGEST_KEYWORD = "סיכום חדש"
 _DIGEST_KEYWORDS = ("סיכום חדש", "סיכום שיחה", "חדש")
+_GUARD_KEYWORD = "guard"
 _VIEW_DETAILS_BUTTON = "צפה בשיחות"
 _LIST_DONE_TEXT = "סיימתי לעבור על רשימת ההמתנה"
 _CANCEL_KEYWORDS = {"cancel", "בטל", "ביטול", "stop"}
@@ -231,6 +239,8 @@ class BotCommandParser:
             return OnboardingCode()
         if stripped.lower() == _QR_KEYWORD:
             return OnboardingQr()
+        if stripped.lower() == _GUARD_KEYWORD:
+            return GuardOpen()
         if any(kw in stripped for kw in _DIGEST_KEYWORDS):
             return DigestOpen()
         if stripped.strip("[]") == _VIEW_DETAILS_BUTTON:

@@ -48,6 +48,7 @@ from echo_v2.persistence.postgres_guard import (
     PostgresGuardChatStateRepository,
     PostgresGuardianChildLinkRepository,
 )
+from echo_v2.persistence.postgres_guard_feedback import PostgresGuardFeedbackRepository
 from echo_v2.persistence.postgres_idempotency import PostgresIdempotencyStore
 from echo_v2.persistence.postgres_scheduled_actions import (
     PostgresScheduledActionRepository,
@@ -91,6 +92,7 @@ class PostgresRepos:
     guard_chat_state: PostgresGuardChatStateRepository
     guard_analysis_results: PostgresGuardAnalysisRepository
     guard_analysis_commit: PostgresGuardAnalysisCommitRepository
+    guard_feedback: PostgresGuardFeedbackRepository
     wfm_feedback: PostgresWaitingForMeFeedbackRepository
     wfm_actions: PostgresWaitingForMeActionRepository
     chat_mutes: PostgresChatMuteRepository
@@ -136,6 +138,7 @@ def build_postgres_repos(settings: DBSettings) -> PostgresRepos:
     guard_chat_state = PostgresGuardChatStateRepository(factory)
     guard_analysis_results = PostgresGuardAnalysisRepository(factory)
     guard_analysis_commit = PostgresGuardAnalysisCommitRepository(factory)
+    guard_feedback = PostgresGuardFeedbackRepository(factory)
     wfm_feedback = PostgresWaitingForMeFeedbackRepository(factory)
     wfm_actions = PostgresWaitingForMeActionRepository(factory)
     chat_mutes = PostgresChatMuteRepository(factory)
@@ -168,6 +171,7 @@ def build_postgres_repos(settings: DBSettings) -> PostgresRepos:
         guard_chat_state=guard_chat_state,
         guard_analysis_results=guard_analysis_results,
         guard_analysis_commit=guard_analysis_commit,
+        guard_feedback=guard_feedback,
         wfm_feedback=wfm_feedback,
         wfm_actions=wfm_actions,
         chat_mutes=chat_mutes,

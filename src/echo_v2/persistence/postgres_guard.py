@@ -49,6 +49,16 @@ class PostgresGuardianChildLinkRepository:
             row = (await session.execute(stmt)).scalar_one_or_none()
             return self._to_domain(row) if row else None
 
+    async def list_active_for_guardian(self, guardian_user_id: str) -> list[GuardianChildLink]:
+        async with self._session_factory() as session:
+            stmt = select(GuardianChildLinkRow).where(
+                GuardianChildLinkRow.guardian_user_id == guardian_user_id,
+                GuardianChildLinkRow.status == GuardianChildLinkStatus.ACTIVE.value,
+                GuardianChildLinkRow.safety_enabled_at.is_not(None),
+            )
+            rows = (await session.execute(stmt)).scalars().all()
+            return [self._to_domain(row) for row in rows]
+
     async def upsert_active(
         self, *, guardian_user_id: str, child_user_id: str, now: datetime
     ) -> GuardianChildLink:
@@ -102,8 +112,9 @@ class PostgresGuardChatStateRepository:
 
     async def upsert_on_message(
         self, *, child_user_id: str, chat_id: str, observed_at: datetime,
-        next_analysis_at: datetime, pending_since: datetime, chat_name: str | None,
-        is_group: bool,
+        next_analysis_at: datetime, pending_since: datetime,
+        next_analysis_reason: str | None = None, chat_name: str | None = None,
+        is_group: bool = False,
     ) -> GuardChatState:
         async with self._session_factory() as session:
             stmt = (
@@ -112,7 +123,8 @@ class PostgresGuardChatStateRepository:
                     child_user_id=child_user_id, chat_id=chat_id, activity_version=1,
                     last_message_at=observed_at, last_analyzed_version=0,
                     last_decision=GuardDecision.NONE.value, pending_since=pending_since,
-                    next_analysis_at=next_analysis_at, chat_name=chat_name, is_group=is_group,
+                    next_analysis_at=next_analysis_at, next_analysis_reason=next_analysis_reason,
+                    chat_name=chat_name, is_group=is_group,
                 )
                 .on_conflict_do_update(
                     index_elements=["child_user_id", "chat_id"],
@@ -121,6 +133,9 @@ class PostgresGuardChatStateRepository:
                         "last_message_at": observed_at,
                         "pending_since": func.coalesce(GuardChatStateRow.pending_since, pending_since),
                         "next_analysis_at": func.least(GuardChatStateRow.next_analysis_at, next_analysis_at),
+                        "next_analysis_reason": func.coalesce(
+                            GuardChatStateRow.next_analysis_reason, next_analysis_reason
+                        ),
                         "chat_name": chat_name, "is_group": is_group,
                         "updated_at": datetime.now(timezone.utc),
                     },
@@ -156,7 +171,7 @@ class PostgresGuardChatStateRepository:
             ).values(
                 last_analyzed_version=target_version, last_decision=decision.value,
                 last_analysis_at=analyzed_at, pending_since=None, next_analysis_at=None,
-                updated_at=analyzed_at,
+                next_analysis_reason=None, updated_at=analyzed_at,
             )
             result = cast(CursorResult[Any], await session.execute(stmt))
             await session.commit()
@@ -170,8 +185,9 @@ class PostgresGuardChatStateRepository:
             last_analyzed_version=row.last_analyzed_version,
             last_decision=GuardDecision(row.last_decision),
             last_analysis_at=row.last_analysis_at, pending_since=row.pending_since,
-            next_analysis_at=row.next_analysis_at, chat_name=row.chat_name,
-            is_group=row.is_group, created_at=row.created_at, updated_at=row.updated_at,
+            next_analysis_at=row.next_analysis_at, next_analysis_reason=row.next_analysis_reason,
+            chat_name=row.chat_name, is_group=row.is_group,
+            created_at=row.created_at, updated_at=row.updated_at,
         )
 
 
@@ -197,6 +213,9 @@ class PostgresGuardAnalysisRepository:
                 "analyzer_version": record.analyzer_version,
                 "taxonomy_version": record.taxonomy_version,
                 "diagnostics": record.diagnostics,
+                "schedule_reason": record.schedule_reason,
+                "pending_since": record.pending_since,
+                "scheduled_for": record.scheduled_for,
             }
             if record.id is not None:
                 values["id"] = record.id
@@ -206,6 +225,18 @@ class PostgresGuardAnalysisRepository:
             result_id = str((await session.execute(stmt)).scalar_one())
             await session.commit()
             return result_id
+
+    async def list_for_children(
+        self, *, child_user_ids: list[str], limit: int = 500
+    ) -> list[GuardAnalysisRecord]:
+        if not child_user_ids:
+            return []
+        async with self._session_factory() as session:
+            stmt = select(GuardAnalysisResultRow).where(
+                GuardAnalysisResultRow.child_user_id.in_(child_user_ids)
+            ).order_by(GuardAnalysisResultRow.created_at.desc()).limit(limit)
+            rows = (await session.execute(stmt)).scalars().all()
+            return [self._to_domain(row) for row in rows]
 
     async def list_for_replay(
         self, *, child_user_id: str, chat_id: str, since: datetime, before_version: int,
@@ -229,6 +260,8 @@ class PostgresGuardAnalysisRepository:
             decision=GuardDecision(row.decision), model=row.model, prompt_version=row.prompt_version,
             analyzer_version=row.analyzer_version, taxonomy_version=row.taxonomy_version,
             created_at=row.created_at, diagnostics=row.diagnostics or {},
+            schedule_reason=row.schedule_reason, pending_since=row.pending_since,
+            scheduled_for=row.scheduled_for,
         )
 
 
@@ -268,6 +301,9 @@ class PostgresGuardAnalysisCommitRepository:
                     "analyzer_version": record.analyzer_version,
                     "taxonomy_version": record.taxonomy_version,
                     "diagnostics": record.diagnostics,
+                    "schedule_reason": record.schedule_reason,
+                    "pending_since": record.pending_since,
+                    "scheduled_for": record.scheduled_for,
                 }
                 if record.id is not None:
                     values["id"] = record.id
@@ -286,7 +322,7 @@ class PostgresGuardAnalysisCommitRepository:
                 ).values(
                     last_analyzed_version=target_version, last_decision=record.decision.value,
                     last_analysis_at=now, pending_since=None, next_analysis_at=None,
-                    updated_at=now,
+                    next_analysis_reason=None, updated_at=now,
                 ))
                 await session.commit()
                 return "committed", str(result_id)

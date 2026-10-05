@@ -302,6 +302,7 @@ class IngestionRepository(Protocol):
         next_analysis_at: datetime | None,
         chat_name: str | None = None,
         analysis_target: AnalysisTarget = AnalysisTarget.WFM,
+        guard_schedule_reason: str | None = None,
     ) -> bool:
         """Insert message + update exactly the selected analysis queue atomically.
 
@@ -340,6 +341,7 @@ class InMemoryIngestionRepository:
         next_analysis_at: datetime | None,
         chat_name: str | None = None,
         analysis_target: AnalysisTarget = AnalysisTarget.WFM,
+        guard_schedule_reason: str | None = None,
     ) -> bool:
         inserted = await self._message_repo.save(message)
         if not inserted:
@@ -362,6 +364,7 @@ class InMemoryIngestionRepository:
                 observed_at=observed_at,
                 next_analysis_at=next_analysis_at or observed_at,
                 pending_since=observed_at,
+                next_analysis_reason=guard_schedule_reason,
                 chat_name=chat_name,
                 is_group=message.chat_id.endswith("@g.us"),
             )

@@ -29,6 +29,8 @@ __all__ = [
 class GuardianChildLinkRepository(Protocol):
     async def get_active_for_child(self, child_user_id: str) -> GuardianChildLink | None: ...
 
+    async def list_active_for_guardian(self, guardian_user_id: str) -> list[GuardianChildLink]: ...
+
     async def upsert_active(
         self, *, guardian_user_id: str, child_user_id: str, now: datetime
     ) -> GuardianChildLink: ...
@@ -46,8 +48,9 @@ class GuardChatStateRepository(Protocol):
         observed_at: datetime,
         next_analysis_at: datetime,
         pending_since: datetime,
-        chat_name: str | None,
-        is_group: bool,
+        next_analysis_reason: str | None = None,
+        chat_name: str | None = None,
+        is_group: bool = False,
     ) -> GuardChatState: ...
 
     async def list_due(self, now: datetime, *, limit: int = 20) -> list[GuardChatState]: ...
@@ -88,6 +91,10 @@ class GuardAnalysisRepository(Protocol):
         before_version: int,
     ) -> list[GuardAnalysisRecord]: ...
 
+    async def list_for_children(
+        self, *, child_user_ids: list[str], limit: int = 500
+    ) -> list[GuardAnalysisRecord]: ...
+
 
 class InMemoryGuardianChildLinkRepository:
     def __init__(self) -> None:
@@ -98,6 +105,12 @@ class InMemoryGuardianChildLinkRepository:
             if link.child_user_id == child_user_id and link.is_guard_enabled:
                 return link
         return None
+
+    async def list_active_for_guardian(self, guardian_user_id: str) -> list[GuardianChildLink]:
+        return [
+            link for link in self._links.values()
+            if link.guardian_user_id == guardian_user_id and link.is_guard_enabled
+        ]
 
     async def upsert_active(
         self, *, guardian_user_id: str, child_user_id: str, now: datetime
@@ -133,8 +146,9 @@ class InMemoryGuardChatStateRepository:
         observed_at: datetime,
         next_analysis_at: datetime,
         pending_since: datetime,
-        chat_name: str | None,
-        is_group: bool,
+        next_analysis_reason: str | None = None,
+        chat_name: str | None = None,
+        is_group: bool = False,
     ) -> GuardChatState:
         key = (child_user_id, chat_id)
         existing = self._states.get(key)
@@ -146,6 +160,7 @@ class InMemoryGuardChatStateRepository:
                 last_message_at=observed_at,
                 pending_since=pending_since,
                 next_analysis_at=next_analysis_at,
+                next_analysis_reason=next_analysis_reason,
                 chat_name=chat_name,
                 is_group=is_group,
             )
@@ -156,6 +171,7 @@ class InMemoryGuardChatStateRepository:
                 last_message_at=observed_at,
                 pending_since=existing.pending_since or pending_since,
                 next_analysis_at=min(existing.next_analysis_at or next_analysis_at, next_analysis_at),
+                next_analysis_reason=existing.next_analysis_reason or next_analysis_reason,
                 chat_name=chat_name or existing.chat_name,
                 is_group=is_group,
                 updated_at=datetime.now(timezone.utc),
@@ -195,6 +211,7 @@ class InMemoryGuardChatStateRepository:
             last_analysis_at=analyzed_at,
             pending_since=None,
             next_analysis_at=None,
+            next_analysis_reason=None,
             updated_at=analyzed_at,
         )
         return True
@@ -280,3 +297,11 @@ class InMemoryGuardAnalysisRepository:
             ],
             key=lambda record: (record.target_version, record.created_at or since),
         )
+
+    async def list_for_children(
+        self, *, child_user_ids: list[str], limit: int = 500
+    ) -> list[GuardAnalysisRecord]:
+        allowed = set(child_user_ids)
+        rows = [record for record in self.records if record.child_user_id in allowed]
+        rows.sort(key=lambda record: record.created_at or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+        return rows[:limit]
