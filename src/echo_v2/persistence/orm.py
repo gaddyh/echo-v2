@@ -699,6 +699,7 @@ class GuardAnalysisResultRow(Base):
     schedule_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     pending_since: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
     scheduled_for: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    chat_name: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
     )

@@ -7,14 +7,17 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from echo_v2.app.guard_debug_routes import build_guard_debug_router
+from echo_v2.domain.chat import Message
 from echo_v2.domain.guard import GuardAnalysisRecord
 from echo_v2.domain.guard_feedback import GuardFeedbackLabel
+from echo_v2.persistence.chat_repositories import InMemoryMessageRepository
 from echo_v2.persistence.guard_feedback import InMemoryGuardFeedbackRepository
 from echo_v2.persistence.guard_repositories import (
     InMemoryGuardAnalysisRepository,
     InMemoryGuardianChildLinkRepository,
 )
 from echo_v2.persistence.waiting_list_tokens import InMemoryWaitingListSessionRepository
+from echo_v2.ports.whatsapp import MessageDirection
 from echo_v2.services.guard_review_service import GuardReviewService
 from echo_v2.services.guard_taxonomy import GuardDecision
 from echo_v2.services.waiting_list_token_service import WaitingListTokenService
@@ -26,7 +29,7 @@ NOW = datetime(2026, 10, 5, 12, tzinfo=timezone.utc)
 def record(version: int, decision: GuardDecision, *, created: datetime) -> GuardAnalysisRecord:
     return GuardAnalysisRecord(
         id=f"result-{version}", child_user_id="child", connection_id="connection",
-        chat_id="chat@c.us", target_version=version, signals=("signal",),
+        chat_id="chat@c.us", target_version=version, signals=("signal",), chat_name="Shay Chat",
         categories=("category",), confidence=0.8, reason="reason",
         evidence_message_ids=(f"message-{version}",), decision=decision,
         model="model", prompt_version="prompt", analyzer_version="analyzer",
@@ -44,8 +47,19 @@ async def setup() -> tuple[GuardReviewService, str, InMemoryGuardFeedbackReposit
     analyses = InMemoryGuardAnalysisRepository()
     await analyses.save(record(1, GuardDecision.NONE, created=NOW - timedelta(minutes=2)))
     await analyses.save(record(2, GuardDecision.WATCH, created=NOW))
+    messages = InMemoryMessageRepository()
+    for version in (1, 2):
+        await messages.save(Message(
+            id=f"message-{version}", user_id="child", connection_id="connection",
+            chat_id="chat@c.us", provider_message_id=f"provider-{version}",
+            direction=MessageDirection.INBOUND, sender_id="sender", timestamp=NOW,
+            text=f"Evidence {version}",
+        ))
     feedback = InMemoryGuardFeedbackRepository()
-    return GuardReviewService(token_service=tokens, links=links, analyses=analyses, feedback=feedback), session_id, feedback
+    return GuardReviewService(
+        token_service=tokens, links=links, analyses=analyses,
+        feedback=feedback, messages=messages,
+    ), session_id, feedback
 
 
 async def test_review_is_guardian_scoped_and_derives_progression() -> None:
@@ -58,6 +72,7 @@ async def test_review_is_guardian_scoped_and_derives_progression() -> None:
     assert newest.activity_delta == 1
     assert newest.scheduled_delay_seconds == 55
     assert newest.scheduler_lag_seconds == 5
+    assert newest.evidence_messages[0].text == "Evidence 2"
 
 
 async def test_filters_and_feedback_edits() -> None:
@@ -93,9 +108,18 @@ async def test_route_auth_and_feedback() -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="https://test") as client:
         assert (await client.get("/api/debug/guard")).status_code == 401
         assert (await client.post("/api/debug/guard/feedback", json={"result_id": "x", "label": "correct"})).status_code == 401
+        assert (await client.get("/api/debug/guard", cookies={"wls": "missing"})).status_code == 401
+        assert (await client.get("/debug/guard")).status_code == 200
+        expired = await client.get("/q/guard/not-a-token")
+        assert expired.status_code == 200
+        _new_session, raw_token = await service._tokens.issue("guardian")
+        token_response = await client.get(f"/q/guard/{raw_token}")
+        assert token_response.status_code == 303
+        assert "/debug/guard" in token_response.headers["location"]
         response = await client.get("/api/debug/guard", cookies={"wls": session_id})
         assert response.status_code == 200
         assert response.json()["results"][0]["previous_decision"] == "none"
+        assert response.json()["results"][0]["evidence_messages"][0]["text"] == "Evidence 2"
         response = await client.post(
             "/api/debug/guard/feedback", cookies={"wls": session_id},
             json={"result_id": "result-2", "label": "correct", "note": "ok"},

@@ -109,12 +109,21 @@ def _response(response: GuardReviewResponse) -> dict[str, object]:
         "results": [
             {
                 "id": item.id, "child_user_id": item.child_user_id, "chat_id": item.chat_id,
-                "created_at": item.created_at, "target_version": item.target_version,
+                "chat_name": item.chat_name, "created_at": item.created_at, "target_version": item.target_version,
                 "previous_target_version": item.previous_target_version,
                 "previous_decision": item.previous_decision, "decision": item.decision,
                 "categories": list(item.categories), "signals": list(item.signals),
                 "confidence": item.confidence, "reason": item.reason,
-                "evidence_message_ids": list(item.evidence_message_ids), "is_group": item.is_group,
+                "evidence_message_ids": list(item.evidence_message_ids),
+                "evidence_messages": [
+                    {
+                        "id": message.id, "direction": message.direction,
+                        "sender": message.sender, "text": message.text,
+                        "timestamp": message.timestamp,
+                    }
+                    for message in item.evidence_messages
+                ],
+                "is_group": item.is_group,
                 "schedule_reason": item.schedule_reason, "pending_since": item.pending_since,
                 "scheduled_for": item.scheduled_for,
                 "scheduled_delay_seconds": item.scheduled_delay_seconds,

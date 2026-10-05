@@ -216,6 +216,7 @@ class PostgresGuardAnalysisRepository:
                 "schedule_reason": record.schedule_reason,
                 "pending_since": record.pending_since,
                 "scheduled_for": record.scheduled_for,
+                "chat_name": record.chat_name,
             }
             if record.id is not None:
                 values["id"] = record.id
@@ -261,7 +262,7 @@ class PostgresGuardAnalysisRepository:
             analyzer_version=row.analyzer_version, taxonomy_version=row.taxonomy_version,
             created_at=row.created_at, diagnostics=row.diagnostics or {},
             schedule_reason=row.schedule_reason, pending_since=row.pending_since,
-            scheduled_for=row.scheduled_for,
+            scheduled_for=row.scheduled_for, chat_name=row.chat_name,
         )
 
 
@@ -304,6 +305,7 @@ class PostgresGuardAnalysisCommitRepository:
                     "schedule_reason": record.schedule_reason,
                     "pending_since": record.pending_since,
                     "scheduled_for": record.scheduled_for,
+                    "chat_name": record.chat_name,
                 }
                 if record.id is not None:
                     values["id"] = record.id

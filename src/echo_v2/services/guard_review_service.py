@@ -5,8 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from echo_v2.domain.chat import Message
 from echo_v2.domain.guard import GuardAnalysisRecord
 from echo_v2.domain.guard_feedback import GuardAnalysisFeedback, GuardFeedbackLabel
+from echo_v2.persistence.chat_repositories import MessageRepository
 from echo_v2.persistence.guard_feedback import GuardFeedbackRepository
 from echo_v2.persistence.guard_repositories import (
     GuardAnalysisRepository,
@@ -16,10 +18,20 @@ from echo_v2.services.waiting_list_token_service import WaitingListTokenService
 
 
 @dataclass(frozen=True)
+class GuardEvidenceMessage:
+    id: str
+    direction: str
+    sender: str | None
+    text: str
+    timestamp: str
+
+
+@dataclass(frozen=True)
 class GuardReviewEntry:
     id: str
     child_user_id: str
     chat_id: str
+    chat_name: str | None
     created_at: str
     target_version: int
     previous_target_version: int | None
@@ -30,6 +42,7 @@ class GuardReviewEntry:
     confidence: float
     reason: str
     evidence_message_ids: tuple[str, ...]
+    evidence_messages: tuple[GuardEvidenceMessage, ...]
     is_group: bool
     schedule_reason: str | None
     pending_since: str | None
@@ -56,11 +69,13 @@ class GuardReviewService:
         links: GuardianChildLinkRepository,
         analyses: GuardAnalysisRepository,
         feedback: GuardFeedbackRepository,
+        messages: MessageRepository,
     ) -> None:
         self._tokens = token_service
         self._links = links
         self._analyses = analyses
         self._feedback = feedback
+        self._messages = messages
 
     async def list_reviews(
         self,
@@ -81,6 +96,14 @@ class GuardReviewService:
             if self._matches(record, decision, category, chat_id, date_from, date_to)
         ]
         feedback = await self._feedback.get_for_results([self._result_id(record) for record in records])
+        messages_by_chat: dict[tuple[str, str], dict[str, Message]] = {}
+        for record in records:
+            key = (record.child_user_id, record.chat_id)
+            if key not in messages_by_chat:
+                messages = await self._messages.list_recent_for_chat(
+                    user_id=record.child_user_id, chat_id=record.chat_id, limit=100
+                )
+                messages_by_chat[key] = {message.id: message for message in messages}
         previous: dict[tuple[str, str], GuardAnalysisRecord | None] = {}
         prior_by_id: dict[str, GuardAnalysisRecord | None] = {}
         for record in sorted(
@@ -94,7 +117,12 @@ class GuardReviewService:
             prior_by_id[self._result_id(record)] = previous.get(key)
             previous[key] = record
         entries = [
-            self._entry(record, prior_by_id[self._result_id(record)], feedback.get(self._result_id(record)))
+            self._entry(
+                record,
+                prior_by_id[self._result_id(record)],
+                feedback.get(self._result_id(record)),
+                messages_by_chat[(record.child_user_id, record.chat_id)],
+            )
             for record in records
         ]
         return GuardReviewResponse(guardian_user_id=guardian_id, results=entries, total_results=len(entries))
@@ -144,7 +172,7 @@ class GuardReviewService:
     @classmethod
     def _entry(
         cls, record: GuardAnalysisRecord, prior: GuardAnalysisRecord | None,
-        feedback: GuardAnalysisFeedback | None,
+        feedback: GuardAnalysisFeedback | None, messages: dict[str, Message],
     ) -> GuardReviewEntry:
         pending = record.pending_since
         scheduled = record.scheduled_for
@@ -154,12 +182,21 @@ class GuardReviewService:
         lag = (created - scheduled).total_seconds() if created and scheduled else None
         return GuardReviewEntry(
             id=cls._result_id(record), child_user_id=record.child_user_id, chat_id=record.chat_id,
-            created_at=created.isoformat() if created else "", target_version=record.target_version,
+            chat_name=record.chat_name, created_at=created.isoformat() if created else "", target_version=record.target_version,
             previous_target_version=prior.target_version if prior else None,
             previous_decision=prior.decision.value if prior else None,
             decision=record.decision.value, categories=record.categories, signals=record.signals,
             confidence=record.confidence, reason=record.reason,
             evidence_message_ids=record.evidence_message_ids,
+            evidence_messages=tuple(
+                GuardEvidenceMessage(
+                    id=message.id, direction=message.direction.value,
+                    sender=message.sender_name or message.sender_id, text=message.text or "",
+                    timestamp=message.timestamp.isoformat(),
+                )
+                for message_id in record.evidence_message_ids
+                if (message := messages.get(message_id)) is not None
+            ),
             is_group=record.chat_id.endswith("@g.us"), schedule_reason=record.schedule_reason,
             pending_since=pending.isoformat() if pending else None,
             scheduled_for=scheduled.isoformat() if scheduled else None,
