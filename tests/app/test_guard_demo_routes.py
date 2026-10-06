@@ -16,12 +16,12 @@ EXPECTED_SCENARIOS = [
     "child_sexual_exploitation_002_intimate_image_sextortion",
 ]
 EXPECTED_HEBREW_SCENARIOS = [
-    "gold_parent_promise_01_stranger_getting_closer",
-    "gold_parent_promise_02_group_turns_on_child",
-    "gold_parent_promise_03_quiet_social_exclusion",
-    "gold_parent_promise_04_embarrassing_video_spreads",
-    "gold_parent_promise_05_no_is_not_respected",
-    "gold_parent_promise_06_bad_day_becomes_more",
+    "gold_parent_01_he_knows_where_she_waits",
+    "gold_parent_02_he_said_stop_they_kept_going",
+    "gold_parent_03_bring_200_tomorrow",
+    "gold_parent_04_please_delete_the_video",
+    "gold_parent_05_if_you_trusted_me",
+    "gold_parent_06_i_dont_want_to_be_alone_tonight",
 ]
 
 
@@ -64,6 +64,11 @@ async def test_hebrew_demo_page_serves_rtl_replay_shell() -> None:
     assert "התחלת הדגמה" in response.text
     assert "המצב הנוכחי" in response.text
     assert "fetch('/api/demo/guard?lang=he')" in response.text
+    assert "payload.landing_promises" in response.text
+    assert 'class="secondary-details"' in response.text
+    assert 'id="parent-fear"' in response.text
+    assert 'id="product-promise"' in response.text
+    assert 'id="alert-window"' in response.text
     assert 'href="/demo/guard"' in response.text
     assert "function playNextSnapshot()" in response.text
     assert response.headers["content-security-policy"].startswith("default-src 'self'")
@@ -88,11 +93,32 @@ async def test_hebrew_demo_data_uses_hebrew_fixture() -> None:
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["version"] == 4
+    assert payload["version"] == 5
     assert payload["kind"] == "echo_guard_demo_gold_set"
     assert [scenario["id"] for scenario in payload["scenarios"]] == EXPECTED_HEBREW_SCENARIOS
-    assert payload["scenarios"][0]["title"] == "מישהו חדש מתחיל להתקרב"
+    assert payload["scenarios"][0]["title"] == "הוא יודע איפה היא מחכה"
     assert response.headers["cache-control"] == "no-store"
+
+
+def test_hebrew_gold_fixture_exposes_parent_metadata_and_clean_intro() -> None:
+    from echo_v2.app.guard_demo_routes import _DEMO_FIXTURE_PATH_HE, _load_fixture
+
+    payload = _load_fixture(_DEMO_FIXTURE_PATH_HE)
+    scenario = payload["scenarios"][4]
+    first_snapshot = scenario["snapshots"][0]
+
+    assert len(payload["landing_promises"]) == 6
+    assert scenario["parent_fear"]
+    assert scenario["product_promise"]
+    assert scenario["alert_window"] == {
+        "earliest_allowed_after": "m9",
+        "ideal_after": "m10",
+        "latest_allowed_after": "m11",
+        "urgent_escalation_after": "m14",
+    }
+    assert first_snapshot["after_message_id"] == "m2"
+    assert first_snapshot["decision"] == "none"
+    assert first_snapshot["should_alert"] is False
 
 
 def test_demo_fixture_snapshots_are_ordered_and_policy_fields_are_separate() -> None:
