@@ -15,6 +15,7 @@ from echo_v2.app.guard_demo_page_he import GUARD_DEMO_PAGE_HE
 __all__ = ["build_guard_demo_router"]
 
 _DEMO_FIXTURE_PATH = Path(__file__).parent / "static" / "guard_demo_scenarios.json"
+_DEMO_FIXTURE_PATH_HE = Path(__file__).parent / "static" / "guard_demo_scenarios_he.json"
 
 
 def _headers() -> dict[str, str]:
@@ -29,9 +30,9 @@ def _headers() -> dict[str, str]:
     }
 
 
-def _load_fixture() -> dict[str, Any]:
+def _load_fixture(path: Path = _DEMO_FIXTURE_PATH) -> dict[str, Any]:
     try:
-        payload = json.loads(_DEMO_FIXTURE_PATH.read_text(encoding="utf-8"))
+        payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise RuntimeError("Guard demo fixture is unavailable") from exc
     if not isinstance(payload, dict) or not isinstance(payload.get("scenarios"), list):
@@ -52,7 +53,8 @@ def build_guard_demo_router() -> APIRouter:
         return HTMLResponse(content=GUARD_DEMO_PAGE_HE, headers=_headers())
 
     @router.get("/api/demo/guard")
-    async def guard_demo_data() -> JSONResponse:
-        return JSONResponse(content=_load_fixture(), headers=_headers())
+    async def guard_demo_data(lang: str = "en") -> JSONResponse:
+        fixture_path = _DEMO_FIXTURE_PATH_HE if lang == "he" else _DEMO_FIXTURE_PATH
+        return JSONResponse(content=_load_fixture(fixture_path), headers=_headers())
 
     return router

@@ -15,6 +15,14 @@ EXPECTED_SCENARIOS = [
     "distress_001_hopelessness_and_help_request_positive",
     "child_sexual_exploitation_002_intimate_image_sextortion",
 ]
+EXPECTED_HEBREW_SCENARIOS = [
+    "gold_parent_promise_01_stranger_getting_closer",
+    "gold_parent_promise_02_group_turns_on_child",
+    "gold_parent_promise_03_quiet_social_exclusion",
+    "gold_parent_promise_04_embarrassing_video_spreads",
+    "gold_parent_promise_05_no_is_not_respected",
+    "gold_parent_promise_06_bad_day_becomes_more",
+]
 
 
 def _client(app: FastAPI) -> AsyncClient:
@@ -55,6 +63,7 @@ async def test_hebrew_demo_page_serves_rtl_replay_shell() -> None:
     assert '<html lang="he" dir="rtl">' in response.text
     assert "התחלת הדגמה" in response.text
     assert "המצב הנוכחי" in response.text
+    assert "fetch('/api/demo/guard?lang=he')" in response.text
     assert 'href="/demo/guard"' in response.text
     assert "function playNextSnapshot()" in response.text
     assert response.headers["content-security-policy"].startswith("default-src 'self'")
@@ -69,6 +78,20 @@ async def test_demo_data_contains_selected_scenarios_in_presentation_order() -> 
     payload = response.json()
     assert payload["kind"] == "echo_guard_demo_replay"
     assert [scenario["id"] for scenario in payload["scenarios"]] == EXPECTED_SCENARIOS
+    assert response.headers["cache-control"] == "no-store"
+
+
+@pytest.mark.asyncio
+async def test_hebrew_demo_data_uses_hebrew_fixture() -> None:
+    async with _client(_make_app()) as client:
+        response = await client.get("/api/demo/guard?lang=he")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["version"] == 4
+    assert payload["kind"] == "echo_guard_demo_gold_set"
+    assert [scenario["id"] for scenario in payload["scenarios"]] == EXPECTED_HEBREW_SCENARIOS
+    assert payload["scenarios"][0]["title"] == "מישהו חדש מתחיל להתקרב"
     assert response.headers["cache-control"] == "no-store"
 
 
