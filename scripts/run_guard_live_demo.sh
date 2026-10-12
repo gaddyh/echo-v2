@@ -12,6 +12,45 @@ LOCAL_DATABASE_URL="${LOCAL_DATABASE_URL:-postgresql+psycopg://echo:echo@127.0.0
 HOST="${GUARD_DEMO_HOST:-127.0.0.1}"
 PORT="${GUARD_DEMO_PORT:-8000}"
 LOG_FILE="${TMPDIR:-/tmp}/echo-guard-live-demo.log"
+PID_FILE="${TMPDIR:-/tmp}/echo-guard-live-demo.pid"
+
+stop_demo() {
+  if [[ -f "$PID_FILE" ]]; then
+    APP_PID="$(cat "$PID_FILE")"
+    if kill -0 "$APP_PID" 2>/dev/null; then
+      echo "Stopping Echo Guard (PID $APP_PID)..."
+      kill "$APP_PID" 2>/dev/null || true
+      for attempt in $(seq 1 20); do
+        if ! kill -0 "$APP_PID" 2>/dev/null; then
+          break
+        fi
+        sleep 0.5
+      done
+    fi
+    rm -f "$PID_FILE"
+  else
+    echo "No managed Echo Guard process found."
+  fi
+
+  if docker info >/dev/null 2>&1; then
+    echo "Stopping local Postgres..."
+    COMPOSE_PROJECT_NAME=echo-guard-live docker compose down --remove-orphans >/dev/null
+  fi
+  echo "Echo Guard Live demo stopped."
+}
+
+case "${1:-start}" in
+  stop)
+    stop_demo
+    exit 0
+    ;;
+  start)
+    ;;
+  *)
+    echo "Usage: $0 [start|stop]" >&2
+    exit 2
+    ;;
+esac
 
 if [[ ! -x "$VENV_PYTHON" || ! -x "$ALEMBIC" || ! -x "$UVICORN" ]]; then
   echo "Missing project virtualenv tools. Run the project setup first." >&2
@@ -52,10 +91,14 @@ DATABASE_URL="$LOCAL_DATABASE_URL" "$UVICORN" echo_v2.app.main:app \
   --port "$PORT" \
   --log-level info >"$LOG_FILE" 2>&1 &
 APP_PID=$!
+printf '%s\n' "$APP_PID" > "$PID_FILE"
 
 cleanup() {
   kill "$APP_PID" 2>/dev/null || true
   wait "$APP_PID" 2>/dev/null || true
+  if [[ -f "$PID_FILE" ]] && [[ "$(cat "$PID_FILE")" == "$APP_PID" ]]; then
+    rm -f "$PID_FILE"
+  fi
 }
 trap cleanup EXIT INT TERM
 
