@@ -15,7 +15,10 @@ from echo_v2.domain.guard_eval import (
 )
 from echo_v2.persistence.guard_eval import GuardEvalRepository
 from echo_v2.services.guard_eval_gold import GoldScenario, GuardGoldSet
-from echo_v2.services.guard_live_compare import GuardLiveCompareRunner
+from echo_v2.services.guard_live_compare import (
+    GuardLiveCompareRunner,
+    LiveSnapshotExecution,
+)
 
 _logger = logging.getLogger("echo_v2.services.guard_live_compare_service")
 
@@ -126,8 +129,7 @@ class GuardLiveCompareService:
 
     async def _execute(self, run_id: str, scenario: GoldScenario) -> None:
         try:
-            results = await self._runner.run(scenario)
-            for result in results:
+            async def save_snapshot(result: LiveSnapshotExecution) -> None:
                 await self._repository.save_snapshot(
                     run_id=run_id,
                     scenario_id=scenario.scenario_id,
@@ -139,6 +141,8 @@ class GuardLiveCompareService:
                     has_difference=result.has_difference,
                     failure=result.failure,
                 )
+
+            await self._runner.run(scenario, on_snapshot=save_snapshot)
             await self._repository.complete_run(run_id)
         except asyncio.CancelledError:
             raise

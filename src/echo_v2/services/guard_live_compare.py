@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol, cast
@@ -65,7 +66,11 @@ class GuardLiveCompareRunner:
         self.taxonomy_version = taxonomy_version
         self._schedule = schedule_policy or GuardSchedulePolicy()
 
-    async def run(self, scenario: GoldScenario) -> tuple[LiveSnapshotExecution, ...]:
+    async def run(
+        self,
+        scenario: GoldScenario,
+        on_snapshot: Callable[[LiveSnapshotExecution], Awaitable[None]] | None = None,
+    ) -> tuple[LiveSnapshotExecution, ...]:
         ledger = GuardSignalLedger()
         prior_alert_kind = AlertKind.NONE
         previous_schedule = None
@@ -119,17 +124,18 @@ class GuardLiveCompareRunner:
             )
             has_difference = bool(diff["difference"])
             failure = bool(diff["failure"])
-            executions.append(
-                LiveSnapshotExecution(
-                    ordinal=checkpoint.ordinal,
-                    after_message_id=checkpoint.after_message_id,
-                    expected=expected,
-                    actual=actual,
-                    diff=diff,
-                    has_difference=has_difference,
-                    failure=failure,
-                )
+            execution = LiveSnapshotExecution(
+                ordinal=checkpoint.ordinal,
+                after_message_id=checkpoint.after_message_id,
+                expected=expected,
+                actual=actual,
+                diff=diff,
+                has_difference=has_difference,
+                failure=failure,
             )
+            executions.append(execution)
+            if on_snapshot is not None:
+                await on_snapshot(execution)
             if alert.event:
                 prior_alert_kind = alert.kind
         return tuple(executions)
