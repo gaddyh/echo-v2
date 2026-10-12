@@ -1,0 +1,2014 @@
+{
+  "version": 3,
+  "kind": "echo_guard_demo_gold_set",
+  "source": {
+    "label": "parent_reassurance_gold_v1",
+    "model": null,
+    "prompt_version": "target_contract",
+    "generated_at": "2026-10-06"
+  },
+  "source_note": "Six authored gold scenarios for Echo Guard demo/evaluation. These are target behaviors, not model outputs. evaluation_pass remains null until the live harness is run. The set intentionally rewards calibrated restraint, cross-message memory, escalation detection, and calm parent-facing guidance.",
+  "provenance_legend": {
+    "gold_target": "authored expected analyzer behavior; not model output"
+  },
+  "scenarios": [
+    {
+      "id": "gold_unknown_adult_routine_to_meeting_001",
+      "family": "unknown_contact_escalation",
+      "title": "הזר שיודע איפה היא מחכה",
+      "subtitle": "Guard מחבר ידע על השגרה, סודיות ומפגש — ומתריע לפני הפגישה.",
+      "moment": "ההתראה הראשונה מגיעה בבקשת הסודיות; בקשת המפגש מסלימה לדחוף.",
+      "source": "gold_authored",
+      "notes": "Gold target: early restraint, then escalation on pattern.",
+      "context": {
+        "relationship": "unknown_contact"
+      },
+      "messages": [
+        {
+          "id": "m1",
+          "sender": "other",
+          "text": "היי, אני רואה אותך לפעמים ליד המגרש אחרי בית ספר 🙂"
+        },
+        {
+          "id": "m2",
+          "sender": "child",
+          "text": "מי זה?"
+        },
+        {
+          "id": "m3",
+          "sender": "other",
+          "text": "סתם מישהו מהאזור. את בדרך כלל מחכה שם לבד עד שאוספים אותך?"
+        },
+        {
+          "id": "m4",
+          "sender": "child",
+          "text": "לפעמים, למה?"
+        },
+        {
+          "id": "m5",
+          "sender": "other",
+          "text": "אל תספרי להורים שכתבתי לך, הם סתם ילחצו"
+        },
+        {
+          "id": "m6",
+          "sender": "child",
+          "text": "זה קצת מוזר"
+        },
+        {
+          "id": "m7",
+          "sender": "other",
+          "text": "מחר אני יכול לקפוץ לשם ב-14:30 לפני שאוספים אותך"
+        }
+      ],
+      "snapshots": [
+        {
+          "after_message_id": "m1",
+          "prefix_length": 1,
+          "new_message_id": "m1",
+          "evaluation_pass": null,
+          "provenance": "gold_target",
+          "target_decision": "watch",
+          "expected": {
+            "required_categories": [
+              "suspicious_contact"
+            ],
+            "required_signals": [
+              "offline_knowledge"
+            ],
+            "required_signal_any_of": [],
+            "forbidden_categories": [],
+            "forbidden_signals": [],
+            "required_evidence_message_ids": [
+              "m1"
+            ],
+            "expected_decision": "watch",
+            "expect_clean": false
+          },
+          "raw": {
+            "signals": [
+              "offline_knowledge"
+            ],
+            "categories": [
+              "suspicious_contact"
+            ],
+            "evidence_message_ids": [
+              "m1"
+            ],
+            "confidence": null,
+            "reason": "איש קשר לא מוכר מפגין ידע על מקום שבו הילדה נמצאת מחוץ לרשת.",
+            "decision": "watch"
+          },
+          "cumulative": {
+            "signals": [
+              "offline_knowledge"
+            ],
+            "categories": [
+              "suspicious_contact"
+            ],
+            "evidence_message_ids": [
+              "m1"
+            ]
+          },
+          "new_signals": [
+            "offline_knowledge"
+          ],
+          "remembered_signals": [],
+          "decision": "watch",
+          "should_alert": false,
+          "alert_label": "במעקב",
+          "alert_kind": "none",
+          "alert_event": false,
+          "alert_reason": "ידע לא מקוון לבדו מצדיק מעקב, לא אזעקה.",
+          "callout": "Guard שם לב, אבל לא מלחיץ את ההורה על הודעה אחת."
+        },
+        {
+          "after_message_id": "m3",
+          "prefix_length": 3,
+          "new_message_id": "m3",
+          "evaluation_pass": null,
+          "provenance": "gold_target",
+          "target_decision": "concerning",
+          "expected": {
+            "required_categories": [
+              "suspicious_contact"
+            ],
+            "required_signals": [
+              "routine_probing"
+            ],
+            "required_signal_any_of": [],
+            "forbidden_categories": [],
+            "forbidden_signals": [],
+            "required_evidence_message_ids": [
+              "m1",
+              "m3"
+            ],
+            "expected_decision": "concerning",
+            "expect_clean": false
+          },
+          "raw": {
+            "signals": [
+              "offline_knowledge",
+              "routine_probing"
+            ],
+            "categories": [
+              "suspicious_contact"
+            ],
+            "evidence_message_ids": [
+              "m1",
+              "m3"
+            ],
+            "confidence": null,
+            "reason": "איש הקשר משלב ידע פיזי מוקדם עם בירור האם הילדה ממתינה לבדה ובאילו נסיבות.",
+            "decision": "concerning"
+          },
+          "cumulative": {
+            "signals": [
+              "offline_knowledge",
+              "routine_probing"
+            ],
+            "categories": [
+              "suspicious_contact"
+            ],
+            "evidence_message_ids": [
+              "m1",
+              "m3"
+            ]
+          },
+          "new_signals": [
+            "routine_probing"
+          ],
+          "remembered_signals": [
+            "offline_knowledge"
+          ],
+          "decision": "concerning",
+          "should_alert": false,
+          "alert_label": "עדיין לא",
+          "alert_kind": "none",
+          "alert_event": false,
+          "alert_reason": "הדפוס מדאיג, אך טרם הופיעה בקשת סודיות או מפגש.",
+          "callout": "שני סימנים מתחברים. Guard ממשיך לעקוב."
+        },
+        {
+          "after_message_id": "m5",
+          "prefix_length": 5,
+          "new_message_id": "m5",
+          "evaluation_pass": null,
+          "provenance": "gold_target",
+          "target_decision": "concerning",
+          "expected": {
+            "required_categories": [
+              "suspicious_contact"
+            ],
+            "required_signals": [
+              "secrecy_request"
+            ],
+            "required_signal_any_of": [],
+            "forbidden_categories": [],
+            "forbidden_signals": [],
+            "required_evidence_message_ids": [
+              "m1",
+              "m3",
+              "m5"
+            ],
+            "expected_decision": "concerning",
+            "expect_clean": false
+          },
+          "raw": {
+            "signals": [
+              "offline_knowledge",
+              "routine_probing",
+              "secrecy_request"
+            ],
+            "categories": [
+              "suspicious_contact"
+            ],
+            "evidence_message_ids": [
+              "m1",
+              "m3",
+              "m5"
+            ],
+            "confidence": null,
+            "reason": "איש קשר לא מוכר שבירר שגרה מבקש כעת להסתיר את עצם הקשר מההורים.",
+            "decision": "concerning"
+          },
+          "cumulative": {
+            "signals": [
+              "offline_knowledge",
+              "routine_probing",
+              "secrecy_request"
+            ],
+            "categories": [
+              "suspicious_contact"
+            ],
+            "evidence_message_ids": [
+              "m1",
+              "m3",
+              "m5"
+            ]
+          },
+          "new_signals": [
+            "secrecy_request"
+          ],
+          "remembered_signals": [
+            "offline_knowledge",
+            "routine_probing"
+          ],
+          "decision": "concerning",
+          "should_alert": true,
+          "alert_label": "להתריע להורה",
+          "alert_kind": "notify",
+          "alert_event": true,
+          "alert_reason": "שילוב של היכרות לא מקוונת, בירור שגרה ובקשת סודיות מצדיק התראה.",
+          "callout": "זה הרגע שבו ההורה צריך לדעת — עוד לפני בקשת המפגש.",
+          "parent_notification": {
+            "kind": "notify",
+            "title": "שיחה שכדאי לבדוק",
+            "body": "איש קשר לא מוכר יודע איפה הילדה נמצאת אחרי הלימודים, שאל אם היא לבד וביקש שלא תספר לכם.",
+            "next_step": "שוחחו איתה בנחת ובדקו מי האדם. אל תאשימו אותה ואל תמחקו את השיחה."
+          }
+        },
+        {
+          "after_message_id": "m7",
+          "prefix_length": 7,
+          "new_message_id": "m7",
+          "evaluation_pass": null,
+          "provenance": "gold_target",
+          "target_decision": "urgent",
+          "expected": {
+            "required_categories": [
+              "suspicious_contact"
+            ],
+            "required_signals": [
+              "meeting_request",
+              "location_request"
+            ],
+            "required_signal_any_of": [],
+            "forbidden_categories": [],
+            "forbidden_signals": [],
+            "required_evidence_message_ids": [
+              "m1",
+              "m3",
+              "m5",
+              "m7"
+            ],
+            "expected_decision": "urgent",
+            "expect_clean": false
+          },
+          "raw": {
+            "signals": [
+              "offline_knowledge",
+              "routine_probing",
+              "secrecy_request",
+              "meeting_request",
+              "location_request"
+            ],
+            "categories": [
+              "suspicious_contact"
+            ],
+            "evidence_message_ids": [
+              "m1",
+              "m3",
+              "m5",
+              "m7"
+            ],
+            "confidence": null,
+            "reason": "לאחר בקשת סודיות ובירור שגרה, איש הקשר מציע להגיע למקום שבו הילדה נמצאת בזמן מוגדר.",
+            "decision": "urgent"
+          },
+          "cumulative": {
+            "signals": [
+              "offline_knowledge",
+              "routine_probing",
+              "secrecy_request",
+              "meeting_request",
+              "location_request"
+            ],
+            "categories": [
+              "suspicious_contact"
+            ],
+            "evidence_message_ids": [
+              "m1",
+              "m3",
+              "m5",
+              "m7"
+            ]
+          },
+          "new_signals": [
+            "meeting_request",
+            "location_request"
+          ],
+          "remembered_signals": [
+            "offline_knowledge",
+            "routine_probing",
+            "secrecy_request"
+          ],
+          "decision": "urgent",
+          "should_alert": true,
+          "alert_label": "דחוף — להתריע עכשיו",
+          "alert_kind": "urgent",
+          "alert_event": true,
+          "alert_reason": "בקשת מפגש פיזי לאחר דפוס חשוד מחייבת הסלמה.",
+          "callout": "הסלמה למפגש פיזי הופכת את האירוע לדחוף.",
+          "parent_notification": {
+            "kind": "urgent",
+            "title": "דחוף: הצעה להיפגש",
+            "body": "איש הקשר מציע להגיע אליה מחר בזמן שבו היא צפויה להיות לבד, אחרי שביקש להסתיר את הקשר.",
+            "next_step": "פנו אליה עכשיו, ודאו שאינה נפגשת איתו ושמרו את ההודעות. אם יש סכנה מיידית — 100."
+          }
+        }
+      ],
+      "provenance": {
+        "messages": "gold_authored",
+        "model_output": "gold_target",
+        "alert_policy": "gold_demo_v1"
+      },
+      "needs_harness_run": true
+    },
+    {
+      "id": "gold_age_deception_to_meeting_002",
+      "family": "child_sexual_exploitation",
+      "title": "הוא אמר שהוא בן 15",
+      "subtitle": "סתירה קטנה בין הודעות חושפת שמבוגר מתחזה לבן נוער.",
+      "moment": "Guard מתריע ברגע שהגיל המוצהר נסתר — לפני בקשת המפגש.",
+      "source": "gold_authored",
+      "notes": "Gold target for cross-message memory and age-deception detection.",
+      "context": {
+        "relationship": "new_contact"
+      },
+      "messages": [
+        {
+          "id": "m1",
+          "sender": "other",
+          "text": "היי, אני בן 15 מהשכבה ליד. ראיתי אותך בקבוצה של הטיול"
+        },
+        {
+          "id": "m2",
+          "sender": "child",
+          "text": "אה מגניב, אני בת 14"
+        },
+        {
+          "id": "m3",
+          "sender": "other",
+          "text": "בואי נדבר רק פה, אל תספרי לחברות עדיין 😅"
+        },
+        {
+          "id": "m4",
+          "sender": "child",
+          "text": "למה לא?"
+        },
+        {
+          "id": "m5",
+          "sender": "other",
+          "text": "סתם, הן יחפרו. מאז שסיימתי צבא אני לא סובל דרמות"
+        },
+        {
+          "id": "m6",
+          "sender": "child",
+          "text": "רגע, אמרת שאתה בן 15"
+        },
+        {
+          "id": "m7",
+          "sender": "other",
+          "text": "עזבי גיל, אני צעיר בראש. רוצה שניפגש מחר אחרי בית ספר?"
+        }
+      ],
+      "snapshots": [
+        {
+          "after_message_id": "m2",
+          "prefix_length": 2,
+          "new_message_id": "m2",
+          "evaluation_pass": null,
+          "provenance": "gold_target",
+          "target_decision": "none",
+          "expected": {
+            "required_categories": [],
+            "required_signals": [],
+            "required_signal_any_of": [],
+            "forbidden_categories": [],
+            "forbidden_signals": [],
+            "required_evidence_message_ids": [],
+            "expected_decision": "none",
+            "expect_clean": true
+          },
+          "raw": {
+            "signals": [],
+            "categories": [],
+            "evidence_message_ids": [],
+            "confidence": null,
+            "reason": "שני בני נוער לכאורה מחליפים גיל ופרטי היכרות בסיסיים, ללא סימן סיכון.",
+            "decision": "none"
+          },
+          "cumulative": {
+            "signals": [],
+            "categories": [],
+            "evidence_message_ids": []
+          },
+          "new_signals": [],
+          "remembered_signals": [],
+          "decision": "none",
+          "should_alert": false,
+          "alert_label": "עדיין לא",
+          "alert_kind": "none",
+          "alert_event": false,
+          "alert_reason": "אין דפוס סיכון.",
+          "callout": "Guard לא חושד רק כי מדובר באיש קשר חדש."
+        },
+        {
+          "after_message_id": "m3",
+          "prefix_length": 3,
+          "new_message_id": "m3",
+          "evaluation_pass": null,
+          "provenance": "gold_target",
+          "target_decision": "watch",
+          "expected": {
+            "required_categories": [
+              "suspicious_contact"
+            ],
+            "required_signals": [
+              "secrecy_request"
+            ],
+            "required_signal_any_of": [],
+            "forbidden_categories": [],
+            "forbidden_signals": [],
+            "required_evidence_message_ids": [
+              "m3"
+            ],
+            "expected_decision": "watch",
+            "expect_clean": false
+          },
+          "raw": {
+            "signals": [
+              "secrecy_request"
+            ],
+            "categories": [
+              "suspicious_contact"
+            ],
+            "evidence_message_ids": [
+              "m3"
+            ],
+            "confidence": null,
+            "reason": "איש קשר חדש מבקש לשמור את עצם הקשר בסוד מהחברות.",
+            "decision": "watch"
+          },
+          "cumulative": {
+            "signals": [
+              "secrecy_request"
+            ],
+            "categories": [
+              "suspicious_contact"
+            ],
+            "evidence_message_ids": [
+              "m3"
+            ]
+          },
+          "new_signals": [
+            "secrecy_request"
+          ],
+          "remembered_signals": [],
+          "decision": "watch",
+          "should_alert": false,
+          "alert_label": "במעקב",
+          "alert_kind": "none",
+          "alert_event": false,
+          "alert_reason": "סודיות לבדה אינה מספיקה להתראה, אך מצדיקה מעקב.",
+          "callout": "Guard זוכר את הבקשה לסודיות."
+        },
+        {
+          "after_message_id": "m5",
+          "prefix_length": 5,
+          "new_message_id": "m5",
+          "evaluation_pass": null,
+          "provenance": "gold_target",
+          "target_decision": "concerning",
+          "expected": {
+            "required_categories": [
+              "suspicious_contact",
+              "child_sexual_exploitation"
+            ],
+            "required_signals": [
+              "age_deception"
+            ],
+            "required_signal_any_of": [],
+            "forbidden_categories": [],
+            "forbidden_signals": [],
+            "required_evidence_message_ids": [
+              "m1",
+              "m3",
+              "m5"
+            ],
+            "expected_decision": "concerning",
+            "expect_clean": false
+          },
+          "raw": {
+            "signals": [
+              "secrecy_request",
+              "age_deception"
+            ],
+            "categories": [
+              "suspicious_contact",
+              "child_sexual_exploitation"
+            ],
+            "evidence_message_ids": [
+              "m1",
+              "m3",
+              "m5"
+            ],
+            "confidence": null,
+            "reason": "האדם טען שהוא בן 15 ואז אמר שסיים צבא — סתירה מפורשת המעידה על הטעיית גיל, לצד בקשת סודיות.",
+            "decision": "concerning"
+          },
+          "cumulative": {
+            "signals": [
+              "secrecy_request",
+              "age_deception"
+            ],
+            "categories": [
+              "suspicious_contact",
+              "child_sexual_exploitation"
+            ],
+            "evidence_message_ids": [
+              "m1",
+              "m3",
+              "m5"
+            ]
+          },
+          "new_signals": [
+            "age_deception"
+          ],
+          "remembered_signals": [
+            "secrecy_request"
+          ],
+          "decision": "concerning",
+          "should_alert": true,
+          "alert_label": "להתריע להורה",
+          "alert_kind": "notify",
+          "alert_event": true,
+          "alert_reason": "הטעיית גיל מפורשת של איש קשר חדש היא סיבה להתראה.",
+          "callout": "Guard מחבר הודעות רחוקות זו מזו ותופס את הסתירה.",
+          "parent_notification": {
+            "kind": "notify",
+            "title": "איש הקשר סתר את הגיל שלו",
+            "body": "אדם שטען שהוא בן 15 אמר בהמשך שסיים צבא, וביקש מהילדה לשמור את השיחה בסוד.",
+            "next_step": "בדקו איתה מי האדם והמליצו לא להמשיך שיחה או לשתף פרטים אישיים."
+          }
+        },
+        {
+          "after_message_id": "m7",
+          "prefix_length": 7,
+          "new_message_id": "m7",
+          "evaluation_pass": null,
+          "provenance": "gold_target",
+          "target_decision": "urgent",
+          "expected": {
+            "required_categories": [
+              "suspicious_contact",
+              "child_sexual_exploitation"
+            ],
+            "required_signals": [
+              "meeting_request"
+            ],
+            "required_signal_any_of": [],
+            "forbidden_categories": [],
+            "forbidden_signals": [],
+            "required_evidence_message_ids": [
+              "m1",
+              "m3",
+              "m5",
+              "m7"
+            ],
+            "expected_decision": "urgent",
+            "expect_clean": false
+          },
+          "raw": {
+            "signals": [
+              "secrecy_request",
+              "age_deception",
+              "meeting_request"
+            ],
+            "categories": [
+              "suspicious_contact",
+              "child_sexual_exploitation"
+            ],
+            "evidence_message_ids": [
+              "m1",
+              "m3",
+              "m5",
+              "m7"
+            ],
+            "confidence": null,
+            "reason": "אדם שהטעה לגבי גילו מבקש כעת להיפגש עם הילדה אחרי הלימודים.",
+            "decision": "urgent"
+          },
+          "cumulative": {
+            "signals": [
+              "secrecy_request",
+              "age_deception",
+              "meeting_request"
+            ],
+            "categories": [
+              "suspicious_contact",
+              "child_sexual_exploitation"
+            ],
+            "evidence_message_ids": [
+              "m1",
+              "m3",
+              "m5",
+              "m7"
+            ]
+          },
+          "new_signals": [
+            "meeting_request"
+          ],
+          "remembered_signals": [
+            "secrecy_request",
+            "age_deception"
+          ],
+          "decision": "urgent",
+          "should_alert": true,
+          "alert_label": "דחוף — להתריע עכשיו",
+          "alert_kind": "urgent",
+          "alert_event": true,
+          "alert_reason": "מפגש מוצע לאחר הטעיית גיל ובקשת סודיות הוא הסלמה דחופה.",
+          "callout": "הטעות בגיל כבר הספיקה להתראה; בקשת המפגש מעלה את הדחיפות.",
+          "parent_notification": {
+            "kind": "urgent",
+            "title": "דחוף: בקשת מפגש אחרי הטעיית גיל",
+            "body": "האדם שביקש סודיות וסתר את הגיל שלו מציע להיפגש איתה מחר אחרי הלימודים.",
+            "next_step": "ודאו שאין מפגש מתוכנן, שמרו ראיות ושקלו חסימה ודיווח."
+          }
+        }
+      ],
+      "provenance": {
+        "messages": "gold_authored",
+        "model_output": "gold_target",
+        "alert_policy": "gold_demo_v1"
+      },
+      "needs_harness_run": true
+    },
+    {
+      "id": "gold_intimate_image_to_sextortion_003",
+      "family": "child_sexual_exploitation",
+      "title": "מתמונה פרטית לסחיטה",
+      "subtitle": "ההתראה מגיעה כבר בבקשה הראשונה; האיום בהפצה מסלים לדחוף.",
+      "moment": "Guard מעדיף התערבות מוקדמת לפני שהילדה מרגישה לכודה.",
+      "source": "gold_authored",
+      "notes": "Gold target for intimate-image request, coercion and sextortion escalation.",
+      "context": {},
+      "messages": [
+        {
+          "id": "m1",
+          "sender": "other",
+          "text": "את ממש יפה. תשלחי לי תמונה פרטית רק בשבילי"
+        },
+        {
+          "id": "m2",
+          "sender": "child",
+          "text": "לא, לא מתאים לי"
+        },
+        {
+          "id": "m3",
+          "sender": "other",
+          "text": "נו מה הבעיה, אם את סומכת עליי אז תשלחי"
+        },
+        {
+          "id": "m4",
+          "sender": "child",
+          "text": "אמרתי לא. תפסיק"
+        },
+        {
+          "id": "m5",
+          "sender": "other",
+          "text": "כבר שמרתי צילום שלך. אם לא תשלחי עוד תמונה אני שולח אותו לקבוצה"
+        },
+        {
+          "id": "m6",
+          "sender": "child",
+          "text": "בבקשה אל תעשה את זה"
+        }
+      ],
+      "snapshots": [
+        {
+          "after_message_id": "m1",
+          "prefix_length": 1,
+          "new_message_id": "m1",
+          "evaluation_pass": null,
+          "provenance": "gold_target",
+          "target_decision": "concerning",
+          "expected": {
+            "required_categories": [
+              "child_sexual_exploitation"
+            ],
+            "required_signals": [
+              "intimate_image_request"
+            ],
+            "required_signal_any_of": [],
+            "forbidden_categories": [],
+            "forbidden_signals": [],
+            "required_evidence_message_ids": [
+              "m1"
+            ],
+            "expected_decision": "concerning",
+            "expect_clean": false
+          },
+          "raw": {
+            "signals": [
+              "intimate_image_request"
+            ],
+            "categories": [
+              "child_sexual_exploitation"
+            ],
+            "evidence_message_ids": [
+              "m1"
+            ],
+            "confidence": null,
+            "reason": "נשלחת לילדה בקשה לתמונה פרטית בעלת אופי אינטימי.",
+            "decision": "concerning"
+          },
+          "cumulative": {
+            "signals": [
+              "intimate_image_request"
+            ],
+            "categories": [
+              "child_sexual_exploitation"
+            ],
+            "evidence_message_ids": [
+              "m1"
+            ]
+          },
+          "new_signals": [
+            "intimate_image_request"
+          ],
+          "remembered_signals": [],
+          "decision": "concerning",
+          "should_alert": true,
+          "alert_label": "להתריע להורה",
+          "alert_kind": "notify",
+          "alert_event": true,
+          "alert_reason": "בקשה לתמונה אינטימית מקטינה מצדיקה התראה מוקדמת.",
+          "callout": "Guard לא מחכה לסחיטה.",
+          "parent_notification": {
+            "kind": "notify",
+            "title": "בקשה לתמונה פרטית",
+            "body": "אדם ביקש מהילדה לשלוח תמונה פרטית.",
+            "next_step": "שוחחו איתה בלי שיפוט והבהירו שהיא לא הסתבכה ולא אשמה. אל תמחקו את ההודעות."
+          }
+        },
+        {
+          "after_message_id": "m4",
+          "prefix_length": 4,
+          "new_message_id": "m4",
+          "evaluation_pass": null,
+          "provenance": "gold_target",
+          "target_decision": "concerning",
+          "expected": {
+            "required_categories": [
+              "child_sexual_exploitation",
+              "harassment_or_coercion"
+            ],
+            "required_signals": [
+              "coercive_demand",
+              "boundary_violation"
+            ],
+            "required_signal_any_of": [],
+            "forbidden_categories": [],
+            "forbidden_signals": [],
+            "required_evidence_message_ids": [
+              "m1",
+              "m2",
+              "m3",
+              "m4"
+            ],
+            "expected_decision": "concerning",
+            "expect_clean": false
+          },
+          "raw": {
+            "signals": [
+              "intimate_image_request",
+              "coercive_demand",
+              "boundary_violation"
+            ],
+            "categories": [
+              "child_sexual_exploitation",
+              "harassment_or_coercion"
+            ],
+            "evidence_message_ids": [
+              "m1",
+              "m2",
+              "m3",
+              "m4"
+            ],
+            "confidence": null,
+            "reason": "לאחר סירוב מפורש, הצד השני מפעיל לחץ וממשיך לבקש את התמונה, תוך הפרת גבול ברור.",
+            "decision": "concerning"
+          },
+          "cumulative": {
+            "signals": [
+              "intimate_image_request",
+              "coercive_demand",
+              "boundary_violation"
+            ],
+            "categories": [
+              "child_sexual_exploitation",
+              "harassment_or_coercion"
+            ],
+            "evidence_message_ids": [
+              "m1",
+              "m2",
+              "m3",
+              "m4"
+            ]
+          },
+          "new_signals": [
+            "coercive_demand",
+            "boundary_violation"
+          ],
+          "remembered_signals": [
+            "intimate_image_request"
+          ],
+          "decision": "concerning",
+          "should_alert": true,
+          "alert_label": "ההורה כבר קיבל התראה",
+          "alert_kind": "none",
+          "alert_event": false,
+          "alert_reason": "האירוע מחמיר אך אין צורך בהתראה כפולה לפני שינוי מהותי ברמת הסיכון.",
+          "callout": "Guard ממשיך לעקוב גם אחרי ההתראה הראשונה."
+        },
+        {
+          "after_message_id": "m5",
+          "prefix_length": 5,
+          "new_message_id": "m5",
+          "evaluation_pass": null,
+          "provenance": "gold_target",
+          "target_decision": "urgent",
+          "expected": {
+            "required_categories": [
+              "child_sexual_exploitation",
+              "harassment_or_coercion"
+            ],
+            "required_signals": [
+              "sexual_coercion",
+              "blackmail_or_extortion",
+              "threat_to_share"
+            ],
+            "required_signal_any_of": [],
+            "forbidden_categories": [],
+            "forbidden_signals": [],
+            "required_evidence_message_ids": [
+              "m1",
+              "m3",
+              "m4",
+              "m5"
+            ],
+            "expected_decision": "urgent",
+            "expect_clean": false
+          },
+          "raw": {
+            "signals": [
+              "intimate_image_request",
+              "sexual_coercion",
+              "blackmail_or_extortion",
+              "threat_to_share",
+              "boundary_violation"
+            ],
+            "categories": [
+              "child_sexual_exploitation",
+              "harassment_or_coercion"
+            ],
+            "evidence_message_ids": [
+              "m1",
+              "m3",
+              "m4",
+              "m5"
+            ],
+            "confidence": null,
+            "reason": "האדם מאיים להפיץ צילום קיים אם הילדה לא תשלח תמונה נוספת — סחיטה מינית ואיום בהפצה.",
+            "decision": "urgent"
+          },
+          "cumulative": {
+            "signals": [
+              "intimate_image_request",
+              "sexual_coercion",
+              "blackmail_or_extortion",
+              "threat_to_share",
+              "boundary_violation"
+            ],
+            "categories": [
+              "child_sexual_exploitation",
+              "harassment_or_coercion"
+            ],
+            "evidence_message_ids": [
+              "m1",
+              "m3",
+              "m4",
+              "m5"
+            ]
+          },
+          "new_signals": [
+            "sexual_coercion",
+            "blackmail_or_extortion",
+            "threat_to_share"
+          ],
+          "remembered_signals": [
+            "intimate_image_request",
+            "boundary_violation"
+          ],
+          "decision": "urgent",
+          "should_alert": true,
+          "alert_label": "דחוף — להתריע עכשיו",
+          "alert_kind": "urgent",
+          "alert_event": true,
+          "alert_reason": "איום בהפצת תמונה וסחיטה הם הסלמה דחופה.",
+          "callout": "זו כבר סחיטה, לא רק לחץ.",
+          "parent_notification": {
+            "kind": "urgent",
+            "title": "דחוף: איום להפיץ תמונה",
+            "body": "אדם מאיים להפיץ צילום של הילדה אם לא תשלח לו תמונה נוספת.",
+            "next_step": "אל תשלחו דבר ואל תשלמו. שמרו צילומי מסך ופרטים, ופנו למוקד 105 או למשטרה לפי הדחיפות."
+          }
+        }
+      ],
+      "provenance": {
+        "messages": "gold_authored",
+        "model_output": "gold_target",
+        "alert_policy": "gold_demo_v1"
+      },
+      "needs_harness_run": true
+    },
+    {
+      "id": "gold_banter_to_bullying_004",
+      "family": "teasing_vs_bullying",
+      "title": "כשהצחוק הופך להצקה",
+      "subtitle": "הקנטה בין חברים נשארת שקטה; Guard מתריע כשהגבול נחצה שוב ושוב.",
+      "moment": "המערכת מחכה לבקשת ״די״, המשך ההשפלה והתנפלות קבוצתית.",
+      "source": "gold_authored",
+      "notes": "Gold target emphasizing context and false-positive resistance.",
+      "context": {
+        "chat_type": "group"
+      },
+      "messages": [
+        {
+          "id": "m1",
+          "sender": "other",
+          "text": "חחח איזה פספוס היה לך במשחק 😂"
+        },
+        {
+          "id": "m2",
+          "sender": "child",
+          "text": "חחח כן הייתי גרוע היום 😂"
+        },
+        {
+          "id": "m3",
+          "sender": "other_2",
+          "text": "לא סתם גרוע, כולם צחקו עליך בחדר הלבשה"
+        },
+        {
+          "id": "m4",
+          "sender": "other",
+          "text": "הוא כמעט בכה שם 😂"
+        },
+        {
+          "id": "m5",
+          "sender": "child",
+          "text": "די, זה כבר לא מצחיק. תפסיקו"
+        },
+        {
+          "id": "m6",
+          "sender": "other_2",
+          "text": "איזה רגיש אתה, אי אפשר להגיד לך כלום"
+        },
+        {
+          "id": "m7",
+          "sender": "other",
+          "text": "כולם בקבוצה חושבים שאתה הורס לנו"
+        },
+        {
+          "id": "m8",
+          "sender": "other_2",
+          "text": "אל תבוא מחר לאימון, אף אחד לא רוצה אותך שם"
+        }
+      ],
+      "snapshots": [
+        {
+          "after_message_id": "m2",
+          "prefix_length": 2,
+          "new_message_id": "m2",
+          "evaluation_pass": null,
+          "provenance": "gold_target",
+          "target_decision": "none",
+          "expected": {
+            "required_categories": [],
+            "required_signals": [],
+            "required_signal_any_of": [],
+            "forbidden_categories": [],
+            "forbidden_signals": [],
+            "required_evidence_message_ids": [],
+            "expected_decision": "none",
+            "expect_clean": true
+          },
+          "raw": {
+            "signals": [],
+            "categories": [],
+            "evidence_message_ids": [],
+            "confidence": null,
+            "reason": "הקנטה הדדית עם צחוק והסכמה מצד הילד; אין דפוס חד-צדדי.",
+            "decision": "none"
+          },
+          "cumulative": {
+            "signals": [],
+            "categories": [],
+            "evidence_message_ids": []
+          },
+          "new_signals": [],
+          "remembered_signals": [],
+          "decision": "none",
+          "should_alert": false,
+          "alert_label": "עדיין לא",
+          "alert_kind": "none",
+          "alert_event": false,
+          "alert_reason": "אין דפוס סיכון.",
+          "callout": "Guard לא הופך כל צחוק בין חברים להצקה."
+        },
+        {
+          "after_message_id": "m4",
+          "prefix_length": 4,
+          "new_message_id": "m4",
+          "evaluation_pass": null,
+          "provenance": "gold_target",
+          "target_decision": "watch",
+          "expected": {
+            "required_categories": [
+              "bullying"
+            ],
+            "required_signals": [
+              "insult_or_humiliation"
+            ],
+            "required_signal_any_of": [],
+            "forbidden_categories": [],
+            "forbidden_signals": [],
+            "required_evidence_message_ids": [
+              "m3",
+              "m4"
+            ],
+            "expected_decision": "watch",
+            "expect_clean": false
+          },
+          "raw": {
+            "signals": [
+              "insult_or_humiliation"
+            ],
+            "categories": [
+              "bullying"
+            ],
+            "evidence_message_ids": [
+              "m3",
+              "m4"
+            ],
+            "confidence": null,
+            "reason": "הטון עובר מהומור הדדי להשפלה של הילד מול הקבוצה, אך טרם הוצב גבול מפורש.",
+            "decision": "watch"
+          },
+          "cumulative": {
+            "signals": [
+              "insult_or_humiliation"
+            ],
+            "categories": [
+              "bullying"
+            ],
+            "evidence_message_ids": [
+              "m3",
+              "m4"
+            ]
+          },
+          "new_signals": [
+            "insult_or_humiliation"
+          ],
+          "remembered_signals": [],
+          "decision": "watch",
+          "should_alert": false,
+          "alert_label": "במעקב",
+          "alert_kind": "none",
+          "alert_event": false,
+          "alert_reason": "השפלה ראשונית מצדיקה מעקב לפני התראה.",
+          "callout": "Guard מבחין בשינוי הטון."
+        },
+        {
+          "after_message_id": "m6",
+          "prefix_length": 6,
+          "new_message_id": "m6",
+          "evaluation_pass": null,
+          "provenance": "gold_target",
+          "target_decision": "concerning",
+          "expected": {
+            "required_categories": [
+              "bullying"
+            ],
+            "required_signals": [
+              "boundary_violation"
+            ],
+            "required_signal_any_of": [],
+            "forbidden_categories": [],
+            "forbidden_signals": [],
+            "required_evidence_message_ids": [
+              "m3",
+              "m4",
+              "m5",
+              "m6"
+            ],
+            "expected_decision": "concerning",
+            "expect_clean": false
+          },
+          "raw": {
+            "signals": [
+              "insult_or_humiliation",
+              "boundary_violation"
+            ],
+            "categories": [
+              "bullying"
+            ],
+            "evidence_message_ids": [
+              "m3",
+              "m4",
+              "m5",
+              "m6"
+            ],
+            "confidence": null,
+            "reason": "הילד ביקש במפורש להפסיק, והמשתתפים ממשיכים ומבטלים את תחושותיו.",
+            "decision": "concerning"
+          },
+          "cumulative": {
+            "signals": [
+              "insult_or_humiliation",
+              "boundary_violation"
+            ],
+            "categories": [
+              "bullying"
+            ],
+            "evidence_message_ids": [
+              "m3",
+              "m4",
+              "m5",
+              "m6"
+            ]
+          },
+          "new_signals": [
+            "boundary_violation"
+          ],
+          "remembered_signals": [
+            "insult_or_humiliation"
+          ],
+          "decision": "concerning",
+          "should_alert": false,
+          "alert_label": "עדיין לא",
+          "alert_kind": "none",
+          "alert_event": false,
+          "alert_reason": "נוצרה הפרת גבול; Guard מחכה לראות אם מדובר בדפוס חוזר או התנפלות קבוצתית.",
+          "callout": "ה״די״ של הילד הוא נקודת מפנה חשובה."
+        },
+        {
+          "after_message_id": "m7",
+          "prefix_length": 7,
+          "new_message_id": "m7",
+          "evaluation_pass": null,
+          "provenance": "gold_target",
+          "target_decision": "concerning",
+          "expected": {
+            "required_categories": [
+              "bullying"
+            ],
+            "required_signals": [
+              "repeated_targeting",
+              "group_pile_on"
+            ],
+            "required_signal_any_of": [],
+            "forbidden_categories": [],
+            "forbidden_signals": [],
+            "required_evidence_message_ids": [
+              "m3",
+              "m4",
+              "m5",
+              "m6",
+              "m7"
+            ],
+            "expected_decision": "concerning",
+            "expect_clean": false
+          },
+          "raw": {
+            "signals": [
+              "insult_or_humiliation",
+              "boundary_violation",
+              "repeated_targeting",
+              "group_pile_on"
+            ],
+            "categories": [
+              "bullying"
+            ],
+            "evidence_message_ids": [
+              "m3",
+              "m4",
+              "m5",
+              "m6",
+              "m7"
+            ],
+            "confidence": null,
+            "reason": "שני משתתפים ממשיכים להשפיל את הילד לאחר שביקש להפסיק ומציגים אותו כמי שהקבוצה כולה דוחה.",
+            "decision": "concerning"
+          },
+          "cumulative": {
+            "signals": [
+              "insult_or_humiliation",
+              "boundary_violation",
+              "repeated_targeting",
+              "group_pile_on"
+            ],
+            "categories": [
+              "bullying"
+            ],
+            "evidence_message_ids": [
+              "m3",
+              "m4",
+              "m5",
+              "m6",
+              "m7"
+            ]
+          },
+          "new_signals": [
+            "repeated_targeting",
+            "group_pile_on"
+          ],
+          "remembered_signals": [
+            "insult_or_humiliation",
+            "boundary_violation"
+          ],
+          "decision": "concerning",
+          "should_alert": true,
+          "alert_label": "להתריע להורה",
+          "alert_kind": "notify",
+          "alert_event": true,
+          "alert_reason": "התעמרות חוזרת והתנפלות קבוצתית מצדיקות התראה.",
+          "callout": "כאן ההורה מקבל התראה — לא על הבדיחה הראשונה.",
+          "parent_notification": {
+            "kind": "notify",
+            "title": "הצקה קבוצתית שחוזרת על עצמה",
+            "body": "כמה ילדים ממשיכים להשפיל אותו גם אחרי שביקש להפסיק, ומציגים אותו כמי שאף אחד בקבוצה לא רוצה.",
+            "next_step": "שאלו אותו מה קרה והקשיבו לפני שפועלים. לפי הצורך, ערבו מחנך, מאמן או גורם אחראי."
+          }
+        },
+        {
+          "after_message_id": "m8",
+          "prefix_length": 8,
+          "new_message_id": "m8",
+          "evaluation_pass": null,
+          "provenance": "gold_target",
+          "target_decision": "concerning",
+          "expected": {
+            "required_categories": [
+              "bullying"
+            ],
+            "required_signals": [
+              "exclusion",
+              "coordinated_exclusion"
+            ],
+            "required_signal_any_of": [],
+            "forbidden_categories": [],
+            "forbidden_signals": [],
+            "required_evidence_message_ids": [
+              "m3",
+              "m4",
+              "m5",
+              "m6",
+              "m7",
+              "m8"
+            ],
+            "expected_decision": "concerning",
+            "expect_clean": false
+          },
+          "raw": {
+            "signals": [
+              "insult_or_humiliation",
+              "boundary_violation",
+              "repeated_targeting",
+              "group_pile_on",
+              "exclusion",
+              "coordinated_exclusion"
+            ],
+            "categories": [
+              "bullying"
+            ],
+            "evidence_message_ids": [
+              "m3",
+              "m4",
+              "m5",
+              "m6",
+              "m7",
+              "m8"
+            ],
+            "confidence": null,
+            "reason": "ההשפלה מתפתחת להדרה מפורשת ומתואמת מהאימון.",
+            "decision": "concerning"
+          },
+          "cumulative": {
+            "signals": [
+              "insult_or_humiliation",
+              "boundary_violation",
+              "repeated_targeting",
+              "group_pile_on",
+              "exclusion",
+              "coordinated_exclusion"
+            ],
+            "categories": [
+              "bullying"
+            ],
+            "evidence_message_ids": [
+              "m3",
+              "m4",
+              "m5",
+              "m6",
+              "m7",
+              "m8"
+            ]
+          },
+          "new_signals": [
+            "exclusion",
+            "coordinated_exclusion"
+          ],
+          "remembered_signals": [
+            "insult_or_humiliation",
+            "boundary_violation",
+            "repeated_targeting",
+            "group_pile_on"
+          ],
+          "decision": "concerning",
+          "should_alert": true,
+          "alert_label": "ההורה כבר קיבל התראה",
+          "alert_kind": "none",
+          "alert_event": false,
+          "alert_reason": "ההדרה נרשמת כהסלמה, אך אין לשלוח אזעקה נוספת ללא שינוי דחיפות.",
+          "callout": "Guard מעדכן את התמונה בלי להציף את ההורה."
+        }
+      ],
+      "provenance": {
+        "messages": "gold_authored",
+        "model_output": "gold_target",
+        "alert_policy": "gold_demo_v1"
+      },
+      "needs_harness_run": true
+    },
+    {
+      "id": "gold_bad_day_to_distress_005",
+      "family": "distress_vs_normal_sadness",
+      "title": "מיום רע לבקשת עזרה",
+      "subtitle": "Guard מבחין בין עצב רגיל לבין רצף שמאותת שהילדה צריכה מבוגר קרוב.",
+      "moment": "הורה מקבל בדיקת שלום רגועה כשחוסר תקווה מצטרף לפחד להיות לבד.",
+      "source": "gold_authored",
+      "notes": "Gold target for calibrated emotional-distress check-in; not a diagnosis.",
+      "context": {},
+      "messages": [
+        {
+          "id": "m1",
+          "sender": "child",
+          "text": "היה לי יום נורא, בא לי רק להיכנס למיטה"
+        },
+        {
+          "id": "m2",
+          "sender": "other",
+          "text": "מבין אותך. רוצה לדבר?"
+        },
+        {
+          "id": "m3",
+          "sender": "child",
+          "text": "לא יודעת. בזמן האחרון הכול מרגיש חסר טעם"
+        },
+        {
+          "id": "m4",
+          "sender": "other",
+          "text": "אני פה איתך. רוצה שאבוא?"
+        },
+        {
+          "id": "m5",
+          "sender": "child",
+          "text": "כן. אני מפחדת להיות לבד עכשיו"
+        },
+        {
+          "id": "m6",
+          "sender": "child",
+          "text": "אני באמת צריכה עזרה"
+        }
+      ],
+      "snapshots": [
+        {
+          "after_message_id": "m1",
+          "prefix_length": 1,
+          "new_message_id": "m1",
+          "evaluation_pass": null,
+          "provenance": "gold_target",
+          "target_decision": "none",
+          "expected": {
+            "required_categories": [],
+            "required_signals": [],
+            "required_signal_any_of": [],
+            "forbidden_categories": [],
+            "forbidden_signals": [],
+            "required_evidence_message_ids": [],
+            "expected_decision": "none",
+            "expect_clean": true
+          },
+          "raw": {
+            "signals": [],
+            "categories": [],
+            "evidence_message_ids": [],
+            "confidence": null,
+            "reason": "תיאור של יום רע ועייפות, ללא סימן מספיק למצוקה מתמשכת או סכנה.",
+            "decision": "none"
+          },
+          "cumulative": {
+            "signals": [],
+            "categories": [],
+            "evidence_message_ids": []
+          },
+          "new_signals": [],
+          "remembered_signals": [],
+          "decision": "none",
+          "should_alert": false,
+          "alert_label": "עדיין לא",
+          "alert_kind": "none",
+          "alert_event": false,
+          "alert_reason": "יום רע כשלעצמו אינו סיבה להתרעה.",
+          "callout": "Guard לא הופך עצב רגיל לאזעקה."
+        },
+        {
+          "after_message_id": "m3",
+          "prefix_length": 3,
+          "new_message_id": "m3",
+          "evaluation_pass": null,
+          "provenance": "gold_target",
+          "target_decision": "concerning",
+          "expected": {
+            "required_categories": [
+              "distress"
+            ],
+            "required_signals": [
+              "hopelessness"
+            ],
+            "required_signal_any_of": [],
+            "forbidden_categories": [],
+            "forbidden_signals": [],
+            "required_evidence_message_ids": [
+              "m3"
+            ],
+            "expected_decision": "concerning",
+            "expect_clean": false
+          },
+          "raw": {
+            "signals": [
+              "hopelessness"
+            ],
+            "categories": [
+              "distress"
+            ],
+            "evidence_message_ids": [
+              "m3"
+            ],
+            "confidence": null,
+            "reason": "הילדה מתארת תחושה מתמשכת שהכול חסר טעם, סימן לחוסר תקווה ומצוקה רגשית.",
+            "decision": "concerning"
+          },
+          "cumulative": {
+            "signals": [
+              "hopelessness"
+            ],
+            "categories": [
+              "distress"
+            ],
+            "evidence_message_ids": [
+              "m3"
+            ]
+          },
+          "new_signals": [
+            "hopelessness"
+          ],
+          "remembered_signals": [],
+          "decision": "concerning",
+          "should_alert": false,
+          "alert_label": "במעקב",
+          "alert_kind": "none",
+          "alert_event": false,
+          "alert_reason": "חוסר תקווה מצדיק תשומת לב; עדיין אין בקשת עזרה או פחד להיות לבד.",
+          "callout": "Guard מזהה שהשיחה כבר מעבר ל״יום רע״."
+        },
+        {
+          "after_message_id": "m5",
+          "prefix_length": 5,
+          "new_message_id": "m5",
+          "evaluation_pass": null,
+          "provenance": "gold_target",
+          "target_decision": "concerning",
+          "expected": {
+            "required_categories": [
+              "distress"
+            ],
+            "required_signals": [
+              "fear_expression"
+            ],
+            "required_signal_any_of": [],
+            "forbidden_categories": [],
+            "forbidden_signals": [],
+            "required_evidence_message_ids": [
+              "m3",
+              "m5"
+            ],
+            "expected_decision": "concerning",
+            "expect_clean": false
+          },
+          "raw": {
+            "signals": [
+              "hopelessness",
+              "fear_expression"
+            ],
+            "categories": [
+              "distress"
+            ],
+            "evidence_message_ids": [
+              "m3",
+              "m5"
+            ],
+            "confidence": null,
+            "reason": "חוסר התקווה מצטרף לפחד מפורש להישאר לבד כעת.",
+            "decision": "concerning"
+          },
+          "cumulative": {
+            "signals": [
+              "hopelessness",
+              "fear_expression"
+            ],
+            "categories": [
+              "distress"
+            ],
+            "evidence_message_ids": [
+              "m3",
+              "m5"
+            ]
+          },
+          "new_signals": [
+            "fear_expression"
+          ],
+          "remembered_signals": [
+            "hopelessness"
+          ],
+          "decision": "concerning",
+          "should_alert": true,
+          "alert_label": "בדיקת שלום עדינה",
+          "alert_kind": "check_in",
+          "alert_event": true,
+          "alert_reason": "שילוב של חוסר תקווה ופחד להיות לבד מצדיק פנייה רגועה של ההורה.",
+          "callout": "לא אזעקה — דחיפה עדינה להיות נוכחים.",
+          "parent_notification": {
+            "kind": "check_in",
+            "title": "כדאי לבדוק מה שלומה",
+            "body": "בשיחה היא כותבת שהכול מרגיש חסר טעם ושהיא מפחדת להיות לבד עכשיו.",
+            "next_step": "גשו אליה בנחת, הישארו איתה ושאלו מה היא צריכה. אם עולה חשש מיידי לבטיחותה, פנו לעזרה דחופה."
+          }
+        },
+        {
+          "after_message_id": "m6",
+          "prefix_length": 6,
+          "new_message_id": "m6",
+          "evaluation_pass": null,
+          "provenance": "gold_target",
+          "target_decision": "concerning",
+          "expected": {
+            "required_categories": [
+              "distress"
+            ],
+            "required_signals": [
+              "help_request"
+            ],
+            "required_signal_any_of": [],
+            "forbidden_categories": [],
+            "forbidden_signals": [],
+            "required_evidence_message_ids": [
+              "m3",
+              "m5",
+              "m6"
+            ],
+            "expected_decision": "concerning",
+            "expect_clean": false
+          },
+          "raw": {
+            "signals": [
+              "hopelessness",
+              "fear_expression",
+              "help_request"
+            ],
+            "categories": [
+              "distress"
+            ],
+            "evidence_message_ids": [
+              "m3",
+              "m5",
+              "m6"
+            ],
+            "confidence": null,
+            "reason": "הילדה מבקשת עזרה במפורש לאחר שתיארה חוסר תקווה ופחד להיות לבד.",
+            "decision": "concerning"
+          },
+          "cumulative": {
+            "signals": [
+              "hopelessness",
+              "fear_expression",
+              "help_request"
+            ],
+            "categories": [
+              "distress"
+            ],
+            "evidence_message_ids": [
+              "m3",
+              "m5",
+              "m6"
+            ]
+          },
+          "new_signals": [
+            "help_request"
+          ],
+          "remembered_signals": [
+            "hopelessness",
+            "fear_expression"
+          ],
+          "decision": "concerning",
+          "should_alert": true,
+          "alert_label": "ההורה כבר קיבל התראה",
+          "alert_kind": "none",
+          "alert_event": false,
+          "alert_reason": "בקשת העזרה מחזקת את הצורך בבדיקה, אך ההתראה כבר נשלחה.",
+          "callout": "Guard ממשיך לאסוף את ההקשר בלי להציף."
+        }
+      ],
+      "provenance": {
+        "messages": "gold_authored",
+        "model_output": "gold_target",
+        "alert_policy": "gold_demo_v1"
+      },
+      "needs_harness_run": true
+    },
+    {
+      "id": "gold_controlling_partner_location_006",
+      "family": "harassment_or_coercion",
+      "title": "״אם אכפת לך — תשלחי מיקום״",
+      "subtitle": "Guard מזהה כשבקשה זוגית הופכת ללחץ, שליטה והפרת גבולות.",
+      "moment": "ההתראה מגיעה אחרי סירוב ברור והמשך לחץ — לא על הוויכוח הראשון.",
+      "source": "gold_authored",
+      "notes": "Gold target for coercive control in a teen relationship using existing Guard signals only.",
+      "context": {
+        "relationship": "dating_peer"
+      },
+      "messages": [
+        {
+          "id": "m1",
+          "sender": "other",
+          "text": "למה לא ענית לי שעה?"
+        },
+        {
+          "id": "m2",
+          "sender": "child",
+          "text": "הייתי בחוג, הטלפון היה בתיק"
+        },
+        {
+          "id": "m3",
+          "sender": "other",
+          "text": "אז תשלחי לי מיקום חי מעכשיו שאני אדע איפה את"
+        },
+        {
+          "id": "m4",
+          "sender": "child",
+          "text": "לא רוצה, זה מרגיש לי מוגזם"
+        },
+        {
+          "id": "m5",
+          "sender": "other",
+          "text": "אם באמת אכפת לך ממני תפעילי מיקום. אין לך מה להסתיר"
+        },
+        {
+          "id": "m6",
+          "sender": "child",
+          "text": "אמרתי לא"
+        },
+        {
+          "id": "m7",
+          "sender": "other",
+          "text": "אל תספרי לאמא שלך על זה, היא סתם תהרוס לנו. תשלחי עכשיו"
+        }
+      ],
+      "snapshots": [
+        {
+          "after_message_id": "m2",
+          "prefix_length": 2,
+          "new_message_id": "m2",
+          "evaluation_pass": null,
+          "provenance": "gold_target",
+          "target_decision": "none",
+          "expected": {
+            "required_categories": [],
+            "required_signals": [],
+            "required_signal_any_of": [],
+            "forbidden_categories": [],
+            "forbidden_signals": [],
+            "required_evidence_message_ids": [],
+            "expected_decision": "none",
+            "expect_clean": true
+          },
+          "raw": {
+            "signals": [],
+            "categories": [],
+            "evidence_message_ids": [],
+            "confidence": null,
+            "reason": "שאלת זוגיות על אי-מענה, ללא איום או דרישה חריגה כשלעצמה.",
+            "decision": "none"
+          },
+          "cumulative": {
+            "signals": [],
+            "categories": [],
+            "evidence_message_ids": []
+          },
+          "new_signals": [],
+          "remembered_signals": [],
+          "decision": "none",
+          "should_alert": false,
+          "alert_label": "עדיין לא",
+          "alert_kind": "none",
+          "alert_event": false,
+          "alert_reason": "אין דפוס מספיק להתערבות.",
+          "callout": "Guard לא נכנס לכל ויכוח זוגי."
+        },
+        {
+          "after_message_id": "m3",
+          "prefix_length": 3,
+          "new_message_id": "m3",
+          "evaluation_pass": null,
+          "provenance": "gold_target",
+          "target_decision": "watch",
+          "expected": {
+            "required_categories": [
+              "harassment_or_coercion"
+            ],
+            "required_signals": [
+              "location_request"
+            ],
+            "required_signal_any_of": [],
+            "forbidden_categories": [],
+            "forbidden_signals": [],
+            "required_evidence_message_ids": [
+              "m3"
+            ],
+            "expected_decision": "watch",
+            "expect_clean": false
+          },
+          "raw": {
+            "signals": [
+              "location_request"
+            ],
+            "categories": [
+              "harassment_or_coercion"
+            ],
+            "evidence_message_ids": [
+              "m3"
+            ],
+            "confidence": null,
+            "reason": "בן הזוג דורש מיקום חי כדי לעקוב היכן הילדה נמצאת.",
+            "decision": "watch"
+          },
+          "cumulative": {
+            "signals": [
+              "location_request"
+            ],
+            "categories": [
+              "harassment_or_coercion"
+            ],
+            "evidence_message_ids": [
+              "m3"
+            ]
+          },
+          "new_signals": [
+            "location_request"
+          ],
+          "remembered_signals": [],
+          "decision": "watch",
+          "should_alert": false,
+          "alert_label": "במעקב",
+          "alert_kind": "none",
+          "alert_event": false,
+          "alert_reason": "דרישת מיקום חד-פעמית מדאיגה אך נבחנת בהקשר של תגובת הילדה והמשך הלחץ.",
+          "callout": "Guard מזהה שליטה אפשרית, אבל מחכה להקשר."
+        },
+        {
+          "after_message_id": "m5",
+          "prefix_length": 5,
+          "new_message_id": "m5",
+          "evaluation_pass": null,
+          "provenance": "gold_target",
+          "target_decision": "concerning",
+          "expected": {
+            "required_categories": [
+              "harassment_or_coercion"
+            ],
+            "required_signals": [
+              "coercive_demand",
+              "boundary_violation"
+            ],
+            "required_signal_any_of": [],
+            "forbidden_categories": [],
+            "forbidden_signals": [],
+            "required_evidence_message_ids": [
+              "m3",
+              "m4",
+              "m5"
+            ],
+            "expected_decision": "concerning",
+            "expect_clean": false
+          },
+          "raw": {
+            "signals": [
+              "location_request",
+              "coercive_demand",
+              "boundary_violation"
+            ],
+            "categories": [
+              "harassment_or_coercion"
+            ],
+            "evidence_message_ids": [
+              "m3",
+              "m4",
+              "m5"
+            ],
+            "confidence": null,
+            "reason": "לאחר שהילדה אומרת שהבקשה מוגזמת ואינה רוצה, בן הזוג מפעיל לחץ רגשי כדי לכפות שיתוף מיקום.",
+            "decision": "concerning"
+          },
+          "cumulative": {
+            "signals": [
+              "location_request",
+              "coercive_demand",
+              "boundary_violation"
+            ],
+            "categories": [
+              "harassment_or_coercion"
+            ],
+            "evidence_message_ids": [
+              "m3",
+              "m4",
+              "m5"
+            ]
+          },
+          "new_signals": [
+            "coercive_demand",
+            "boundary_violation"
+          ],
+          "remembered_signals": [
+            "location_request"
+          ],
+          "decision": "concerning",
+          "should_alert": true,
+          "alert_label": "להתריע להורה",
+          "alert_kind": "notify",
+          "alert_event": true,
+          "alert_reason": "דרישת מיקום מתמשכת לאחר סירוב, עם לחץ רגשי, מצביעה על קשר שולט.",
+          "callout": "ההתראה היא על דפוס של שליטה, לא על ריב.",
+          "parent_notification": {
+            "kind": "notify",
+            "title": "לחץ לשלוט במיקום שלה",
+            "body": "בן זוג דורש ממנה לשתף מיקום חי וממשיך ללחוץ גם אחרי שאמרה שאינה רוצה.",
+            "next_step": "פתחו שיחה רגועה על גבולות ובטיחות בקשר. הימנעו מהאשמה או מאיסור מיידי שעלול לסגור אותה."
+          }
+        },
+        {
+          "after_message_id": "m7",
+          "prefix_length": 7,
+          "new_message_id": "m7",
+          "evaluation_pass": null,
+          "provenance": "gold_target",
+          "target_decision": "concerning",
+          "expected": {
+            "required_categories": [
+              "harassment_or_coercion"
+            ],
+            "required_signals": [
+              "secrecy_request"
+            ],
+            "required_signal_any_of": [],
+            "forbidden_categories": [],
+            "forbidden_signals": [],
+            "required_evidence_message_ids": [
+              "m3",
+              "m4",
+              "m5",
+              "m6",
+              "m7"
+            ],
+            "expected_decision": "concerning",
+            "expect_clean": false
+          },
+          "raw": {
+            "signals": [
+              "location_request",
+              "coercive_demand",
+              "boundary_violation",
+              "secrecy_request"
+            ],
+            "categories": [
+              "harassment_or_coercion"
+            ],
+            "evidence_message_ids": [
+              "m3",
+              "m4",
+              "m5",
+              "m6",
+              "m7"
+            ],
+            "confidence": null,
+            "reason": "הלחץ לשיתוף מיקום ממשיך אחרי סירוב מפורש ומצטרפת בקשה להסתיר את ההתנהגות מהאם.",
+            "decision": "concerning"
+          },
+          "cumulative": {
+            "signals": [
+              "location_request",
+              "coercive_demand",
+              "boundary_violation",
+              "secrecy_request"
+            ],
+            "categories": [
+              "harassment_or_coercion"
+            ],
+            "evidence_message_ids": [
+              "m3",
+              "m4",
+              "m5",
+              "m6",
+              "m7"
+            ]
+          },
+          "new_signals": [
+            "secrecy_request"
+          ],
+          "remembered_signals": [
+            "location_request",
+            "coercive_demand",
+            "boundary_violation"
+          ],
+          "decision": "concerning",
+          "should_alert": true,
+          "alert_label": "ההורה כבר קיבל התראה",
+          "alert_kind": "none",
+          "alert_event": false,
+          "alert_reason": "בקשת הסודיות מחזקת את הדפוס השולט, אך אין צורך בהתראה כפולה ללא שינוי דחיפות.",
+          "callout": "Guard מתעד את ההסלמה בלי להציף."
+        }
+      ],
+      "provenance": {
+        "messages": "gold_authored",
+        "model_output": "gold_target",
+        "alert_policy": "gold_demo_v1"
+      },
+      "needs_harness_run": true
+    }
+  ],
+  "lang": "he",
+  "dir": "rtl"
+}
