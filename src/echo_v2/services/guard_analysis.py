@@ -48,7 +48,8 @@ class GuardAnalysisProcessor:
             child_user_id=child_user_id,
             chat_id=chat_id,
         )
-        since = datetime.now(timezone.utc) - self._window
+        reference_time = conversation.latest_message_at or datetime.now(timezone.utc)
+        since = reference_time - self._window
         prior = await self._analyses.list_for_replay(
             child_user_id=child_user_id,
             chat_id=chat_id,

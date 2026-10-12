@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 
 from echo_v2.persistence.chat_repositories import MessageRepository
 from echo_v2.services.guard_analyzer import GuardAnalysisInput, GuardMessage
@@ -22,6 +23,7 @@ class GuardConversation:
     input: GuardAnalysisInput
     participant_diagnostics: tuple[ParticipantDiagnostic, ...] = ()
     connection_id: str = ""
+    latest_message_at: datetime | None = None
 
 
 class GuardConversationBuilder:
@@ -93,4 +95,5 @@ class GuardConversationBuilder:
             ),
             participant_diagnostics=tuple(diagnostics),
             connection_id=connection_id,
+            latest_message_at=max((message.timestamp for message in messages), default=None),
         )
