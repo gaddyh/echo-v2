@@ -399,10 +399,10 @@ def create_app() -> FastAPI:
         judge=judge,
         excluded_chat_ids=excluded_chat_ids,
     )
-    guard_analyzer = LLMGuardAnalyzer(
-        client=openai_client,
-        model=os.environ.get("GUARD_LLM_MODEL_NAME", os.environ.get("LLM_MODEL_NAME", "gpt-4.1")),
+    guard_model = os.environ.get(
+        "GUARD_LLM_MODEL_NAME", os.environ.get("LLM_MODEL_NAME", "gpt-4.1")
     )
+    guard_analyzer = LLMGuardAnalyzer(client=openai_client, model=guard_model)
     guard_processor = GuardAnalysisProcessor(
         message_repo=repos.messages,
         analyzer=guard_analyzer,
@@ -415,6 +415,35 @@ def create_app() -> FastAPI:
         commit_repo=repos.guard_analysis_commit,
         poll_interval_seconds=float(os.environ.get("GUARD_ANALYSIS_POLL_INTERVAL", "10")),
         excluded_chat_ids=excluded_chat_ids,
+    )
+    from echo_v2.services.guard_analyzer import (
+        GUARD_ANALYZER_VERSION,
+        GUARD_PROMPT_VERSION,
+    )
+    from echo_v2.services.guard_eval_gold import load_guard_gold
+    from echo_v2.services.guard_live_compare import GuardLiveCompareRunner
+    from echo_v2.services.guard_live_compare_service import GuardLiveCompareService
+    from echo_v2.services.guard_taxonomy import GUARD_TAXONOMY_VERSION
+
+    guard_live_compare = GuardLiveCompareService(
+        repository=repos.guard_eval,
+        gold=load_guard_gold(),
+        runner=GuardLiveCompareRunner(
+            analyzer=guard_analyzer,
+            model=guard_model,
+            prompt_version=GUARD_PROMPT_VERSION,
+            analyzer_version=GUARD_ANALYZER_VERSION,
+            taxonomy_version=GUARD_TAXONOMY_VERSION,
+        ),
+        max_active_runs=int(os.environ.get("GUARD_EVAL_MAX_ACTIVE_RUNS", "2")),
+        daily_limit=int(os.environ.get("GUARD_EVAL_DAILY_LIMIT", "30")),
+        requester_limit=int(os.environ.get("GUARD_EVAL_REQUESTER_LIMIT", "3")),
+        requester_window_seconds=int(
+            os.environ.get("GUARD_EVAL_REQUESTER_WINDOW_SECONDS", "3600")
+        ),
+        stale_after_seconds=int(
+            os.environ.get("GUARD_EVAL_STALE_AFTER_SECONDS", "1800")
+        ),
     )
     chat_analysis_enabled = os.environ.get("CHAT_ANALYSIS_ENABLED", "false").lower() in (
         "1",
@@ -600,7 +629,7 @@ def create_app() -> FastAPI:
     guard_debug_router = build_guard_debug_router(
         service=guard_review_service, token_service=token_service
     )
-    guard_demo_router = build_guard_demo_router()
+    guard_demo_router = build_guard_demo_router(live_compare=guard_live_compare)
 
     # --- FastAPI app with lifespan (scheduler + worker start/stop with app) --
     scheduler_task: asyncio.Task[None] | None = None
@@ -619,7 +648,13 @@ def create_app() -> FastAPI:
         nonlocal snooze_worker_task, alert_checker_task
         nonlocal pool_warmup_task, baileys_event_consumer_task
         nonlocal baileys_message_consumer_task
-        # Startup: recover stale actions + start scheduler loop.
+        # Startup: recover stale actions and isolated Guard Live Compare runs.
+        try:
+            recovered_guard_runs = await guard_live_compare.recover_stale_runs()
+            if recovered_guard_runs:
+                _logger.info("recovered %d stale Guard Live Compare runs", recovered_guard_runs)
+        except Exception:
+            _logger.exception("Guard Live Compare recovery failed on startup")
         try:
             recovered = await scheduler.recover()
             if recovered:
@@ -715,6 +750,7 @@ def create_app() -> FastAPI:
             except asyncio.CancelledError:
                 pass
             _logger.info("scheduler loop stopped")
+        await guard_live_compare.shutdown()
 
         # Cancel pool warm-up + close pool (cancels refill task).
         if pool_warmup_task is not None:

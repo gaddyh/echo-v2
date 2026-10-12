@@ -47,6 +47,9 @@ async def test_demo_page_serves_replay_shell_with_security_headers() -> None:
     assert 'id="next"' in response.text
     assert 'href="/demo/guard/he"' in response.text
     assert "function playNextSnapshot()" in response.text
+    assert "Run Live Compare" in response.text
+    assert "Expected · Human Gold" in response.text
+    assert "saveJudgment" in response.text
     assert "state.snapshotIndex>=scenario.snapshots.length-1" in response.text
     assert response.headers["cache-control"] == "no-store"
     assert response.headers["referrer-policy"] == "no-referrer"
@@ -71,6 +74,7 @@ async def test_hebrew_demo_page_serves_rtl_replay_shell() -> None:
     assert 'id="alert-window"' in response.text
     assert 'href="/demo/guard"' in response.text
     assert "function playNextSnapshot()" in response.text
+    assert "הרצת Live להשוואה" in response.text
     assert response.headers["content-security-policy"].startswith("default-src 'self'")
 
 

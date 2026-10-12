@@ -27,6 +27,7 @@ from echo_v2.persistence.db import (
 from echo_v2.persistence.green_instance_pool import (
     PostgresGreenInstancePoolRepository,
 )
+from echo_v2.persistence.guard_eval import PostgresGuardEvalRepository
 from echo_v2.persistence.postgres_chat import (
     PostgresAnalysisCommitRepository,
     PostgresChatStateRepository,
@@ -93,6 +94,7 @@ class PostgresRepos:
     guard_analysis_results: PostgresGuardAnalysisRepository
     guard_analysis_commit: PostgresGuardAnalysisCommitRepository
     guard_feedback: PostgresGuardFeedbackRepository
+    guard_eval: PostgresGuardEvalRepository
     wfm_feedback: PostgresWaitingForMeFeedbackRepository
     wfm_actions: PostgresWaitingForMeActionRepository
     chat_mutes: PostgresChatMuteRepository
@@ -139,6 +141,7 @@ def build_postgres_repos(settings: DBSettings) -> PostgresRepos:
     guard_analysis_results = PostgresGuardAnalysisRepository(factory)
     guard_analysis_commit = PostgresGuardAnalysisCommitRepository(factory)
     guard_feedback = PostgresGuardFeedbackRepository(factory)
+    guard_eval = PostgresGuardEvalRepository(factory)
     wfm_feedback = PostgresWaitingForMeFeedbackRepository(factory)
     wfm_actions = PostgresWaitingForMeActionRepository(factory)
     chat_mutes = PostgresChatMuteRepository(factory)
@@ -172,6 +175,7 @@ def build_postgres_repos(settings: DBSettings) -> PostgresRepos:
         guard_analysis_results=guard_analysis_results,
         guard_analysis_commit=guard_analysis_commit,
         guard_feedback=guard_feedback,
+        guard_eval=guard_eval,
         wfm_feedback=wfm_feedback,
         wfm_actions=wfm_actions,
         chat_mutes=chat_mutes,

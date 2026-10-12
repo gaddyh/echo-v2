@@ -59,6 +59,9 @@ __all__ = [
     "GuardAnalysisFeedbackRow",
     "GuardAnalysisResultRow",
     "GuardChatStateRow",
+    "GuardEvalJudgmentRow",
+    "GuardEvalRunRow",
+    "GuardEvalSnapshotRow",
     "GuardianChildLinkRow",
     "IdempotencyOperationRow",
     "MessageRow",
@@ -765,6 +768,116 @@ class GuardAnalysisFeedbackEventRow(Base):
     )
 
     __table_args__ = (Index("ix_guard_feedback_events_result_changed", "result_id", "changed_at"),)
+
+
+# --- guard_eval --------------------------------------------------------------
+
+
+class GuardEvalRunRow(Base):
+    """Immutable technical metadata for one isolated Live Compare run."""
+
+    __tablename__ = "guard_eval_runs"
+
+    id: Mapped[str] = mapped_column(
+        Uuid, primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    scenario_id: Mapped[str] = mapped_column(Text, nullable=False)
+    requester_key: Mapped[str] = mapped_column(Text, nullable=False)
+    request_id: Mapped[str] = mapped_column(Text, nullable=False)
+    gold_version: Mapped[str] = mapped_column(Text, nullable=False)
+    gold_label: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    model: Mapped[str] = mapped_column(Text, nullable=False)
+    prompt_version: Mapped[str] = mapped_column(Text, nullable=False)
+    analyzer_version: Mapped[str] = mapped_column(Text, nullable=False)
+    taxonomy_version: Mapped[str] = mapped_column(Text, nullable=False)
+    metadata_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+    started_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('running', 'completed', 'failed')",
+            name="guard_eval_runs_status_check",
+        ),
+        UniqueConstraint(
+            "requester_key", "request_id", name="guard_eval_runs_request_key"
+        ),
+        Index("ix_guard_eval_runs_created_at", "created_at"),
+        Index("ix_guard_eval_runs_requester_created", "requester_key", "created_at"),
+        Index("ix_guard_eval_runs_status_created", "status", "created_at"),
+    )
+
+
+class GuardEvalSnapshotRow(Base):
+    """Immutable reproducibility record for one Gold checkpoint."""
+
+    __tablename__ = "guard_eval_snapshots"
+
+    id: Mapped[str] = mapped_column(
+        Uuid, primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    run_id: Mapped[str] = mapped_column(
+        Uuid, ForeignKey("guard_eval_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    scenario_id: Mapped[str] = mapped_column(Text, nullable=False)
+    ordinal: Mapped[int] = mapped_column(nullable=False)
+    after_message_id: Mapped[str] = mapped_column(Text, nullable=False)
+    expected: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    actual: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    diff: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    has_difference: Mapped[bool] = mapped_column(nullable=False)
+    failure: Mapped[bool] = mapped_column(nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("run_id", "ordinal", name="guard_eval_snapshots_run_ordinal_key"),
+        Index("ix_guard_eval_snapshots_run_ordinal", "run_id", "ordinal"),
+    )
+
+
+class GuardEvalJudgmentRow(Base):
+    """Mutable anonymous human interpretation of one immutable snapshot."""
+
+    __tablename__ = "guard_eval_judgments"
+
+    id: Mapped[str] = mapped_column(
+        Uuid, primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    snapshot_id: Mapped[str] = mapped_column(
+        Uuid, ForeignKey("guard_eval_snapshots.id", ondelete="CASCADE"), nullable=False
+    )
+    reviewer_key: Mapped[str] = mapped_column(Text, nullable=False)
+    label: Mapped[str] = mapped_column(Text, nullable=False)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "snapshot_id", "reviewer_key", name="guard_eval_judgments_snapshot_reviewer_key"
+        ),
+        CheckConstraint(
+            "label IN ('accepted_difference', 'real_failure', 'gold_needs_correction', 'undecided')",
+            name="guard_eval_judgments_label_check",
+        ),
+        Index("ix_guard_eval_judgments_snapshot", "snapshot_id"),
+    )
 
 
 # --- waiting_for_me_results -------------------------------------------------
