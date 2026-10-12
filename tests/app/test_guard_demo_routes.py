@@ -56,6 +56,8 @@ async def test_demo_page_serves_replay_shell_with_security_headers() -> None:
     assert "live-inline-diff" in response.text
     assert "inline-judgment" in response.text
     assert "saveInlineJudgment" in response.text
+    assert "scenarioIndex=state.scenarios.findIndex" in response.text
+    assert "saved-runs').onchange=replaySaved" in response.text
     assert ".live-compare{display:none!important}" in response.text
     assert "Relevant data" in response.text
     assert "state.scenarioIndex++" not in response.text
@@ -90,6 +92,8 @@ async def test_hebrew_demo_page_serves_rtl_replay_shell() -> None:
     assert "הנתונים הרלוונטיים" in response.text
     assert "inline-judgment" in response.text
     assert "saveInlineJudgment" in response.text
+    assert "scenarioIndex=state.scenarios.findIndex" in response.text
+    assert "saved-runs').onchange=replaySaved" in response.text
     assert ".live-compare{display:none!important}" in response.text
     assert "state.scenarioIndex++" not in response.text
     assert response.headers["content-security-policy"].startswith("default-src 'self'")
