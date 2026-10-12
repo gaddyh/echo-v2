@@ -48,11 +48,14 @@ async def test_demo_page_serves_replay_shell_with_security_headers() -> None:
     assert 'href="/demo/guard/he"' in response.text
     assert "function playNextSnapshot()" in response.text
     assert "Run Live Compare" in response.text
+    assert 'class="live-mode-title">Live Compare' in response.text
     assert "Expected · Human Gold" in response.text
     assert "saveJudgment" in response.text
     assert "renderInlineCompare" in response.text
+    assert "item.after_message_id===messageId" in response.text
     assert "live-inline-diff" in response.text
     assert "Relevant data" in response.text
+    assert "state.scenarioIndex++" not in response.text
     assert "state.snapshotIndex>=scenario.snapshots.length-1" in response.text
     assert response.headers["cache-control"] == "no-store"
     assert response.headers["referrer-policy"] == "no-referrer"
@@ -78,8 +81,11 @@ async def test_hebrew_demo_page_serves_rtl_replay_shell() -> None:
     assert 'href="/demo/guard"' in response.text
     assert "function playNextSnapshot()" in response.text
     assert "הרצת Live להשוואה" in response.text
+    assert 'class="live-mode-title">Live Compare' in response.text
     assert "renderInlineCompare" in response.text
+    assert "item.after_message_id===messageId" in response.text
     assert "הנתונים הרלוונטיים" in response.text
+    assert "state.scenarioIndex++" not in response.text
     assert response.headers["content-security-policy"].startswith("default-src 'self'")
 
 
