@@ -237,6 +237,11 @@ async def test_guard_landing_page_remains_available():
     assert resp.status_code == 200
     assert "Echo Guard" in resp.text
     assert 'src="/og-guard-v2.png"' in resp.text
+    assert 'id="hero-title"' in resp.text
+    assert "כדאי לדעת לפני שהוא מסלים" in resp.text
+    assert 'id="trust-title"' in resp.text
+    assert "שקיפות מההתחלה" in resp.text
+    assert "פחות רעש, יותר הקשר" in resp.text
 
 
 async def test_landing_page_has_og_tags_and_scarcity():
