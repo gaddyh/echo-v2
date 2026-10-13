@@ -17,7 +17,7 @@ from echo_v2.services.guard_eval_gold import (
     GoldLedgerExpectation,
     GoldScenario,
 )
-from echo_v2.services.guard_live_compare import GuardLiveCompareRunner
+from echo_v2.services.guard_live_compare import GuardLiveCompareRunner, _failure_reasons
 from echo_v2.services.guard_taxonomy import GUARD_TAXONOMY_VERSION
 
 
@@ -133,6 +133,37 @@ async def test_runner_uses_full_prefix_and_accumulates_ledger() -> None:
     assert results[1].actual["decision"] == "concerning"
     assert results[1].actual["alert"]["kind"] == AlertKind.NONE.value
     assert results[1].failure is False
+
+
+async def test_runner_supports_raw_analyzer_and_updates_alert_history() -> None:
+    class RawAnalyzer(FakeAnalyzer):
+        async def analyze_with_raw(self, conversation):
+            return await self.analyze(conversation), '{"raw": true}'
+
+    analyzer = RawAnalyzer([
+        GuardAnalysis(
+            categories=("suspicious_contact",), signals=("location_request",),
+            evidence_message_ids=("m1",),
+        ),
+        GuardAnalysis(
+            categories=("suspicious_contact",), signals=("location_request",),
+            evidence_message_ids=("m2",),
+        ),
+    ])
+    runner = GuardLiveCompareRunner(
+        analyzer=analyzer, model="model", prompt_version="prompt",
+        analyzer_version="analyzer", taxonomy_version=GUARD_TAXONOMY_VERSION,
+    )
+    results = await runner.run(_scenario())
+    assert results[0].actual["analyzer"]["raw_response"] == '{"raw": true}'
+    assert results[0].actual["alert"]["event"] is True
+    assert results[1].actual["alert"]["event"] is False
+
+
+async def test_failure_reasons_cover_behavioral_mismatch_layers() -> None:
+    assert _failure_reasons(decision_mismatch=True, alert_mismatch=True, timing_pass=False) == [
+        "decision_mismatch", "alert_mismatch", "alert_outside_gold_window"
+    ]
 
 
 async def test_analyzer_difference_can_be_non_failure() -> None:

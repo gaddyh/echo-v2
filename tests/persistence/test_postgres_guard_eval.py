@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from uuid import uuid4
 
 import pytest
 
@@ -92,3 +93,49 @@ async def test_eval_admission_persists_immutable_run_and_mutable_judgment(
     assert bundle is not None
     assert len(bundle.snapshots) == 1
     assert bundle.judgments[0].reason == "The final decision still arrived on time."
+
+
+async def test_eval_admission_enforces_limits_and_recovers_stale_runs(
+    session_factory, clean_db
+) -> None:
+    repository = PostgresGuardEvalRepository(session_factory)
+    now = datetime.now(timezone.utc)
+
+    def request(request_id: str, **limits: object) -> dict[str, object]:
+        values: dict[str, object] = {
+            "scenario_id": "gold-1", "requester_key": "requester-2", "request_id": request_id,
+            "gold_version": "5", "gold_label": "gold", "model": "model",
+            "prompt_version": "prompt", "analyzer_version": "analyzer", "taxonomy_version": "v1",
+            "metadata": {}, "requester_window": timedelta(hours=1), "now": now,
+            "max_active": 2, "daily_limit": 10, "requester_limit": 3,
+        }
+        values.update(limits)
+        return values
+
+    first = await repository.admit_run(**request("first"))
+    assert first.allowed
+    active_limited = await repository.admit_run(**request("active", max_active=1))
+    assert not active_limited.allowed and active_limited.reason == "active_limit"
+
+    daily_limited = await repository.admit_run(**request("daily", max_active=10, daily_limit=1))
+    assert not daily_limited.allowed and daily_limited.reason == "daily_limit"
+
+    requester_limited = await repository.admit_run(
+        **request("requester", max_active=10, daily_limit=10, requester_limit=1)
+    )
+    assert not requester_limited.allowed and requester_limited.reason == "requester_limit"
+
+    recovered = await repository.recover_stale_runs(
+        stale_after=timedelta(seconds=1), now=now + timedelta(hours=2)
+    )
+    assert recovered == 1
+    missing_id = str(uuid4())
+    assert await repository.get_run(missing_id) is None
+    assert await repository.complete_run(missing_id) is None
+    assert await repository.fail_run(missing_id, error="missing") is None
+    assert await repository.set_judgment(
+        snapshot_id=missing_id, reviewer_key="reviewer", label=GuardEvalJudgmentLabel.UNDECIDED,
+        note=None, reason=None
+    ) is None
+    runs = await repository.list_runs(scenario_id="gold-1")
+    assert len(runs) == 1 and runs[0].status is GuardEvalRunStatus.FAILED
