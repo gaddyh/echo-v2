@@ -2,11 +2,21 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from echo_v2.app.guard_demo_routes import build_guard_demo_router
+from echo_v2.domain.guard_eval import (
+    GuardEvalAdmission,
+    GuardEvalJudgment,
+    GuardEvalRun,
+    GuardEvalRunBundle,
+    GuardEvalRunStatus,
+    GuardEvalSnapshot,
+)
 
 EXPECTED_SCENARIOS = [
     "unknown_contact_escalation_001",
@@ -29,9 +39,44 @@ def _client(app: FastAPI) -> AsyncClient:
     return AsyncClient(transport=ASGITransport(app=app), base_url="https://test")
 
 
-def _make_app() -> FastAPI:
+class FakeLiveCompare:
+    def __init__(self) -> None:
+        now = datetime.now(timezone.utc)
+        self.run = GuardEvalRun(
+            id="run-1", scenario_id=EXPECTED_HEBREW_SCENARIOS[0], requester_key="key",
+            request_id="request", gold_version="5", gold_label="gold",
+            status=GuardEvalRunStatus.COMPLETED, model="model", prompt_version="prompt",
+            analyzer_version="analyzer", taxonomy_version="v1", created_at=now,
+        )
+        self.snapshot = GuardEvalSnapshot(
+            id="snapshot-1", run_id="run-1", scenario_id=self.run.scenario_id,
+            ordinal=0, after_message_id="m2", expected={"decision": "none"},
+            actual={"decision": "watch"}, diff={"difference": True, "failure": True},
+            has_difference=True, failure=True, created_at=now,
+        )
+        self.judgment = None
+
+    async def list(self, **kwargs):
+        return (self.run,)
+
+    async def get(self, run_id):
+        return GuardEvalRunBundle(self.run, (self.snapshot,), (self.judgment,) if self.judgment else ())
+
+    async def start(self, **kwargs):
+        return GuardEvalAdmission(run=self.run, allowed=True)
+
+    async def set_judgment(self, **kwargs):
+        self.judgment = GuardEvalJudgment(
+            snapshot_id=kwargs["snapshot_id"], reviewer_key=kwargs["reviewer_key"],
+            label=kwargs["label"], note=kwargs["note"], reason=kwargs["reason"],
+            created_at=datetime.now(timezone.utc), updated_at=datetime.now(timezone.utc),
+        )
+        return self.judgment
+
+
+def _make_app(live_compare=None) -> FastAPI:
     app = FastAPI()
-    app.include_router(build_guard_demo_router())
+    app.include_router(build_guard_demo_router(live_compare=live_compare))
     return app
 
 
@@ -47,6 +92,20 @@ async def test_demo_page_serves_replay_shell_with_security_headers() -> None:
     assert 'id="next"' in response.text
     assert 'href="/demo/guard/he"' in response.text
     assert "function playNextSnapshot()" in response.text
+    assert "Run Live Compare" in response.text
+    assert 'class="live-mode-title">Live Compare' in response.text
+    assert "Expected · Human Gold" in response.text
+    assert "saveJudgment" in response.text
+    assert "renderInlineCompare" in response.text
+    assert "item.after_message_id===messageId" in response.text
+    assert "live-inline-diff" in response.text
+    assert "inline-judgment" in response.text
+    assert "saveInlineJudgment" in response.text
+    assert "scenarioIndex=state.scenarios.findIndex" in response.text
+    assert "saved-runs').onchange=replaySaved" in response.text
+    assert ".live-compare{display:none!important}" in response.text
+    assert "Relevant data" in response.text
+    assert "state.scenarioIndex++" not in response.text
     assert "state.snapshotIndex>=scenario.snapshots.length-1" in response.text
     assert response.headers["cache-control"] == "no-store"
     assert response.headers["referrer-policy"] == "no-referrer"
@@ -71,6 +130,17 @@ async def test_hebrew_demo_page_serves_rtl_replay_shell() -> None:
     assert 'id="alert-window"' in response.text
     assert 'href="/demo/guard"' in response.text
     assert "function playNextSnapshot()" in response.text
+    assert "הרצת Live להשוואה" in response.text
+    assert 'class="live-mode-title">Live Compare' in response.text
+    assert "renderInlineCompare" in response.text
+    assert "item.after_message_id===messageId" in response.text
+    assert "הנתונים הרלוונטיים" in response.text
+    assert "inline-judgment" in response.text
+    assert "saveInlineJudgment" in response.text
+    assert "scenarioIndex=state.scenarios.findIndex" in response.text
+    assert "saved-runs').onchange=replaySaved" in response.text
+    assert ".live-compare{display:none!important}" in response.text
+    assert "state.scenarioIndex++" not in response.text
     assert response.headers["content-security-policy"].startswith("default-src 'self'")
 
 

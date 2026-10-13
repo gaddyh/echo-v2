@@ -1177,7 +1177,7 @@ async def test_schedule_send_naive_send_at_returns_invalid():
     session_id, _ = await token_service.issue(USER_ID)
     active_id = await _setup_chat_and_active(active_repo, service._chat_state_repo)
 
-    naive = datetime(2099, 1, 1, 10, 0)  # noqa: DTZ001  no tzinfo — intentional
+    naive = datetime(2099, 1, 1, 10, 0)  # noqa: DTZ001, RUF100 - intentionally naive
     result = await service.schedule_send(
         session_id=session_id,
         user_id=USER_ID,
@@ -1550,7 +1550,7 @@ async def test_schedule_send_naive_datetime_returns_invalid():
         active_id=active_id,
         request_id="req-1",
         message="hello",
-        send_at=datetime(2099, 1, 1, 10, 0),  # noqa: DTZ001 — intentionally naive
+        send_at=datetime(2099, 1, 1, 10, 0),  # noqa: DTZ001, RUF100 - intentionally naive
     )
     assert result is not None
     assert result.outcome == "invalid"

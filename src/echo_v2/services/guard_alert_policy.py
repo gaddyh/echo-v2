@@ -9,6 +9,7 @@ evolve with product policy without prompt tuning or detector retraining.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum, IntEnum
 from typing import Protocol
 
 from echo_v2.services.guard_analyzer import GuardAnalysis
@@ -21,11 +22,40 @@ from echo_v2.services.guard_taxonomy import (
 )
 
 __all__ = [
+    "AlertKind",
+    "AlertOutcome",
     "AlertPolicy",
     "ChildContext",
     "ConversationContext",
     "DefaultAlertPolicy",
 ]
+
+
+class AlertKind(str, Enum):
+    NONE = "none"
+    NOTIFY = "notify"
+    URGENT = "urgent"
+
+
+class _AlertRank(IntEnum):
+    NONE = 0
+    NOTIFY = 1
+    URGENT = 2
+
+
+_ALERT_RANKS = {
+    AlertKind.NONE: _AlertRank.NONE,
+    AlertKind.NOTIFY: _AlertRank.NOTIFY,
+    AlertKind.URGENT: _AlertRank.URGENT,
+}
+
+
+@dataclass(frozen=True)
+class AlertOutcome:
+    should_alert: bool
+    event: bool
+    kind: AlertKind
+    reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -40,12 +70,28 @@ class ChildContext:
 class ConversationContext:
     """Conversation and notification history known to the policy."""
 
+    prior_alert_kind: AlertKind = AlertKind.NONE
     prior_alert_sent: bool = False
     quiet_hours: bool = False
 
+    def effective_prior_alert_kind(self) -> AlertKind:
+        if self.prior_alert_kind is not AlertKind.NONE:
+            return self.prior_alert_kind
+        return AlertKind.NOTIFY if self.prior_alert_sent else AlertKind.NONE
+
 
 class AlertPolicy(Protocol):
-    """Policy interface for deciding whether to notify a parent."""
+    """Protocol for deciding whether to notify a parent."""
+
+    def evaluate(
+        self,
+        *,
+        analysis: GuardAnalysis,
+        child_context: ChildContext,
+        conversation_context: ConversationContext,
+        signal_state: GuardSignalState | None = None,
+    ) -> AlertOutcome:
+        raise NotImplementedError
 
     def should_alert(
         self,
@@ -59,12 +105,47 @@ class AlertPolicy(Protocol):
 
 
 class DefaultAlertPolicy:
-    """Initial deterministic Guard notification policy.
+    """Initial deterministic Guard notification policy."""
 
-    ``watch`` never alerts. ``urgent`` always alerts. A ``concerning``
-    analysis alerts only when it contains an actionable category/signal
-    combination; a developing pattern alone is monitored without notifying.
-    """
+    def evaluate(
+        self,
+        *,
+        analysis: GuardAnalysis,
+        child_context: ChildContext,
+        conversation_context: ConversationContext,
+        signal_state: GuardSignalState | None = None,
+    ) -> AlertOutcome:
+        del child_context
+        decision = DefaultDecisionPolicy().decide(
+            signals=analysis.signals,
+            categories=analysis.categories,
+            signal_state=signal_state,
+        )
+        if decision is GuardDecision.URGENT:
+            kind = AlertKind.URGENT
+            reason = "Immediate or escalating high-risk evidence."
+        elif self._actionable(
+            analysis=analysis,
+            signal_state=signal_state,
+            conversation_context=conversation_context,
+        ):
+            kind = AlertKind.NOTIFY
+            reason = "A deterministic Guard alert threshold was reached."
+        else:
+            kind = AlertKind.NONE
+            reason = ""
+        event = (
+            kind is not AlertKind.NONE
+            and _ALERT_RANKS[kind]
+            > _ALERT_RANKS[conversation_context.effective_prior_alert_kind()]
+            and not conversation_context.quiet_hours
+        )
+        return AlertOutcome(
+            should_alert=kind is not AlertKind.NONE,
+            event=event,
+            kind=kind,
+            reason=reason,
+        )
 
     def should_alert(
         self,
@@ -74,22 +155,22 @@ class DefaultAlertPolicy:
         conversation_context: ConversationContext,
         signal_state: GuardSignalState | None = None,
     ) -> bool:
-        del child_context
-        decision = DefaultDecisionPolicy().decide(
-            signals=analysis.signals,
-            categories=analysis.categories,
+        return self.evaluate(
+            analysis=analysis,
+            child_context=child_context,
+            conversation_context=conversation_context,
             signal_state=signal_state,
-        )
+        ).event
 
-        if decision in {GuardDecision.NONE, GuardDecision.WATCH}:
+    @staticmethod
+    def _actionable(
+        *,
+        analysis: GuardAnalysis,
+        signal_state: GuardSignalState | None,
+        conversation_context: ConversationContext,
+    ) -> bool:
+        if conversation_context.effective_prior_alert_kind() is not AlertKind.NONE or conversation_context.quiet_hours:
             return False
-        if decision == GuardDecision.URGENT:
-            return True
-        if conversation_context.prior_alert_sent:
-            return False
-        if conversation_context.quiet_hours:
-            return False
-
         signals = {
             GuardSignal(signal)
             for signal in (signal_state.active_signals if signal_state else analysis.signals)
@@ -102,29 +183,16 @@ class DefaultAlertPolicy:
                 else analysis.categories
             )
         }
-
         suspicious_contact_is_actionable = (
             GuardCategory.SUSPICIOUS_CONTACT in categories
-            and bool(
-                signals
-                & {GuardSignal.LOCATION_REQUEST, GuardSignal.MEETING_REQUEST}
-            )
+            and bool(signals & {GuardSignal.LOCATION_REQUEST, GuardSignal.MEETING_REQUEST})
         )
         bullying_is_established = (
             GuardCategory.BULLYING in categories
-            and {
-                GuardSignal.REPEATED_TARGETING,
-                GuardSignal.GROUP_PILE_ON,
-            }
-            <= signals
+            and {GuardSignal.REPEATED_TARGETING, GuardSignal.GROUP_PILE_ON} <= signals
         )
         explicit_threat = (
             GuardCategory.HARASSMENT_OR_COERCION in categories
             and GuardSignal.THREAT in signals
         )
-
-        return (
-            suspicious_contact_is_actionable
-            or bullying_is_established
-            or explicit_threat
-        )
+        return suspicious_contact_is_actionable or bullying_is_established or explicit_threat

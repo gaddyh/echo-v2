@@ -292,7 +292,7 @@ def _try_explicit_datetime(
     # Try ISO format.
     for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M:%S"):
         try:
-            dt = datetime.strptime(text, fmt)  # noqa: DTZ007 - intentional naive local dt, tz attached later
+            dt = datetime.strptime(text, fmt)  # noqa: DTZ007, RUF100 - intentional naive local dt
             return _ParseResult(local_dt=dt)
         except ValueError:
             continue
