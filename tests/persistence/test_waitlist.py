@@ -47,6 +47,17 @@ async def test_list_all_ordered_oldest_first(waitlist_repo):
     assert [s.name for s in signups] == ["ראשונה", "שני", "שלישית"]
 
 
+async def test_add_with_preference(waitlist_repo):
+    inserted = await waitlist_repo.add(
+        name="דנה",
+        phone_number="+972501234567",
+        preference="box",
+    )
+    assert inserted is True
+    signups = await waitlist_repo.list_all()
+    assert signups[0].preference == "box"
+
+
 async def test_add_with_willingness_to_pay(waitlist_repo):
     inserted = await waitlist_repo.add(
         name="דנה",

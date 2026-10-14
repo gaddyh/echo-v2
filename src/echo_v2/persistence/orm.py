@@ -1315,7 +1315,7 @@ class WaitingListSessionRow(Base):
 
 
 class WaitlistSignupRow(Base):
-    """A landing-page waitlist signup — name + phone number.
+    """A landing-page waitlist signup with contact and demand signals.
 
     Not linked to ``users``: signups happen before onboarding. Deduplicated
     by canonical E.164 ``phone_number`` (``INSERT ON CONFLICT DO NOTHING``)
@@ -1333,6 +1333,7 @@ class WaitlistSignupRow(Base):
     name: Mapped[str] = mapped_column(Text, nullable=False)
     phone_number: Mapped[str] = mapped_column(Text, nullable=False)
     willingness_to_pay: Mapped[str | None] = mapped_column(Text, nullable=True)
+    preference: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True),
         nullable=False,
@@ -1344,6 +1345,10 @@ class WaitlistSignupRow(Base):
         CheckConstraint(
             "willingness_to_pay IN ('free', 'under_30', '30_70', '70_120', '120_plus')",
             name="waitlist_wtp_check",
+        ),
+        CheckConstraint(
+            "preference IN ('android', 'box', 'both')",
+            name="waitlist_preference_check",
         ),
     )
 

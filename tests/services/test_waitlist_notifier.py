@@ -67,6 +67,7 @@ async def test_notify_echo_guard_format():
     await notifier.notify(
         name="דני כהן",
         phone="+972501234567",
+        preference="box",
         children_count="3",
         children_ages="8, 11, 14",
     )
@@ -75,6 +76,7 @@ async def test_notify_echo_guard_format():
     assert "Echo Guard" in text
     assert "דני כהן" in text
     assert "+972501234567" in text
+    assert "העדפה: Guard Box" in text
     assert "ילדים: 3" in text
     assert "גילאים: 8, 11, 14" in text
     # WTP line must NOT appear in the Echo Guard format.
