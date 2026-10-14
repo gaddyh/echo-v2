@@ -28,6 +28,11 @@ _WTP_LABELS = {
     "70_120": "70–120 ₪",
     "120_plus": "120+ ₪",
 }
+_PREFERENCE_LABELS = {
+    "android": "Guard Android",
+    "box": "Guard Box",
+    "both": "שניהם",
+}
 
 
 @runtime_checkable
@@ -40,6 +45,7 @@ class WaitlistNotifier(Protocol):
         name: str,
         phone: str,
         willingness_to_pay: str | None = None,
+        preference: str | None = None,
         children_count: str | None = None,
         children_ages: str | None = None,
     ) -> None: ...
@@ -63,6 +69,7 @@ class Dialog360WaitlistNotifier:
         name: str,
         phone: str,
         willingness_to_pay: str | None = None,
+        preference: str | None = None,
         children_count: str | None = None,
         children_ages: str | None = None,
     ) -> None:
@@ -71,6 +78,7 @@ class Dialog360WaitlistNotifier:
                 "🛡️ Echo Guard — נרשם חדש לפיילוט\n"
                 f"שם: {name}\n"
                 f"טלפון: {phone}\n"
+                f"העדפה: {_PREFERENCE_LABELS.get(preference or '', '—')}\n"
                 f"ילדים: {children_count}\n"
                 f"גילאים: {children_ages or '—'}"
             )
@@ -84,9 +92,9 @@ class Dialog360WaitlistNotifier:
             )
         _logger.info(
             "waitlist: notifying owner %s about new signup %s (%s) "
-            "[children_count=%r children_ages=%r wtp=%r]",
+            "[preference=%r children_count=%r children_ages=%r wtp=%r]",
             self._owner_phone, name, phone,
-            children_count, children_ages, willingness_to_pay,
+            preference, children_count, children_ages, willingness_to_pay,
         )
         try:
             msg_id = await self._bot.send_text(self._owner_phone, text)

@@ -66,6 +66,9 @@ class WaitlistRequest(BaseModel):
     wtp: Literal["free", "under_30", "30_70", "70_120", "120_plus"] | None = Field(
         None, description="Optional willingness-to-pay signal"
     )
+    preference: Literal["android", "box", "both"] | None = Field(
+        None, description="Echo Guard connection preference"
+    )
     # Echo Guard pilot fields (optional — only sent from the /guard landing page).
     # Not yet persisted; used only to format the owner's WhatsApp notification.
     children_count: str | None = Field(
@@ -227,8 +230,8 @@ def build_landing_router(
 
         _logger.info(
             "waitlist: signup request ip=%s cf_ray=%s name=%r phone=%r wtp=%r "
-            "children_count=%r children_ages=%r",
-            client_ip, cf_ray, body.name, phone_e164, body.wtp,
+            "preference=%r children_count=%r children_ages=%r",
+            client_ip, cf_ray, body.name, phone_e164, body.wtp, body.preference,
             body.children_count, body.children_ages,
         )
         rate_limit_reason = _check_rate_limits(client_ip, phone_e164)
@@ -243,6 +246,7 @@ def build_landing_router(
             name=body.name,
             phone_number=phone_e164,
             willingness_to_pay=body.wtp,
+            preference=body.preference,
         )
         # Duplicates get the same response as new signups — the endpoint
         # must not leak whether a number is already on the list.
@@ -257,6 +261,7 @@ def build_landing_router(
                         name=body.name,
                         phone=phone_e164,
                         willingness_to_pay=body.wtp,
+                        preference=body.preference,
                         children_count=body.children_count,
                         children_ages=body.children_ages,
                     )

@@ -64,6 +64,37 @@ async def test_waitlist_signup_success():
     assert signups[0].phone_number == "+972546610653"
 
 
+async def test_waitlist_signup_persists_guard_preference():
+    app, repo = _make_app()
+    async with _client(app) as client:
+        resp = await client.post(
+            "/api/waitlist",
+            json={
+                "name": "דנה",
+                "phone": "0546610653",
+                "preference": "box",
+            },
+        )
+    assert resp.status_code == 200
+    signups = await repo.list_all()
+    assert signups[0].preference == "box"
+
+
+async def test_waitlist_signup_rejects_invalid_preference():
+    app, repo = _make_app()
+    async with _client(app) as client:
+        resp = await client.post(
+            "/api/waitlist",
+            json={
+                "name": "דנה",
+                "phone": "0546610653",
+                "preference": "read_all_messages",
+            },
+        )
+    assert resp.status_code == 422
+    assert await repo.list_all() == []
+
+
 async def test_waitlist_signup_normalizes_phone_variants():
     """Equivalent phone formats collapse to one row."""
     app, repo = _make_app()
@@ -241,7 +272,25 @@ async def test_guard_landing_page_remains_available():
     assert "כדאי לדעת לפני שהוא מסלים" in resp.text
     assert 'id="trust-title"' in resp.text
     assert "שקיפות מההתחלה" in resp.text
+    assert "אתם בשליטה" in resp.text
     assert "פחות רעש, יותר הקשר" in resp.text
+    assert 'class="alert-preview"' in resp.text
+    assert "זוהה לחץ חוזר בשיחה" in resp.text
+    assert "גם אחרי שהוא הביע חוסר רצון" in resp.text
+    assert "התראה ממוקדת, לא הצפה" in resp.text
+    assert "המחשה בלבד, המבוססת על תרחיש Gold" in resp.text
+    assert 'class="signup-disclosure"' in resp.text
+    assert "לא מציג להורה את כל השיחות" in resp.text
+    assert 'class="section connection-section' in resp.text
+    assert "50 המקומות הראשונים בלבד" not in resp.text
+    assert "preference: preference" in resp.text
+
+    html = resp.text
+    assert html.index('id="signals"') < html.index('id="how"')
+    assert html.index('id="how"') < html.index('id="connect"')
+    assert html.index('id="connect"') < html.index('id="join"')
+    assert html.index('id="join"') < html.index('id="trust-title"')
+    assert html.index('id="trust-title"') < html.index('class="fineprint"')
 
 
 async def test_landing_page_has_og_tags_and_scarcity():
@@ -320,7 +369,7 @@ async def test_notifier_fires_on_new_signup():
 
     class FakeNotifier:
         async def notify(self, *, name, phone, willingness_to_pay=None,
-                         children_count=None, children_ages=None):
+                         preference=None, children_count=None, children_ages=None):
             calls.append(
                 {"name": name, "phone": phone, "wtp": willingness_to_pay}
             )
@@ -349,7 +398,7 @@ async def test_notifier_silent_on_duplicate():
 
     class FakeNotifier:
         async def notify(self, *, name, phone, willingness_to_pay=None,
-                         children_count=None, children_ages=None):
+                         preference=None, children_count=None, children_ages=None):
             calls.append({"name": name})
 
     repo = InMemoryWaitlistRepository()
@@ -372,7 +421,7 @@ async def test_notifier_silent_on_duplicate():
 async def test_notifier_failure_does_not_break_signup():
     class BoomNotifier:
         async def notify(self, *, name, phone, willingness_to_pay=None,
-                         children_count=None, children_ages=None):
+                         preference=None, children_count=None, children_ages=None):
             raise RuntimeError("boom")
 
     repo = InMemoryWaitlistRepository()
@@ -395,9 +444,10 @@ async def test_notifier_receives_echo_guard_children_fields():
 
     class FakeNotifier:
         async def notify(self, *, name, phone, willingness_to_pay=None,
-                         children_count=None, children_ages=None):
+                         preference=None, children_count=None, children_ages=None):
             calls.append({
                 "name": name, "phone": phone, "wtp": willingness_to_pay,
+                "preference": preference,
                 "children_count": children_count,
                 "children_ages": children_ages,
             })
@@ -413,11 +463,13 @@ async def test_notifier_receives_echo_guard_children_fields():
             json={
                 "name": "דני כהן",
                 "phone": "0546610653",
+                "preference": "android",
                 "children_count": "3",
                 "children_ages": "8, 11, 14",
             },
         )
     assert resp.status_code == 200
     assert len(calls) == 1
+    assert calls[0]["preference"] == "android"
     assert calls[0]["children_count"] == "3"
     assert calls[0]["children_ages"] == "8, 11, 14"
