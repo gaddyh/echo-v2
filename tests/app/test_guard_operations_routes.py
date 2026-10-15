@@ -57,6 +57,7 @@ async def test_operations_route_requires_session_and_serializes_dashboard() -> N
     assert "Guard operations" in page.text
     assert "Current state" in page.text
     assert "Decision transitions" in page.text
+    assert "Relevant messages for this transition" in page.text
     assert "Complete analysis log" in page.text
 
 

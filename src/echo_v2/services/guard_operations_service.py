@@ -309,6 +309,8 @@ class GuardOperationsService:
                         "categories": list(analysis["categories"]),
                         "first_reason": analysis["reason"],
                         "latest_reason": analysis["reason"],
+                        "evidence_message_count": len(analysis["evidence_messages"]),
+                        "evidence_messages": list(analysis["evidence_messages"]),
                         "evidence_analysis_count": (
                             1 if analysis["evidence_message_ids"] else 0
                         ),
@@ -321,6 +323,13 @@ class GuardOperationsService:
             group["analysis_count"] += 1
             group["analysis_ids"].append(analysis["id"])
             group["latest_reason"] = analysis["reason"]
+            known_message_ids = {message["id"] for message in group["evidence_messages"]}
+            group["evidence_messages"].extend(
+                message
+                for message in analysis["evidence_messages"]
+                if message["id"] not in known_message_ids
+            )
+            group["evidence_message_count"] = len(group["evidence_messages"])
             group["evidence_analysis_count"] += (
                 1 if analysis["evidence_message_ids"] else 0
             )
