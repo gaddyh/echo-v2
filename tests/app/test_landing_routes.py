@@ -33,6 +33,7 @@ async def test_landing_page_serves_echo_guard_kids_html():
     assert resp.status_code == 200
     assert "text/html" in resp.headers.get("content-type", "")
     assert "Echo Guard" in resp.text
+    assert '<span dir="ltr">Echo <span style="color:#7558e9">Guard</span></span>' in resp.text
     assert "לפעמים טוב" in resp.text
     assert 'id="signup"' in resp.text
     assert "שמירת טיוטת מייל" in resp.text
