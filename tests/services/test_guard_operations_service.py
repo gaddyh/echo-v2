@@ -150,6 +150,8 @@ async def test_dashboard_groups_decisions_and_uses_latest_analysis_for_policy() 
         "concerning", "watch", "concerning"
     ]
     assert [group["analysis_count"] for group in chat["decision_groups"]] == [1, 1, 1]
+    assert chat["decision_groups"][0]["evidence_message_count"] == 1
+    assert chat["decision_groups"][0]["evidence_messages"][0]["text"] == "<evidence>"
     assert chat["latest_analysis"]["target_version"] == 3
     assert chat["latest_policy"] is None
 
