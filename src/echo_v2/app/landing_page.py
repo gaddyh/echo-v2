@@ -1,9 +1,10 @@
 """HTML for the public landing page.
 
-The editable landing-page source lives in the repository root at
-``landing4.html``. It is loaded here so the FastAPI route can expose the same
-page through the package API while retaining the no-build-step HTML/CSS/JS.
-The page contains a waitlist signup form that POSTs to ``/api/waitlist``.
+The editable landing-page source lives beside this module at
+``echo-guard-kids-landing.html``. It is loaded here so the FastAPI route can
+expose the same page through the package API while retaining the no-build-step
+HTML/CSS/JS.
+The page contains the Echo Guard concept signup flow.
 """
 
 from __future__ import annotations
@@ -911,7 +912,7 @@ function showError(msg) {
 </html>
 """
 
-# Keep the editable design in the repository root while exposing it through
+# Keep the editable design beside the package module while exposing it through
 # the package API used by the FastAPI route.
-_LANDING4_PATH = Path(__file__).resolve().parents[3] / "landing4.html"
-LANDING_PAGE = _LANDING4_PATH.read_text(encoding="utf-8")
+_LANDING_PAGE_PATH = Path(__file__).with_name("echo-guard-kids-landing.html")
+LANDING_PAGE = _LANDING_PAGE_PATH.read_text(encoding="utf-8")
