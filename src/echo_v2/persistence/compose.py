@@ -29,6 +29,9 @@ from echo_v2.persistence.green_instance_pool import (
     PostgresGreenInstancePoolRepository,
 )
 from echo_v2.persistence.guard_eval import PostgresGuardEvalRepository
+from echo_v2.persistence.guard_operations import (
+    PostgresGuardAnalysisTelemetryRepository,
+)
 from echo_v2.persistence.postgres_chat import (
     PostgresAnalysisCommitRepository,
     PostgresChatStateRepository,
@@ -95,6 +98,7 @@ class PostgresRepos:
     guard_chat_state: PostgresGuardChatStateRepository
     guard_analysis_results: PostgresGuardAnalysisRepository
     guard_analysis_commit: PostgresGuardAnalysisCommitRepository
+    guard_analysis_telemetry: PostgresGuardAnalysisTelemetryRepository
     guard_alerts: PostgresGuardAlertRepository
     guard_feedback: PostgresGuardFeedbackRepository
     guard_eval: PostgresGuardEvalRepository
@@ -143,6 +147,7 @@ def build_postgres_repos(settings: DBSettings) -> PostgresRepos:
     guard_chat_state = PostgresGuardChatStateRepository(factory)
     guard_analysis_results = PostgresGuardAnalysisRepository(factory)
     guard_analysis_commit = PostgresGuardAnalysisCommitRepository(factory)
+    guard_analysis_telemetry = PostgresGuardAnalysisTelemetryRepository(factory)
     guard_alerts = PostgresGuardAlertRepository(factory)
     guard_feedback = PostgresGuardFeedbackRepository(factory)
     guard_eval = PostgresGuardEvalRepository(factory)
@@ -178,6 +183,7 @@ def build_postgres_repos(settings: DBSettings) -> PostgresRepos:
         guard_chat_state=guard_chat_state,
         guard_analysis_results=guard_analysis_results,
         guard_analysis_commit=guard_analysis_commit,
+        guard_analysis_telemetry=guard_analysis_telemetry,
         guard_alerts=guard_alerts,
         guard_feedback=guard_feedback,
         guard_eval=guard_eval,

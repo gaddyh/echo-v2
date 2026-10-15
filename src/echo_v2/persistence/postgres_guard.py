@@ -174,6 +174,16 @@ class PostgresGuardChatStateRepository:
             ).order_by(GuardChatStateRow.next_analysis_at).limit(limit)
             return [self._to_domain(row) for row in (await session.execute(stmt)).scalars().all()]
 
+    async def list_for_children(self, child_user_ids: list[str]) -> list[GuardChatState]:
+        if not child_user_ids:
+            return []
+        async with self._session_factory() as session:
+            stmt = select(GuardChatStateRow).where(
+                GuardChatStateRow.child_user_id.in_(child_user_ids)
+            ).order_by(GuardChatStateRow.last_message_at.desc())
+            rows = (await session.execute(stmt)).scalars().all()
+            return [self._to_domain(row) for row in rows]
+
     async def mark_processed(
         self, child_user_id: str, chat_id: str, target_version: int, *,
         decision: GuardDecision, analyzed_at: datetime,
@@ -271,6 +281,20 @@ class PostgresGuardAnalysisRepository:
             stmt = select(GuardAnalysisResultRow).where(
                 GuardAnalysisResultRow.child_user_id.in_(child_user_ids)
             ).order_by(GuardAnalysisResultRow.created_at.desc()).limit(limit)
+            rows = (await session.execute(stmt)).scalars().all()
+            return [self._to_domain(row) for row in rows]
+
+    async def list_for_chat(
+        self, *, child_user_id: str, chat_id: str, limit: int = 500
+    ) -> list[GuardAnalysisRecord]:
+        async with self._session_factory() as session:
+            stmt = select(GuardAnalysisResultRow).where(
+                GuardAnalysisResultRow.child_user_id == child_user_id,
+                GuardAnalysisResultRow.chat_id == chat_id,
+            ).order_by(
+                GuardAnalysisResultRow.target_version,
+                GuardAnalysisResultRow.created_at,
+            ).limit(limit)
             rows = (await session.execute(stmt)).scalars().all()
             return [self._to_domain(row) for row in rows]
 

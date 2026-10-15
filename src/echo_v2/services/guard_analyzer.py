@@ -47,6 +47,7 @@ __all__ = [
     "GuardDecision",
     "GuardLLMOutput",
     "GuardMessage",
+    "GuardParticipantImpact",
     "GuardSignal",
     "LLMGuardAnalyzer",
 ]
@@ -54,15 +55,26 @@ __all__ = [
 _logger = logging.getLogger("echo_v2.services.guard_analyzer")
 
 # Bump when the prompt or output contract changes.
-GUARD_PROMPT_VERSION = "v0.6-child-exploitation"
+GUARD_PROMPT_VERSION = "v0.7-participant-impact"
 
 # Bump when the analysis pipeline changes.
-GUARD_ANALYZER_VERSION = "2026-10-01.0"
+GUARD_ANALYZER_VERSION = "2026-10-15.1"
 
 Decision = GuardDecision
 
 _SIGNAL_NAMES = ", ".join(signal.value for signal in GuardSignal)
 _CATEGORY_NAMES = ", ".join(category.value for category in GuardCategory)
+
+
+class GuardParticipantImpact(BaseModel):
+    """Explicit participant relationship, when the conversation supports one."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    actor: StrictStr
+    target: StrictStr
+    child_position: StrictStr
+    evidence_message_ids: list[StrictStr] = Field(default_factory=list)
 
 
 class GuardLLMOutput(BaseModel):
@@ -75,6 +87,7 @@ class GuardLLMOutput(BaseModel):
     evidence_message_ids: list[StrictStr]
     confidence: float = Field(ge=0.0, le=1.0)
     reason: StrictStr
+    participant_impact: list[GuardParticipantImpact] = Field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -118,6 +131,7 @@ class GuardAnalysis:
     evidence_message_ids: tuple[str, ...] = ()
     confidence: float = 0.0
     reason: str = ""
+    participant_impact: tuple[dict[str, object], ...] = ()
     model: str = ""
     prompt_version: str = ""
     analyzer_version: str = ""
@@ -162,6 +176,11 @@ Use only IDs present in the conversation; use an empty list when there is \
 no meaningful concern.
 - "reason": One short sentence (in Hebrew or English) explaining what \
 is happening and what evidence supports the detected signals.
+- "participant_impact": For group conversations only, optionally identify an \
+  explicit actor and target using canonical participant roles such as "other", \
+  "other_2", or "child", the child's position ("victim", "actor", \
+  "witness", or "unknown"), and supporting message IDs. Use an empty list \
+  when the relationship is not explicit.
 
 Rules:
 - Analyze this input as a realtime snapshot of what is supported by the \
@@ -192,7 +211,8 @@ sharing-threat signals when supported.
 Output format (JSON only):
 {{"signals": ["..."], "categories": ["..."], \
 "evidence_message_ids": ["..."], \
-"confidence": <0.0-1.0>, "reason": "<one short sentence>"}}
+"confidence": <0.0-1.0>, "reason": "<one short sentence>", \
+"participant_impact": []}}
 """
 
 
@@ -355,12 +375,30 @@ def _analysis_from_output(
             "Guard output cites unknown evidence message IDs: "
             + ", ".join(sorted(unknown_ids))
         )
+    participant_impact: list[dict[str, object]] = []
+    for item in output.participant_impact:
+        impact_ids = tuple(item.evidence_message_ids)
+        unknown_impact_ids = set(impact_ids) - set(valid_message_ids)
+        if unknown_impact_ids:
+            raise AnalysisError(
+                "Guard participant impact cites unknown message IDs: "
+                + ", ".join(sorted(unknown_impact_ids))
+            )
+        participant_impact.append(
+            {
+                "actor": item.actor,
+                "target": item.target,
+                "child_position": item.child_position,
+                "evidence_message_ids": list(impact_ids),
+            }
+        )
     return GuardAnalysis(
         signals=tuple(dict.fromkeys(signal.value for signal in output.signals)),
         categories=tuple(dict.fromkeys(category.value for category in output.categories)),
         evidence_message_ids=evidence_ids,
         confidence=output.confidence,
         reason=output.reason,
+        participant_impact=tuple(participant_impact),
         model=model,
         prompt_version=prompt_version,
         analyzer_version=GUARD_ANALYZER_VERSION,

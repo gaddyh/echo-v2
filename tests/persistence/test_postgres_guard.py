@@ -9,7 +9,14 @@ import pytest
 
 from echo_v2.domain.chat import Message
 from echo_v2.domain.guard import GuardAnalysisRecord
+from echo_v2.domain.guard_operations import (
+    GuardAnalysisAttempt,
+    GuardAnalysisAttemptStatus,
+)
 from echo_v2.persistence.chat_repositories import AnalysisTarget
+from echo_v2.persistence.guard_operations import (
+    PostgresGuardAnalysisTelemetryRepository,
+)
 from echo_v2.persistence.postgres_chat import PostgresIngestionRepository
 from echo_v2.persistence.postgres_guard import (
     PostgresGuardAnalysisCommitRepository,
@@ -67,6 +74,7 @@ async def test_guard_link_and_state_repositories(session_factory, clean_db) -> N
     assert current is not None
     assert current.activity_version == 2
     assert current.next_analysis_at == now + timedelta(seconds=120)
+    assert (await states.list_for_children([child]))[0].chat_id == "group@g.us"
 
 
 async def test_guard_ingestion_and_version_fenced_commit(session_factory, clean_db) -> None:
@@ -140,6 +148,10 @@ async def test_guard_observation_replay_and_due_state(session_factory, clean_db)
     )
     result_id = await analysis_repo.save(record)
     assert result_id
+    listed = await analysis_repo.list_for_chat(
+        child_user_id=child, chat_id="chat@c.us"
+    )
+    assert listed[0].id == result_id
     replay = await analysis_repo.list_for_replay(
         child_user_id=child, chat_id="chat@c.us", since=now - timedelta(hours=1),
         before_version=2,
@@ -150,3 +162,33 @@ async def test_guard_observation_replay_and_due_state(session_factory, clean_db)
         child, "chat@c.us", 1, decision=GuardDecision.WATCH, analyzed_at=now
     )
     assert await state_repo.list_due(now) == []
+
+
+async def test_guard_analysis_telemetry_lifecycle(session_factory, clean_db) -> None:
+    child = await insert_user(session_factory, "+972546610657")
+    telemetry = PostgresGuardAnalysisTelemetryRepository(session_factory)
+    started = datetime.now(timezone.utc)
+    attempt = GuardAnalysisAttempt(
+        id=str(uuid.uuid4()),
+        child_user_id=child,
+        chat_id="chat@g.us",
+        target_version=3,
+        status=GuardAnalysisAttemptStatus.STARTED,
+        started_at=started,
+        scheduled_for=started,
+        pending_since=started - timedelta(seconds=10),
+    )
+    await telemetry.start(attempt)
+    await telemetry.finish(
+        attempt.id,
+        status=GuardAnalysisAttemptStatus.FAILED,
+        finished_at=started + timedelta(seconds=2),
+        error_code="AnalysisError",
+    )
+
+    rows = await telemetry.list_for_chat(child_user_id=child, chat_id="chat@g.us")
+
+    assert len(rows) == 1
+    assert rows[0].status is GuardAnalysisAttemptStatus.FAILED
+    assert rows[0].error_code == "AnalysisError"
+    assert rows[0].target_version == 3

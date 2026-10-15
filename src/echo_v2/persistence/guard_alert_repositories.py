@@ -173,6 +173,28 @@ class PostgresGuardAlertRepository(GuardAlertRepository):
                 .values(status=status)
             )
 
+    async def list_evaluations_for_chat(
+        self, *, child_user_id: str, chat_id: str, limit: int = 500
+    ) -> list[GuardAlertEvaluation]:
+        async with self._session() as session:
+            stmt = select(GuardAlertEvaluationRow).where(
+                GuardAlertEvaluationRow.child_user_id == child_user_id,
+                GuardAlertEvaluationRow.chat_id == chat_id,
+            ).order_by(GuardAlertEvaluationRow.evaluated_at).limit(limit)
+            rows = (await session.execute(stmt)).scalars().all()
+            return [_evaluation(row) for row in rows]
+
+    async def list_alerts_for_chat(
+        self, *, child_user_id: str, chat_id: str, limit: int = 100
+    ) -> list[GuardAlert]:
+        async with self._session() as session:
+            stmt = select(GuardAlertRow).where(
+                GuardAlertRow.child_user_id == child_user_id,
+                GuardAlertRow.chat_id == chat_id,
+            ).order_by(GuardAlertRow.created_at).limit(limit)
+            rows = (await session.execute(stmt)).scalars().all()
+            return [_alert(row) for row in rows]
+
     async def save_alert(self, alert: GuardAlert) -> bool:
         async with self._session() as session:
             stmt = (
@@ -260,6 +282,26 @@ class InMemoryGuardAlertRepository:
         alert = self.alerts.get(alert_id)
         if alert is not None:
             self.alerts[alert_id] = replace(alert, status=GuardAlertStatus(status))
+
+    async def list_evaluations_for_chat(
+        self, *, child_user_id: str, chat_id: str, limit: int = 500
+    ) -> list[GuardAlertEvaluation]:
+        rows = [
+            evaluation for evaluation in self.evaluations.values()
+            if evaluation.child_user_id == child_user_id and evaluation.chat_id == chat_id
+        ]
+        rows.sort(key=lambda item: item.evaluated_at)
+        return rows[-limit:]
+
+    async def list_alerts_for_chat(
+        self, *, child_user_id: str, chat_id: str, limit: int = 100
+    ) -> list[GuardAlert]:
+        rows = [
+            alert for alert in self.alerts.values()
+            if alert.child_user_id == child_user_id and alert.chat_id == chat_id
+        ]
+        rows.sort(key=lambda item: item.created_at)
+        return rows[-limit:]
 
 
 class _SessionContext:

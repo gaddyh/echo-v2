@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -9,10 +10,14 @@ import pytest
 
 from echo_v2.domain.chat import Message
 from echo_v2.domain.guard import GuardAnalysisRecord, GuardChatState
+from echo_v2.domain.guard_operations import GuardAnalysisAttemptStatus
 from echo_v2.persistence.chat_repositories import (
     InMemoryChatStateRepository,
     InMemoryIngestionRepository,
     InMemoryMessageRepository,
+)
+from echo_v2.persistence.guard_operations import (
+    InMemoryGuardAnalysisTelemetryRepository,
 )
 from echo_v2.persistence.guard_repositories import (
     InMemoryGuardAnalysisCommitRepository,
@@ -232,15 +237,35 @@ async def test_guard_worker_commits_due_state() -> None:
     processor = GuardAnalysisProcessor(
         message_repo=messages, analyzer=FakeAnalyzer(), analysis_repo=analyses,
     )
+    telemetry = InMemoryGuardAnalysisTelemetryRepository()
+
+    class FakeAlerts:
+        def __init__(self) -> None:
+            self.calls = []
+
+        async def evaluate_committed(self, **kwargs):
+            self.calls.append(kwargs)
+
+        async def reconcile_pending(self, *, limit: int) -> int:
+            return 0
+
+    alerts = FakeAlerts()
     worker = GuardAnalysisWorker(
         state_repo=state, processor=processor,
         commit_repo=InMemoryGuardAnalysisCommitRepository(state, analyses),
+        alert_processor=alerts,
+        telemetry=telemetry,
     )
     assert await worker.run_once()
     current = await state.get("child", "chat@c.us")
     assert current is not None
     assert current.last_analyzed_version == 1
     assert current.next_analysis_at is None
+    attempts = await telemetry.list_for_chat(child_user_id="child", chat_id="chat@c.us")
+    assert len(attempts) == 1
+    assert attempts[0].status.value == "committed"
+    assert attempts[0].result_id is not None
+    assert len(alerts.calls) == 1
 
 
 async def test_guard_worker_returns_false_without_due_state() -> None:
@@ -258,6 +283,11 @@ async def test_guard_worker_returns_false_without_due_state() -> None:
         ),
     )
     assert await worker.run_once() is False
+    await worker._start_attempt("unused", GuardChatState(
+        child_user_id="child", chat_id="unused", activity_version=1,
+        last_message_at=BASE,
+    ), BASE)
+    await worker._finish_attempt("unused", GuardAnalysisAttemptStatus.STARTED)
 
 
 async def test_guard_in_memory_repositories_cover_missing_and_duplicate_paths() -> None:
@@ -351,11 +381,103 @@ async def test_guard_worker_drains_excluded_and_survives_processor_error() -> No
         next_analysis_at=BASE - timedelta(days=1), pending_since=BASE,
         chat_name=None, is_group=False,
     )
+    telemetry = InMemoryGuardAnalysisTelemetryRepository()
     worker = GuardAnalysisWorker(
         state_repo=state, processor=FailingProcessor(),
         commit_repo=InMemoryGuardAnalysisCommitRepository(
             state, InMemoryGuardAnalysisRepository()
         ),
+        telemetry=telemetry,
+    )
+    assert await worker.run_once()
+    attempts = await telemetry.list_for_chat(child_user_id="child", chat_id="failing")
+    assert attempts[0].status.value == "failed"
+    assert attempts[0].error_code == "RuntimeError"
+
+
+async def test_guard_worker_reraises_cancellation() -> None:
+    from echo_v2.services.guard_analysis_worker import GuardAnalysisWorker
+
+    state = InMemoryGuardChatStateRepository()
+    await state.upsert_on_message(
+        child_user_id="child", chat_id="cancelled", observed_at=BASE,
+        next_analysis_at=BASE - timedelta(days=1), pending_since=BASE,
+        chat_name=None, is_group=False,
+    )
+
+    class CancelledProcessor:
+        async def process(self, child_user_id, chat_id, target_version):
+            raise asyncio.CancelledError
+
+    worker = GuardAnalysisWorker(
+        state_repo=state,
+        processor=CancelledProcessor(),
+        commit_repo=object(),
+    )
+    with pytest.raises(asyncio.CancelledError):
+        await worker.run_once()
+
+
+async def test_guard_worker_records_stale_attempt() -> None:
+    from echo_v2.services.guard_analysis_worker import GuardAnalysisWorker
+
+    state = InMemoryGuardChatStateRepository()
+    await state.upsert_on_message(
+        child_user_id="child", chat_id="stale", observed_at=BASE,
+        next_analysis_at=BASE - timedelta(days=1), pending_since=BASE,
+        chat_name=None, is_group=False,
+    )
+
+    class Processor:
+        async def process(self, child_user_id, chat_id, target_version):
+            return type("Prepared", (), {"record": GuardAnalysisRecord(
+                child_user_id=child_user_id, connection_id="conn", chat_id=chat_id,
+                target_version=target_version, signals=(), categories=(), confidence=1,
+                reason="none", evidence_message_ids=(), decision=GuardDecision.NONE,
+                model="m", prompt_version="p", analyzer_version="a", taxonomy_version="t",
+            )})()
+
+    class StaleCommit:
+        async def commit_if_current(self, **kwargs):
+            return "stale", None
+
+    telemetry = InMemoryGuardAnalysisTelemetryRepository()
+    worker = GuardAnalysisWorker(
+        state_repo=state, processor=Processor(), commit_repo=StaleCommit(), telemetry=telemetry
+    )
+    assert await worker.run_once()
+    attempts = await telemetry.list_for_chat(child_user_id="child", chat_id="stale")
+    assert attempts[0].status.value == "stale"
+
+
+async def test_guard_worker_continues_when_telemetry_fails() -> None:
+    from echo_v2.services.guard_analysis_worker import GuardAnalysisWorker
+
+    state = InMemoryGuardChatStateRepository()
+    await state.upsert_on_message(
+        child_user_id="child", chat_id="telemetry", observed_at=BASE,
+        next_analysis_at=BASE - timedelta(days=1), pending_since=BASE,
+        chat_name=None, is_group=False,
+    )
+
+    class FailingTelemetry:
+        async def start(self, attempt):
+            raise RuntimeError("telemetry unavailable")
+
+        async def finish(self, *args, **kwargs):
+            raise RuntimeError("telemetry unavailable")
+
+    class FailingProcessor:
+        async def process(self, child_user_id, chat_id, target_version):
+            raise RuntimeError("analysis unavailable")
+
+    worker = GuardAnalysisWorker(
+        state_repo=state,
+        processor=FailingProcessor(),
+        commit_repo=InMemoryGuardAnalysisCommitRepository(
+            state, InMemoryGuardAnalysisRepository()
+        ),
+        telemetry=FailingTelemetry(),
     )
     assert await worker.run_once()
 

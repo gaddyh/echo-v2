@@ -15,6 +15,7 @@ from echo_v2.services.guard_analyzer import (
     GuardMessage,
     GuardSignal,
     LLMGuardAnalyzer,
+    _analysis_from_output,
     _parse_llm_output,
 )
 
@@ -83,6 +84,40 @@ def test_parse_guard_output_deduplicates_signals_and_categories() -> None:
     assert result.signals == ("repeated_targeting",)
     assert result.categories == ("bullying",)
     assert result.evidence_message_ids == ()
+
+
+def test_parse_guard_output_preserves_participant_impact() -> None:
+    result = _analysis_from_output(
+        GuardLLMOutput.model_validate_json(
+            '{"signals":["group_pile_on"],"categories":["bullying"],'
+            '"evidence_message_ids":["m1"],"confidence":0.9,"reason":"pattern",'
+            '"participant_impact":[{"actor":"other","target":"child",'
+            '"child_position":"victim","evidence_message_ids":["m1"]}]}'
+        ),
+        valid_message_ids=("m1",),
+    )
+
+    assert result.participant_impact == (
+        {
+            "actor": "other",
+            "target": "child",
+            "child_position": "victim",
+            "evidence_message_ids": ["m1"],
+        },
+    )
+
+
+def test_parse_guard_output_rejects_unknown_participant_impact_evidence() -> None:
+    with pytest.raises(AnalysisError, match="participant impact"):
+        _analysis_from_output(
+            GuardLLMOutput.model_validate_json(
+                '{"signals":["group_pile_on"],"categories":["bullying"],'
+                '"evidence_message_ids":["m1"],"confidence":0.9,"reason":"pattern",'
+                '"participant_impact":[{"actor":"other","target":"child",'
+                '"child_position":"victim","evidence_message_ids":["unknown"]}]}'
+            ),
+            valid_message_ids=("m1",),
+        )
 
 
 @pytest.mark.asyncio

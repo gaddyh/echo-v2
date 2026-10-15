@@ -126,6 +126,12 @@ async def test_guard_alert_and_action_commit_atomically(session_factory, clean_d
                 alert_id=alert.id,
             )
         ) is True
+        assert len(await uow.guard_alerts.list_alerts_for_chat(
+            child_user_id=child, chat_id="chat@c.us"
+        )) == 1
+        assert len(await uow.guard_alerts.list_evaluations_for_chat(
+            child_user_id=child, chat_id="chat@c.us"
+        )) == 1
 
     async with session_factory() as session:
         row = (

@@ -111,6 +111,7 @@ class GuardAnalysisProcessor:
                 ],
                 "cumulative_signals": list(state.active_signals),
                 "cumulative_categories": list(state.active_categories),
+                "participant_impact": list(current.participant_impact),
             },
         )
         return PreparedGuardAnalysis(record=record, conversation=conversation)
