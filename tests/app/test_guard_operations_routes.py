@@ -55,7 +55,9 @@ async def test_operations_route_requires_session_and_serializes_dashboard() -> N
     assert response.headers["cache-control"] == "no-store"
     assert page.status_code == 200
     assert "Guard operations" in page.text
-    assert "participant" in page.text
+    assert "Current state" in page.text
+    assert "Decision transitions" in page.text
+    assert "Complete analysis log" in page.text
 
 
 async def test_operations_token_exchange_rejects_expired_token() -> None:
