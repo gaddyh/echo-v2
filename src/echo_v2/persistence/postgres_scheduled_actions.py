@@ -212,6 +212,13 @@ class PostgresScheduledActionRepository(ScheduledActionRepository):
             error=error,
         )
 
+    async def mark_cancelled(self, action_id: str, reason: str) -> None:
+        await self._mark_terminal(
+            action_id,
+            status=ScheduledActionStatus.CANCELLED,
+            error=reason,
+        )
+
     async def cancel(self, action_id: str, user_id: str) -> bool:
         async with self._session() as session:
             # Conditional update: only cancels if PENDING + owned by user.

@@ -16,6 +16,7 @@ from echo_v2.domain.guard import (
     GuardianChildLinkStatus,
 )
 from echo_v2.persistence.orm import (
+    GuardAlertEvaluationRow,
     GuardAnalysisResultRow,
     GuardChatStateRow,
     GuardianChildLinkRow,
@@ -45,6 +46,19 @@ class PostgresGuardianChildLinkRepository:
                 )
                 .order_by(GuardianChildLinkRow.updated_at.desc())
                 .limit(1)
+            )
+            row = (await session.execute(stmt)).scalar_one_or_none()
+            return self._to_domain(row) if row else None
+
+    async def get_active_for_pair(
+        self, *, guardian_user_id: str, child_user_id: str
+    ) -> GuardianChildLink | None:
+        async with self._session_factory() as session:
+            stmt = select(GuardianChildLinkRow).where(
+                GuardianChildLinkRow.guardian_user_id == guardian_user_id,
+                GuardianChildLinkRow.child_user_id == child_user_id,
+                GuardianChildLinkRow.status == GuardianChildLinkStatus.ACTIVE.value,
+                GuardianChildLinkRow.safety_enabled_at.is_not(None),
             )
             row = (await session.execute(stmt)).scalar_one_or_none()
             return self._to_domain(row) if row else None
@@ -227,6 +241,26 @@ class PostgresGuardAnalysisRepository:
             result_id = str((await session.execute(stmt)).scalar_one())
             await session.commit()
             return result_id
+
+    async def list_needing_alert_evaluation(
+        self, *, since: datetime, limit: int = 20
+    ) -> list[GuardAnalysisRecord]:
+        async with self._session_factory() as session:
+            stmt = (
+                select(GuardAnalysisResultRow)
+                .outerjoin(
+                    GuardAlertEvaluationRow,
+                    GuardAlertEvaluationRow.analysis_result_id == GuardAnalysisResultRow.id,
+                )
+                .where(
+                    GuardAnalysisResultRow.created_at >= since,
+                    GuardAlertEvaluationRow.analysis_result_id.is_(None),
+                )
+                .order_by(GuardAnalysisResultRow.created_at)
+                .limit(limit)
+            )
+            rows = (await session.execute(stmt)).scalars().all()
+            return [self._to_domain(row) for row in rows]
 
     async def list_for_children(
         self, *, child_user_ids: list[str], limit: int = 500

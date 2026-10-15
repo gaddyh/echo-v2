@@ -307,6 +307,9 @@ def create_app() -> FastAPI:
     guard_shadow_enabled = os.environ.get("GUARD_SHADOW_ENABLED", "false").lower() in (
         "1", "true", "yes"
     )
+    guard_alerts_enabled = os.environ.get("GUARD_ALERTS_ENABLED", "true").lower() in (
+        "1", "true", "yes"
+    )
     ingestion_service = ChatIngestionService(
         repos.ingestion,
         quiet_period_seconds=float(os.environ.get("CHAT_QUIET_PERIOD_SECONDS", "300")),
@@ -465,6 +468,27 @@ def create_app() -> FastAPI:
         repos.waiting_list_sessions,
         ttl_hours=int(os.environ.get("ECHO_WAITING_LIST_TOKEN_TTL_HOURS", "48")),
     )
+
+    from echo_v2.services.guard_alert_service import GuardAlertService
+
+    guard_alert_service = GuardAlertService(
+        links=repos.guardian_child_links,
+        users=user_repo,
+        token_service=token_service,
+        unit_of_work=repos.unit_of_work,
+        alerts=repos.guard_alerts,
+        analyses=repos.guard_analysis_results,
+        base_url=webhook_base_url,
+        enabled=guard_alerts_enabled,
+        template_name=os.environ.get("GUARD_ALERT_TEMPLATE_NAME", "guard_alert_v1"),
+        template_language=os.environ.get("GUARD_ALERT_TEMPLATE_LANGUAGE", "he"),
+        quiet_period_seconds=int(os.environ.get("GUARD_ALERT_EPISODE_QUIET_SECONDS", "1800")),
+        notify_ttl_seconds=int(os.environ.get("GUARD_ALERT_NOTIFY_TTL_SECONDS", "3600")),
+        urgent_ttl_seconds=int(os.environ.get("GUARD_ALERT_URGENT_TTL_SECONDS", "900")),
+    )
+    guard_worker.set_alert_processor(guard_alert_service)
+    scheduling_service.set_guard_send_validator(guard_alert_service.validate_before_send)
+
     # Shared name resolver — used by the query service (for current_views)
     # and by the action service (for contact creation fallback).
     name_resolver = ContactNameResolver(

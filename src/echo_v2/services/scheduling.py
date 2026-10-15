@@ -99,6 +99,7 @@ class SchedulingService:
         event_sink: EventSink | None = None,
         bot_channel: BotChannel | None = None,
         send_validator: Any | None = None,
+        guard_send_validator: Any | None = None,
         baileys_event_repo: Any | None = None,
     ) -> None:
         self._action_repo = action_repo
@@ -108,7 +109,11 @@ class SchedulingService:
         self._event_sink = event_sink or NO_OP_SINK
         self._bot_channel = bot_channel
         self._send_validator = send_validator
+        self._guard_send_validator = guard_send_validator
         self._baileys_event_repo = baileys_event_repo
+
+    def set_guard_send_validator(self, validator: Any) -> None:
+        self._guard_send_validator = validator
 
     async def create(
         self,
@@ -296,6 +301,16 @@ class SchedulingService:
             error = f"action {action.id} payload missing chat_id"
             await self._action_repo.mark_failed(action.id, error)
             raise PermanentError(error)
+
+        if (
+            action.payload.get("kind") == "guard_alert"
+            and self._guard_send_validator is not None
+        ):
+            allowed = await self._guard_send_validator(action.payload)
+            if not allowed:
+                reason = "Guard alert authorization or freshness check failed"
+                await self._action_repo.mark_cancelled(action.id, reason)
+                return "guard_alert_suppressed"
 
         template = action.payload.get("template")
         if template is not None:

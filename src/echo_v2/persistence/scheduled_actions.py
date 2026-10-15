@@ -84,6 +84,9 @@ class ScheduledActionRepository:
     async def mark_indeterminate(self, action_id: str, error: str) -> None:
         """Mark an action as INDETERMINATE (send outcome unknown)."""
 
+    async def mark_cancelled(self, action_id: str, reason: str) -> None:
+        """Cancel a claimed action before its external side effect occurs."""
+
     async def cancel(self, action_id: str, user_id: str) -> bool:
         """Cancel a PENDING action. Returns ``True`` if cancelled, ``False``
         if not found, not owned by ``user_id``, or not in PENDING status."""
@@ -178,6 +181,13 @@ class InMemoryScheduledActionRepository(ScheduledActionRepository):
             action_id,
             status=ScheduledActionStatus.INDETERMINATE,
             error=error,
+        )
+
+    async def mark_cancelled(self, action_id: str, reason: str) -> None:
+        self._update_terminal(
+            action_id,
+            status=ScheduledActionStatus.CANCELLED,
+            error=reason,
         )
 
     async def cancel(self, action_id: str, user_id: str) -> bool:

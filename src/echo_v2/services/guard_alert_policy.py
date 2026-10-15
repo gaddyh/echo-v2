@@ -21,6 +21,8 @@ from echo_v2.services.guard_taxonomy import (
     GuardSignal,
 )
 
+GUARD_ALERT_POLICY_VERSION = "2026-10-15.1"
+
 __all__ = [
     "AlertKind",
     "AlertOutcome",
@@ -56,6 +58,7 @@ class AlertOutcome:
     event: bool
     kind: AlertKind
     reason: str = ""
+    threshold_family: str | None = None
 
 
 @dataclass(frozen=True)
@@ -121,6 +124,10 @@ class DefaultAlertPolicy:
             categories=analysis.categories,
             signal_state=signal_state,
         )
+        threshold_family = self._threshold_family(
+            analysis=analysis,
+            signal_state=signal_state,
+        )
         if decision is GuardDecision.URGENT:
             kind = AlertKind.URGENT
             reason = "Immediate or escalating high-risk evidence."
@@ -145,7 +152,44 @@ class DefaultAlertPolicy:
             event=event,
             kind=kind,
             reason=reason,
+            threshold_family=threshold_family if kind is not AlertKind.NONE else None,
         )
+
+    @staticmethod
+    def _threshold_family(
+        *, analysis: GuardAnalysis, signal_state: GuardSignalState | None
+    ) -> str | None:
+        signals = {
+            GuardSignal(signal)
+            for signal in (signal_state.active_signals if signal_state else analysis.signals)
+        }
+        categories = {
+            GuardCategory(category)
+            for category in (
+                signal_state.active_categories if signal_state else analysis.categories
+            )
+        }
+        if GuardSignal.SELF_HARM_EXPRESSION in signals:
+            return "urgent_self_harm"
+        if GuardSignal.BLACKMAIL_OR_EXTORTION in signals:
+            return "urgent_blackmail"
+        if GuardCategory.SUSPICIOUS_CONTACT in categories and signals & {
+            GuardSignal.LOCATION_REQUEST,
+            GuardSignal.MEETING_REQUEST,
+        }:
+            return "suspicious_contact_location_or_meeting"
+        if GuardCategory.BULLYING in categories and {
+            GuardSignal.REPEATED_TARGETING,
+            GuardSignal.GROUP_PILE_ON,
+        } <= signals:
+            return "bullying_established"
+        if GuardCategory.HARASSMENT_OR_COERCION in categories and GuardSignal.THREAT in signals:
+            return "harassment_explicit_threat"
+        if GuardCategory.CHILD_SEXUAL_EXPLOITATION in categories:
+            return "child_sexual_exploitation"
+        if GuardCategory.HARMFUL_SHARING in categories and GuardSignal.THREAT_TO_SHARE in signals:
+            return "harmful_sharing_threat"
+        return None
 
     def should_alert(
         self,

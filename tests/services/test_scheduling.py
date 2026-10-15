@@ -419,6 +419,32 @@ async def test_bot_send_succeeds():
     assert len(actions) == 0  # action was marked succeeded
 
 
+async def test_guard_bot_send_is_suppressed_before_provider_call():
+    service, bot = _make_bot_service()
+
+    async def reject(_payload: dict[str, Any]) -> bool:
+        return False
+
+    service.set_guard_send_validator(reject)
+    action = _make_bot_action(
+        payload={
+            "kind": "guard_alert",
+            "chat_id": "972500000001",
+            "message": "alert",
+            "guardian_user_id": "guardian",
+            "child_user_id": "child",
+            "expires_at": "2099-01-01T00:00:00+00:00",
+        }
+    )
+    await service._action_repo.save(action)
+
+    assert await service.execute(action) == "guard_alert_suppressed"
+    assert bot.sent == []
+    fetched = await service._action_repo.get(action.id)
+    assert fetched is not None
+    assert fetched.status is ScheduledActionStatus.CANCELLED
+
+
 async def test_bot_send_no_bot_channel_fails():
     """SEND_BOT_MESSAGE without a bot channel configured fails."""
     service, _ = _make_bot_service(bot=None)  # type: ignore[arg-type]
