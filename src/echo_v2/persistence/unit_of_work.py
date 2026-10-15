@@ -30,7 +30,6 @@ from dataclasses import dataclass
 from types import TracebackType
 from typing import Any
 
-from echo_v2.persistence.postgres_guard_alert import PostgresGuardAlertRepository
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -52,6 +51,7 @@ from echo_v2.persistence.postgres_feedback import (
     PostgresWaitingForMeActionRepository,
     PostgresWaitingForMeFeedbackRepository,
 )
+from echo_v2.persistence.postgres_guard_alert import PostgresGuardAlertRepository
 from echo_v2.persistence.postgres_idempotency import PostgresIdempotencyStore
 from echo_v2.persistence.postgres_scheduled_actions import (
     PostgresScheduledActionRepository,
