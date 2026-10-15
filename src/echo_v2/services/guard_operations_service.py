@@ -25,6 +25,9 @@ from echo_v2.persistence.guard_repositories import (
 from echo_v2.persistence.scheduled_actions import ScheduledActionRepository
 from echo_v2.services.waiting_list_token_service import WaitingListTokenService
 
+_DEFAULT_HISTORY_RECORDS = 500
+_MAX_HISTORY_RECORDS = 5000
+
 
 @dataclass(frozen=True)
 class GuardOperationsResponse:
@@ -91,7 +94,13 @@ class GuardOperationsService:
                 continue
             if chat_id is not None and state.chat_id != chat_id:
                 continue
-            chat = await self._build_chat(state, now)
+            chat = await self._build_chat(
+                state,
+                now,
+                history_limit=(
+                    _MAX_HISTORY_RECORDS if chat_id is not None else _DEFAULT_HISTORY_RECORDS
+                ),
+            )
             if not self._matches(
                 chat,
                 decision=decision,
@@ -115,11 +124,13 @@ class GuardOperationsService:
             chats=tuple(page),
         )
 
-    async def _build_chat(self, state: GuardChatState, now: datetime) -> dict[str, Any]:
+    async def _build_chat(
+        self, state: GuardChatState, now: datetime, *, history_limit: int
+    ) -> dict[str, Any]:
         records = await self._analyses.list_for_chat(
             child_user_id=state.child_user_id,
             chat_id=state.chat_id,
-            limit=500,
+            limit=history_limit,
         )
         attempts = await self._telemetry.list_for_chat(
             child_user_id=state.child_user_id,
@@ -228,8 +239,13 @@ class GuardOperationsService:
                         }
                     )
         timeline.sort(key=_timeline_sort_key)
-        latest_evaluation = evaluations[-1] if evaluations else None
-        latest_alert = alerts[-1] if alerts else None
+        latest_record_id = records[-1].id if records else None
+        latest_evaluation = evaluations_by_result.get(latest_record_id or "")
+        latest_alert = (
+            alerts_by_id.get(latest_evaluation.alert_id)
+            if latest_evaluation is not None and latest_evaluation.alert_id is not None
+            else None
+        )
         latest_action = (
             actions_by_id.get(latest_alert.scheduled_action_id) if latest_alert else None
         )
@@ -240,6 +256,7 @@ class GuardOperationsService:
             and backlog > 0
         )
         latest_view = analysis_views[-1] if analysis_views else None
+        decision_groups = self._decision_groups(analysis_views)
         return {
             "child_user_id": state.child_user_id,
             "chat_id": state.chat_id,
@@ -257,9 +274,11 @@ class GuardOperationsService:
             "backlog": backlog,
             "overdue": is_overdue,
             "analysis_count": len(records),
+            "analysis_history_complete": len(records) < _MAX_HISTORY_RECORDS,
             "attempt_count": len(attempts),
             "latest_attempt": asdict(attempts[-1]) if attempts else None,
             "latest_analysis": latest_view,
+            "decision_groups": decision_groups,
             "latest_policy": _policy_view(latest_evaluation, latest_alert),
             "threshold_states": [asdict(state_item) for state_item in threshold_states],
             "latest_delivery": _delivery_view(latest_alert, latest_action),
@@ -269,6 +288,45 @@ class GuardOperationsService:
             "timeline": timeline,
             "analyses": analysis_views,
         }
+
+
+    @staticmethod
+    def _decision_groups(analyses: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        groups: list[dict[str, Any]] = []
+        for analysis in analyses:
+            decision = str(analysis["decision"])
+            if not groups or groups[-1]["decision"] != decision:
+                groups.append(
+                    {
+                        "decision": decision,
+                        "start_version": analysis["target_version"],
+                        "end_version": analysis["target_version"],
+                        "start_at": analysis["created_at"],
+                        "end_at": analysis["created_at"],
+                        "analysis_count": 1,
+                        "analysis_ids": [analysis["id"]],
+                        "signals": list(analysis["signals"]),
+                        "categories": list(analysis["categories"]),
+                        "first_reason": analysis["reason"],
+                        "latest_reason": analysis["reason"],
+                        "evidence_analysis_count": (
+                            1 if analysis["evidence_message_ids"] else 0
+                        ),
+                    }
+                )
+                continue
+            group = groups[-1]
+            group["end_version"] = analysis["target_version"]
+            group["end_at"] = analysis["created_at"]
+            group["analysis_count"] += 1
+            group["analysis_ids"].append(analysis["id"])
+            group["latest_reason"] = analysis["reason"]
+            group["evidence_analysis_count"] += (
+                1 if analysis["evidence_message_ids"] else 0
+            )
+            for field in ("signals", "categories"):
+                group[field] = list(dict.fromkeys([*group[field], *analysis[field]]))
+        return groups
 
     @staticmethod
     def _matches(

@@ -137,6 +137,23 @@ async def test_dashboard_includes_unanalysed_group_and_participant_diagnostics()
     assert all(chat["child_user_id"] == "child" for chat in scoped.chats)
 
 
+async def test_dashboard_groups_decisions_and_uses_latest_analysis_for_policy() -> None:
+    service, session_id, _ = await setup()
+    await service._analyses.save(record(2, "class@g.us", GuardDecision.WATCH))
+    await service._analyses.save(record(3, "class@g.us", GuardDecision.CONCERNING))
+
+    response = await service.list_dashboard(session_id=session_id, chat_id="class@g.us")
+
+    assert response is not None
+    chat = response.chats[0]
+    assert [group["decision"] for group in chat["decision_groups"]] == [
+        "concerning", "watch", "concerning"
+    ]
+    assert [group["analysis_count"] for group in chat["decision_groups"]] == [1, 1, 1]
+    assert chat["latest_analysis"]["target_version"] == 3
+    assert chat["latest_policy"] is None
+
+
 async def test_dashboard_scopes_children_and_normalizes_not_actionable() -> None:
     service, session_id, _ = await setup()
     assert await service.list_dashboard(session_id="expired") is None
