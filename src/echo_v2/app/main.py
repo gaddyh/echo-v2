@@ -307,7 +307,7 @@ def create_app() -> FastAPI:
     guard_shadow_enabled = os.environ.get("GUARD_SHADOW_ENABLED", "false").lower() in (
         "1", "true", "yes"
     )
-    guard_alerts_enabled = os.environ.get("GUARD_ALERTS_ENABLED", "false").lower() in (
+    guard_alerts_enabled = os.environ.get("GUARD_ALERTS_ENABLED", "true").lower() in (
         "1", "true", "yes"
     )
     ingestion_service = ChatIngestionService(
