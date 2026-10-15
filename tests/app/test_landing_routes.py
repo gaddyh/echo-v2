@@ -26,20 +26,18 @@ def _client(app: FastAPI) -> AsyncClient:
 # --- GET / -------------------------------------------------------------------
 
 
-async def test_landing_page_serves_html():
+async def test_landing_page_serves_echo_guard_kids_html():
     app, _ = _make_app()
     async with _client(app) as client:
         resp = await client.get("/")
     assert resp.status_code == 200
     assert "text/html" in resp.headers.get("content-type", "")
-    assert "Too much WhatsApp?" in resp.text
-    assert "Join early access" in resp.text
-    assert "Early access · $4.95/month when activated" in resp.text
-    assert "Connect in under a minute" in resp.text
-    assert "Scan a QR code just like WhatsApp Web" in resp.text
-    assert "Try Echo early" in resp.text
-    assert 'id="waitlist-form"' in resp.text
-    assert 'action="/api/waitlist"' not in resp.text
+    assert "Echo Guard" in resp.text
+    assert "לפעמים טוב" in resp.text
+    assert 'id="signup"' in resp.text
+    assert "שמירת טיוטת מייל" in resp.text
+    assert "הטופס פותח טיוטת מייל" in resp.text
+    assert "Too much WhatsApp?" not in resp.text
     # Security headers.
     assert resp.headers.get("x-content-type-options") == "nosniff"
     assert "default-src 'self'" in resp.headers.get("content-security-policy", "")
@@ -293,7 +291,7 @@ async def test_guard_landing_page_remains_available():
     assert html.index('id="trust-title"') < html.index('class="fineprint"')
 
 
-async def test_landing_page_has_og_tags_and_scarcity():
+async def test_landing_page_has_og_tags_and_counter():
     app, _ = _make_app()
     async with _client(app) as client:
         resp = await client.get("/")
@@ -302,31 +300,31 @@ async def test_landing_page_has_og_tags_and_scarcity():
     assert 'og:title' in html
     assert 'og:image' in html
     assert '{{BASE_URL}}' not in html  # template substituted
-    # Scarcity messaging and the waitlist form are always present.
-    assert "Early access is limited" in html
-    assert "Join the waitlist" in html
+    assert 'content="/og-guard-v2.png"' in html
+    assert "לפעמים טוב" in html
     # The landing page uses 50 as the default counter before live volume exists.
     assert "{{COUNTER}}" not in html
-    assert "50 early-access spots" in html
+    assert "🔥 כבר 50 אנשים ברשימה" in html
 
 
-async def test_landing_page_serves_hebrew_for_israeli_country_header():
+async def test_landing_page_is_guard_kids_for_israeli_country_header():
     app, _ = _make_app()
     async with _client(app) as client:
         resp = await client.get("/", headers={"CF-IPCountry": "IL"})
     assert resp.status_code == 200
     assert '<html lang="he" dir="rtl">' in resp.text
+    assert "Echo Guard" in resp.text
     assert "🔥 כבר 50 אנשים ברשימה" in resp.text
-    assert "Too Much WhatsApp?" not in resp.text
 
 
-async def test_landing_page_falls_back_to_english_without_country_header():
+async def test_landing_page_is_guard_kids_without_country_header():
     app, _ = _make_app()
     async with _client(app) as client:
         resp = await client.get("/", headers={"CF-IPCountry": "US"})
     assert resp.status_code == 200
-    assert '<html lang="en">' in resp.text
-    assert "50 early-access spots" in resp.text
+    assert '<html lang="he" dir="rtl">' in resp.text
+    assert "Echo Guard" in resp.text
+    assert "🔥 כבר 50 אנשים ברשימה" in resp.text
 
 
 async def test_landing_page_shows_counter_above_threshold():
@@ -339,7 +337,7 @@ async def test_landing_page_shows_counter_above_threshold():
         await repo.add(name=f"u{i}", phone_number=f"+97250100{i:04d}")
     async with _client(app) as client:
         resp = await client.get("/")
-    assert "25 early-access spots" in resp.text
+    assert "🔥 כבר 25 אנשים ברשימה" in resp.text
 
 
 async def test_og_image_endpoint_serves_png():
