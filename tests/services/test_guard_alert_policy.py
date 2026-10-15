@@ -33,6 +33,25 @@ def test_guard_policy(case) -> None:
     assert actual is case.expected_should_alert
 
 
+@pytest.mark.parametrize(
+    ("signals", "categories", "family"),
+    [
+        (("self_harm_expression",), ("distress",), "urgent_self_harm"),
+        (("blackmail_or_extortion",), ("harassment_or_coercion",), "urgent_blackmail"),
+        (("repeated_targeting", "group_pile_on"), ("bullying",), "bullying_established"),
+        (("threat",), ("harassment_or_coercion",), "harassment_explicit_threat"),
+        (("threat_to_share",), ("harmful_sharing",), "harmful_sharing_threat"),
+        (("sexual_solicitation",), ("child_sexual_exploitation",), "child_sexual_exploitation"),
+    ],
+)
+def test_policy_assigns_threshold_families(signals, categories, family) -> None:
+    family_actual = DefaultAlertPolicy._threshold_family(
+        analysis=GuardAnalysis(signals=signals, categories=categories),
+        signal_state=None,
+    )
+    assert family_actual == family
+
+
 def test_policy_uses_accumulated_signals_when_latest_analysis_omits_one() -> None:
     ledger = GuardSignalLedger()
     ledger.update(

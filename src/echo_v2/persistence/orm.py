@@ -55,6 +55,8 @@ __all__ = [
     "ChatRow",
     "ContactRow",
     "GreenInstancePoolRow",
+    "GuardAlertEvaluationRow",
+    "GuardAlertRow",
     "GuardAnalysisFeedbackEventRow",
     "GuardAnalysisFeedbackRow",
     "GuardAnalysisResultRow",
@@ -62,6 +64,7 @@ __all__ = [
     "GuardEvalJudgmentRow",
     "GuardEvalRunRow",
     "GuardEvalSnapshotRow",
+    "GuardThresholdStateRow",
     "GuardianChildLinkRow",
     "IdempotencyOperationRow",
     "MessageRow",
@@ -725,6 +728,125 @@ class GuardAnalysisResultRow(Base):
             "chat_id",
             "created_at",
         ),
+    )
+
+
+class GuardThresholdStateRow(Base):
+    """Minimal active threshold state used for Guard episode deduplication."""
+
+    __tablename__ = "guard_threshold_state"
+
+    child_user_id: Mapped[str] = mapped_column(
+        Uuid, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    chat_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    threshold_family: Mapped[str] = mapped_column(Text, primary_key=True)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default="inactive")
+    episode_start_version: Mapped[int | None] = mapped_column(nullable=True)
+    current_kind: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_processed_version: Mapped[int] = mapped_column(nullable=False, server_default=text("0"))
+    last_supporting_version: Mapped[int | None] = mapped_column(nullable=True)
+    last_supporting_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    non_actionable_count: Mapped[int] = mapped_column(nullable=False, server_default=text("0"))
+    non_actionable_since: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('active', 'inactive')",
+            name="guard_threshold_state_status_check",
+        ),
+        CheckConstraint(
+            "current_kind IS NULL OR current_kind IN ('notify', 'urgent')",
+            name="guard_threshold_state_kind_check",
+        ),
+    )
+
+
+class GuardAlertEvaluationRow(Base):
+    """Durable marker that a committed Guard result reached alert policy."""
+
+    __tablename__ = "guard_alert_evaluations"
+
+    analysis_result_id: Mapped[str] = mapped_column(
+        Uuid,
+        ForeignKey("guard_analysis_results.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    child_user_id: Mapped[str] = mapped_column(
+        Uuid, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    chat_id: Mapped[str] = mapped_column(Text, nullable=False)
+    target_version: Mapped[int] = mapped_column(nullable=False)
+    policy_version: Mapped[str] = mapped_column(Text, nullable=False)
+    outcome: Mapped[str] = mapped_column(Text, nullable=False)
+    evaluated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+    alert_id: Mapped[str | None] = mapped_column(
+        Uuid, ForeignKey("guard_alerts.id", ondelete="SET NULL"), nullable=True
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "outcome IN ('scheduled', 'no_action', 'suppressed')",
+            name="guard_alert_evaluations_outcome_check",
+        ),
+        Index("ix_guard_alert_evaluations_child_created", "child_user_id", "evaluated_at"),
+    )
+
+
+class GuardAlertRow(Base):
+    """A logical Guard notification event linked to one scheduled action."""
+
+    __tablename__ = "guard_alerts"
+
+    id: Mapped[str] = mapped_column(Uuid, primary_key=True)
+    analysis_result_id: Mapped[str] = mapped_column(
+        Uuid, ForeignKey("guard_analysis_results.id", ondelete="CASCADE"), nullable=False
+    )
+    guardian_user_id: Mapped[str] = mapped_column(
+        Uuid, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    child_user_id: Mapped[str] = mapped_column(
+        Uuid, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    chat_id: Mapped[str] = mapped_column(Text, nullable=False)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    categories: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    policy_reason: Mapped[str] = mapped_column(Text, nullable=False)
+    policy_version: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    scheduled_action_id: Mapped[str] = mapped_column(
+        Uuid, ForeignKey("scheduled_actions.id", ondelete="CASCADE"), nullable=False
+    )
+    logical_event_key: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    threshold_family: Mapped[str] = mapped_column(Text, nullable=False)
+    episode_start_version: Mapped[int] = mapped_column(nullable=False)
+    detected_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+    metadata_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('notify', 'urgent')",
+            name="guard_alerts_kind_check",
+        ),
+        CheckConstraint(
+            "status IN ('scheduled', 'suppressed', 'expired')",
+            name="guard_alerts_status_check",
+        ),
+        Index("ix_guard_alerts_child_chat_created", "child_user_id", "chat_id", "created_at"),
     )
 
 

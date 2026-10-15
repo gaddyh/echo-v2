@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from types import TracebackType
 from typing import Any
 
+from echo_v2.persistence.postgres_guard_alert import PostgresGuardAlertRepository
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -52,6 +53,9 @@ from echo_v2.persistence.postgres_feedback import (
     PostgresWaitingForMeFeedbackRepository,
 )
 from echo_v2.persistence.postgres_idempotency import PostgresIdempotencyStore
+from echo_v2.persistence.postgres_scheduled_actions import (
+    PostgresScheduledActionRepository,
+)
 from echo_v2.persistence.postgres_webhook_dedup import PostgresWebhookDedupStore
 from echo_v2.persistence.postgres_whatsapp_connections import (
     PostgresWhatsAppConnectionRepository,
@@ -80,6 +84,8 @@ class UnitOfWorkRepos:
     wfm_actions: PostgresWaitingForMeActionRepository
     chat_mutes: PostgresChatMuteRepository
     chat_not_interested_clicks: PostgresChatNotInterestedClickRepository
+    scheduled_actions: PostgresScheduledActionRepository
+    guard_alerts: PostgresGuardAlertRepository
 
 
 class PostgresUnitOfWork:
@@ -154,6 +160,14 @@ class PostgresUnitOfWork:
                 session=self._session,
             ),
             chat_not_interested_clicks=PostgresChatNotInterestedClickRepository(
+                self._session_factory,
+                session=self._session,
+            ),
+            scheduled_actions=PostgresScheduledActionRepository(
+                self._session_factory,
+                session=self._session,
+            ),
+            guard_alerts=PostgresGuardAlertRepository(
                 self._session_factory,
                 session=self._session,
             ),
@@ -232,3 +246,13 @@ class PostgresUnitOfWork:
     def chat_not_interested_clicks(self) -> PostgresChatNotInterestedClickRepository:
         assert self.repos is not None, "UnitOfWork not entered"
         return self.repos.chat_not_interested_clicks
+
+    @property
+    def scheduled_actions(self) -> PostgresScheduledActionRepository:
+        assert self.repos is not None, "UnitOfWork not entered"
+        return self.repos.scheduled_actions
+
+    @property
+    def guard_alerts(self) -> PostgresGuardAlertRepository:
+        assert self.repos is not None, "UnitOfWork not entered"
+        return self.repos.guard_alerts

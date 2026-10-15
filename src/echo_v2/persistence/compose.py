@@ -8,6 +8,7 @@ singleton stays in-memory so tests without Docker keep working.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -49,6 +50,7 @@ from echo_v2.persistence.postgres_guard import (
     PostgresGuardChatStateRepository,
     PostgresGuardianChildLinkRepository,
 )
+from echo_v2.persistence.postgres_guard_alert import PostgresGuardAlertRepository
 from echo_v2.persistence.postgres_guard_feedback import PostgresGuardFeedbackRepository
 from echo_v2.persistence.postgres_idempotency import PostgresIdempotencyStore
 from echo_v2.persistence.postgres_scheduled_actions import (
@@ -93,6 +95,7 @@ class PostgresRepos:
     guard_chat_state: PostgresGuardChatStateRepository
     guard_analysis_results: PostgresGuardAnalysisRepository
     guard_analysis_commit: PostgresGuardAnalysisCommitRepository
+    guard_alerts: PostgresGuardAlertRepository
     guard_feedback: PostgresGuardFeedbackRepository
     guard_eval: PostgresGuardEvalRepository
     wfm_feedback: PostgresWaitingForMeFeedbackRepository
@@ -103,7 +106,7 @@ class PostgresRepos:
     waiting_list_sessions: PostgresWaitingListSessionRepository
     waitlist: PostgresWaitlistRepository
     session_factory: async_sessionmaker[AsyncSession]
-    unit_of_work: type[PostgresUnitOfWork]
+    unit_of_work: Callable[[], PostgresUnitOfWork]
 
 
 def build_postgres_repos(settings: DBSettings) -> PostgresRepos:
@@ -140,6 +143,7 @@ def build_postgres_repos(settings: DBSettings) -> PostgresRepos:
     guard_chat_state = PostgresGuardChatStateRepository(factory)
     guard_analysis_results = PostgresGuardAnalysisRepository(factory)
     guard_analysis_commit = PostgresGuardAnalysisCommitRepository(factory)
+    guard_alerts = PostgresGuardAlertRepository(factory)
     guard_feedback = PostgresGuardFeedbackRepository(factory)
     guard_eval = PostgresGuardEvalRepository(factory)
     wfm_feedback = PostgresWaitingForMeFeedbackRepository(factory)
@@ -174,6 +178,7 @@ def build_postgres_repos(settings: DBSettings) -> PostgresRepos:
         guard_chat_state=guard_chat_state,
         guard_analysis_results=guard_analysis_results,
         guard_analysis_commit=guard_analysis_commit,
+        guard_alerts=guard_alerts,
         guard_feedback=guard_feedback,
         guard_eval=guard_eval,
         wfm_feedback=wfm_feedback,

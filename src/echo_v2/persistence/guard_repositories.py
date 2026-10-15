@@ -12,6 +12,11 @@ from echo_v2.domain.guard import (
     GuardianChildLink,
     GuardianChildLinkStatus,
 )
+from echo_v2.domain.guard_alert import (
+    GuardAlert,
+    GuardAlertEvaluation,
+    GuardThresholdState,
+)
 from echo_v2.services.guard_taxonomy import GuardDecision
 
 __all__ = [
@@ -28,6 +33,10 @@ __all__ = [
 @runtime_checkable
 class GuardianChildLinkRepository(Protocol):
     async def get_active_for_child(self, child_user_id: str) -> GuardianChildLink | None: ...
+
+    async def get_active_for_pair(
+        self, *, guardian_user_id: str, child_user_id: str
+    ) -> GuardianChildLink | None: ...
 
     async def list_active_for_guardian(self, guardian_user_id: str) -> list[GuardianChildLink]: ...
 
@@ -82,6 +91,10 @@ class GuardAnalysisCommitRepository(Protocol):
 class GuardAnalysisRepository(Protocol):
     async def save(self, record: GuardAnalysisRecord) -> str: ...
 
+    async def list_needing_alert_evaluation(
+        self, *, since: datetime, limit: int = 20
+    ) -> list[GuardAnalysisRecord]: ...
+
     async def list_for_replay(
         self,
         *,
@@ -96,6 +109,29 @@ class GuardAnalysisRepository(Protocol):
     ) -> list[GuardAnalysisRecord]: ...
 
 
+@runtime_checkable
+class GuardAlertRepository(Protocol):
+    async def get_threshold_state(
+        self, *, child_user_id: str, chat_id: str, threshold_family: str
+    ) -> GuardThresholdState: ...
+
+    async def list_threshold_states(
+        self, *, child_user_id: str, chat_id: str
+    ) -> list[GuardThresholdState]: ...
+
+    async def save_threshold_state(self, state: GuardThresholdState) -> None: ...
+
+    async def get_evaluation(self, analysis_result_id: str) -> GuardAlertEvaluation | None: ...
+
+    async def save_evaluation(self, evaluation: GuardAlertEvaluation) -> bool: ...
+
+    async def get_by_event_key(self, logical_event_key: str) -> GuardAlert | None: ...
+
+    async def save_alert(self, alert: GuardAlert) -> bool: ...
+
+    async def update_alert_status(self, alert_id: str, status: str) -> None: ...
+
+
 class InMemoryGuardianChildLinkRepository:
     def __init__(self) -> None:
         self._links: dict[tuple[str, str], GuardianChildLink] = {}
@@ -105,6 +141,12 @@ class InMemoryGuardianChildLinkRepository:
             if link.child_user_id == child_user_id and link.is_guard_enabled:
                 return link
         return None
+
+    async def get_active_for_pair(
+        self, *, guardian_user_id: str, child_user_id: str
+    ) -> GuardianChildLink | None:
+        link = self._links.get((guardian_user_id, child_user_id))
+        return link if link is not None and link.is_guard_enabled else None
 
     async def list_active_for_guardian(self, guardian_user_id: str) -> list[GuardianChildLink]:
         return [
@@ -277,6 +319,18 @@ class InMemoryGuardAnalysisRepository:
             )
         )
         return record_id
+
+    async def list_needing_alert_evaluation(
+        self, *, since: datetime, limit: int = 20
+    ) -> list[GuardAnalysisRecord]:
+        return [
+            record
+            for record in sorted(
+                self.records,
+                key=lambda item: item.created_at or datetime.min.replace(tzinfo=timezone.utc),
+            )
+            if record.created_at is not None and record.created_at >= since
+        ][:limit]
 
     async def list_for_replay(
         self,
