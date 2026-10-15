@@ -113,6 +113,16 @@ class MessageRepository(Protocol):
         """Return the last ``limit`` messages in chronological order."""
         ...
 
+    async def list_by_ids(
+        self,
+        *,
+        user_id: str,
+        chat_id: str,
+        message_ids: set[str],
+    ) -> list[Message]:
+        """Return the requested messages for one authorized chat."""
+        ...
+
     async def update_text(self, message_id: str, text: str) -> bool:
         """Update the ``text`` column of a message row.
 
@@ -202,6 +212,23 @@ class InMemoryMessageRepository:
             key=lambda m: (m.timestamp, m.id),
         )
         return chat_msgs[-max(0, limit):] if limit else []
+
+    async def list_by_ids(
+        self,
+        *,
+        user_id: str,
+        chat_id: str,
+        message_ids: set[str],
+    ) -> list[Message]:
+        if not message_ids:
+            return []
+        return [
+            message
+            for message in self._messages.values()
+            if message.user_id == user_id
+            and message.chat_id == chat_id
+            and message.id in message_ids
+        ]
 
     async def update_text(self, message_id: str, text: str) -> bool:
         import dataclasses as _dataclasses

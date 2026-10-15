@@ -101,6 +101,13 @@ async def setup() -> tuple[GuardOperationsService, str, InMemoryGuardAlertReposi
     actions = InMemoryScheduledActionRepository()
     messages = InMemoryMessageRepository()
     await messages.save(Message(id="message-class@g.us-1", user_id="child", connection_id="connection", chat_id="class@g.us", provider_message_id="provider-1", direction=MessageDirection.INBOUND, sender_id="sender", sender_name="Other", timestamp=NOW, text="<evidence>"))
+    for index in range(100):
+        await messages.save(Message(
+            id=f"noise-{index}", user_id="child", connection_id="connection",
+            chat_id="class@g.us", provider_message_id=f"noise-provider-{index}",
+            direction=MessageDirection.INBOUND, sender_id="sender", timestamp=NOW + timedelta(seconds=index + 1),
+            text="Recent noise",
+        ))
     return GuardOperationsService(token_service=tokens, links=links, chat_states=states, analyses=analyses, alerts=alerts, telemetry=telemetry, actions=actions, messages=messages), session_id, alerts
 
 
@@ -113,6 +120,7 @@ async def test_dashboard_includes_unanalysed_group_and_participant_diagnostics()
     assert group["chat_name"] == "Class group"
     assert group["latest_analysis"]["participant_diagnostics"][0]["role"] == "other"
     assert group["latest_analysis"]["participant_impact"][0]["target"] == "child"
+    assert group["latest_analysis"]["evidence_messages"][0]["text"] == "<evidence>"
     private = next(chat for chat in response.chats if not chat["is_group"])
     assert private["analysis_count"] == 0
     assert private["timeline"][0]["kind"] == "queue"

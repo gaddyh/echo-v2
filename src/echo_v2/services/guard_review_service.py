@@ -96,14 +96,20 @@ class GuardReviewService:
             if self._matches(record, decision, category, chat_id, date_from, date_to)
         ]
         feedback = await self._feedback.get_for_results([self._result_id(record) for record in records])
-        messages_by_chat: dict[tuple[str, str], dict[str, Message]] = {}
+        evidence_ids_by_chat: dict[tuple[str, str], set[str]] = {}
         for record in records:
             key = (record.child_user_id, record.chat_id)
-            if key not in messages_by_chat:
-                messages = await self._messages.list_recent_for_chat(
-                    user_id=record.child_user_id, chat_id=record.chat_id, limit=100
-                )
-                messages_by_chat[key] = {message.id: message for message in messages}
+            evidence_ids_by_chat.setdefault(key, set()).update(record.evidence_message_ids)
+        messages_by_chat: dict[tuple[str, str], dict[str, Message]] = {}
+        for (child_user_id, evidence_chat_id), message_ids in evidence_ids_by_chat.items():
+            messages = await self._messages.list_by_ids(
+                user_id=child_user_id,
+                chat_id=evidence_chat_id,
+                message_ids=message_ids,
+            )
+            messages_by_chat[(child_user_id, evidence_chat_id)] = {
+                message.id: message for message in messages
+            }
         previous: dict[tuple[str, str], GuardAnalysisRecord | None] = {}
         prior_by_id: dict[str, GuardAnalysisRecord | None] = {}
         for record in sorted(
