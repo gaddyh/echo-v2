@@ -4,11 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Protocol
 
 from echo_v2.domain.guard import GuardAnalysisRecord, GuardChatState
+from echo_v2.domain.guard_operations import (
+    GuardAnalysisAttempt,
+    GuardAnalysisAttemptStatus,
+)
+from echo_v2.persistence.guard_operations import GuardAnalysisTelemetryRepository
 from echo_v2.persistence.guard_repositories import (
     GuardAnalysisCommitRepository,
     GuardChatStateRepository,
@@ -34,6 +40,7 @@ class GuardAnalysisWorker:
         processor: GuardAnalysisProcessor,
         commit_repo: GuardAnalysisCommitRepository,
         alert_processor: GuardAlertProcessor | None = None,
+        telemetry: GuardAnalysisTelemetryRepository | None = None,
         poll_interval_seconds: float = 60.0,
         excluded_chat_ids: frozenset[str] = frozenset(),
     ) -> None:
@@ -41,6 +48,7 @@ class GuardAnalysisWorker:
         self._processor = processor
         self._commit = commit_repo
         self._alerts = alert_processor
+        self._telemetry = telemetry
         self._poll_interval = poll_interval_seconds
         self._excluded = excluded_chat_ids
 
@@ -81,36 +89,103 @@ class GuardAnalysisWorker:
             await asyncio.sleep(self._poll_interval)
 
     async def _process(self, chat: GuardChatState) -> str:
-        prepared = await self._processor.process(
-            chat.child_user_id,
-            chat.chat_id,
-            chat.activity_version,
-        )
-        record = replace(
-            prepared.record,
-            schedule_reason=chat.next_analysis_reason,
-            pending_since=chat.pending_since,
-            scheduled_for=chat.next_analysis_at,
-            chat_name=chat.chat_name,
-        )
-        status, result_id = await self._commit.commit_if_current(
-            child_user_id=chat.child_user_id,
-            chat_id=chat.chat_id,
-            target_version=chat.activity_version,
-            record=record,
-        )
-        if status == "committed" and result_id is not None and self._alerts is not None:
-            await self._alerts.evaluate_committed(
-                record=record,
-                result_id=result_id,
+        attempt_id = str(uuid.uuid4())
+        started_at = datetime.now(timezone.utc)
+        await self._start_attempt(attempt_id, chat, started_at)
+        try:
+            prepared = await self._processor.process(
+                chat.child_user_id,
+                chat.chat_id,
+                chat.activity_version,
             )
-        _logger.info(
-            "Guard analysis %s for %s/%s version=%d result=%s decision=%s",
-            status,
-            chat.child_user_id,
-            chat.chat_id,
-            chat.activity_version,
-            result_id,
-            prepared.record.decision.value,
-        )
-        return status
+            record = replace(
+                prepared.record,
+                schedule_reason=chat.next_analysis_reason,
+                pending_since=chat.pending_since,
+                scheduled_for=chat.next_analysis_at,
+                chat_name=chat.chat_name,
+            )
+            status, result_id = await self._commit.commit_if_current(
+                child_user_id=chat.child_user_id,
+                chat_id=chat.chat_id,
+                target_version=chat.activity_version,
+                record=record,
+            )
+            await self._finish_attempt(
+                attempt_id,
+                GuardAnalysisAttemptStatus.COMMITTED
+                if status == "committed"
+                else GuardAnalysisAttemptStatus.STALE,
+                result_id=result_id,
+                record=record,
+            )
+            if status == "committed" and result_id is not None and self._alerts is not None:
+                await self._alerts.evaluate_committed(
+                    record=record,
+                    result_id=result_id,
+                )
+            _logger.info(
+                "Guard analysis %s for %s/%s version=%d result=%s decision=%s",
+                status,
+                chat.child_user_id,
+                chat.chat_id,
+                chat.activity_version,
+                result_id,
+                prepared.record.decision.value,
+            )
+            return status
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            await self._finish_attempt(
+                attempt_id,
+                GuardAnalysisAttemptStatus.FAILED,
+                error_code=type(exc).__name__,
+            )
+            raise
+
+    async def _start_attempt(
+        self, attempt_id: str, chat: GuardChatState, started_at: datetime
+    ) -> None:
+        if self._telemetry is None:
+            return
+        try:
+            await self._telemetry.start(
+                GuardAnalysisAttempt(
+                    id=attempt_id,
+                    child_user_id=chat.child_user_id,
+                    chat_id=chat.chat_id,
+                    target_version=chat.activity_version,
+                    status=GuardAnalysisAttemptStatus.STARTED,
+                    started_at=started_at,
+                    scheduled_for=chat.next_analysis_at,
+                    pending_since=chat.pending_since,
+                )
+            )
+        except Exception:
+            _logger.exception("failed to record Guard analysis start")
+
+    async def _finish_attempt(
+        self,
+        attempt_id: str,
+        status: GuardAnalysisAttemptStatus,
+        *,
+        result_id: str | None = None,
+        record: object | None = None,
+        error_code: str | None = None,
+    ) -> None:
+        if self._telemetry is None:
+            return
+        try:
+            await self._telemetry.finish(
+                attempt_id,
+                status=status,
+                finished_at=datetime.now(timezone.utc),
+                result_id=result_id,
+                model=getattr(record, "model", None),
+                prompt_version=getattr(record, "prompt_version", None),
+                analyzer_version=getattr(record, "analyzer_version", None),
+                error_code=error_code,
+            )
+        except Exception:
+            _logger.exception("failed to record Guard analysis completion")

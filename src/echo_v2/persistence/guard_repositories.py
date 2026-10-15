@@ -64,6 +64,8 @@ class GuardChatStateRepository(Protocol):
 
     async def list_due(self, now: datetime, *, limit: int = 20) -> list[GuardChatState]: ...
 
+    async def list_for_children(self, child_user_ids: list[str]) -> list[GuardChatState]: ...
+
     async def mark_processed(
         self,
         child_user_id: str,
@@ -108,6 +110,10 @@ class GuardAnalysisRepository(Protocol):
         self, *, child_user_ids: list[str], limit: int = 500
     ) -> list[GuardAnalysisRecord]: ...
 
+    async def list_for_chat(
+        self, *, child_user_id: str, chat_id: str, limit: int = 500
+    ) -> list[GuardAnalysisRecord]: ...
+
 
 @runtime_checkable
 class GuardAlertRepository(Protocol):
@@ -130,6 +136,14 @@ class GuardAlertRepository(Protocol):
     async def save_alert(self, alert: GuardAlert) -> bool: ...
 
     async def update_alert_status(self, alert_id: str, status: str) -> None: ...
+
+    async def list_evaluations_for_chat(
+        self, *, child_user_id: str, chat_id: str, limit: int = 500
+    ) -> list[GuardAlertEvaluation]: ...
+
+    async def list_alerts_for_chat(
+        self, *, child_user_id: str, chat_id: str, limit: int = 100
+    ) -> list[GuardAlert]: ...
 
 
 class InMemoryGuardianChildLinkRepository:
@@ -232,6 +246,10 @@ class InMemoryGuardChatStateRepository:
         ]
         due.sort(key=lambda state: state.next_analysis_at or now)
         return due[:limit]
+
+    async def list_for_children(self, child_user_ids: list[str]) -> list[GuardChatState]:
+        allowed = set(child_user_ids)
+        return [state for state in self._states.values() if state.child_user_id in allowed]
 
     async def mark_processed(
         self,
@@ -359,3 +377,13 @@ class InMemoryGuardAnalysisRepository:
         rows = [record for record in self.records if record.child_user_id in allowed]
         rows.sort(key=lambda record: record.created_at or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
         return rows[:limit]
+
+    async def list_for_chat(
+        self, *, child_user_id: str, chat_id: str, limit: int = 500
+    ) -> list[GuardAnalysisRecord]:
+        rows = [
+            record for record in self.records
+            if record.child_user_id == child_user_id and record.chat_id == chat_id
+        ]
+        rows.sort(key=lambda record: record.created_at or datetime.min.replace(tzinfo=timezone.utc))
+        return rows[-limit:]

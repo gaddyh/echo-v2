@@ -416,6 +416,7 @@ def create_app() -> FastAPI:
         state_repo=repos.guard_chat_state,
         processor=guard_processor,
         commit_repo=repos.guard_analysis_commit,
+        telemetry=repos.guard_analysis_telemetry,
         poll_interval_seconds=float(os.environ.get("GUARD_ANALYSIS_POLL_INTERVAL", "10")),
         excluded_chat_ids=excluded_chat_ids,
     )
@@ -612,8 +613,10 @@ def create_app() -> FastAPI:
     # --- waiting-list mini web app (service + router) -----------------------
     from echo_v2.app.guard_debug_routes import build_guard_debug_router
     from echo_v2.app.guard_demo_routes import build_guard_demo_router
+    from echo_v2.app.guard_operations_routes import build_guard_operations_router
     from echo_v2.app.waiting_list_routes import build_waiting_list_router
     from echo_v2.services.debug_analysis_service import DebugAnalysisService
+    from echo_v2.services.guard_operations_service import GuardOperationsService
     from echo_v2.services.guard_review_service import GuardReviewService
     from echo_v2.services.waiting_list_action_service import WaitingListActionService
 
@@ -652,6 +655,19 @@ def create_app() -> FastAPI:
     )
     guard_debug_router = build_guard_debug_router(
         service=guard_review_service, token_service=token_service
+    )
+    guard_operations_service = GuardOperationsService(
+        token_service=token_service,
+        links=repos.guardian_child_links,
+        chat_states=repos.guard_chat_state,
+        analyses=repos.guard_analysis_results,
+        alerts=repos.guard_alerts,
+        telemetry=repos.guard_analysis_telemetry,
+        actions=repos.scheduled_actions,
+        messages=repos.messages,
+    )
+    guard_operations_router = build_guard_operations_router(
+        service=guard_operations_service, token_service=token_service
     )
     guard_demo_router = build_guard_demo_router(live_compare=guard_live_compare)
 
@@ -853,6 +869,7 @@ def create_app() -> FastAPI:
     # Waiting-list mini web app: token→cookie exchange + JSON API.
     app.include_router(waiting_list_router)
     app.include_router(guard_debug_router)
+    app.include_router(guard_operations_router)
     app.include_router(guard_demo_router)
 
     # Public landing page + waitlist signup.

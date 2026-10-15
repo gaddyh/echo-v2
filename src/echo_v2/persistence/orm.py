@@ -672,6 +672,55 @@ class GuardChatStateRow(Base):
     )
 
 
+# --- guard_analysis_attempts -------------------------------------------------
+
+
+class GuardAnalysisAttemptRow(Base):
+    """Operational lifecycle of one Guard worker attempt."""
+
+    __tablename__ = "guard_analysis_attempts"
+
+    id: Mapped[str] = mapped_column(
+        Uuid, primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    child_user_id: Mapped[str] = mapped_column(
+        Uuid, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    chat_id: Mapped[str] = mapped_column(Text, nullable=False)
+    target_version: Mapped[int] = mapped_column(nullable=False)
+    scheduled_for: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    pending_since: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    started_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    result_id: Mapped[str | None] = mapped_column(
+        Uuid, ForeignKey("guard_analysis_results.id", ondelete="SET NULL"), nullable=True
+    )
+    model: Mapped[str | None] = mapped_column(Text, nullable=True)
+    prompt_version: Mapped[str | None] = mapped_column(Text, nullable=True)
+    analyzer_version: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_code: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('started', 'committed', 'stale', 'failed')",
+            name="guard_analysis_attempts_status_check",
+        ),
+        Index(
+            "ix_guard_analysis_attempts_child_chat_started",
+            "child_user_id", "chat_id", "started_at",
+        ),
+    )
+
+
 # --- guard_analysis_results -----------------------------------------------
 
 
