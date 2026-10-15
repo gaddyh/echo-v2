@@ -138,6 +138,28 @@ class PostgresMessageRepository:
             inserted = result.scalar_one_or_none()
             return inserted is not None
 
+    async def list_by_ids(
+        self,
+        *,
+        user_id: str,
+        chat_id: str,
+        message_ids: set[str],
+    ) -> list[Message]:
+        if not message_ids:
+            return []
+        async with self._session() as session:
+            stmt = (
+                select(MessageRow)
+                .where(
+                    MessageRow.user_id == user_id,
+                    MessageRow.chat_id == chat_id,
+                    MessageRow.id.in_(message_ids),
+                )
+                .order_by(MessageRow.timestamp, MessageRow.created_at, MessageRow.id)
+            )
+            rows = (await session.execute(stmt)).scalars().all()
+            return [self._row_to_domain(row) for row in rows]
+
     async def update_text(self, message_id: str, text: str) -> bool:
         """Update the ``text`` column of a message row.
 

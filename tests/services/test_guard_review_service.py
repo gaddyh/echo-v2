@@ -81,6 +81,23 @@ async def test_review_is_guardian_scoped_and_derives_progression() -> None:
     assert newest.evidence_messages[0].text == "Evidence 2"
 
 
+async def test_review_resolves_evidence_older_than_recent_message_window() -> None:
+    service, session_id, _ = await setup()
+    for index in range(100):
+        await service._messages.save(Message(
+            id=f"noise-{index}", user_id="child", connection_id="connection",
+            chat_id="chat@c.us", provider_message_id=f"noise-provider-{index}",
+            direction=MessageDirection.INBOUND, sender_id="sender",
+            timestamp=NOW + timedelta(seconds=index + 1), text="Recent noise",
+        ))
+
+    result = await service.list_reviews(session_id=session_id)
+
+    assert result is not None
+    assert result.results[0].evidence_messages[0].text == "Evidence 2"
+    assert result.results[1].evidence_messages[0].text == "Evidence 1"
+
+
 async def test_private_result_without_snapshot_name_uses_latest_sender_name() -> None:
     message = Message(
         id="message", user_id="child", connection_id="connection", chat_id="chat@c.us",

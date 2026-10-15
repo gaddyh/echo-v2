@@ -17,7 +17,10 @@ from echo_v2.persistence.chat_repositories import AnalysisTarget
 from echo_v2.persistence.guard_operations import (
     PostgresGuardAnalysisTelemetryRepository,
 )
-from echo_v2.persistence.postgres_chat import PostgresIngestionRepository
+from echo_v2.persistence.postgres_chat import (
+    PostgresIngestionRepository,
+    PostgresMessageRepository,
+)
 from echo_v2.persistence.postgres_guard import (
     PostgresGuardAnalysisCommitRepository,
     PostgresGuardAnalysisRepository,
@@ -127,6 +130,40 @@ async def test_guard_ingestion_and_version_fenced_commit(session_factory, clean_
         child_user_id=child, chat_id=message.chat_id, target_version=1, record=record
     )
     assert stale_status == "stale"
+
+
+async def test_message_repository_resolves_old_evidence_message(
+    session_factory, clean_db
+) -> None:
+    child = await insert_user(session_factory, "+972546610658")
+    connection_id = await _connection(session_factory, child)
+    messages = PostgresMessageRepository(session_factory)
+    now = datetime.now(timezone.utc)
+    evidence = Message(
+        id=str(uuid.uuid4()), user_id=child, connection_id=connection_id,
+        chat_id="chat@c.us", provider_message_id="evidence-message",
+        direction=MessageDirection.INBOUND, sender_id="sender", timestamp=now,
+        text="old evidence",
+    )
+    assert await messages.save(evidence)
+    for index in range(100):
+        recent = Message(
+            id=str(uuid.uuid4()), user_id=child, connection_id=connection_id,
+            chat_id="chat@c.us", provider_message_id=f"recent-{index}",
+            direction=MessageDirection.INBOUND, sender_id="sender",
+            timestamp=now + timedelta(seconds=index + 1), text="recent message",
+        )
+        assert await messages.save(recent)
+
+    recent_messages = await messages.list_recent_for_chat(
+        user_id=child, chat_id="chat@c.us", limit=100
+    )
+    evidence_messages = await messages.list_by_ids(
+        user_id=child, chat_id="chat@c.us", message_ids={evidence.id}
+    )
+
+    assert evidence not in recent_messages
+    assert [message.text for message in evidence_messages] == ["old evidence"]
 
 
 async def test_guard_observation_replay_and_due_state(session_factory, clean_db) -> None:

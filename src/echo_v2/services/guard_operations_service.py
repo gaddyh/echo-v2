@@ -147,10 +147,15 @@ class GuardOperationsService:
             action = await self._actions.get(alert.scheduled_action_id)
             if action is not None:
                 actions_by_id[alert.scheduled_action_id] = action
-        messages = await self._messages.list_recent_for_chat(
+        evidence_message_ids = {
+            message_id
+            for record in records
+            for message_id in record.evidence_message_ids
+        }
+        messages = await self._messages.list_by_ids(
             user_id=state.child_user_id,
             chat_id=state.chat_id,
-            limit=100,
+            message_ids=evidence_message_ids,
         )
         message_by_id = {message.id: message for message in messages}
         timeline: list[dict[str, Any]] = []
