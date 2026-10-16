@@ -32,6 +32,7 @@ from echo_v2.domain.waiting_for_me import (
 )
 from echo_v2.persistence.chat_repositories import (
     AnalysisTarget,
+    MessageWindow,
     WaitingForMeResultEntry,
 )
 from echo_v2.persistence.orm import (
@@ -317,6 +318,72 @@ class PostgresMessageRepository:
             )
             rows = (await session.execute(stmt)).scalars().all()
             return [self._row_to_domain(row) for row in reversed(rows)]
+
+    async def list_for_chat_window(
+        self,
+        *,
+        user_id: str,
+        chat_id: str,
+        since: datetime,
+        until: datetime,
+        limit: int = 100,
+    ) -> MessageWindow:
+        bounded_limit = max(0, limit)
+        async with self._session() as session:
+            filters = (
+                MessageRow.user_id == user_id,
+                MessageRow.chat_id == chat_id,
+                MessageRow.timestamp >= since,
+                MessageRow.timestamp < until,
+            )
+            total = int(
+                (await session.execute(
+                    select(func.count()).select_from(MessageRow).where(*filters)
+                )).scalar_one()
+            )
+            connection_ids = tuple(
+                sorted(
+                    str(value)
+                    for value in (
+                        await session.execute(
+                            select(MessageRow.connection_id).where(*filters).distinct()
+                        )
+                    ).scalars().all()
+                )
+            )
+            unknown_sender_count = int(
+                (await session.execute(
+                    select(func.count()).select_from(MessageRow).where(
+                        *filters,
+                        MessageRow.direction == MessageDirection.INBOUND.value,
+                        MessageRow.sender_id.is_(None),
+                    )
+                )).scalar_one()
+            )
+            if bounded_limit == 0:
+                return MessageWindow(
+                    messages=(),
+                    omitted_message_count=total,
+                    connection_ids=connection_ids,
+                    unknown_sender_count=unknown_sender_count,
+                )
+            stmt = (
+                select(MessageRow)
+                .where(*filters)
+                .order_by(
+                    desc(MessageRow.timestamp),
+                    desc(MessageRow.created_at),
+                    desc(MessageRow.id),
+                )
+                .limit(bounded_limit)
+            )
+            rows = (await session.execute(stmt)).scalars().all()
+            return MessageWindow(
+                messages=tuple(self._row_to_domain(row) for row in reversed(rows)),
+                omitted_message_count=max(0, total - bounded_limit),
+                connection_ids=connection_ids,
+                unknown_sender_count=unknown_sender_count,
+            )
 
     @staticmethod
     def _row_to_domain(row: MessageRow) -> Message:

@@ -64,6 +64,7 @@ __all__ = [
     "GuardEvalJudgmentRow",
     "GuardEvalRunRow",
     "GuardEvalSnapshotRow",
+    "GuardSimpleAssessmentRow",
     "GuardThresholdStateRow",
     "GuardianChildLinkRow",
     "IdempotencyOperationRow",
@@ -776,6 +777,60 @@ class GuardAnalysisResultRow(Base):
             "child_user_id",
             "chat_id",
             "created_at",
+        ),
+    )
+
+
+class GuardSimpleAssessmentRow(Base):
+    """Immutable Baseline B assessment with separately mutable resolution metadata."""
+
+    __tablename__ = "guard_simple_assessments"
+
+    id: Mapped[str] = mapped_column(
+        Uuid, primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    child_user_id: Mapped[str] = mapped_column(
+        Uuid, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    connection_id: Mapped[str] = mapped_column(
+        Uuid, ForeignKey("whatsapp_connections.id", ondelete="CASCADE"), nullable=False
+    )
+    chat_id: Mapped[str] = mapped_column(Text, nullable=False)
+    chat_type: Mapped[str] = mapped_column(Text, nullable=False)
+    timezone: Mapped[str] = mapped_column(Text, nullable=False)
+    window_start: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False)
+    window_end: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    child_role: Mapped[str] = mapped_column(Text, nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    evidence_message_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    model: Mapped[str] = mapped_column(Text, nullable=False)
+    prompt_version: Mapped[str] = mapped_column(Text, nullable=False)
+    analyzer_version: Mapped[str] = mapped_column(Text, nullable=False)
+    truncated: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
+    omitted_message_count: Mapped[int] = mapped_column(nullable=False, server_default=text("0"))
+    identity_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
+    identity_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    diagnostics: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    resolved_by: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('safe', 'attention', 'urgent', 'uncertain')",
+            name="guard_simple_assessments_status_check",
+        ),
+        CheckConstraint(
+            "child_role IN ('target', 'participant', 'bystander', 'unknown')",
+            name="guard_simple_assessments_child_role_check",
+        ),
+        Index(
+            "ix_guard_simple_assessments_child_chat_created",
+            "child_user_id", "chat_id", "created_at",
         ),
     )
 

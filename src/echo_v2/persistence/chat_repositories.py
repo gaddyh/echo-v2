@@ -56,6 +56,7 @@ __all__ = [
     "InMemoryWaitingForMeResultRepository",
     "IngestionRepository",
     "MessageRepository",
+    "MessageWindow",
     "WaitingForMeActiveRepository",
     "WaitingForMeResultEntry",
     "WaitingForMeResultRepository",
@@ -63,6 +64,18 @@ __all__ = [
 
 
 # --- MessageRepository -----------------------------------------------------
+
+
+@dataclass(frozen=True)
+class MessageWindow:
+    messages: tuple[Message, ...]
+    omitted_message_count: int = 0
+    connection_ids: tuple[str, ...] = ()
+    unknown_sender_count: int = 0
+
+    @property
+    def truncated(self) -> bool:
+        return self.omitted_message_count > 0
 
 
 @runtime_checkable
@@ -111,6 +124,18 @@ class MessageRepository(Protocol):
         limit: int = 8,
     ) -> list[Message]:
         """Return the last ``limit`` messages in chronological order."""
+        ...
+
+    async def list_for_chat_window(
+        self,
+        *,
+        user_id: str,
+        chat_id: str,
+        since: datetime,
+        until: datetime,
+        limit: int = 100,
+    ) -> MessageWindow:
+        """Return a bounded chronological local-time window and omission count."""
         ...
 
     async def list_by_ids(
@@ -212,6 +237,37 @@ class InMemoryMessageRepository:
             key=lambda m: (m.timestamp, m.id),
         )
         return chat_msgs[-max(0, limit):] if limit else []
+
+    async def list_for_chat_window(
+        self,
+        *,
+        user_id: str,
+        chat_id: str,
+        since: datetime,
+        until: datetime,
+        limit: int = 100,
+    ) -> MessageWindow:
+        messages = sorted(
+            (
+                message
+                for message in self._messages.values()
+                if message.user_id == user_id
+                and message.chat_id == chat_id
+                and since <= message.timestamp < until
+            ),
+            key=lambda message: (message.timestamp, message.id),
+        )
+        omitted = max(0, len(messages) - max(0, limit))
+        return MessageWindow(
+            messages=tuple(messages[-max(0, limit):]) if limit else (),
+            omitted_message_count=omitted,
+            connection_ids=tuple(sorted({message.connection_id for message in messages})),
+            unknown_sender_count=sum(
+                1
+                for message in messages
+                if message.direction.value == "inbound" and not message.sender_id
+            ),
+        )
 
     async def list_by_ids(
         self,
