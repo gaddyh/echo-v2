@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from echo_v2.domain.chat import Message
-from echo_v2.domain.guard_simple import ChildRole, SafetyAssessment, SafetyStatus
+from echo_v2.domain.guard_simple import ChildRole, SafetyAssessment
 from echo_v2.persistence.postgres_chat import PostgresMessageRepository
 from echo_v2.persistence.postgres_guard_simple import (
     PostgresGuardSimpleAssessmentRepository,
@@ -38,7 +38,9 @@ async def connection(session_factory, user_id: str) -> str:
         return value
 
 
-def assessment(child: str, connection_id: str, *, status: SafetyStatus, created_at: datetime) -> SafetyAssessment:
+def assessment(
+    child: str, connection_id: str, *, parent_should_know: bool | None, created_at: datetime
+) -> SafetyAssessment:
     return SafetyAssessment(
         child_user_id=child,
         connection_id=connection_id,
@@ -47,11 +49,11 @@ def assessment(child: str, connection_id: str, *, status: SafetyStatus, created_
         timezone="Asia/Jerusalem",
         window_start=NOW.replace(hour=0),
         window_end=NOW,
-        status=status,
+        parent_should_know=parent_should_know,
         child_role=ChildRole.TARGET,
         summary="summary",
         reason="reason",
-        evidence_message_ids=("message-1",) if status is not SafetyStatus.SAFE else (),
+        evidence_message_ids=("message-1",) if parent_should_know else (),
         model="test",
         prompt_version="baseline-b-test",
         analyzer_version="baseline-b-test",
@@ -67,14 +69,14 @@ async def test_assessments_are_isolated_and_resolution_is_separate(
     repository = PostgresGuardSimpleAssessmentRepository(session_factory)
 
     result_id = await repository.save(
-        assessment(child, connection_id, status=SafetyStatus.ATTENTION, created_at=NOW)
+        assessment(child, connection_id, parent_should_know=True, created_at=NOW)
     )
     assert result_id
     await repository.save(
         assessment(
             child,
             connection_id,
-            status=SafetyStatus.SAFE,
+            parent_should_know=False,
             created_at=NOW.replace(hour=11),
         )
     )
@@ -82,7 +84,7 @@ async def test_assessments_are_isolated_and_resolution_is_separate(
     current = await repository.latest_unresolved(child_user_id=child, chat_id="group@g.us")
     assert current is not None
     assert current.id == result_id
-    assert current.status is SafetyStatus.ATTENTION
+    assert current.parent_should_know is True
 
     assert await repository.resolve(
         assessment_id=result_id, resolved_by="guardian", resolved_at=NOW

@@ -10,7 +10,6 @@ import pytest
 
 from echo_v2.domain.guard_simple import (
     ChildRole,
-    SafetyStatus,
     SimpleConversation,
     SimpleConversationMessage,
 )
@@ -28,6 +27,7 @@ NOW = datetime(2026, 10, 16, 10, tzinfo=timezone.utc)
 def conversation(**overrides: object) -> SimpleConversation:
     values: dict[str, object] = {
         "child_user_id": "child-1",
+        "child_name": "Shay",
         "chat_id": "group@g.us",
         "chat_type": "group",
         "connection_id": "connection-1",
@@ -46,7 +46,7 @@ def conversation(**overrides: object) -> SimpleConversation:
 
 def output(**overrides: object) -> SimpleSafetyLLMOutput:
     values: dict[str, object] = {
-        "status": SafetyStatus.ATTENTION,
+        "parent_should_know": True,
         "child_role": ChildRole.TARGET,
         "summary": "The child is being repeatedly targeted.",
         "evidence_message_ids": ["m1", "m2"],
@@ -70,7 +70,7 @@ def test_output_schema_is_strict_and_has_only_simple_fields() -> None:
 
     assert schema["additionalProperties"] is False
     assert set(schema["required"]) == {
-        "status",
+        "parent_should_know",
         "child_role",
         "summary",
         "evidence_message_ids",
@@ -81,7 +81,7 @@ def test_output_schema_is_strict_and_has_only_simple_fields() -> None:
 def test_user_payload_identifies_child_and_preserves_group_context() -> None:
     payload = _build_user_message(conversation())
 
-    assert '"monitored_child":{"user_id":"child-1","role":"child"}' in payload
+    assert '"monitored_child":{"user_id":"child-1","name":"Shay","role":"child"}' in payload
     assert '"type":"group"' in payload
     assert '"id":"m1"' in payload
 
@@ -89,11 +89,11 @@ def test_user_payload_identifies_child_and_preserves_group_context() -> None:
 def test_prompt_calibrates_urgent_non_physical_risk_and_current_context() -> None:
     prompt = " ".join(_SYSTEM_PROMPT.lower().split())
 
-    assert "does not require physical violence" in prompt
-    assert "publish private, intimate, or humiliating photos or videos" in prompt
-    assert "meet alone or secretly" in prompt
-    assert "explicit imminent self-harm danger" in prompt
-    assert "ordinary meetup request" in prompt
+    assert "parent_should_know = true or false" in prompt
+    assert "configured name" in prompt
+    assert "publish private or humiliating material" in prompt
+    assert "ordinary social activity" in prompt
+    assert "internal unknown outcome" in prompt
     assert "unresolved prior concern is context" in prompt
 
 
@@ -105,7 +105,7 @@ async def test_analyzer_returns_structured_assessment_and_usage() -> None:
 
     result = await analyzer.analyze_with_raw(conversation())
 
-    assert result.assessment.status is SafetyStatus.ATTENTION
+    assert result.assessment.parent_should_know is True
     assert result.assessment.child_role is ChildRole.TARGET
     assert result.assessment.evidence_message_ids == ("m1", "m2")
     assert result.prompt_tokens == 11
@@ -124,7 +124,7 @@ async def test_empty_context_is_uncertain_without_calling_llm() -> None:
 
     result = await analyzer.analyze(conversation(messages=()))
 
-    assert result.status is SafetyStatus.UNCERTAIN
+    assert result.parent_should_know is None
     client.chat.completions.parse.assert_not_awaited()
 
 
@@ -158,7 +158,7 @@ async def test_safe_output_can_have_no_evidence() -> None:
     client.chat.completions.parse = AsyncMock(
         return_value=response(
             output(
-                status=SafetyStatus.SAFE,
+                parent_should_know=False,
                 child_role=ChildRole.PARTICIPANT,
                 evidence_message_ids=[],
                 summary="No actionable concern found.",
@@ -169,7 +169,7 @@ async def test_safe_output_can_have_no_evidence() -> None:
 
     result = await analyzer.analyze(conversation())
 
-    assert result.status is SafetyStatus.SAFE
+    assert result.parent_should_know is False
     assert result.evidence_message_ids == ()
 
 
@@ -202,7 +202,7 @@ async def test_analyzer_retries_provider_failure() -> None:
 
     result = await analyzer.analyze(conversation())
 
-    assert result.status is SafetyStatus.ATTENTION
+    assert result.parent_should_know is True
     assert client.chat.completions.parse.await_count == 2
 
 

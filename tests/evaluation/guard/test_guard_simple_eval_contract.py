@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from echo_v2.domain.guard_simple import ChildRole, SafetyStatus
+from echo_v2.domain.guard_simple import ChildRole
 from tests.evaluation.guard.guard_simple_cases import CASES, validate_cases
 
 
@@ -10,19 +10,19 @@ def test_baseline_b_gold_cases_are_valid() -> None:
     validate_cases()
 
 
-def test_gold_cases_cover_prefixes_and_expected_statuses() -> None:
+def test_gold_cases_cover_prefixes_and_expected_parent_attention() -> None:
     assert len(CASES) == 6
     assert all(len(case.checkpoints) >= 2 for case in CASES)
     assert all(
-        checkpoint.expected_statuses
+        checkpoint.expected_parent_should_know
         for case in CASES
         for checkpoint in case.checkpoints
     )
     assert all(
-        isinstance(status, SafetyStatus)
+        value in (True, False, None)
         for case in CASES
         for checkpoint in case.checkpoints
-        for status in checkpoint.expected_statuses
+        for value in checkpoint.expected_parent_should_know
     )
     assert any(
         ChildRole.TARGET in checkpoint.expected_child_roles

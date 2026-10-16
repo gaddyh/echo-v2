@@ -6,7 +6,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Protocol, runtime_checkable
 
-from echo_v2.domain.guard_simple import SafetyAssessment, SafetyStatus
+from echo_v2.domain.guard_simple import SafetyAssessment
 
 
 @runtime_checkable
@@ -18,7 +18,11 @@ class GuardSimpleAssessmentRepository(Protocol):
     ) -> list[SafetyAssessment]: ...
 
     async def latest_unresolved(
-        self, *, child_user_id: str, chat_id: str
+        self,
+        *,
+        child_user_id: str,
+        chat_id: str,
+        before: datetime | None = None,
     ) -> SafetyAssessment | None: ...
 
     async def resolve(
@@ -53,15 +57,20 @@ class InMemoryGuardSimpleAssessmentRepository:
         return rows[-max(0, limit):]
 
     async def latest_unresolved(
-        self, *, child_user_id: str, chat_id: str
+        self,
+        *,
+        child_user_id: str,
+        chat_id: str,
+        before: datetime | None = None,
     ) -> SafetyAssessment | None:
         rows = [
             assessment
             for assessment in self.assessments
             if assessment.child_user_id == child_user_id
             and assessment.chat_id == chat_id
-            and assessment.status in (SafetyStatus.ATTENTION, SafetyStatus.URGENT)
+            and assessment.parent_should_know is True
             and assessment.resolved_at is None
+            and (before is None or (assessment.created_at or before) < before)
         ]
         return max(
             rows,
