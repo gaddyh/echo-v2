@@ -102,6 +102,7 @@ async def test_guard_alert_and_action_commit_atomically(session_factory, clean_d
         detected_at=now,
         expires_at=now + timedelta(hours=1),
         created_at=now,
+        metadata={"session_id": "session-guardian", "review_token": "raw-token"},
     )
 
     async with PostgresUnitOfWork(session_factory) as uow:
@@ -114,6 +115,13 @@ async def test_guard_alert_and_action_commit_atomically(session_factory, clean_d
         _, created = await uow.scheduled_actions.create_once(action)
         assert created is True
         assert await uow.guard_alerts.save_alert(alert) is True
+        loaded = await uow.guard_alerts.get_by_session_id(
+            session_id="session-guardian", guardian_user_id=guardian
+        )
+        assert loaded is not None and loaded.id == alert.id
+        assert await uow.guard_alerts.get_by_session_id(
+            session_id="session-guardian", guardian_user_id=child
+        ) is None
         assert await uow.guard_alerts.save_evaluation(
             GuardAlertEvaluation(
                 analysis_result_id=result_id,

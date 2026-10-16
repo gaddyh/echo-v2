@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import date, datetime, time, timezone
 
 from fastapi import APIRouter, Cookie, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from echo_v2.app.guard_debug_page import GUARD_DEBUG_PAGE
@@ -14,7 +14,6 @@ from echo_v2.services.guard_review_service import (
     GuardReviewResponse,
     GuardReviewService,
 )
-from echo_v2.services.waiting_list_token_service import WaitingListTokenService
 
 _SESSION_COOKIE = "wls"
 
@@ -34,22 +33,8 @@ def _headers() -> dict[str, str]:
     }
 
 
-def build_guard_debug_router(
-    *, service: GuardReviewService, token_service: WaitingListTokenService
-) -> APIRouter:
+def build_guard_debug_router(*, service: GuardReviewService) -> APIRouter:
     router = APIRouter()
-
-    @router.get("/q/guard/{token}")
-    async def guard_token_exchange(token: str) -> Response:
-        resolved = await token_service.resolve(token)
-        if resolved is None:
-            return HTMLResponse(content="Guard review link expired", headers=_headers())
-        response = RedirectResponse(url="/debug/guard", status_code=303, headers=_headers())
-        response.set_cookie(
-            key=_SESSION_COOKIE, value=resolved.session_id, max_age=172800,
-            httponly=True, secure=True, samesite="lax", path="/api",
-        )
-        return response
 
     @router.get("/debug/guard", response_class=HTMLResponse)
     async def guard_debug_page() -> HTMLResponse:

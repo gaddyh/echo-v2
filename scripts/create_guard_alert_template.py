@@ -2,16 +2,16 @@
 
 The template is used for proactive Echo Guard notifications. It carries one
 safe, deterministic summary parameter and a dynamic URL button to the
-guardian-scoped Guard Review page.
+guardian-scoped Guard parent alert page.
 
 Template structure:
   Name:     guard_alert_v1
   Category: UTILITY
   Language: he
   Header:   "התראת בטיחות מ־Echo"
-  Body:     "Echo זיהה דפוס שייתכן שחשוב לשים לב אליו:\n{{1}}\n\nפתח/י את Guard Review לפרטים."
+  Body:     "Echo זיהה דפוס שייתכן שחשוב לשים לב אליו:\n{{1}}\n\nפתח/י את ההתראה לפרטים."
   Footer:   "Echo Guard — שמים לב בזמן"
-  Button:   URL "לפתיחת Guard Review" → {BASE_URL}/q/{token}
+  Button:   URL "לפתיחת ההתראה" → {BASE_URL}/q/guard/{token}
 
 Usage:
     .venv/bin/python scripts/create_guard_alert_template.py
@@ -52,7 +52,7 @@ def template_payload(base_url: str) -> dict[str, object]:
                 "text": (
                     "Echo זיהה דפוס שייתכן שחשוב לשים לב אליו:\n"
                     "{{1}}\n\n"
-                    "פתח/י את Guard Review לפרטים."
+                    "פתח/י את ההתראה לפרטים."
                 ),
                 "example": {
                     "body_text": [
@@ -69,9 +69,9 @@ def template_payload(base_url: str) -> dict[str, object]:
                 "buttons": [
                     {
                         "type": "URL",
-                        "text": "לפתיחת Guard Review",
-                        "url": f"{base_url}/q/{{{{1}}}}",
-                        "example": [f"{base_url}/q/example_guard_token"],
+                        "text": "לפתיחת ההתראה",
+                        "url": f"{base_url}/q/guard/{{{{1}}}}",
+                        "example": [f"{base_url}/q/guard/example_guard_token"],
                     }
                 ],
             },
@@ -105,7 +105,7 @@ async def main() -> None:
     print(f"  URL: {url}")
     print(f"  Category: {TEMPLATE_CATEGORY}")
     print(f"  Language: {TEMPLATE_LANGUAGE}")
-    print(f"  Review URL: {base_url}/q/{{token}}")
+    print(f"  Alert URL: {base_url}/q/guard/{{token}}")
     print()
 
     async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=10.0)) as client:

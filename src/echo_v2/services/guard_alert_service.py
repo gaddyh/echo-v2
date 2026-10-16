@@ -298,8 +298,7 @@ class GuardAlertService:
         )
         alert_id = str(uuid.uuid5(_NAMESPACE, event_key))
         action_id = str(uuid.uuid5(_NAMESPACE, f"{event_key}:action"))
-        _session_id, raw_token = await self._tokens.issue(guardian_user_id)
-        del _session_id
+        session_id, raw_token = await self._tokens.issue(guardian_user_id)
         category = outcome.threshold_family.replace("_", " ") if outcome.threshold_family else "safety concern"
         summary = f"Guard detected a potentially concerning {category}."
         ttl = self._urgent_ttl if kind is GuardAlertKind.URGENT else self._notify_ttl
@@ -322,7 +321,11 @@ class GuardAlertService:
             detected_at=detected_at,
             expires_at=detected_at + ttl,
             created_at=now,
-            metadata={"guardian_phone": guardian_phone, "review_token": raw_token},
+            metadata={
+                "guardian_phone": guardian_phone,
+                "review_token": raw_token,
+                "session_id": session_id,
+            },
         )
 
     def _scheduled_action(self, alert: GuardAlert, guardian_phone: str) -> ScheduledAction:
@@ -347,7 +350,7 @@ class GuardAlertService:
                     "name": self._template_name,
                     "language": self._template_language,
                     "body_params": [alert.summary],
-                    "url_suffix": f"q/guard/{alert.metadata['review_token'] if alert.metadata else ''}",
+                    "url_suffix": alert.metadata["review_token"] if alert.metadata else "",
                 },
             },
         )
