@@ -10,7 +10,7 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision = "0041_guard_parent_attention_delivery"
+revision = "0041_parent_attention"
 down_revision = "0040_guard_simple_assessments"
 branch_labels = None
 depends_on = None
