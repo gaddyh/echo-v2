@@ -69,6 +69,8 @@ class SafetyAssessment:
     summary: str
     evidence_message_ids: tuple[str, ...]
     reason: str
+    input_message_ids: tuple[str, ...] = ()
+    input_content_hash: str | None = None
     child_user_id: str = ""
     child_name: str = ""
     connection_id: str = ""

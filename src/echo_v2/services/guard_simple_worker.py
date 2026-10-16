@@ -30,6 +30,8 @@ class ParentAttentionDelivery(Protocol):
 
     async def reconcile_pending(self, *, limit: int) -> int: ...
 
+    async def mark_evaluation_failed(self, *, assessment_id: str, error: str) -> None: ...
+
 
 class GuardSimpleAnalysisWorker:
     def __init__(
@@ -106,10 +108,17 @@ class GuardSimpleAnalysisWorker:
             assessment=assessment,
         )
         if status == "committed" and assessment_id and self._delivery is not None:
-            await self._delivery.evaluate_committed(
-                assessment=assessment,
-                assessment_id=assessment_id,
-            )
+            try:
+                await self._delivery.evaluate_committed(
+                    assessment=assessment,
+                    assessment_id=assessment_id,
+                )
+            except Exception as exc:
+                await self._delivery.mark_evaluation_failed(
+                    assessment_id=assessment_id,
+                    error=str(exc),
+                )
+                raise
         _logger.info(
             "Baseline B analysis %s for %s/%s version=%d result=%s parent_should_know=%s",
             status,

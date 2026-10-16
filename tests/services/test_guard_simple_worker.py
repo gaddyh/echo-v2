@@ -12,6 +12,9 @@ from echo_v2.persistence.guard_simple_repositories import (
     InMemoryGuardSimpleAssessmentCommitRepository,
     InMemoryGuardSimpleAssessmentRepository,
 )
+from echo_v2.persistence.parent_attention_delivery import (
+    InMemoryParentAttentionDeliveryOutcomeRepository,
+)
 from echo_v2.services.guard_simple_worker import GuardSimpleAnalysisWorker
 
 pytestmark = pytest.mark.asyncio
@@ -67,11 +70,12 @@ async def test_worker_commits_current_version_and_delivers() -> None:
         connection_id="connection",
     )
     assessments = InMemoryGuardSimpleAssessmentRepository()
+    outcomes = InMemoryParentAttentionDeliveryOutcomeRepository()
     delivery = FakeDelivery()
     worker = GuardSimpleAnalysisWorker(
         state_repo=states,
         processor=FakeProcessor(),
-        commit_repo=InMemoryGuardSimpleAssessmentCommitRepository(states, assessments),
+        commit_repo=InMemoryGuardSimpleAssessmentCommitRepository(states, assessments, outcomes),
         users=FakeUsers(),
         delivery=delivery,
     )
@@ -80,6 +84,8 @@ async def test_worker_commits_current_version_and_delivers() -> None:
     assert len(assessments.assessments) == 1
     assert assessments.assessments[0].parent_should_know is True
     assert len(delivery.assessments) == 1
+    outcome = await outcomes.get("guard-simple-1")
+    assert outcome is not None and outcome.reason == "pending_evaluation"
     state = await states.get("child", "chat@c.us")
     assert state is not None
     assert state.last_parent_should_know is True

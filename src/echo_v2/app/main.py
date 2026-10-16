@@ -527,6 +527,9 @@ def create_app() -> FastAPI:
         links=repos.guardian_child_links,
         users=user_repo,
         delivery=repos.parent_attention_delivery,
+        outcomes=repos.parent_attention_delivery_outcomes,
+        assessments=repos.guard_simple_assessments,
+        actions=repos.scheduled_actions,
         scheduling=scheduling_service,
         template_name=os.environ.get(
             "GUARD_PARENT_ATTENTION_TEMPLATE_NAME", "guard_parent_attention_v1"
@@ -671,9 +674,11 @@ def create_app() -> FastAPI:
     from echo_v2.app.guard_parent_alert_routes import build_guard_parent_alert_router
     from echo_v2.app.waiting_list_routes import build_waiting_list_router
     from echo_v2.services.debug_analysis_service import DebugAnalysisService
-    from echo_v2.services.guard_operations_service import GuardOperationsService
     from echo_v2.services.guard_parent_alert_service import GuardParentAlertService
     from echo_v2.services.guard_review_service import GuardReviewService
+    from echo_v2.services.guard_simple_telemetry_service import (
+        GuardSimpleTelemetryService,
+    )
     from echo_v2.services.waiting_list_action_service import WaitingListActionService
 
     waiting_list_service = WaitingListActionService(
@@ -719,18 +724,18 @@ def create_app() -> FastAPI:
         messages=repos.messages,
     )
     guard_debug_router = build_guard_debug_router(service=guard_review_service)
-    guard_operations_service = GuardOperationsService(
+    guard_activity_service = GuardSimpleTelemetryService(
         token_service=token_service,
         links=repos.guardian_child_links,
+        users=user_repo,
         chat_states=repos.guard_chat_state,
-        analyses=repos.guard_analysis_results,
-        alerts=repos.guard_alerts,
-        telemetry=repos.guard_analysis_telemetry,
+        assessments=repos.guard_simple_assessments,
+        outcomes=repos.parent_attention_delivery_outcomes,
         actions=repos.scheduled_actions,
         messages=repos.messages,
     )
     guard_operations_router = build_guard_operations_router(
-        service=guard_operations_service, token_service=token_service
+        service=guard_activity_service, token_service=token_service
     )
     guard_demo_router = build_guard_demo_router(live_compare=guard_live_compare)
 

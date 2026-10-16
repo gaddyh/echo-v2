@@ -147,6 +147,8 @@ async def test_missing_sender_attribution_fails_closed() -> None:
     assert result.parent_should_know is None
     assert result.child_role is ChildRole.UNKNOWN
     assert not result.identity_verified
+    assert result.input_message_ids == ("m1",)
+    assert result.input_content_hash
     assert assessments.assessments[0].parent_should_know is None
 
 
