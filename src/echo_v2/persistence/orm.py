@@ -64,6 +64,7 @@ __all__ = [
     "GuardEvalJudgmentRow",
     "GuardEvalRunRow",
     "GuardEvalSnapshotRow",
+    "GuardParentAttentionDeliveryRow",
     "GuardSimpleAssessmentRow",
     "GuardThresholdStateRow",
     "GuardianChildLinkRow",
@@ -645,6 +646,10 @@ class GuardChatStateRow(Base):
     last_decision: Mapped[str] = mapped_column(
         Text, nullable=False, server_default="none"
     )
+    last_parent_should_know: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    connection_id: Mapped[str | None] = mapped_column(
+        Uuid, ForeignKey("whatsapp_connections.id", ondelete="SET NULL"), nullable=True
+    )
     last_analysis_at: Mapped[datetime | None] = mapped_column(
         TIMESTAMP(timezone=True), nullable=True
     )
@@ -797,6 +802,7 @@ class GuardSimpleAssessmentRow(Base):
     )
     chat_id: Mapped[str] = mapped_column(Text, nullable=False)
     chat_type: Mapped[str] = mapped_column(Text, nullable=False)
+    chat_name: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
     timezone: Mapped[str] = mapped_column(Text, nullable=False)
     window_start: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False)
     window_end: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False)
@@ -834,6 +840,31 @@ class GuardSimpleAssessmentRow(Base):
             "ix_guard_simple_assessments_child_chat_created",
             "child_user_id", "chat_id", "created_at",
         ),
+    )
+
+
+class GuardParentAttentionDeliveryRow(Base):
+    """Minimal new-evidence delivery history for Baseline B."""
+
+    __tablename__ = "guard_parent_attention_delivery"
+
+    child_user_id: Mapped[str] = mapped_column(
+        Uuid, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    chat_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    last_delivered_assessment_id: Mapped[str | None] = mapped_column(
+        Uuid, ForeignKey("guard_simple_assessments.id", ondelete="SET NULL"), nullable=True
+    )
+    last_delivered_evidence_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    last_delivered_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    last_action_id: Mapped[str | None] = mapped_column(
+        Uuid, ForeignKey("scheduled_actions.id", ondelete="SET NULL"), nullable=True
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
     )
 
 

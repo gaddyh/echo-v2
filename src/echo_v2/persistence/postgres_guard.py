@@ -128,7 +128,7 @@ class PostgresGuardChatStateRepository:
         self, *, child_user_id: str, chat_id: str, observed_at: datetime,
         next_analysis_at: datetime, pending_since: datetime,
         next_analysis_reason: str | None = None, chat_name: str | None = None,
-        is_group: bool = False,
+        connection_id: str | None = None, is_group: bool = False,
     ) -> GuardChatState:
         async with self._session_factory() as session:
             stmt = (
@@ -138,7 +138,7 @@ class PostgresGuardChatStateRepository:
                     last_message_at=observed_at, last_analyzed_version=0,
                     last_decision=GuardDecision.NONE.value, pending_since=pending_since,
                     next_analysis_at=next_analysis_at, next_analysis_reason=next_analysis_reason,
-                    chat_name=chat_name, is_group=is_group,
+                    connection_id=connection_id, chat_name=chat_name, is_group=is_group,
                 )
                 .on_conflict_do_update(
                     index_elements=["child_user_id", "chat_id"],
@@ -151,6 +151,7 @@ class PostgresGuardChatStateRepository:
                             GuardChatStateRow.next_analysis_reason, next_analysis_reason
                         ),
                         "chat_name": func.coalesce(chat_name, GuardChatStateRow.chat_name),
+                        "connection_id": func.coalesce(connection_id, GuardChatStateRow.connection_id),
                         "is_group": is_group,
                         "updated_at": datetime.now(timezone.utc),
                     },
@@ -187,6 +188,7 @@ class PostgresGuardChatStateRepository:
     async def mark_processed(
         self, child_user_id: str, chat_id: str, target_version: int, *,
         decision: GuardDecision, analyzed_at: datetime,
+        parent_should_know: bool | None = None,
     ) -> bool:
         async with self._session_factory() as session:
             stmt = update(GuardChatStateRow).where(
@@ -195,6 +197,7 @@ class PostgresGuardChatStateRepository:
                 GuardChatStateRow.activity_version == target_version,
             ).values(
                 last_analyzed_version=target_version, last_decision=decision.value,
+                last_parent_should_know=parent_should_know,
                 last_analysis_at=analyzed_at, pending_since=None, next_analysis_at=None,
                 next_analysis_reason=None, updated_at=analyzed_at,
             )
@@ -209,6 +212,8 @@ class PostgresGuardChatStateRepository:
             activity_version=row.activity_version, last_message_at=row.last_message_at,
             last_analyzed_version=row.last_analyzed_version,
             last_decision=GuardDecision(row.last_decision),
+            last_parent_should_know=row.last_parent_should_know,
+            connection_id=str(row.connection_id) if row.connection_id else None,
             last_analysis_at=row.last_analysis_at, pending_since=row.pending_since,
             next_analysis_at=row.next_analysis_at, next_analysis_reason=row.next_analysis_reason,
             chat_name=row.chat_name, is_group=row.is_group,

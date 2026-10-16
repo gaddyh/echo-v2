@@ -721,6 +721,7 @@ class PostgresIngestionRepository:
         observed_at: datetime,
         next_analysis_at: datetime | None,
         chat_name: str | None = None,
+        connection_id: str | None = None,
         analysis_target: AnalysisTarget = AnalysisTarget.WFM,
         guard_schedule_reason: str | None = None,
     ) -> bool:
@@ -801,6 +802,7 @@ class PostgresIngestionRepository:
                             pending_since=observed_at,
                             next_analysis_at=next_analysis_at,
                             next_analysis_reason=guard_schedule_reason,
+                            connection_id=connection_id or message.connection_id,
                             chat_name=chat_name,
                             is_group=message.chat_id.endswith("@g.us"),
                         )
@@ -820,6 +822,7 @@ class PostgresIngestionRepository:
                                 ),
                                 "updated_at": datetime.now(timezone.utc),
                                 **({"chat_name": chat_name} if chat_name else {}),
+                                "connection_id": connection_id or message.connection_id,
                                 "is_group": message.chat_id.endswith("@g.us"),
                             },
                             where=GuardChatStateRow.last_message_at <= observed_at,

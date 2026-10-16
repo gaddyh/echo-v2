@@ -152,6 +152,12 @@ class PostgresUserRepository:
             row = result.scalar_one_or_none()
             return row if row else None
 
+    async def get_timezone_by_id(self, user_id: str) -> str | None:
+        async with self._session_factory() as session:
+            stmt = select(UserRow.timezone).where(UserRow.id == user_id)
+            value = (await session.execute(stmt)).scalar_one_or_none()
+            return value
+
     async def get_user_info_by_id(
         self, user_id: str
     ) -> tuple[str, str | None] | None:

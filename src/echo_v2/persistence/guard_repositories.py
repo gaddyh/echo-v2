@@ -59,6 +59,7 @@ class GuardChatStateRepository(Protocol):
         pending_since: datetime,
         next_analysis_reason: str | None = None,
         chat_name: str | None = None,
+        connection_id: str | None = None,
         is_group: bool = False,
     ) -> GuardChatState: ...
 
@@ -74,6 +75,7 @@ class GuardChatStateRepository(Protocol):
         *,
         decision: GuardDecision,
         analyzed_at: datetime,
+        parent_should_know: bool | None = None,
     ) -> bool: ...
 
 
@@ -208,6 +210,7 @@ class InMemoryGuardChatStateRepository:
         pending_since: datetime,
         next_analysis_reason: str | None = None,
         chat_name: str | None = None,
+        connection_id: str | None = None,
         is_group: bool = False,
     ) -> GuardChatState:
         key = (child_user_id, chat_id)
@@ -222,6 +225,7 @@ class InMemoryGuardChatStateRepository:
                 next_analysis_at=next_analysis_at,
                 next_analysis_reason=next_analysis_reason,
                 chat_name=chat_name,
+                connection_id=connection_id,
                 is_group=is_group,
             )
         elif observed_at >= existing.last_message_at:
@@ -233,6 +237,7 @@ class InMemoryGuardChatStateRepository:
                 next_analysis_at=min(existing.next_analysis_at or next_analysis_at, next_analysis_at),
                 next_analysis_reason=existing.next_analysis_reason or next_analysis_reason,
                 chat_name=chat_name or existing.chat_name,
+                connection_id=connection_id or existing.connection_id,
                 is_group=is_group,
                 updated_at=datetime.now(timezone.utc),
             )
@@ -263,6 +268,7 @@ class InMemoryGuardChatStateRepository:
         *,
         decision: GuardDecision,
         analyzed_at: datetime,
+        parent_should_know: bool | None = None,
     ) -> bool:
         key = (child_user_id, chat_id)
         state = self._states.get(key)
@@ -272,6 +278,7 @@ class InMemoryGuardChatStateRepository:
             state,
             last_analyzed_version=target_version,
             last_decision=decision,
+            last_parent_should_know=parent_should_know,
             last_analysis_at=analyzed_at,
             pending_since=None,
             next_analysis_at=None,

@@ -46,6 +46,8 @@ class GuardChatState:
     last_message_at: datetime
     last_analyzed_version: int = 0
     last_decision: GuardDecision = GuardDecision.NONE
+    last_parent_should_know: bool | None = None
+    connection_id: str | None = None
     last_analysis_at: datetime | None = None
     pending_since: datetime | None = None
     next_analysis_at: datetime | None = None

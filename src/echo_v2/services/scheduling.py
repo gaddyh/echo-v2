@@ -303,7 +303,7 @@ class SchedulingService:
             raise PermanentError(error)
 
         if (
-            action.payload.get("kind") == "guard_alert"
+            action.payload.get("kind") in {"guard_alert", "guard_parent_attention"}
             and self._guard_send_validator is not None
         ):
             allowed = await self._guard_send_validator(action.payload)
