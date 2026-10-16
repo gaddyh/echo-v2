@@ -123,6 +123,13 @@ async def test_actionable_result_creates_one_alert_and_scheduled_action() -> Non
     assert len(pending) == 1
     assert len(alerts.alerts) == 1
     assert pending[0].payload["idempotency_key"].startswith("guard:alert:")
+    alert = next(iter(alerts.alerts.values()))
+    assert alert.metadata == {
+        "guardian_phone": "+972500000001",
+        "review_token": "token-guardian",
+        "session_id": "session-guardian",
+    }
+    assert pending[0].payload["template"]["url_suffix"] == "token-guardian"
 
     assert await service.evaluate_committed(
         record=record(result_id="result-1", version=1, at=BASE),

@@ -173,6 +173,22 @@ class PostgresGuardAlertRepository(GuardAlertRepository):
                 .values(status=status)
             )
 
+    async def get_by_session_id(
+        self, *, session_id: str, guardian_user_id: str
+    ) -> GuardAlert | None:
+        async with self._session() as session:
+            row = (
+                await session.execute(
+                    select(GuardAlertRow)
+                    .where(
+                        GuardAlertRow.guardian_user_id == guardian_user_id,
+                        GuardAlertRow.metadata_json["session_id"].astext == session_id,
+                    )
+                    .order_by(GuardAlertRow.created_at.desc())
+                )
+            ).scalars().first()
+            return _alert(row) if row else None
+
     async def list_evaluations_for_chat(
         self, *, child_user_id: str, chat_id: str, limit: int = 500
     ) -> list[GuardAlertEvaluation]:
@@ -271,6 +287,18 @@ class InMemoryGuardAlertRepository:
             (alert for alert in self.alerts.values() if alert.logical_event_key == logical_event_key),
             None,
         )
+
+    async def get_by_session_id(
+        self, *, session_id: str, guardian_user_id: str
+    ) -> GuardAlert | None:
+        rows = [
+            alert
+            for alert in self.alerts.values()
+            if alert.guardian_user_id == guardian_user_id
+            and alert.metadata
+            and alert.metadata.get("session_id") == session_id
+        ]
+        return max(rows, key=lambda alert: alert.created_at, default=None)
 
     async def save_alert(self, alert: GuardAlert) -> bool:
         if await self.get_by_event_key(alert.logical_event_key) is not None:

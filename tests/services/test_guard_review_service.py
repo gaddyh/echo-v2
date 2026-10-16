@@ -137,18 +137,12 @@ async def test_invalid_and_unauthorized_feedback() -> None:
 async def test_route_auth_and_feedback() -> None:
     service, session_id, _ = await setup()
     app = FastAPI()
-    app.include_router(build_guard_debug_router(service=service, token_service=service._tokens))
+    app.include_router(build_guard_debug_router(service=service))
     async with AsyncClient(transport=ASGITransport(app=app), base_url="https://test") as client:
         assert (await client.get("/api/debug/guard")).status_code == 401
         assert (await client.post("/api/debug/guard/feedback", json={"result_id": "x", "label": "correct"})).status_code == 401
         assert (await client.get("/api/debug/guard", cookies={"wls": "missing"})).status_code == 401
         assert (await client.get("/debug/guard")).status_code == 200
-        expired = await client.get("/q/guard/not-a-token")
-        assert expired.status_code == 200
-        _new_session, raw_token = await service._tokens.issue("guardian")
-        token_response = await client.get(f"/q/guard/{raw_token}")
-        assert token_response.status_code == 303
-        assert "/debug/guard" in token_response.headers["location"]
         response = await client.get("/api/debug/guard", cookies={"wls": session_id})
         assert response.status_code == 200
         assert response.json()["results"][0]["previous_decision"] == "none"

@@ -614,9 +614,11 @@ def create_app() -> FastAPI:
     from echo_v2.app.guard_debug_routes import build_guard_debug_router
     from echo_v2.app.guard_demo_routes import build_guard_demo_router
     from echo_v2.app.guard_operations_routes import build_guard_operations_router
+    from echo_v2.app.guard_parent_alert_routes import build_guard_parent_alert_router
     from echo_v2.app.waiting_list_routes import build_waiting_list_router
     from echo_v2.services.debug_analysis_service import DebugAnalysisService
     from echo_v2.services.guard_operations_service import GuardOperationsService
+    from echo_v2.services.guard_parent_alert_service import GuardParentAlertService
     from echo_v2.services.guard_review_service import GuardReviewService
     from echo_v2.services.waiting_list_action_service import WaitingListActionService
 
@@ -646,6 +648,15 @@ def create_app() -> FastAPI:
         bot_phone=bot_phone,
         debug_service=debug_service,
     )
+    guard_parent_alert_service = GuardParentAlertService(
+        token_service=token_service,
+        alerts=repos.guard_alerts,
+        users=user_repo,
+    )
+    guard_parent_alert_router = build_guard_parent_alert_router(
+        token_service=token_service,
+        service=guard_parent_alert_service,
+    )
     guard_review_service = GuardReviewService(
         token_service=token_service,
         links=repos.guardian_child_links,
@@ -653,9 +664,7 @@ def create_app() -> FastAPI:
         feedback=repos.guard_feedback,
         messages=repos.messages,
     )
-    guard_debug_router = build_guard_debug_router(
-        service=guard_review_service, token_service=token_service
-    )
+    guard_debug_router = build_guard_debug_router(service=guard_review_service)
     guard_operations_service = GuardOperationsService(
         token_service=token_service,
         links=repos.guardian_child_links,
@@ -868,6 +877,7 @@ def create_app() -> FastAPI:
 
     # Waiting-list mini web app: token→cookie exchange + JSON API.
     app.include_router(waiting_list_router)
+    app.include_router(guard_parent_alert_router)
     app.include_router(guard_debug_router)
     app.include_router(guard_operations_router)
     app.include_router(guard_demo_router)
