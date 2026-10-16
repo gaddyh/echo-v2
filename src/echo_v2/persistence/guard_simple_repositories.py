@@ -6,10 +6,24 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Protocol, runtime_checkable
 
+from echo_v2.domain.guard import GuardChatState
 from echo_v2.domain.guard_simple import SafetyAssessment
+from echo_v2.persistence.guard_repositories import GuardChatStateRepository
+from echo_v2.services.guard_taxonomy import GuardDecision
 
 
 @runtime_checkable
+class GuardSimpleAssessmentCommitRepository(Protocol):
+    async def commit_if_current(
+        self,
+        *,
+        child_user_id: str,
+        chat_id: str,
+        target_version: int,
+        assessment: SafetyAssessment,
+    ) -> tuple[str, str | None]: ...
+
+
 class GuardSimpleAssessmentRepository(Protocol):
     async def save(self, assessment: SafetyAssessment) -> str: ...
 
@@ -92,7 +106,41 @@ class InMemoryGuardSimpleAssessmentRepository:
         return False
 
 
+class InMemoryGuardSimpleAssessmentCommitRepository:
+    def __init__(
+        self,
+        state_repo: GuardChatStateRepository,
+        assessment_repo: InMemoryGuardSimpleAssessmentRepository,
+    ) -> None:
+        self._state = state_repo
+        self._assessments = assessment_repo
+
+    async def commit_if_current(
+        self,
+        *,
+        child_user_id: str,
+        chat_id: str,
+        target_version: int,
+        assessment: SafetyAssessment,
+    ) -> tuple[str, str | None]:
+        state: GuardChatState | None = await self._state.get(child_user_id, chat_id)
+        if state is None or state.activity_version != target_version:
+            return "stale", None
+        assessment_id = await self._assessments.save(assessment)
+        committed = await self._state.mark_processed(
+            child_user_id,
+            chat_id,
+            target_version,
+            decision=GuardDecision.NONE,
+            analyzed_at=datetime.now(timezone.utc),
+            parent_should_know=assessment.parent_should_know,
+        )
+        return ("committed", assessment_id) if committed else ("stale", None)
+
+
 __all__ = [
+    "GuardSimpleAssessmentCommitRepository",
     "GuardSimpleAssessmentRepository",
+    "InMemoryGuardSimpleAssessmentCommitRepository",
     "InMemoryGuardSimpleAssessmentRepository",
 ]

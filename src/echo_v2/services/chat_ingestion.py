@@ -78,6 +78,8 @@ class ChatIngestionService:
         guard_chat_state_repo: GuardChatStateRepository | None = None,
         guard_schedule_policy: GuardSchedulePolicy | None = None,
         guard_shadow_enabled: bool = False,
+        guard_simple_enabled: bool = False,
+        guard_simple_quiet_period_seconds: float = 300.0,
     ) -> None:
         self._ingestion_repo = ingestion_repo
         self._quiet_period = quiet_period_seconds
@@ -87,6 +89,8 @@ class ChatIngestionService:
         self._guard_state = guard_chat_state_repo
         self._guard_policy = guard_schedule_policy or GuardSchedulePolicy()
         self._guard_shadow_enabled = guard_shadow_enabled
+        self._guard_simple_enabled = guard_simple_enabled
+        self._guard_simple_quiet_period = guard_simple_quiet_period_seconds
 
     async def ingest_message(
         self,
@@ -113,7 +117,7 @@ class ChatIngestionService:
 
         guard_enabled = False
         previous_guard_state = None
-        if self._guard_shadow_enabled and self._child_links is not None:
+        if (self._guard_shadow_enabled or self._guard_simple_enabled) and self._child_links is not None:
             link = await self._child_links.get_active_for_child(user_id)
             guard_enabled = link is not None
             if guard_enabled and self._guard_state is not None:
@@ -131,7 +135,10 @@ class ChatIngestionService:
         ):
             effective_chat_name = event.sender_name
         analysis_target = AnalysisTarget.GUARD if guard_enabled else AnalysisTarget.WFM
-        if guard_enabled:
+        if guard_enabled and self._guard_simple_enabled:
+            next_analysis_at = message_time + timedelta(seconds=self._guard_simple_quiet_period)
+            guard_schedule_reason = "fixed_parent_attention_quiet_period"
+        elif guard_enabled:
             previous_decision = (
                 previous_guard_state.last_decision
                 if previous_guard_state is not None
@@ -194,6 +201,7 @@ class ChatIngestionService:
             observed_at=message_time,
             next_analysis_at=next_analysis_at,
             chat_name=effective_chat_name,
+            connection_id=connection_id,
             analysis_target=analysis_target,
             guard_schedule_reason=guard_schedule_reason,
         )

@@ -47,6 +47,7 @@ class SimpleConversation:
     window_start: datetime
     window_end: datetime
     monitored_child_role: str
+    chat_name: str = ""
     messages: tuple[SimpleConversationMessage, ...] = ()
     truncated: bool = False
     omitted_message_count: int = 0
@@ -73,6 +74,7 @@ class SafetyAssessment:
     connection_id: str = ""
     chat_id: str = ""
     chat_type: str = ""
+    chat_name: str = ""
     timezone: str = ""
     window_start: datetime | None = None
     window_end: datetime | None = None

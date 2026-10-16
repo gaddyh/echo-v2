@@ -191,6 +191,10 @@ class SimpleGuardConversationBuilder:
             window_start=window_start,
             window_end=window_end,
             monitored_child_role="child",
+            chat_name=next(
+                (message.chat_name for message in reversed(messages) if message.chat_name),
+                chat_id,
+            ),
             messages=tuple(simple_messages),
             truncated=window.truncated,
             omitted_message_count=window.omitted_message_count,

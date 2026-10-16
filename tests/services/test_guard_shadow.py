@@ -120,6 +120,29 @@ async def test_guard_queue_ownership_skips_wfm_and_allows_groups() -> None:
     assert state.next_analysis_at == BASE + timedelta(seconds=120)
 
 
+async def test_guard_simple_queue_uses_fixed_quiet_period() -> None:
+    messages = InMemoryMessageRepository()
+    wfm_state = InMemoryChatStateRepository()
+    guard_state = InMemoryGuardChatStateRepository()
+    links = InMemoryGuardianChildLinkRepository()
+    await links.upsert_active(guardian_user_id="guardian", child_user_id="child", now=BASE)
+    service = ChatIngestionService(
+        InMemoryIngestionRepository(messages, wfm_state, guard_state),
+        child_link_repo=links,
+        guard_chat_state_repo=guard_state,
+        guard_simple_enabled=True,
+        guard_simple_quiet_period_seconds=300,
+    )
+
+    assert await service.ingest_message(
+        _event("group@g.us", "simple-one", BASE), user_id="child", connection_id="conn-uuid"
+    )
+    state = await guard_state.get("child", "group@g.us")
+    assert state is not None
+    assert state.next_analysis_at == BASE + timedelta(seconds=300)
+    assert state.connection_id == "conn-uuid"
+
+
 async def test_guard_conversation_roles_are_stable_and_identity_free() -> None:
     messages = InMemoryMessageRepository()
     for sender_id, at in (("z", BASE), ("a", BASE + timedelta(seconds=1))):

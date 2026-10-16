@@ -59,6 +59,9 @@ from echo_v2.persistence.postgres_guard_simple import (
     PostgresGuardSimpleAssessmentRepository,
 )
 from echo_v2.persistence.postgres_idempotency import PostgresIdempotencyStore
+from echo_v2.persistence.postgres_parent_attention_delivery import (
+    PostgresParentAttentionDeliveryRepository,
+)
 from echo_v2.persistence.postgres_scheduled_actions import (
     PostgresScheduledActionRepository,
 )
@@ -103,6 +106,7 @@ class PostgresRepos:
     guard_analysis_commit: PostgresGuardAnalysisCommitRepository
     guard_analysis_telemetry: PostgresGuardAnalysisTelemetryRepository
     guard_simple_assessments: PostgresGuardSimpleAssessmentRepository
+    parent_attention_delivery: PostgresParentAttentionDeliveryRepository
     guard_alerts: PostgresGuardAlertRepository
     guard_feedback: PostgresGuardFeedbackRepository
     guard_eval: PostgresGuardEvalRepository
@@ -153,6 +157,7 @@ def build_postgres_repos(settings: DBSettings) -> PostgresRepos:
     guard_analysis_commit = PostgresGuardAnalysisCommitRepository(factory)
     guard_analysis_telemetry = PostgresGuardAnalysisTelemetryRepository(factory)
     guard_simple_assessments = PostgresGuardSimpleAssessmentRepository(factory)
+    parent_attention_delivery = PostgresParentAttentionDeliveryRepository(factory)
     guard_alerts = PostgresGuardAlertRepository(factory)
     guard_feedback = PostgresGuardFeedbackRepository(factory)
     guard_eval = PostgresGuardEvalRepository(factory)
@@ -190,6 +195,7 @@ def build_postgres_repos(settings: DBSettings) -> PostgresRepos:
         guard_analysis_commit=guard_analysis_commit,
         guard_analysis_telemetry=guard_analysis_telemetry,
         guard_simple_assessments=guard_simple_assessments,
+        parent_attention_delivery=parent_attention_delivery,
         guard_alerts=guard_alerts,
         guard_feedback=guard_feedback,
         guard_eval=guard_eval,

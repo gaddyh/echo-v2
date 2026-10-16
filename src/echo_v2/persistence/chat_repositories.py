@@ -384,6 +384,7 @@ class IngestionRepository(Protocol):
         observed_at: datetime,
         next_analysis_at: datetime | None,
         chat_name: str | None = None,
+        connection_id: str | None = None,
         analysis_target: AnalysisTarget = AnalysisTarget.WFM,
         guard_schedule_reason: str | None = None,
     ) -> bool:
@@ -423,6 +424,7 @@ class InMemoryIngestionRepository:
         observed_at: datetime,
         next_analysis_at: datetime | None,
         chat_name: str | None = None,
+        connection_id: str | None = None,
         analysis_target: AnalysisTarget = AnalysisTarget.WFM,
         guard_schedule_reason: str | None = None,
     ) -> bool:
@@ -449,6 +451,7 @@ class InMemoryIngestionRepository:
                 pending_since=observed_at,
                 next_analysis_reason=guard_schedule_reason,
                 chat_name=chat_name,
+                connection_id=connection_id or message.connection_id,
                 is_group=message.chat_id.endswith("@g.us"),
             )
         return True

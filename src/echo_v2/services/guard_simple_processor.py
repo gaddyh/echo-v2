@@ -89,11 +89,13 @@ class GuardSimpleProcessor:
             summary = "There are no messages in the observed window."
             reason = "The current-day context is empty, so a reliable determination is not possible."
             evidence_ids = ()
-        if not conversation.identity_verified:
+        identity_verified = conversation.identity_verified and bool(child_name.strip())
+        identity_reason = conversation.identity_reason
+        if not identity_verified:
             parent_should_know = None
             child_role = ChildRole.UNKNOWN
             summary = "The monitored child's identity could not be verified in this context."
-            reason = conversation.identity_reason or "Sender identity is uncertain."
+            reason = identity_reason or "The child's configured name is unavailable."
             evidence_ids = ()
         evidence_by_id = {message.id: message for message in conversation.messages}
         evidence_timestamps = tuple(
@@ -122,16 +124,18 @@ class GuardSimpleProcessor:
             reason=reason,
             evidence_message_ids=evidence_ids,
             child_user_id=child_user_id,
+            child_name=child_name,
             connection_id=connection_id,
             chat_id=chat_id,
             chat_type=conversation.chat_type,
+            chat_name=conversation.chat_name,
             timezone=conversation.timezone,
             window_start=conversation.window_start,
             window_end=conversation.window_end,
             truncated=conversation.truncated,
             omitted_message_count=conversation.omitted_message_count,
-            identity_verified=conversation.identity_verified,
-            identity_reason=conversation.identity_reason,
+            identity_verified=identity_verified,
+            identity_reason=identity_reason,
             created_at=datetime.now(timezone.utc),
             diagnostics={
                 **current.diagnostics,

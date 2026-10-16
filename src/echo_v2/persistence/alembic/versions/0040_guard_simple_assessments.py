@@ -24,6 +24,7 @@ def upgrade() -> None:
         sa.Column("connection_id", postgresql.UUID(as_uuid=False), nullable=False),
         sa.Column("chat_id", sa.Text(), nullable=False),
         sa.Column("chat_type", sa.Text(), nullable=False),
+        sa.Column("chat_name", sa.Text(), server_default="", nullable=False),
         sa.Column("timezone", sa.Text(), nullable=False),
         sa.Column("window_start", sa.TIMESTAMP(timezone=True), nullable=False),
         sa.Column("window_end", sa.TIMESTAMP(timezone=True), nullable=False),

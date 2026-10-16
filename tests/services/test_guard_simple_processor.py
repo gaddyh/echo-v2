@@ -226,6 +226,24 @@ async def test_same_day_parent_concern_is_not_reused_as_recursive_context() -> N
     assert analyzer.conversations[0].prior_concern is None
 
 
+async def test_missing_child_name_fails_closed() -> None:
+    messages = InMemoryMessageRepository()
+    await messages.save(message("m1", BASE))
+    processor = GuardSimpleProcessor(
+        message_repo=messages,
+        analyzer=FakeAnalyzer(True),
+        assessment_repo=InMemoryGuardSimpleAssessmentRepository(),
+    )
+
+    result = await processor.process(
+        child_user_id="child", connection_id="connection", chat_id="group@g.us",
+        child_name="", as_of=BASE,
+    )
+
+    assert result.parent_should_know is None
+    assert not result.identity_verified
+
+
 async def test_empty_day_is_unknown_and_does_not_create_false_result() -> None:
     messages = InMemoryMessageRepository()
     analyzer = FakeAnalyzer(False)
