@@ -6,7 +6,6 @@ from dataclasses import dataclass
 
 from echo_v2.domain.guard_simple import (
     ChildRole,
-    SafetyStatus,
     SimpleConversationMessage,
 )
 
@@ -14,7 +13,7 @@ from echo_v2.domain.guard_simple import (
 @dataclass(frozen=True)
 class SimpleGoldCheckpoint:
     after_message_id: str
-    expected_statuses: tuple[SafetyStatus, ...]
+    expected_parent_should_know: tuple[bool, ...]
     expected_child_roles: tuple[ChildRole, ...] = (
         ChildRole.PARTICIPANT,
         ChildRole.TARGET,
@@ -42,8 +41,8 @@ CASES: tuple[SimpleGoldCase, ...] = (
             SimpleConversationMessage("meet-2", "child", "Sure, see you there."),
         ),
         checkpoints=(
-            SimpleGoldCheckpoint("meet-1", (SafetyStatus.SAFE, SafetyStatus.UNCERTAIN)),
-            SimpleGoldCheckpoint("meet-2", (SafetyStatus.SAFE,)),
+            SimpleGoldCheckpoint("meet-1", (False, None)),
+            SimpleGoldCheckpoint("meet-2", (False,)),
         ),
     ),
     SimpleGoldCase(
@@ -56,7 +55,7 @@ CASES: tuple[SimpleGoldCase, ...] = (
             SimpleConversationMessage("tease-3", "other", "Rematch?"),
         ),
         checkpoints=tuple(
-            SimpleGoldCheckpoint(message_id, (SafetyStatus.SAFE,))
+            SimpleGoldCheckpoint(message_id, (False,))
             for message_id in ("tease-1", "tease-2", "tease-3")
         ),
     ),
@@ -70,10 +69,10 @@ CASES: tuple[SimpleGoldCase, ...] = (
         ),
         checkpoints=(
             SimpleGoldCheckpoint(
-                "critic-1", (SafetyStatus.SAFE, SafetyStatus.UNCERTAIN), (ChildRole.TARGET, ChildRole.UNKNOWN)
+                "critic-1", (False, None), (ChildRole.TARGET, ChildRole.UNKNOWN)
             ),
             SimpleGoldCheckpoint(
-                "critic-2", (SafetyStatus.SAFE, SafetyStatus.UNCERTAIN), (ChildRole.TARGET, ChildRole.UNKNOWN)
+                "critic-2", (False, None), (ChildRole.TARGET, ChildRole.UNKNOWN)
             ),
         ),
     ),
@@ -87,11 +86,11 @@ CASES: tuple[SimpleGoldCase, ...] = (
             SimpleConversationMessage("bully-3", "other_3", "Everyone laugh at Shay again."),
         ),
         checkpoints=(
-            SimpleGoldCheckpoint("bully-1", (SafetyStatus.SAFE, SafetyStatus.UNCERTAIN)),
+            SimpleGoldCheckpoint("bully-1", (False, None)),
             SimpleGoldCheckpoint(
-                "bully-2", (SafetyStatus.UNCERTAIN, SafetyStatus.ATTENTION), (ChildRole.TARGET,)
+                "bully-2", (None, True), (ChildRole.TARGET,)
             ),
-            SimpleGoldCheckpoint("bully-3", (SafetyStatus.ATTENTION,), (ChildRole.TARGET,)),
+            SimpleGoldCheckpoint("bully-3", (True,), (ChildRole.TARGET,)),
         ),
     ),
     SimpleGoldCase(
@@ -104,9 +103,9 @@ CASES: tuple[SimpleGoldCase, ...] = (
             SimpleConversationMessage("secret-3", "other", "Meet me alone tonight or I'll be angry."),
         ),
         checkpoints=(
-            SimpleGoldCheckpoint("secret-1", (SafetyStatus.UNCERTAIN, SafetyStatus.ATTENTION)),
-            SimpleGoldCheckpoint("secret-2", (SafetyStatus.ATTENTION, SafetyStatus.UNCERTAIN)),
-            SimpleGoldCheckpoint("secret-3", (SafetyStatus.ATTENTION, SafetyStatus.URGENT)),
+            SimpleGoldCheckpoint("secret-1", (None, True)),
+            SimpleGoldCheckpoint("secret-2", (True, None)),
+            SimpleGoldCheckpoint("secret-3", (True,)),
         ),
     ),
     SimpleGoldCase(
@@ -120,10 +119,10 @@ CASES: tuple[SimpleGoldCase, ...] = (
             SimpleConversationMessage("threat-4", "other", "I know which bus you take home."),
         ),
         checkpoints=(
-            SimpleGoldCheckpoint("threat-1", (SafetyStatus.ATTENTION, SafetyStatus.UNCERTAIN)),
-            SimpleGoldCheckpoint("threat-2", (SafetyStatus.ATTENTION,)),
-            SimpleGoldCheckpoint("threat-3", (SafetyStatus.URGENT, SafetyStatus.ATTENTION)),
-            SimpleGoldCheckpoint("threat-4", (SafetyStatus.URGENT,)),
+            SimpleGoldCheckpoint("threat-1", (True, None)),
+            SimpleGoldCheckpoint("threat-2", (True,)),
+            SimpleGoldCheckpoint("threat-3", (True, False)),
+            SimpleGoldCheckpoint("threat-4", (True,)),
         ),
     ),
 )

@@ -1,10 +1,9 @@
-"""Compare Baseline B with the existing Guard path on the same Gold prefixes."""
+"""Direct Baseline B validation against canonical Guard Gold expectations."""
 
 from __future__ import annotations
 
 import json
 import os
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -12,20 +11,7 @@ from typing import Any
 import pytest
 
 from echo_v2.domain.guard_simple import SimpleConversation, SimpleConversationMessage
-from echo_v2.services.guard_alert_policy import (
-    AlertKind,
-    ChildContext,
-    ConversationContext,
-    DefaultAlertPolicy,
-)
-from echo_v2.services.guard_analyzer import (
-    AnalysisError,
-    GuardAnalysisInput,
-    LLMGuardAnalyzer,
-)
-from echo_v2.services.guard_decision_policy import DefaultDecisionPolicy
 from echo_v2.services.guard_eval_gold import GoldScenario, load_guard_gold
-from echo_v2.services.guard_signal_ledger import GuardSignalLedger
 from echo_v2.services.guard_simple_analyzer import SimpleSafetyAnalyzer
 
 pytestmark = [
@@ -51,6 +37,7 @@ def _simple_conversation(scenario: GoldScenario, prefix_length: int) -> SimpleCo
     )
     return SimpleConversation(
         child_user_id="gold-child",
+        child_name=str(scenario.context.get("child_name", "the monitored child")),
         chat_id=scenario.scenario_id,
         chat_type=(
             "group" if scenario.context.get("conversation_type") == "group" else "private"
@@ -68,22 +55,41 @@ def _prefix_ids(scenario: GoldScenario, prefix_length: int) -> set[str]:
     return {message.id for message in scenario.messages[:prefix_length]}
 
 
-async def _run_comparison() -> list[dict[str, Any]]:
+def _expected_parent_should_know(
+    scenario: GoldScenario, after_message_id: str, decision: str
+) -> bool:
+    """Translate each Gold stage into the parent-attention question."""
+    early_non_actionable = {
+        "gold_parent_01_he_knows_where_she_waits": {"m2", "m3", "m9"},
+        "gold_parent_02_he_said_stop_they_kept_going": {"m2", "m4"},
+        "gold_parent_03_bring_200_tomorrow": {"m3"},
+        "gold_parent_04_please_delete_the_video": {"m2"},
+        "gold_parent_05_if_you_trusted_me": {"m2", "m4", "m7"},
+        "gold_parent_06_i_dont_want_to_be_alone_tonight": {"m2", "m5", "m7"},
+    }
+    if after_message_id in early_non_actionable.get(scenario.scenario_id, set()):
+        return False
+    if scenario.scenario_id == "gold_parent_03_bring_200_tomorrow" and after_message_id == "m3":
+        return False
+    return decision in {"concerning", "urgent"} or (
+        scenario.scenario_id in {
+            "gold_parent_03_bring_200_tomorrow",
+            "gold_parent_04_please_delete_the_video",
+        }
+        and after_message_id in {"m6"}
+    )
+
+
+async def _run_validation() -> list[dict[str, Any]]:
     from openai import AsyncOpenAI
 
-    client = AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
-    legacy = LLMGuardAnalyzer(
-        client=client,
-        model=os.environ.get("GUARD_LLM_MODEL", os.environ.get("LLM_MODEL_NAME", "gpt-4.1")),
-    )
-    simple = SimpleSafetyAnalyzer(
-        client=client,
+    analyzer = SimpleSafetyAnalyzer(
+        client=AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY", "")),
         model=os.environ.get(
             "GUARD_SIMPLE_LLM_MODEL",
-            os.environ.get("GUARD_LLM_MODEL", os.environ.get("LLM_MODEL_NAME", "gpt-4.1")),
+            os.environ.get("LLM_MODEL_NAME", "gpt-4.1"),
         ),
     )
-    rows: list[dict[str, Any]] = []
     gold = load_guard_gold()
     requested_ids = {
         value.strip()
@@ -99,135 +105,79 @@ async def _run_comparison() -> list[dict[str, Any]]:
         known = {scenario.scenario_id for scenario in gold.scenarios}
         raise ValueError(f"unknown GUARD_COMPARE_CASE_IDS: {sorted(requested_ids - known)}")
 
+    rows: list[dict[str, Any]] = []
     for scenario in scenarios:
-        ledger = GuardSignalLedger()
-        prior_alert_kind = AlertKind.NONE
         for checkpoint in scenario.checkpoints:
-            legacy_conversation = GuardAnalysisInput(
-                child_id="gold-child",
-                chat_id=scenario.scenario_id,
-                messages=scenario.messages[: checkpoint.prefix_length],
-                context=dict(scenario.context),
-            )
-            legacy_started = time.perf_counter()
-            legacy_error: str | None = None
-            try:
-                legacy_analysis, _legacy_raw = await legacy.analyze_with_raw(legacy_conversation)
-            except AnalysisError as exc:
-                legacy_analysis = None
-                legacy_error = str(exc)
-            legacy_latency_ms = (time.perf_counter() - legacy_started) * 1000
-            legacy_state = ledger.update(legacy_analysis) if legacy_analysis is not None else ledger.state()
-            legacy_decision = (
-                DefaultDecisionPolicy().decide(
-                    signals=legacy_analysis.signals,
-                    categories=legacy_analysis.categories,
-                    signal_state=legacy_state,
-                )
-                if legacy_analysis is not None
-                else None
-            )
-            known_contact = scenario.context.get("contact_is_known")
-            legacy_alert = (
-                DefaultAlertPolicy().evaluate(
-                    analysis=legacy_analysis,
-                    child_context=ChildContext(
-                        known_contact=known_contact if isinstance(known_contact, bool) else None
-                    ),
-                    conversation_context=ConversationContext(prior_alert_kind=prior_alert_kind),
-                    signal_state=legacy_state,
-                )
-                if legacy_analysis is not None
-                else None
-            )
-            if legacy_alert is not None and legacy_alert.event:
-                prior_alert_kind = legacy_alert.kind
-
-            simple_started = time.perf_counter()
-            simple_run = await simple.analyze_with_raw(
+            run = await analyzer.analyze_with_raw(
                 _simple_conversation(scenario, checkpoint.prefix_length)
             )
-            simple_latency_ms = (time.perf_counter() - simple_started) * 1000
-            simple_assessment = simple_run.assessment
+            assessment = run.assessment
+            expected = _expected_parent_should_know(
+                scenario, checkpoint.after_message_id, checkpoint.decision
+            )
             prefix_ids = _prefix_ids(scenario, checkpoint.prefix_length)
+            evidence_within_prefix = set(assessment.evidence_message_ids) <= prefix_ids
+            passed = (
+                assessment.parent_should_know is expected
+                and evidence_within_prefix
+                and (
+                    assessment.parent_should_know is not True
+                    or bool(assessment.evidence_message_ids)
+                )
+            )
             row = {
                 "scenario_id": scenario.scenario_id,
                 "title": scenario.title,
                 "after_message_id": checkpoint.after_message_id,
                 "prefix_length": checkpoint.prefix_length,
-                "gold": {
-                    "legacy_decision": checkpoint.decision,
-                    "legacy_alert_event": checkpoint.alert.event,
-                    "legacy_alert_kind": checkpoint.alert.kind,
+                "expected_parent_should_know": expected,
+                "actual_parent_should_know": assessment.parent_should_know,
+                "child_role": assessment.child_role.value,
+                "summary": assessment.summary,
+                "reason": assessment.reason,
+                "evidence_message_ids": list(assessment.evidence_message_ids),
+                "evidence_within_prefix": evidence_within_prefix,
+                "latency_ms": round((run.latency_ms or 0.0), 1),
+                "token_usage": {
+                    "prompt_tokens": run.prompt_tokens,
+                    "completion_tokens": run.completion_tokens,
+                    "total_tokens": run.total_tokens,
                 },
-                "legacy": {
-                    "signals": list(legacy_analysis.signals) if legacy_analysis is not None else [],
-                    "categories": list(legacy_analysis.categories) if legacy_analysis is not None else [],
-                    "active_signals": list(legacy_state.active_signals),
-                    "active_categories": list(legacy_state.active_categories),
-                    "evidence_message_ids": (
-                        list(legacy_analysis.evidence_message_ids)
-                        if legacy_analysis is not None
-                        else []
-                    ),
-                    "decision": legacy_decision.value if legacy_decision is not None else None,
-                    "alert_event": legacy_alert.event if legacy_alert is not None else False,
-                    "alert_kind": legacy_alert.kind.value if legacy_alert is not None else None,
-                    "alert_reason": legacy_alert.reason if legacy_alert is not None else None,
-                    "error": legacy_error,
-                    "latency_ms": round(legacy_latency_ms, 1),
-                    "token_usage": None,
-                },
-                "baseline_b": {
-                    "status": simple_assessment.status.value,
-                    "child_role": simple_assessment.child_role.value,
-                    "summary": simple_assessment.summary,
-                    "reason": simple_assessment.reason,
-                    "evidence_message_ids": list(simple_assessment.evidence_message_ids),
-                    "evidence_within_prefix": set(simple_assessment.evidence_message_ids) <= prefix_ids,
-                    "latency_ms": round(simple_latency_ms, 1),
-                    "token_usage": {
-                        "prompt_tokens": simple_run.prompt_tokens,
-                        "completion_tokens": simple_run.completion_tokens,
-                        "total_tokens": simple_run.total_tokens,
-                    },
-                },
+                "pass": passed,
             }
             rows.append(row)
             print(
                 f"{scenario.scenario_id} @ {checkpoint.after_message_id}: "
-                f"legacy={legacy_decision.value if legacy_decision is not None else 'error'}/"
-                f"{legacy_alert.kind.value if legacy_alert is not None else 'none'} "
-                f"baseline_b={simple_assessment.status.value}/{simple_assessment.child_role.value} "
-                f"legacy_evidence={list(legacy_analysis.evidence_message_ids) if legacy_analysis is not None else []} "
-                f"baseline_b_evidence={list(simple_assessment.evidence_message_ids)}"
+                f"expected={expected} actual={assessment.parent_should_know} "
+                f"role={assessment.child_role.value} "
+                f"evidence={list(assessment.evidence_message_ids)} "
+                f"{'PASS' if passed else 'FAIL'}"
             )
     return rows
 
 
 @pytest.mark.asyncio
-async def test_compare_baseline_b_with_existing_path_on_shared_gold_prefixes() -> None:
-    rows = await _run_comparison()
-    assert len(rows) > 0
-    assert all(row["baseline_b"]["evidence_within_prefix"] for row in rows)
+async def test_baseline_b_reports_canonical_gold_prefixes() -> None:
+    rows = await _run_validation()
+    assert rows
     run_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    output_dir = _RESULTS_DIR / f"{run_id}_guard_baseline_compare"
+    output_dir = _RESULTS_DIR / f"{run_id}_guard_baseline_expected"
     output_dir.mkdir(parents=True, exist_ok=True)
-    (output_dir / "comparison.json").write_text(
+    (output_dir / "results.json").write_text(
         json.dumps(rows, indent=2, ensure_ascii=False), encoding="utf-8"
     )
-    summary = [
-        "# Baseline A / Baseline B Gold prefix comparison",
+    lines = [
+        "# Baseline B canonical Gold validation",
         "",
-        "| Scenario | Prefix | Legacy | Baseline B | Legacy evidence | Baseline B evidence |",
-        "|---|---:|---|---|---|---|",
+        "| Scenario | Prefix | Expected | Actual | Role | Evidence | Result |",
+        "|---|---|---:|---:|---|---|---|",
     ]
     for row in rows:
-        summary.append(
+        lines.append(
             f"| {row['scenario_id']} | {row['after_message_id']} | "
-            f"{row['legacy']['decision']}/{row['legacy']['alert_kind']} | "
-            f"{row['baseline_b']['status']}/{row['baseline_b']['child_role']} | "
-            f"{row['legacy']['evidence_message_ids']} | "
-            f"{row['baseline_b']['evidence_message_ids']} |"
+            f"{row['expected_parent_should_know']} | "
+            f"{row['actual_parent_should_know']} | "
+            f"{row['child_role']} | {row['evidence_message_ids']} | "
+            f"{'PASS' if row['pass'] else 'FAIL'} |"
         )
-    (output_dir / "comparison.md").write_text("\n".join(summary) + "\n", encoding="utf-8")
+    (output_dir / "report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")

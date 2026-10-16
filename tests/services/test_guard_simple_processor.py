@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from echo_v2.domain.chat import Message
-from echo_v2.domain.guard_simple import ChildRole, SafetyAssessment, SafetyStatus
+from echo_v2.domain.guard_simple import ChildRole, SafetyAssessment
 from echo_v2.persistence.chat_repositories import InMemoryMessageRepository
 from echo_v2.persistence.guard_simple_repositories import (
     InMemoryGuardSimpleAssessmentRepository,
@@ -21,15 +21,15 @@ BASE = datetime(2026, 10, 16, 8, tzinfo=timezone.utc)
 
 
 class FakeAnalyzer:
-    def __init__(self, status: SafetyStatus = SafetyStatus.SAFE) -> None:
-        self.status = status
+    def __init__(self, parent_should_know: bool | None = False) -> None:
+        self.parent_should_know = parent_should_know
         self.conversations = []
 
     async def analyze(self, conversation):
         self.conversations.append(conversation)
         return SafetyAssessment(
-            status=self.status,
-            child_role=ChildRole.TARGET if self.status is not SafetyStatus.SAFE else ChildRole.PARTICIPANT,
+            parent_should_know=self.parent_should_know,
+            child_role=ChildRole.TARGET if self.parent_should_know else ChildRole.PARTICIPANT,
             summary="assessment",
             evidence_message_ids=(conversation.messages[0].id,) if conversation.messages else (),
             reason="reason",
@@ -76,6 +76,7 @@ async def test_builder_uses_local_calendar_day_and_newest_cap() -> None:
 
     built = await SimpleGuardConversationBuilder(messages, max_messages=100).build(
         child_user_id="child",
+        child_name="Shay",
         connection_id="connection",
         chat_id="group@g.us",
         timezone_name="Asia/Jerusalem",
@@ -96,6 +97,7 @@ async def test_invalid_timezone_falls_back_to_pilot_timezone() -> None:
 
     built = await SimpleGuardConversationBuilder(messages).build(
         child_user_id="child",
+        child_name="Shay",
         connection_id="connection",
         chat_id="chat@c.us",
         timezone_name="not/a-zone",
@@ -111,6 +113,7 @@ async def test_group_can_concern_child_without_child_authored_message() -> None:
 
     built = await SimpleGuardConversationBuilder(messages).build(
         child_user_id="child",
+        child_name="Shay",
         connection_id="connection",
         chat_id="group@g.us",
         timezone_name="Asia/Jerusalem",
@@ -124,7 +127,7 @@ async def test_group_can_concern_child_without_child_authored_message() -> None:
 async def test_missing_sender_attribution_fails_closed() -> None:
     messages = InMemoryMessageRepository()
     await messages.save(message("m1", BASE, sender_id=None))
-    analyzer = FakeAnalyzer(SafetyStatus.ATTENTION)
+    analyzer = FakeAnalyzer(True)
     assessments = InMemoryGuardSimpleAssessmentRepository()
     processor = GuardSimpleProcessor(
         message_repo=messages,
@@ -135,15 +138,16 @@ async def test_missing_sender_attribution_fails_closed() -> None:
 
     result = await processor.process(
         child_user_id="child",
+        child_name="Shay",
         connection_id="connection",
         chat_id="group@g.us",
         as_of=BASE + timedelta(minutes=1),
     )
 
-    assert result.status is SafetyStatus.UNCERTAIN
+    assert result.parent_should_know is None
     assert result.child_role is ChildRole.UNKNOWN
     assert not result.identity_verified
-    assert assessments.assessments[0].status is SafetyStatus.UNCERTAIN
+    assert assessments.assessments[0].parent_should_know is None
 
 
 async def test_prior_actionable_assessment_is_context_not_forced_decision() -> None:
@@ -152,7 +156,7 @@ async def test_prior_actionable_assessment_is_context_not_forced_decision() -> N
     assessments = InMemoryGuardSimpleAssessmentRepository()
     await assessments.save(
         SafetyAssessment(
-            status=SafetyStatus.ATTENTION,
+            parent_should_know=True,
             child_role=ChildRole.TARGET,
             summary="Yesterday's concern",
             evidence_message_ids=("old",),
@@ -163,7 +167,7 @@ async def test_prior_actionable_assessment_is_context_not_forced_decision() -> N
             created_at=BASE - timedelta(days=1),
         )
     )
-    analyzer = FakeAnalyzer(SafetyStatus.SAFE)
+    analyzer = FakeAnalyzer(False)
     processor = GuardSimpleProcessor(
         message_repo=messages,
         analyzer=analyzer,
@@ -173,20 +177,37 @@ async def test_prior_actionable_assessment_is_context_not_forced_decision() -> N
 
     result = await processor.process(
         child_user_id="child",
+        child_name="Shay",
         connection_id="connection",
         chat_id="group@g.us",
         as_of=BASE + timedelta(minutes=1),
     )
 
-    assert result.status is SafetyStatus.SAFE
+    assert result.parent_should_know is False
     assert analyzer.conversations[0].prior_concern is not None
     assert analyzer.conversations[0].prior_concern.evidence_message_ids == ("old",)
 
 
-async def test_empty_day_is_uncertain_and_does_not_create_safe_result() -> None:
+async def test_same_day_parent_concern_is_not_reused_as_recursive_context() -> None:
     messages = InMemoryMessageRepository()
-    analyzer = FakeAnalyzer(SafetyStatus.SAFE)
+    await messages.save(message("m1", BASE, direction=MessageDirection.OUTBOUND, sender_id=None))
     assessments = InMemoryGuardSimpleAssessmentRepository()
+    await assessments.save(
+        SafetyAssessment(
+            parent_should_know=True,
+            child_role=ChildRole.TARGET,
+            summary="same-day concern",
+            evidence_message_ids=("old",),
+            reason="prior",
+            child_user_id="child",
+            connection_id="connection",
+            chat_id="group@g.us",
+            created_at=BASE - timedelta(hours=1),
+            first_detected_at=BASE - timedelta(hours=2),
+            last_evidence_at=BASE - timedelta(hours=1),
+        )
+    )
+    analyzer = FakeAnalyzer(False)
     processor = GuardSimpleProcessor(
         message_repo=messages,
         analyzer=analyzer,
@@ -196,11 +217,34 @@ async def test_empty_day_is_uncertain_and_does_not_create_safe_result() -> None:
     result = await processor.process(
         child_user_id="child",
         connection_id="connection",
+        chat_id="group@g.us",
+        child_name="Shay",
+        as_of=BASE,
+    )
+
+    assert result.parent_should_know is False
+    assert analyzer.conversations[0].prior_concern is None
+
+
+async def test_empty_day_is_unknown_and_does_not_create_false_result() -> None:
+    messages = InMemoryMessageRepository()
+    analyzer = FakeAnalyzer(False)
+    assessments = InMemoryGuardSimpleAssessmentRepository()
+    processor = GuardSimpleProcessor(
+        message_repo=messages,
+        analyzer=analyzer,
+        assessment_repo=assessments,
+    )
+
+    result = await processor.process(
+        child_user_id="child",
+        child_name="Shay",
+        connection_id="connection",
         chat_id="chat@c.us",
         as_of=BASE,
     )
 
-    assert result.status is SafetyStatus.UNCERTAIN
+    assert result.parent_should_know is None
 
 
 async def test_processor_rejects_non_positive_message_cap() -> None:
@@ -226,6 +270,7 @@ async def test_invalid_configured_timezone_uses_fallback() -> None:
 
     result = await processor.process(
         child_user_id="child",
+        child_name="Shay",
         connection_id="connection",
         chat_id="group@g.us",
         as_of=BASE + timedelta(minutes=1),
@@ -237,7 +282,7 @@ async def test_invalid_configured_timezone_uses_fallback() -> None:
 async def test_in_memory_history_can_list_and_resolve_assessments() -> None:
     repository = InMemoryGuardSimpleAssessmentRepository()
     assessment = SafetyAssessment(
-        status=SafetyStatus.ATTENTION,
+        parent_should_know=True,
         child_role=ChildRole.TARGET,
         summary="concern",
         evidence_message_ids=("m1",),

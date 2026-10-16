@@ -48,6 +48,7 @@ async def build(
         await repository.save(item)
     return await SimpleGuardConversationBuilder(repository, max_messages=max_messages).build(
         child_user_id="child",
+        child_name="Shay",
         connection_id=connection_id,
         chat_id=chat_id,
         timezone_name="Asia/Jerusalem",
