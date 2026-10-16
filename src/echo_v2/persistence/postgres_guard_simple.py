@@ -9,7 +9,7 @@ from sqlalchemy import CursorResult, desc, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from echo_v2.domain.guard_simple import ChildRole, SafetyAssessment, SafetyStatus
+from echo_v2.domain.guard_simple import ChildRole, SafetyAssessment
 from echo_v2.persistence.orm import GuardSimpleAssessmentRow
 
 
@@ -26,7 +26,7 @@ class PostgresGuardSimpleAssessmentRepository:
             "timezone": assessment.timezone,
             "window_start": assessment.window_start,
             "window_end": assessment.window_end,
-            "status": assessment.status.value,
+            "parent_should_know": assessment.parent_should_know,
             "child_role": assessment.child_role.value,
             "summary": assessment.summary,
             "reason": assessment.reason,
@@ -40,6 +40,8 @@ class PostgresGuardSimpleAssessmentRepository:
             "identity_reason": assessment.identity_reason,
             "diagnostics": assessment.diagnostics,
             "created_at": assessment.created_at or datetime.now(timezone.utc),
+            "first_detected_at": assessment.first_detected_at,
+            "last_evidence_at": assessment.last_evidence_at,
         }
         if assessment.id is not None:
             values["id"] = assessment.id
@@ -74,20 +76,25 @@ class PostgresGuardSimpleAssessmentRepository:
             return [_to_domain(row) for row in reversed(rows)]
 
     async def latest_unresolved(
-        self, *, child_user_id: str, chat_id: str
+        self,
+        *,
+        child_user_id: str,
+        chat_id: str,
+        before: datetime | None = None,
     ) -> SafetyAssessment | None:
         async with self._session_factory() as session:
+            filters = [
+                GuardSimpleAssessmentRow.child_user_id == child_user_id,
+                GuardSimpleAssessmentRow.chat_id == chat_id,
+                GuardSimpleAssessmentRow.parent_should_know.is_(True),
+                GuardSimpleAssessmentRow.resolved_at.is_(None),
+            ]
+            if before is not None:
+                filters.append(GuardSimpleAssessmentRow.created_at < before)
             row = (
                 await session.execute(
                     select(GuardSimpleAssessmentRow)
-                    .where(
-                        GuardSimpleAssessmentRow.child_user_id == child_user_id,
-                        GuardSimpleAssessmentRow.chat_id == chat_id,
-                        GuardSimpleAssessmentRow.status.in_(
-                            (SafetyStatus.ATTENTION.value, SafetyStatus.URGENT.value)
-                        ),
-                        GuardSimpleAssessmentRow.resolved_at.is_(None),
-                    )
+                    .where(*filters)
                     .order_by(
                         GuardSimpleAssessmentRow.created_at.desc(),
                         GuardSimpleAssessmentRow.id.desc(),
@@ -129,7 +136,7 @@ def _to_domain(row: GuardSimpleAssessmentRow) -> SafetyAssessment:
         timezone=row.timezone,
         window_start=row.window_start,
         window_end=row.window_end,
-        status=SafetyStatus(row.status),
+        parent_should_know=row.parent_should_know,
         child_role=ChildRole(row.child_role),
         summary=row.summary,
         reason=row.reason,
@@ -143,6 +150,8 @@ def _to_domain(row: GuardSimpleAssessmentRow) -> SafetyAssessment:
         identity_reason=row.identity_reason,
         diagnostics=row.diagnostics or {},
         created_at=row.created_at,
+        first_detected_at=row.first_detected_at,
+        last_evidence_at=row.last_evidence_at,
         resolved_at=row.resolved_at,
         resolved_by=row.resolved_by,
     )

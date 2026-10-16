@@ -800,7 +800,7 @@ class GuardSimpleAssessmentRow(Base):
     timezone: Mapped[str] = mapped_column(Text, nullable=False)
     window_start: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False)
     window_end: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False)
-    status: Mapped[str] = mapped_column(Text, nullable=False)
+    parent_should_know: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     child_role: Mapped[str] = mapped_column(Text, nullable=False)
     summary: Mapped[str] = mapped_column(Text, nullable=False)
     reason: Mapped[str] = mapped_column(Text, nullable=False)
@@ -816,14 +816,16 @@ class GuardSimpleAssessmentRow(Base):
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
     )
+    first_detected_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    last_evidence_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
     resolved_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
     resolved_by: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = (
-        CheckConstraint(
-            "status IN ('safe', 'attention', 'urgent', 'uncertain')",
-            name="guard_simple_assessments_status_check",
-        ),
         CheckConstraint(
             "child_role IN ('target', 'participant', 'bystander', 'unknown')",
             name="guard_simple_assessments_child_role_check",

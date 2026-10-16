@@ -123,6 +123,7 @@ class SimpleGuardConversationBuilder:
         self,
         *,
         child_user_id: str,
+        child_name: str,
         connection_id: str,
         chat_id: str,
         timezone_name: str,
@@ -176,11 +177,13 @@ class SimpleGuardConversationBuilder:
                     id=message.id,
                     sender=role,
                     text=message.text or "",
+                    timestamp=message.timestamp,
                 )
             )
 
         return SimpleConversation(
             child_user_id=child_user_id,
+            child_name=child_name,
             chat_id=chat_id,
             chat_type="group" if chat_id.endswith("@g.us") else "private",
             connection_id=connection_id,

@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from echo_v2.domain.guard_simple import SafetyStatus, SimpleConversation
+from echo_v2.domain.guard_simple import SimpleConversation
 from echo_v2.services.guard_simple_analyzer import SimpleSafetyAnalyzer
 from tests.evaluation.guard.guard_simple_cases import (
     CASES,
@@ -52,6 +52,7 @@ async def test_baseline_b_gold_prefixes(analyzer: SimpleSafetyAnalyzer) -> None:
         for checkpoint in case.checkpoints:
             conversation = SimpleConversation(
                 child_user_id="gold-child",
+                child_name="Shay",
                 chat_id=case.case_id,
                 chat_type=case.chat_type,
                 connection_id="gold-connection",
@@ -65,16 +66,16 @@ async def test_baseline_b_gold_prefixes(analyzer: SimpleSafetyAnalyzer) -> None:
             assessment = run.assessment
             print(
                 f"{case.case_id} @ {checkpoint.after_message_id}: "
-                f"{assessment.status.value} / {assessment.child_role.value} / "
+                f"{assessment.parent_should_know} / {assessment.child_role.value} / "
                 f"evidence={list(assessment.evidence_message_ids)} / "
                 f"summary={assessment.summary} / reason={assessment.reason}"
             )
             prefix_ids = {message.id for message in conversation.messages}
-            if assessment.status not in checkpoint.expected_statuses:
+            if assessment.parent_should_know not in checkpoint.expected_parent_should_know:
                 failures.append(
                     f"{case.case_id}@{checkpoint.after_message_id}: "
-                    f"got {assessment.status.value}, expected "
-                    f"{[status.value for status in checkpoint.expected_statuses]}"
+                    f"got {assessment.parent_should_know}, expected "
+                    f"{list(checkpoint.expected_parent_should_know)}"
                 )
             if assessment.child_role not in checkpoint.expected_child_roles:
                 failures.append(
@@ -85,9 +86,9 @@ async def test_baseline_b_gold_prefixes(analyzer: SimpleSafetyAnalyzer) -> None:
                 failures.append(
                     f"{case.case_id}@{checkpoint.after_message_id}: evidence cites a message outside the prefix"
                 )
-            if assessment.status in (SafetyStatus.ATTENTION, SafetyStatus.URGENT) and not assessment.evidence_message_ids:
+            if assessment.parent_should_know is True and not assessment.evidence_message_ids:
                 failures.append(
-                    f"{case.case_id}@{checkpoint.after_message_id}: actionable result has no evidence"
+                    f"{case.case_id}@{checkpoint.after_message_id}: true result has no evidence"
                 )
     if failures:
         pytest.fail("\n".join(failures))
