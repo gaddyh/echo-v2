@@ -9,7 +9,7 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0043_guard_simple_assessment_chat_name"
+revision = "0043_guard_assessment_chat_name"
 down_revision = "0042_guard_activity_telemetry"
 branch_labels = None
 depends_on = None
