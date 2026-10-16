@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import replace
 from datetime import datetime, time, timezone
 from typing import Protocol
@@ -11,6 +13,7 @@ from echo_v2.domain.guard_simple import (
     ChildRole,
     PriorConcern,
     SafetyAssessment,
+    SimpleConversation,
 )
 from echo_v2.persistence.chat_repositories import MessageRepository
 from echo_v2.persistence.guard_simple_repositories import (
@@ -123,6 +126,8 @@ class GuardSimpleProcessor:
             summary=summary,
             reason=reason,
             evidence_message_ids=evidence_ids,
+            input_message_ids=conversation.input_message_ids,
+            input_content_hash=_conversation_input_hash(conversation),
             child_user_id=child_user_id,
             child_name=child_name,
             connection_id=connection_id,
@@ -159,6 +164,20 @@ class GuardSimpleProcessor:
         except (ZoneInfoNotFoundError, ValueError):
             return DEFAULT_SIMPLE_GUARD_TIMEZONE
         return configured
+
+
+def _conversation_input_hash(conversation: SimpleConversation) -> str:
+    messages = conversation.messages
+    payload = [
+        {
+            "id": message.id,
+            "text": message.text,
+            "timestamp": message.timestamp.isoformat() if message.timestamp else None,
+        }
+        for message in messages
+    ]
+    encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 def _prior_concern(assessment: SafetyAssessment | None) -> PriorConcern | None:

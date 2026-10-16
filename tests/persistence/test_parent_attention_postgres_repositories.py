@@ -10,7 +10,11 @@ import pytest
 
 from echo_v2.domain.guard import GuardAnalysisRecord
 from echo_v2.domain.guard_simple import ChildRole, SafetyAssessment
-from echo_v2.domain.parent_attention import ParentAttentionDeliveryState
+from echo_v2.domain.parent_attention import (
+    ParentAttentionDeliveryOutcome,
+    ParentAttentionDeliveryState,
+    ParentAttentionOutcomeStatus,
+)
 from echo_v2.persistence.postgres_guard import (
     PostgresGuardAnalysisCommitRepository,
     PostgresGuardAnalysisRepository,
@@ -21,6 +25,7 @@ from echo_v2.persistence.postgres_guard_simple import (
     PostgresGuardSimpleAssessmentRepository,
 )
 from echo_v2.persistence.postgres_parent_attention_delivery import (
+    PostgresParentAttentionDeliveryOutcomeRepository,
     PostgresParentAttentionDeliveryRepository,
 )
 from echo_v2.services.guard_taxonomy import GuardDecision
@@ -94,6 +99,8 @@ def simple_row() -> SimpleNamespace:
         summary="summary",
         reason="reason",
         evidence_message_ids=["m1"],
+        input_message_ids=["m1"],
+        input_content_hash="hash",
         model="model",
         prompt_version="prompt",
         analyzer_version="analyzer",
@@ -267,7 +274,7 @@ async def test_parent_attention_postgres_adapter_contract() -> None:
             FakeResult(row=SimpleNamespace(
                 child_user_id="child", chat_id="chat@c.us",
                 last_delivered_assessment_id="assessment-id",
-                last_delivered_evidence_ids=["m1"], last_delivered_at=NOW,
+                last_delivered_evidence_ids=["m1"], last_scheduled_at=NOW,
                 last_action_id="action-id", resolved_at=None,
             )),
             FakeResult(rowcount=1),
@@ -277,7 +284,7 @@ async def test_parent_attention_postgres_adapter_contract() -> None:
     state = ParentAttentionDeliveryState(
         child_user_id="child", chat_id="chat@c.us",
         last_delivered_assessment_id="assessment-id",
-        last_delivered_evidence_ids=("m1",), last_delivered_at=NOW,
+        last_delivered_evidence_ids=("m1",), last_scheduled_at=NOW,
         last_action_id="action-id",
     )
 
@@ -288,6 +295,72 @@ async def test_parent_attention_postgres_adapter_contract() -> None:
     assert loaded is not None
     assert loaded.last_delivered_evidence_ids == ("m1",)
     assert session.commits == 2
+
+
+async def test_parent_attention_outcome_postgres_adapter_contract() -> None:
+    row = SimpleNamespace(
+        assessment_id="assessment-id",
+        child_user_id="child",
+        chat_id="chat@c.us",
+        status="sent",
+        reason="provider_confirmed",
+        scheduled_action_id="action-id",
+        provider_message_id="provider-id",
+        created_at=NOW,
+        updated_at=NOW,
+        scheduled_at=NOW,
+        sent_at=NOW,
+        failed_at=None,
+    )
+    outcome = ParentAttentionDeliveryOutcome(
+        assessment_id="assessment-id",
+        child_user_id="child",
+        chat_id="chat@c.us",
+        status=ParentAttentionOutcomeStatus.SENT,
+        reason="provider_confirmed",
+        scheduled_action_id="action-id",
+        provider_message_id="provider-id",
+        created_at=NOW,
+        updated_at=NOW,
+        scheduled_at=NOW,
+        sent_at=NOW,
+    )
+    saved = PostgresParentAttentionDeliveryOutcomeRepository(
+        FakeSessionFactory(FakeSession([FakeResult()]))
+    )
+    await saved.save(outcome)
+    loaded = await PostgresParentAttentionDeliveryOutcomeRepository(
+        FakeSessionFactory(FakeSession([FakeResult(row=row)]))
+    ).get("assessment-id")
+    listed = await PostgresParentAttentionDeliveryOutcomeRepository(
+        FakeSessionFactory(FakeSession([FakeResult(rows=[row])]))
+    ).list_for_assessments(["assessment-id"])
+    pending = await PostgresParentAttentionDeliveryOutcomeRepository(
+        FakeSessionFactory(FakeSession([FakeResult(rows=[row])]))
+    ).list_pending_evaluation()
+    reconcilable = await PostgresParentAttentionDeliveryOutcomeRepository(
+        FakeSessionFactory(FakeSession([FakeResult(rows=[row])]))
+    ).list_reconcilable()
+    count = await PostgresParentAttentionDeliveryOutcomeRepository(
+        FakeSessionFactory(FakeSession([FakeResult(scalar=1)]))
+    ).count_sent(
+        child_user_ids=["child"],
+        created_after=NOW.replace(hour=0),
+        created_before=NOW,
+        chat_id="chat@c.us",
+    )
+    assert await PostgresParentAttentionDeliveryOutcomeRepository(
+        FakeSessionFactory(FakeSession([]))
+    ).list_for_assessments([]) == []
+    assert await PostgresParentAttentionDeliveryOutcomeRepository(
+        FakeSessionFactory(FakeSession([]))
+    ).count_sent(child_user_ids=[]) == 0
+
+    assert loaded is not None and loaded.status is ParentAttentionOutcomeStatus.SENT
+    assert listed[0].provider_message_id == "provider-id"
+    assert pending[0].assessment_id == "assessment-id"
+    assert reconcilable[0].assessment_id == "assessment-id"
+    assert count == 1
 
 
 async def test_simple_postgres_adapter_contract() -> None:
@@ -302,6 +375,7 @@ async def test_simple_postgres_adapter_contract() -> None:
             FakeResult(rowcount=1),
             FakeResult(row=state_row),
             FakeResult(scalar="assessment-id"),
+            FakeResult(),
             FakeResult(rowcount=1),
         ]
     )
@@ -323,6 +397,49 @@ async def test_simple_postgres_adapter_contract() -> None:
     assert latest is not None and latest.parent_should_know is True
     assert resolved
     assert committed == ("committed", "assessment-id")
+
+
+async def test_simple_postgres_activity_query_contract() -> None:
+    row = simple_row()
+    repository = PostgresGuardSimpleAssessmentRepository(
+        FakeSessionFactory(FakeSession([FakeResult(row=row)]))
+    )
+    loaded = await repository.get("assessment-id")
+    listed = await PostgresGuardSimpleAssessmentRepository(
+        FakeSessionFactory(FakeSession([FakeResult(rows=[row])]))
+    ).list_for_children(
+        child_user_ids=["child"],
+        created_after=NOW.replace(hour=0),
+        created_before=NOW,
+        chat_id="chat@c.us",
+        decision="yes",
+        before=(NOW, "assessment-id"),
+    )
+    await PostgresGuardSimpleAssessmentRepository(
+        FakeSessionFactory(FakeSession([FakeResult(rows=[row])]))
+    ).list_for_children(child_user_ids=["child"], decision="no")
+    await PostgresGuardSimpleAssessmentRepository(
+        FakeSessionFactory(FakeSession([FakeResult(rows=[row])]))
+    ).list_for_children(child_user_ids=["child"], decision="unknown")
+    counts = await PostgresGuardSimpleAssessmentRepository(
+        FakeSessionFactory(FakeSession([FakeResult(rows=[True, False, None])]))
+    ).count_for_children(
+        child_user_ids=["child"],
+        created_after=NOW.replace(hour=0),
+        created_before=NOW,
+        chat_id="chat@c.us",
+        decision="yes",
+    )
+    assert await PostgresGuardSimpleAssessmentRepository(
+        FakeSessionFactory(FakeSession([]))
+    ).list_for_children(child_user_ids=[], limit=0) == []
+    assert await PostgresGuardSimpleAssessmentRepository(
+        FakeSessionFactory(FakeSession([]))
+    ).count_for_children(child_user_ids=[]) == {"analyzed": 0, "yes": 0, "no": 0, "unknown": 0}
+
+    assert loaded is not None and loaded.input_message_ids == ("m1",)
+    assert listed[0].input_content_hash == "hash"
+    assert counts == {"analyzed": 3, "yes": 1, "no": 1, "unknown": 1}
 
 
 async def test_simple_postgres_latest_unresolved_supports_before_boundary() -> None:
@@ -362,6 +479,7 @@ async def test_simple_postgres_commit_rejects_lost_activity_update() -> None:
     session = FakeSession([
         FakeResult(row=SimpleNamespace(activity_version=3)),
         FakeResult(scalar="assessment-id"),
+        FakeResult(),
         FakeResult(rowcount=0),
     ])
     repository = PostgresGuardSimpleAssessmentRepository(FakeSessionFactory(session))

@@ -1,15 +1,16 @@
-"""Authenticated Guard operations dashboard routes."""
+"""Authenticated Guard Activity telemetry routes."""
 
 from __future__ import annotations
 
-from datetime import date
+from dataclasses import asdict
+from datetime import date, datetime, time, timedelta, timezone
 
 from fastapi import APIRouter, Cookie, HTTPException
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
-from echo_v2.app.guard_operations_page import GUARD_OPERATIONS_PAGE
-from echo_v2.services.guard_operations_service import GuardOperationsService
+from echo_v2.app.guard_operations_page import GUARD_ACTIVITY_PAGE
+from echo_v2.services.guard_simple_telemetry_service import GuardSimpleTelemetryService
 from echo_v2.services.waiting_list_token_service import WaitingListTokenService
 
 _SESSION_COOKIE = "wls"
@@ -28,7 +29,7 @@ def _headers() -> dict[str, str]:
 
 
 def build_guard_operations_router(
-    *, service: GuardOperationsService, token_service: WaitingListTokenService
+    *, service: GuardSimpleTelemetryService, token_service: WaitingListTokenService
 ) -> APIRouter:
     router = APIRouter()
 
@@ -36,7 +37,7 @@ def build_guard_operations_router(
     async def operations_token_exchange(token: str) -> Response:
         resolved = await token_service.resolve(token)
         if resolved is None:
-            return HTMLResponse(content="Guard operations link expired", headers=_headers())
+            return HTMLResponse(content="Guard Activity link expired", headers=_headers())
         response = RedirectResponse(
             url="/debug/guard/operations", status_code=303, headers=_headers()
         )
@@ -53,7 +54,7 @@ def build_guard_operations_router(
 
     @router.get("/debug/guard/operations", response_class=HTMLResponse)
     async def operations_page() -> HTMLResponse:
-        return HTMLResponse(content=GUARD_OPERATIONS_PAGE, headers=_headers())
+        return HTMLResponse(content=GUARD_ACTIVITY_PAGE, headers=_headers())
 
     @router.get("/api/debug/guard/operations")
     async def operations_data(
@@ -61,44 +62,71 @@ def build_guard_operations_router(
         child_id: str | None = None,
         chat_id: str | None = None,
         decision: str | None = None,
-        category: str | None = None,
-        mode: str | None = None,
-        overdue: bool | None = None,
         date_from: date | None = None,
         date_to: date | None = None,
-        limit: int = 100,
-        offset: int = 0,
+        limit: int = 50,
+        cursor: str | None = None,
     ) -> JSONResponse:
         if wls is None:
             raise HTTPException(status_code=401, detail="no session")
-        result = await service.list_dashboard(
+        result = await service.list_activity(
             session_id=wls,
             child_user_id=child_id,
             chat_id=chat_id,
             decision=decision,
-            category=category,
-            mode=mode,
-            overdue=overdue,
-            date_from=date_from,
-            date_to=date_to,
+            date_from=_date_start(date_from),
+            date_to=_date_end(date_to),
             limit=limit,
-            offset=offset,
+            cursor=cursor,
         )
         if result is None:
             raise HTTPException(status_code=401, detail="session expired")
         return JSONResponse(
-            content=jsonable_encoder(
-                {
-                    "guardian_user_id": result.guardian_user_id,
-                    "generated_at": result.generated_at,
-                    "summary": result.summary,
-                    "chats": result.chats,
-                }
-            ),
+            content=jsonable_encoder(asdict(result)),
             headers=_headers(),
         )
 
+    @router.get("/api/debug/guard/operations/{assessment_id}/context")
+    async def analysis_context(
+        assessment_id: str,
+        wls: str | None = Cookie(default=None, alias=_SESSION_COOKIE),
+    ) -> JSONResponse:
+        if wls is None:
+            raise HTTPException(status_code=401, detail="no session")
+        if await token_service.resolve_session(wls) is None:
+            raise HTTPException(status_code=401, detail="session expired")
+        result = await service.get_context(session_id=wls, assessment_id=assessment_id)
+        if result is None:
+            raise HTTPException(status_code=404, detail="analysis not found")
+        return JSONResponse(content=jsonable_encoder(result), headers=_headers())
+
+    @router.get("/api/debug/guard/operations/{assessment_id}")
+    async def analysis_detail(
+        assessment_id: str,
+        wls: str | None = Cookie(default=None, alias=_SESSION_COOKIE),
+    ) -> JSONResponse:
+        if wls is None:
+            raise HTTPException(status_code=401, detail="no session")
+        if await token_service.resolve_session(wls) is None:
+            raise HTTPException(status_code=401, detail="session expired")
+        result = await service.get_analysis(session_id=wls, assessment_id=assessment_id)
+        if result is None:
+            raise HTTPException(status_code=404, detail="analysis not found")
+        return JSONResponse(content=jsonable_encoder(result), headers=_headers())
+
     return router
+
+
+def _date_start(value: date | None) -> datetime | None:
+    return datetime.combine(value, time.min, tzinfo=timezone.utc) if value else None
+
+
+def _date_end(value: date | None) -> datetime | None:
+    return (
+        datetime.combine(value, time.min, tzinfo=timezone.utc) + timedelta(days=1)
+        if value
+        else None
+    )
 
 
 __all__ = ["build_guard_operations_router"]

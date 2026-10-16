@@ -5,12 +5,16 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, cast
 
-from sqlalchemy import CursorResult, desc, select, update
+from sqlalchemy import CursorResult, and_, desc, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from echo_v2.domain.guard_simple import ChildRole, SafetyAssessment
-from echo_v2.persistence.orm import GuardChatStateRow, GuardSimpleAssessmentRow
+from echo_v2.persistence.orm import (
+    GuardChatStateRow,
+    GuardParentAttentionDeliveryOutcomeRow,
+    GuardSimpleAssessmentRow,
+)
 
 
 class PostgresGuardSimpleAssessmentRepository:
@@ -32,6 +36,8 @@ class PostgresGuardSimpleAssessmentRepository:
             "summary": assessment.summary,
             "reason": assessment.reason,
             "evidence_message_ids": list(assessment.evidence_message_ids),
+            "input_message_ids": list(assessment.input_message_ids),
+            "input_content_hash": assessment.input_content_hash,
             "model": assessment.model,
             "prompt_version": assessment.prompt_version,
             "analyzer_version": assessment.analyzer_version,
@@ -56,6 +62,17 @@ class PostgresGuardSimpleAssessmentRepository:
             await session.commit()
             return assessment_id
 
+    async def get(self, assessment_id: str) -> SafetyAssessment | None:
+        async with self._session_factory() as session:
+            row = (
+                await session.execute(
+                    select(GuardSimpleAssessmentRow).where(
+                        GuardSimpleAssessmentRow.id == assessment_id
+                    )
+                )
+            ).scalar_one_or_none()
+            return _to_domain(row) if row is not None else None
+
     async def list_for_chat(
         self, *, child_user_id: str, chat_id: str, limit: int = 100
     ) -> list[SafetyAssessment]:
@@ -75,6 +92,95 @@ class PostgresGuardSimpleAssessmentRepository:
                 )
             ).scalars().all()
             return [_to_domain(row) for row in reversed(rows)]
+
+    async def list_for_children(
+        self,
+        *,
+        child_user_ids: list[str],
+        created_after: datetime | None = None,
+        created_before: datetime | None = None,
+        chat_id: str | None = None,
+        decision: str | None = None,
+        limit: int = 50,
+        before: tuple[datetime, str] | None = None,
+    ) -> list[SafetyAssessment]:
+        if not child_user_ids or limit <= 0:
+            return []
+        filters: list[Any] = [GuardSimpleAssessmentRow.child_user_id.in_(child_user_ids)]
+        if created_after is not None:
+            filters.append(GuardSimpleAssessmentRow.created_at >= created_after)
+        if created_before is not None:
+            filters.append(GuardSimpleAssessmentRow.created_at < created_before)
+        if chat_id is not None:
+            filters.append(GuardSimpleAssessmentRow.chat_id == chat_id)
+        if decision == "yes":
+            filters.append(GuardSimpleAssessmentRow.parent_should_know.is_(True))
+        elif decision == "no":
+            filters.append(GuardSimpleAssessmentRow.parent_should_know.is_(False))
+        elif decision == "unknown":
+            filters.append(GuardSimpleAssessmentRow.parent_should_know.is_(None))
+        if before is not None:
+            before_at, before_id = before
+            filters.append(
+                or_(
+                    GuardSimpleAssessmentRow.created_at < before_at,
+                    and_(
+                        GuardSimpleAssessmentRow.created_at == before_at,
+                        GuardSimpleAssessmentRow.id < before_id,
+                    ),
+                )
+            )
+        async with self._session_factory() as session:
+            rows = (
+                await session.execute(
+                    select(GuardSimpleAssessmentRow)
+                    .where(*filters)
+                    .order_by(
+                        GuardSimpleAssessmentRow.created_at.desc(),
+                        GuardSimpleAssessmentRow.id.desc(),
+                    )
+                    .limit(limit)
+                )
+            ).scalars().all()
+            return [_to_domain(row) for row in rows]
+
+    async def count_for_children(
+        self,
+        *,
+        child_user_ids: list[str],
+        created_after: datetime | None = None,
+        created_before: datetime | None = None,
+        chat_id: str | None = None,
+        decision: str | None = None,
+    ) -> dict[str, int]:
+        if not child_user_ids:
+            return {"analyzed": 0, "yes": 0, "no": 0, "unknown": 0}
+        filters: list[Any] = [GuardSimpleAssessmentRow.child_user_id.in_(child_user_ids)]
+        if created_after is not None:
+            filters.append(GuardSimpleAssessmentRow.created_at >= created_after)
+        if created_before is not None:
+            filters.append(GuardSimpleAssessmentRow.created_at < created_before)
+        if chat_id is not None:
+            filters.append(GuardSimpleAssessmentRow.chat_id == chat_id)
+        if decision == "yes":
+            filters.append(GuardSimpleAssessmentRow.parent_should_know.is_(True))
+        elif decision == "no":
+            filters.append(GuardSimpleAssessmentRow.parent_should_know.is_(False))
+        elif decision == "unknown":
+            filters.append(GuardSimpleAssessmentRow.parent_should_know.is_(None))
+        async with self._session_factory() as session:
+            rows = (
+                await session.execute(
+                    select(GuardSimpleAssessmentRow.parent_should_know)
+                    .where(*filters)
+                )
+            ).scalars().all()
+            return {
+                "analyzed": len(rows),
+                "yes": sum(value is True for value in rows),
+                "no": sum(value is False for value in rows),
+                "unknown": sum(value is None for value in rows),
+            }
 
     async def latest_unresolved(
         self,
@@ -148,6 +254,8 @@ class PostgresGuardSimpleAssessmentRepository:
             "summary": assessment.summary,
             "reason": assessment.reason,
             "evidence_message_ids": list(assessment.evidence_message_ids),
+            "input_message_ids": list(assessment.input_message_ids),
+            "input_content_hash": assessment.input_content_hash,
             "model": assessment.model,
             "prompt_version": assessment.prompt_version,
             "analyzer_version": assessment.analyzer_version,
@@ -183,6 +291,18 @@ class PostgresGuardSimpleAssessmentRepository:
                     .returning(GuardSimpleAssessmentRow.id)
                 )
             ).scalar_one()
+            now = datetime.now(timezone.utc)
+            await session.execute(
+                pg_insert(GuardParentAttentionDeliveryOutcomeRow).values(
+                    assessment_id=result_id,
+                    child_user_id=assessment.child_user_id,
+                    chat_id=assessment.chat_id,
+                    status="not_sent",
+                    reason="pending_evaluation",
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
             updated = cast(
                 CursorResult[Any],
                 await session.execute(
@@ -226,6 +346,8 @@ def _to_domain(row: GuardSimpleAssessmentRow) -> SafetyAssessment:
         summary=row.summary,
         reason=row.reason,
         evidence_message_ids=tuple(row.evidence_message_ids),
+        input_message_ids=tuple(row.input_message_ids or ()),
+        input_content_hash=row.input_content_hash,
         model=row.model,
         prompt_version=row.prompt_version,
         analyzer_version=row.analyzer_version,

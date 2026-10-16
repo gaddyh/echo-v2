@@ -64,6 +64,7 @@ __all__ = [
     "GuardEvalJudgmentRow",
     "GuardEvalRunRow",
     "GuardEvalSnapshotRow",
+    "GuardParentAttentionDeliveryOutcomeRow",
     "GuardParentAttentionDeliveryRow",
     "GuardSimpleAssessmentRow",
     "GuardThresholdStateRow",
@@ -811,6 +812,8 @@ class GuardSimpleAssessmentRow(Base):
     summary: Mapped[str] = mapped_column(Text, nullable=False)
     reason: Mapped[str] = mapped_column(Text, nullable=False)
     evidence_message_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    input_message_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    input_content_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
     model: Mapped[str] = mapped_column(Text, nullable=False)
     prompt_version: Mapped[str] = mapped_column(Text, nullable=False)
     analyzer_version: Mapped[str] = mapped_column(Text, nullable=False)
@@ -856,7 +859,7 @@ class GuardParentAttentionDeliveryRow(Base):
         Uuid, ForeignKey("guard_simple_assessments.id", ondelete="SET NULL"), nullable=True
     )
     last_delivered_evidence_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
-    last_delivered_at: Mapped[datetime | None] = mapped_column(
+    last_scheduled_at: Mapped[datetime | None] = mapped_column(
         TIMESTAMP(timezone=True), nullable=True
     )
     last_action_id: Mapped[str | None] = mapped_column(
@@ -865,6 +868,52 @@ class GuardParentAttentionDeliveryRow(Base):
     resolved_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class GuardParentAttentionDeliveryOutcomeRow(Base):
+    """Per-assessment parent-attention notification outcome."""
+
+    __tablename__ = "guard_parent_attention_delivery_outcomes"
+
+    assessment_id: Mapped[str] = mapped_column(
+        Uuid, ForeignKey("guard_simple_assessments.id", ondelete="CASCADE"), primary_key=True
+    )
+    child_user_id: Mapped[str] = mapped_column(
+        Uuid, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    chat_id: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    scheduled_action_id: Mapped[str | None] = mapped_column(
+        Uuid, ForeignKey("scheduled_actions.id", ondelete="SET NULL"), nullable=True
+    )
+    provider_message_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+    scheduled_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    sent_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    failed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('not_sent', 'scheduled', 'sent', 'failed', 'indeterminate')",
+            name="guard_parent_attention_delivery_outcome_status_check",
+        ),
+        Index(
+            "ix_guard_parent_attention_delivery_outcomes_status_updated",
+            "status", "updated_at",
+        ),
+        Index(
+            "ix_guard_parent_attention_delivery_outcomes_child_chat",
+            "child_user_id", "chat_id",
+        ),
     )
 
 
