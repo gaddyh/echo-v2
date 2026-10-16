@@ -532,6 +532,8 @@ def create_app() -> FastAPI:
             "GUARD_PARENT_ATTENTION_TEMPLATE_NAME", "guard_parent_attention_v1"
         ),
         template_language=os.environ.get("GUARD_PARENT_ATTENTION_TEMPLATE_LANGUAGE", "he"),
+        enabled=os.environ.get("GUARD_SIMPLE_DELIVERY_ENABLED", "false").lower()
+        in ("1", "true", "yes"),
     )
     simple_worker.set_delivery(parent_attention_delivery)
     if guard_simple_enabled:

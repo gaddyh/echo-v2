@@ -38,6 +38,7 @@ class ParentAttentionDeliveryService:
         scheduling: SchedulingCreator,
         template_name: str = "guard_parent_attention_v1",
         template_language: str = "he",
+        enabled: bool = False,
     ) -> None:
         self._links = links
         self._users = users
@@ -45,10 +46,13 @@ class ParentAttentionDeliveryService:
         self._scheduling = scheduling
         self._template_name = template_name
         self._template_language = template_language
+        self._enabled = enabled
 
     async def evaluate_committed(
         self, *, assessment: SafetyAssessment, assessment_id: str
     ) -> str:
+        if not self._enabled:
+            return "disabled"
         if assessment.parent_should_know is not True:
             return "not_parent_attention"
         current = await self._delivery.get(

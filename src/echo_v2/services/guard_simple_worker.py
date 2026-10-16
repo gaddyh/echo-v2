@@ -91,7 +91,7 @@ class GuardSimpleAnalysisWorker:
         if not chat.connection_id:
             raise ValueError("Baseline B chat has no monitored connection")
         user_info = await self._users.get_user_info_by_id(chat.child_user_id)
-        child_name = user_info[1] if user_info and user_info[1] else "הילד/ה"
+        child_name = user_info[1] if user_info and user_info[1] else ""
         assessment = await self._processor.process(
             child_user_id=chat.child_user_id,
             connection_id=chat.connection_id,
