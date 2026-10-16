@@ -39,6 +39,13 @@ def upgrade() -> None:
                     "ELSE NULL END"
                 )
             )
+    if "status" in columns:
+        op.alter_column(
+            "guard_simple_assessments",
+            "status",
+            existing_type=sa.Text(),
+            nullable=True,
+        )
     if "first_detected_at" not in columns:
         op.add_column(
             "guard_simple_assessments",
