@@ -17,15 +17,27 @@ import asyncio
 import base64
 import secrets
 from dataclasses import dataclass, field
+from unittest.mock import AsyncMock
 
 import pytest
 
 from echo_v2.integrations.green.provisioner import GreenProvisioner
 from echo_v2.persistence.whatsapp_connections import (
     InMemoryWhatsAppConnectionRepository,
+    StoredConnection,
 )
 from echo_v2.ports.bot import BotEvent, BotEventType
-from echo_v2.ports.whatsapp import ConnectionConfig, CreatedConnection
+from echo_v2.ports.whatsapp import (
+    ConnectionConfig,
+    ConnectionRef,
+    ConnectionStatus,
+    ConnectionStatusSnapshot,
+    CreatedConnection,
+    PairingOutcome,
+    PairingQr,
+    PairingResult,
+    ProviderCredentials,
+)
 from echo_v2.services.onboarding import OnboardingService
 
 __all__ = []
@@ -1921,6 +1933,159 @@ def test_qr_outcome_passkey_required():
 
 def test_qr_outcome_timeout():
     """Unknown type → TIMEOUT."""
-    from echo_v2.ports.whatsapp import PairingOutcome
     from echo_v2.services.onboarding import _qr_outcome
     assert _qr_outcome({"type": "unknown"}) is PairingOutcome.TIMEOUT
+
+
+async def test_provider_qr_path_sends_qr_and_completes() -> None:
+    service, bot, user_repo, conn_repo, _green_client = _make_service()
+    user_id = await user_repo.create_user(PHONE, first_name="Dana")
+    conn = StoredConnection(
+        user_id=user_id,
+        ref=ConnectionRef("baileys", "child-connection"),
+        credentials=ProviderCredentials(data=b"token"),
+        webhook_token_hash=b"hash",
+        status=ConnectionStatus.PAIRING_REQUIRED,
+    )
+    await conn_repo.save(conn)
+    provisioner = AsyncMock()
+    provisioner.get_pairing_qr.return_value = PairingResult(
+        outcome=PairingOutcome.QR_READY,
+        qr=PairingQr(image_base64=base64.b64encode(b"png").decode()),
+    )
+    provisioner.get_status.return_value = ConnectionStatusSnapshot(
+        status=ConnectionStatus.CONNECTED,
+    )
+    service._provisioner = provisioner
+    await service._send_provider_qr_and_poll(user_id, PHONE, conn)
+    await asyncio.sleep(0.05)
+    assert len(bot.sent_images) == 1
+    assert (await user_repo.get_by_phone(PHONE))[1] == "active"
+
+
+async def test_provider_qr_send_failure_marks_failed() -> None:
+    service, bot, user_repo, conn_repo, _green_client = _make_service()
+    bot.send_image_should_fail = True
+    user_id = await user_repo.create_user(PHONE, first_name="Dana")
+    conn = StoredConnection(
+        user_id=user_id,
+        ref=ConnectionRef("baileys", "child-connection"),
+        credentials=ProviderCredentials(data=b"token"),
+        webhook_token_hash=b"hash",
+        status=ConnectionStatus.PAIRING_REQUIRED,
+    )
+    await conn_repo.save(conn)
+    provisioner = AsyncMock()
+    provisioner.get_pairing_qr.return_value = PairingResult(
+        outcome=PairingOutcome.QR_READY,
+        qr=PairingQr(image_base64=base64.b64encode(b"png").decode()),
+    )
+    service._provisioner = provisioner
+    await service._send_provider_qr_and_poll(user_id, PHONE, conn)
+    assert (await user_repo.get_by_phone(PHONE))[1] == "failed"
+
+
+async def test_provider_qr_non_qr_outcome_marks_failed() -> None:
+    service, bot, user_repo, conn_repo, _green_client = _make_service()
+    user_id = await user_repo.create_user(PHONE, first_name="Dana")
+    conn = StoredConnection(
+        user_id=user_id,
+        ref=ConnectionRef("baileys", "child-connection"),
+        credentials=ProviderCredentials(data=b"token"),
+        webhook_token_hash=b"hash",
+        status=ConnectionStatus.PAIRING_REQUIRED,
+    )
+    await conn_repo.save(conn)
+    provisioner = AsyncMock()
+    provisioner.get_pairing_qr.return_value = PairingResult(
+        outcome=PairingOutcome.PASSKEY_REQUIRED,
+    )
+    service._provisioner = provisioner
+    await service._send_provider_qr_and_poll(user_id, PHONE, conn)
+    assert (await user_repo.get_by_phone(PHONE))[1] == "failed"
+    assert any("לא הצלחתי לקבל" in text for _phone, text in bot.sent)
+
+
+async def test_provider_qr_already_authorized_completes() -> None:
+    service, _bot, user_repo, conn_repo, _green_client = _make_service()
+    user_id = await user_repo.create_user(PHONE, first_name="Dana")
+    conn = StoredConnection(
+        user_id=user_id,
+        ref=ConnectionRef("baileys", "child-connection"),
+        credentials=ProviderCredentials(data=b"token"),
+        webhook_token_hash=b"hash",
+        status=ConnectionStatus.PAIRING_REQUIRED,
+    )
+    await conn_repo.save(conn)
+    provisioner = AsyncMock()
+    provisioner.get_pairing_qr.return_value = PairingResult(
+        outcome=PairingOutcome.ALREADY_AUTHORIZED,
+    )
+    service._provisioner = provisioner
+    await service._send_provider_qr_and_poll(user_id, PHONE, conn)
+    assert (await user_repo.get_by_phone(PHONE))[1] == "active"
+
+
+async def test_provider_status_poll_transient_error_then_timeout() -> None:
+    service, bot, user_repo, conn_repo, _green_client = _make_service(
+        poll_max_attempts=2
+    )
+    user_id = await user_repo.create_user(PHONE, first_name="Dana")
+    conn = StoredConnection(
+        user_id=user_id,
+        ref=ConnectionRef("baileys", "child-connection"),
+        credentials=ProviderCredentials(data=b"token"),
+        webhook_token_hash=b"hash",
+        status=ConnectionStatus.PAIRING_REQUIRED,
+    )
+    await conn_repo.save(conn)
+    provisioner = AsyncMock()
+    provisioner.get_status.side_effect = [RuntimeError("temporary"), ConnectionStatusSnapshot(status=ConnectionStatus.UNKNOWN)]
+    service._provisioner = provisioner
+    await service._poll_provider_status(user_id, PHONE, conn.ref)
+    assert any("לא התחברת בזמן" in text for _phone, text in bot.sent)
+
+
+async def test_provider_status_poll_retries_pairing_required() -> None:
+    service, bot, user_repo, conn_repo, _green_client = _make_service(
+        poll_max_attempts=2
+    )
+    user_id = await user_repo.create_user(PHONE, first_name="Dana")
+    conn = StoredConnection(
+        user_id=user_id,
+        ref=ConnectionRef("baileys", "child-connection"),
+        credentials=ProviderCredentials(data=b"token"),
+        webhook_token_hash=b"hash",
+        status=ConnectionStatus.PAIRING_REQUIRED,
+    )
+    await conn_repo.save(conn)
+    provisioner = AsyncMock()
+    provisioner.get_status.side_effect = [
+        ConnectionStatusSnapshot(status=ConnectionStatus.PAIRING_REQUIRED),
+        ConnectionStatusSnapshot(status=ConnectionStatus.UNKNOWN),
+    ]
+    service._provisioner = provisioner
+    await service._poll_provider_status(user_id, PHONE, conn.ref)
+    assert any("לא התחברת בזמן" in text for _phone, text in bot.sent)
+
+
+async def test_provider_status_poll_times_out() -> None:
+    service, bot, user_repo, conn_repo, _green_client = _make_service(
+        poll_max_attempts=1
+    )
+    user_id = await user_repo.create_user(PHONE, first_name="Dana")
+    conn = StoredConnection(
+        user_id=user_id,
+        ref=ConnectionRef("baileys", "child-connection"),
+        credentials=ProviderCredentials(data=b"token"),
+        webhook_token_hash=b"hash",
+        status=ConnectionStatus.PAIRING_REQUIRED,
+    )
+    await conn_repo.save(conn)
+    provisioner = AsyncMock()
+    provisioner.get_status.return_value = ConnectionStatusSnapshot(
+        status=ConnectionStatus.UNKNOWN,
+    )
+    service._provisioner = provisioner
+    await service._poll_provider_status(user_id, PHONE, conn.ref)
+    assert any("לא התחברת בזמן" in text for _phone, text in bot.sent)
