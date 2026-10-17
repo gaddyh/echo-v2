@@ -63,7 +63,13 @@ class BotFlowRegistry:
         self, event: BotEvent, user_id: str,
     ) -> bool:
         """If a flow is active, handle the event and return True."""
-        # 1. Onboarding flow — if the user is in onboarding, route there.
+        # 1. Parent-child onboarding owns contacts from active guardians and
+        # follow-up text such as a missing child name.
+        handle_parent_event = getattr(self._onboarding, "handle_parent_event", None)
+        if handle_parent_event is not None and await handle_parent_event(event):
+            return True
+
+        # 2. Legacy single-user onboarding flow — if the user is pending, route there.
         is_onboarding = await self._onboarding.is_onboarding(event.user_phone)
         if is_onboarding:
             if event.type is BotEventType.TEXT and event.text:

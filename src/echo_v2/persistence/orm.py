@@ -691,7 +691,7 @@ class GuardianChildLinkRow(Base):
         Uuid, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
     status: Mapped[str] = mapped_column(Text, nullable=False)
-    child_consented_at: Mapped[datetime | None] = mapped_column(
+    guardian_authorized_at: Mapped[datetime | None] = mapped_column(
         TIMESTAMP(timezone=True), nullable=True
     )
     safety_enabled_at: Mapped[datetime | None] = mapped_column(
@@ -709,7 +709,7 @@ class GuardianChildLinkRow(Base):
             "guardian_user_id", "child_user_id", name="guardian_child_links_pair_key"
         ),
         CheckConstraint(
-            "status IN ('active', 'revoked')",
+            "status IN ('pending', 'active', 'revoked')",
             name="guardian_child_links_status_check",
         ),
         Index("ix_guardian_child_links_child_status", "child_user_id", "status"),

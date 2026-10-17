@@ -377,6 +377,26 @@ async def test_guard_in_memory_repositories_cover_missing_and_duplicate_paths() 
     ))[0] == "stale"
 
 
+async def test_guardian_link_pending_authorization_and_activation() -> None:
+    links = InMemoryGuardianChildLinkRepository()
+    pending = await links.upsert_pending(
+        guardian_user_id="guardian", child_user_id="child", now=BASE
+    )
+    assert pending.status.value == "pending"
+    assert await links.get_pending_for_child("child") == pending
+    authorized = await links.authorize_guardian(
+        guardian_user_id="guardian", child_user_id="child",
+        now=BASE + timedelta(seconds=1),
+    )
+    assert authorized.guardian_authorized_at is not None
+    active = await links.activate(
+        guardian_user_id="guardian", child_user_id="child",
+        now=BASE + timedelta(seconds=2),
+    )
+    assert active.is_guard_enabled
+    assert await links.get_pending_for_child("child") is None
+
+
 async def test_guard_worker_drains_excluded_and_survives_processor_error() -> None:
     from echo_v2.services.guard_analysis_worker import GuardAnalysisWorker
 

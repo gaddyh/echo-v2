@@ -16,6 +16,7 @@ from echo_v2.bot import (
     Cancel,
     DigestOpen,
     ListDone,
+    OnboardingAuthorize,
     OnboardingCode,
     OnboardingInfo,
     OnboardingQr,
@@ -108,6 +109,12 @@ def test_parse_onboarding_info():
     parser = BotCommandParser()
     cmd = parser.parse(_button_event("onboarding:info"))
     assert isinstance(cmd, OnboardingInfo)
+
+
+def test_parse_onboarding_authorize():
+    parser = BotCommandParser()
+    cmd = parser.parse(_button_event("onboarding:authorize"))
+    assert isinstance(cmd, OnboardingAuthorize)
 
 
 def test_parse_unknown_callback():

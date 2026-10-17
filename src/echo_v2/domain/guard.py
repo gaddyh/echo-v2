@@ -18,6 +18,7 @@ __all__ = [
 
 
 class GuardianChildLinkStatus(str, Enum):
+    PENDING = "pending"
     ACTIVE = "active"
     REVOKED = "revoked"
 
@@ -28,7 +29,7 @@ class GuardianChildLink:
     guardian_user_id: str
     child_user_id: str
     status: GuardianChildLinkStatus
-    child_consented_at: datetime | None = None
+    guardian_authorized_at: datetime | None = None
     safety_enabled_at: datetime | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None

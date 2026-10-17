@@ -36,6 +36,7 @@ __all__ = [
     "DigestOpen",
     "GuardOpen",
     "ListDone",
+    "OnboardingAuthorize",
     "OnboardingCode",
     "OnboardingConnect",
     "OnboardingInfo",
@@ -106,6 +107,11 @@ class OnboardingConnect:
 
 
 @dataclass(frozen=True)
+class OnboardingAuthorize:
+    """Guardian confirmed parental responsibility and Guard monitoring."""
+
+
+@dataclass(frozen=True)
 class OnboardingShowQr:
     """Pending user tapped 'הצג QR' — fetch + send QR for an existing connection."""
 
@@ -140,6 +146,7 @@ BotCommand = (
     | ListDone
     | OnboardingStart
     | OnboardingConnect
+    | OnboardingAuthorize
     | OnboardingShowQr
     | OnboardingInfo
     | OnboardingCode
@@ -224,6 +231,8 @@ class BotCommandParser:
             return OnboardingStart()
         if callback_id == "onboarding:connect":
             return OnboardingConnect()
+        if callback_id == "onboarding:authorize":
+            return OnboardingAuthorize()
         if callback_id == "onboarding:show_qr":
             return OnboardingShowQr()
         if callback_id == "onboarding:info":

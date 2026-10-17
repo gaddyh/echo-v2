@@ -24,9 +24,11 @@ from dataclasses import dataclass, field
 import pytest
 
 from echo_v2.integrations.green.provisioner import GreenProvisioner
+from echo_v2.persistence.guard_repositories import InMemoryGuardianChildLinkRepository
 from echo_v2.persistence.whatsapp_connections import (
     InMemoryWhatsAppConnectionRepository,
 )
+from echo_v2.ports.bot import BotContact, BotEvent, BotEventType
 from echo_v2.ports.whatsapp import ConnectionRef, ProviderCredentials
 from echo_v2.services.onboarding import OnboardingService
 
@@ -153,6 +155,10 @@ class FakeGreenClient:
             "message": base64.b64encode(b"fake-qr-png").decode("utf-8"),
         }
         self.qr_should_fail: bool = False
+        self.account_phone: str | None = None
+
+    async def get_account_phone(self, id_instance: str, api_token: str) -> str | None:
+        return self.account_phone
 
     def set_state_sequence(self, states: list[str | None]) -> None:
         """Set the sequence of states returned by get_state_instance."""
@@ -229,6 +235,107 @@ def fakes():
 
 
 # --- Tests -----------------------------------------------------------------
+
+
+async def test_parent_registers_child_authorizes_and_activates(fakes):
+    service, bot, user_repo, connection_repo, green_client = fakes
+    links = InMemoryGuardianChildLinkRepository()
+    service = OnboardingService(
+        bot=bot,
+        user_repo=user_repo,
+        connection_repo=connection_repo,
+        provisioner=service._provisioner,
+        green_client=green_client,
+        webhook_base_url="https://echo.example.com",
+        poll_interval=0.01,
+        poll_max_attempts=3,
+        guardian_child_links=links,
+    )
+    parent_phone = "+972546610653"
+    child_phone = "+972546610654"
+
+    await service.handle_unknown_event(
+        BotEvent(
+            event_id="parent-identity",
+            user_phone=parent_phone,
+            type=BotEventType.TEXT,
+            text="אני דנה אמא של אוריה",
+        )
+    )
+    parent = await user_repo.get_by_phone(parent_phone)
+    assert parent is not None and parent[1] == "active" and parent[2] == "דנה"
+
+    await service.handle_parent_event(
+        BotEvent(
+            event_id="child-contact",
+            user_phone=parent_phone,
+            type=BotEventType.CONTACT,
+            contact=BotContact(phone=child_phone, name="אוריה"),
+        )
+    )
+    parent_id = parent[0]
+    pending = await links.get_pending_for_guardian(parent_id)
+    assert len(pending) == 1
+    assert len(bot.sent_buttons) >= 1
+
+    await service.handle_onboarding_authorize(parent_phone)
+    pending = await links.get_pending_for_guardian(parent_id)
+    assert pending[0].guardian_authorized_at is not None
+
+    green_client.set_state_sequence(["notAuthorized", "authorized"])
+    green_client.account_phone = child_phone
+    await service.handle_onboarding_connect(parent_phone)
+    await asyncio.sleep(0.1)
+    await service.handle_onboarding_show_qr(parent_phone)
+    await asyncio.sleep(0.2)
+
+    child = await user_repo.get_by_phone(child_phone)
+    assert child is not None
+    active = await links.get_active_for_pair(
+        guardian_user_id=parent_id, child_user_id=child[0]
+    )
+    assert active is not None
+    assert any("Guard פעיל" in text for _phone, text in bot.sent)
+
+
+async def test_parent_contact_name_fallback_and_reauthorization(fakes):
+    service, bot, user_repo, _connection_repo, _green_client = fakes
+    links = InMemoryGuardianChildLinkRepository()
+    service = OnboardingService(
+        bot=bot,
+        user_repo=user_repo,
+        connection_repo=_connection_repo,
+        provisioner=service._provisioner,
+        green_client=_green_client,
+        webhook_base_url="https://echo.example.com",
+        guardian_child_links=links,
+    )
+    parent_phone = "+972546610653"
+    child_phone = "+972546610655"
+    await service.handle_unknown_event(BotEvent(
+        event_id="parent", user_phone=parent_phone,
+        type=BotEventType.TEXT, text="אני דנה אמא של אוריה",
+    ))
+    await service.handle_unknown_event(BotEvent(
+        event_id="parent-again", user_phone=parent_phone,
+        type=BotEventType.TEXT, text="אני דנה אמא של אוריה",
+    ))
+    parent = await user_repo.get_by_phone(parent_phone)
+    assert parent is not None
+    await service.handle_parent_event(BotEvent(
+        event_id="nameless-child", user_phone=parent_phone,
+        type=BotEventType.CONTACT,
+        contact=BotContact(phone=child_phone, name=""),
+    ))
+    await service.handle_parent_event(BotEvent(
+        event_id="child-name", user_phone=parent_phone,
+        type=BotEventType.TEXT, text="אוריה",
+    ))
+    pending = await links.get_pending_for_guardian(parent[0])
+    assert pending and pending[0].guardian_authorized_at is None
+    await service.handle_onboarding_connect(parent_phone)
+    await service.handle_onboarding_authorize(parent_phone)
+    assert any("Connect" in body for _phone, body, _buttons in bot.sent_buttons)
 
 
 async def test_unknown_user_starts_onboarding(fakes):
