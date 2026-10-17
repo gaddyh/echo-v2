@@ -20,6 +20,7 @@ import asyncio
 import base64
 import secrets
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 import pytest
 
@@ -30,7 +31,7 @@ from echo_v2.persistence.whatsapp_connections import (
 )
 from echo_v2.ports.bot import BotContact, BotEvent, BotEventType
 from echo_v2.ports.whatsapp import ConnectionRef, ConnectionStatus, ProviderCredentials
-from echo_v2.services.onboarding import OnboardingService
+from echo_v2.services.onboarding import OnboardingContext, OnboardingService
 
 __all__ = []
 
@@ -464,6 +465,62 @@ async def test_child_activation_rejects_phone_mismatch(fakes):
     assert await links.get_active_for_pair(
         guardian_user_id=parent[0], child_user_id=child[0]
     ) is None
+
+
+async def test_parent_flow_ignores_events_without_guardian_state(fakes):
+    service, _bot, _user_repo, _connection_repo, _green_client = fakes
+    assert await service.handle_parent_event(BotEvent(
+        event_id="unknown", user_phone="+972546610653",
+        type=BotEventType.TEXT, text="hello",
+    )) is False
+    await service.handle_onboarding_authorize("not-a-phone")
+    linked_service = OnboardingService(
+        bot=_bot, user_repo=_user_repo, connection_repo=_connection_repo,
+        provisioner=service._provisioner, green_client=_green_client,
+        webhook_base_url="https://echo.example.com",
+        guardian_child_links=InMemoryGuardianChildLinkRepository(),
+    )
+    await linked_service.handle_onboarding_authorize("not-a-phone")
+    await service._register_guardian("+972546610653", "Dana")
+    assert await service.handle_parent_event(BotEvent(
+        event_id="no-pending", user_phone="+972546610653",
+        type=BotEventType.TEXT, text="hello",
+    )) is False
+    assert await service._pending_for_guardian("missing") is None
+    await service._register_guardian("invalid", "Dana")
+    ctx = OnboardingContext("guardian", "+972546610653", "active", "Dana", None)
+    await service._create_child_from_contact(
+        ctx, BotContact(phone="not-a-phone", name="Child")
+    )
+    await service._create_child_from_contact(
+        ctx, BotContact(phone="+972546610654", name="Child")
+    )
+
+
+async def test_child_activation_without_connection_is_not_ready(fakes):
+    service, _bot, user_repo, _connection_repo, _green_client = fakes
+    links = InMemoryGuardianChildLinkRepository()
+    service = OnboardingService(
+        bot=_bot, user_repo=user_repo, connection_repo=_connection_repo,
+        provisioner=service._provisioner, green_client=_green_client,
+        webhook_base_url="https://echo.example.com", guardian_child_links=links,
+    )
+    guardian = await user_repo.create_user("+972546610653", first_name="Dana", onboarding_status="active")
+    child = await user_repo.create_user("+972546610654", first_name="אוריה", onboarding_status="pending")
+    await links.upsert_pending(guardian_user_id=guardian, child_user_id=child, now=datetime.now(timezone.utc))
+    await links.authorize_guardian(guardian_user_id=guardian, child_user_id=child, now=datetime.now(timezone.utc))
+    assert await service._activate_child_connection(child) is False
+
+
+async def test_require_green_client_raises_when_missing(fakes):
+    _service, bot, user_repo, connection_repo, _green_client = fakes
+    service = OnboardingService(
+        bot=bot, user_repo=user_repo, connection_repo=connection_repo,
+        provisioner=_service._provisioner, green_client=None,
+        webhook_base_url="https://echo.example.com",
+    )
+    with pytest.raises(RuntimeError, match="Green client is required"):
+        service._require_green_client()
 
 
 async def test_unknown_user_starts_onboarding(fakes):
