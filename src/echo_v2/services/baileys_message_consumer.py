@@ -39,6 +39,7 @@ class BaileysMessageConsumer:
         self._worker_id = worker_id or f"echo-baileys-message-{socket.gethostname()}"
 
     async def run_once(self) -> int:
+        _logger.info("baileys message batch claim start worker_id=%s batch_size=%d", self._worker_id, self._batch_size)
         claimed = await self._repository.claim_batch(
             self._worker_id,
             batch_size=self._batch_size,
@@ -47,11 +48,16 @@ class BaileysMessageConsumer:
             event_type="message",
         )
         processed = 0
+        _logger.info("baileys message batch claimed count=%d", len(claimed))
         for item in claimed:
             try:
                 if not isinstance(item.event, BaileysMessageEnvelope):
                     raise TypeError("message consumer received a connection-state event")
                 event = BaileysMessageEvent.from_payload(item.event.payload)
+                _logger.info(
+                    "baileys message processing start event_id=%s provider_message_id=%s chat_id=%s kind=%s",
+                    item.event.event_id, event.provider_message_id, event.chat_id, event.kind.value,
+                )
                 resolved = await self._repository.resolve_message_user(event)
                 if resolved is None:
                     raise ValueError("unknown Echo Baileys connection")
@@ -64,6 +70,7 @@ class BaileysMessageConsumer:
                 if not await self._repository.complete_claimed_event(item):
                     raise RuntimeError("Baileys message claim was lost before completion")
                 processed += 1
+                _logger.info("baileys message processing complete event_id=%s", item.event.event_id)
             except Exception as exc:
                 _logger.exception(
                     "Baileys message event processing failed event_id=%s",
