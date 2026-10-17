@@ -44,6 +44,7 @@ from echo_v2.services.guard_schedule_policy import (
     GuardSchedulingContext,
 )
 from echo_v2.services.guard_taxonomy import GuardDecision
+from echo_v2.services.media_enrichment import MediaEnrichmentService
 
 __all__ = ["ChatIngestionService"]
 
@@ -80,6 +81,7 @@ class ChatIngestionService:
         guard_shadow_enabled: bool = False,
         guard_simple_enabled: bool = False,
         guard_simple_quiet_period_seconds: float = 300.0,
+        media_enrichment_service: MediaEnrichmentService | None = None,
     ) -> None:
         self._ingestion_repo = ingestion_repo
         self._quiet_period = quiet_period_seconds
@@ -91,6 +93,10 @@ class ChatIngestionService:
         self._guard_shadow_enabled = guard_shadow_enabled
         self._guard_simple_enabled = guard_simple_enabled
         self._guard_simple_quiet_period = guard_simple_quiet_period_seconds
+        self._media_enrichment = media_enrichment_service
+
+    def set_media_enrichment_service(self, service: MediaEnrichmentService) -> None:
+        self._media_enrichment = service
 
     async def ingest_message(
         self,
@@ -195,7 +201,7 @@ class ChatIngestionService:
             media_file_name=event.media_file_name,
         )
 
-        return await self._ingestion_repo.ingest_if_new(
+        inserted = await self._ingestion_repo.ingest_if_new(
             message=message,
             direction=event.direction,
             observed_at=message_time,
@@ -205,3 +211,13 @@ class ChatIngestionService:
             analysis_target=analysis_target,
             guard_schedule_reason=guard_schedule_reason,
         )
+        if (
+            inserted
+            and self._media_enrichment is not None
+            and message.message_type in {"audio", "image", "video", "document"}
+        ):
+            try:
+                await self._media_enrichment.enrich([message])
+            except Exception:
+                _logger.exception("eager audio enrichment failed for message %s", message.id)
+        return inserted
