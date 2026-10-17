@@ -45,7 +45,7 @@ class PostgresGuardSimpleAssessmentRepository:
             "omitted_message_count": assessment.omitted_message_count,
             "identity_verified": assessment.identity_verified,
             "identity_reason": assessment.identity_reason,
-            "diagnostics": assessment.diagnostics,
+            "diagnostics": _json_safe_diagnostics(assessment.diagnostics),
             "created_at": assessment.created_at or datetime.now(timezone.utc),
             "first_detected_at": assessment.first_detected_at,
             "last_evidence_at": assessment.last_evidence_at,
@@ -263,7 +263,7 @@ class PostgresGuardSimpleAssessmentRepository:
             "omitted_message_count": assessment.omitted_message_count,
             "identity_verified": assessment.identity_verified,
             "identity_reason": assessment.identity_reason,
-            "diagnostics": assessment.diagnostics,
+            "diagnostics": _json_safe_diagnostics(assessment.diagnostics),
             "created_at": assessment.created_at or datetime.now(timezone.utc),
             "first_detected_at": assessment.first_detected_at,
             "last_evidence_at": assessment.last_evidence_at,
@@ -304,10 +304,13 @@ class PostgresGuardSimpleAssessmentRepository:
                 )
             )
             now = datetime.now(timezone.utc)
-            retry_at = assessment.diagnostics.get("next_media_retry_at")
+            retry_at_value = assessment.diagnostics.get("next_media_retry_at")
+            if isinstance(retry_at_value, str):
+                retry_at_value = datetime.fromisoformat(retry_at_value)
+            retry_at = retry_at_value
             retryable = (
                 assessment.diagnostics.get("retryable_media_evidence") is True
-                and retry_at is not None
+                and isinstance(retry_at, datetime)
             )
             values_for_state: dict[str, Any] = {
                 "last_parent_should_know": assessment.parent_should_know,
@@ -343,6 +346,18 @@ class PostgresGuardSimpleAssessmentRepository:
                 return "stale", None
             await session.commit()
             return ("deferred" if retryable else "committed"), str(result_id)
+
+
+def _json_safe_diagnostics(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {key: _json_safe_diagnostics(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json_safe_diagnostics(item) for item in value]
+    if isinstance(value, tuple):
+        return [_json_safe_diagnostics(item) for item in value]
+    return value
 
 
 def _to_domain(row: GuardSimpleAssessmentRow) -> SafetyAssessment:

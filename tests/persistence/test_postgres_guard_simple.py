@@ -12,6 +12,7 @@ from echo_v2.domain.guard_simple import ChildRole, SafetyAssessment
 from echo_v2.persistence.postgres_chat import PostgresMessageRepository
 from echo_v2.persistence.postgres_guard_simple import (
     PostgresGuardSimpleAssessmentRepository,
+    _json_safe_diagnostics,
 )
 from echo_v2.ports.whatsapp import MessageDirection
 from tests.persistence.conftest import insert_user
@@ -129,3 +130,14 @@ async def test_postgres_message_window_reports_bounds_connections_and_unknown_se
     assert len(window.messages) == 1
     assert window.connection_ids == (connection_id,)
     assert window.unknown_sender_count == 1
+
+
+def test_guard_diagnostics_are_json_safe() -> None:
+    value = _json_safe_diagnostics({
+        "retry_at": NOW,
+        "items": (NOW, {"nested": NOW}),
+    })
+    assert value == {
+        "retry_at": NOW.isoformat(),
+        "items": [NOW.isoformat(), {"nested": NOW.isoformat()}],
+    }
