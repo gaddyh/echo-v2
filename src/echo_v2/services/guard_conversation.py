@@ -13,6 +13,7 @@ from echo_v2.domain.guard_simple import (
 )
 from echo_v2.persistence.chat_repositories import MessageRepository
 from echo_v2.services.guard_analyzer import GuardAnalysisInput, GuardMessage
+from echo_v2.services.media_enrichment import MediaEnrichmentService
 
 __all__ = [
     "GuardConversation",
@@ -113,11 +114,18 @@ class GuardConversationBuilder:
 class SimpleGuardConversationBuilder:
     """Build a child-aware, bounded calendar-day Baseline B context."""
 
-    def __init__(self, message_repo: MessageRepository, *, max_messages: int = 100) -> None:
+    def __init__(
+        self,
+        message_repo: MessageRepository,
+        *,
+        max_messages: int = 100,
+        enrichment_service: MediaEnrichmentService | None = None,
+    ) -> None:
         if max_messages < 1:
             raise ValueError("max_messages must be positive")
         self._messages = message_repo
         self._max_messages = max_messages
+        self._enrichment = enrichment_service
 
     async def build(
         self,
@@ -143,6 +151,8 @@ class SimpleGuardConversationBuilder:
             limit=self._max_messages,
         )
         messages = list(window.messages)
+        enriched = await self._enrichment.enrich(messages) if self._enrichment is not None else None
+        enriched_by_id = {item.message.id: item for item in enriched or ()}
         connections = set(window.connection_ids)
         identity_reasons: list[str] = []
         if any(connection != connection_id for connection in connections):
@@ -172,12 +182,30 @@ class SimpleGuardConversationBuilder:
                 unknown_index += 1
                 role = f"unknown_participant_{unknown_index}"
                 identity_reasons.append("inbound sender attribution is missing")
+            enriched_message = enriched_by_id.get(message.id)
             simple_messages.append(
                 SimpleConversationMessage(
                     id=message.id,
                     sender=role,
-                    text=message.text or "",
+                    text=(enriched_message.effective_text if enriched_message else message.text or ""),
                     timestamp=message.timestamp,
+                    enrichment_version=(
+                        enriched_message.enrichment.enrichment_version
+                        if enriched_message and enriched_message.enrichment else None
+                    ),
+                    enrichment_status=(
+                        enriched_message.enrichment.status.value
+                        if enriched_message and enriched_message.enrichment else None
+                    ),
+                    enrichment_error=(
+                        enriched_message.enrichment.error
+                        if enriched_message and enriched_message.enrichment else None
+                    ),
+                    next_retry_at=(
+                        enriched_message.enrichment.next_retry_at
+                        or enriched_message.enrichment.lease_expires_at
+                        if enriched_message and enriched_message.enrichment else None
+                    ),
                 )
             )
 

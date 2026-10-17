@@ -54,6 +54,7 @@ from echo_v2.persistence.chat_repositories import (
     ChatStateRepository,
     MessageRepository,
 )
+from echo_v2.services.media_enrichment import MediaEnrichmentService
 from echo_v2.services.media_summarizer import MediaSummarizer
 from echo_v2.services.transcription import Transcriber, handle_direct_audio_download_url
 from echo_v2.services.waiting_for_me_analyzer import WaitingForMeAnalyzer
@@ -213,6 +214,7 @@ class ChatAnalysisProcessor:
         transcriber: Transcriber | None = None,
         media_summarizer: MediaSummarizer | None = None,
         media_url_resolver: MediaUrlResolver | None = None,
+        enrichment_service: MediaEnrichmentService | None = None,
     ) -> None:
         self._messages = message_repo
         self._analyzer = analyzer
@@ -221,6 +223,7 @@ class ChatAnalysisProcessor:
         self._transcriber = transcriber
         self._media_summarizer = media_summarizer
         self._media_url_resolver = media_url_resolver
+        self._enrichment = enrichment_service
 
     async def process(
         self,
@@ -235,53 +238,29 @@ class ChatAnalysisProcessor:
             max_no_outbound=self._max_no_outbound,
         )
 
-        if self._media_url_resolver is not None:
-            await self._refresh_media_urls(messages)
-
-        # Lazy media processing: transcribe audio and summarize
-        # image/video/document messages that have a download URL but no
-        # text yet, so the analyzer sees a textual representation.
-        audio_count = sum(1 for m in messages if m.message_type == "audio")
-        audio_with_url = sum(
-            1 for m in messages
-            if m.message_type == "audio" and m.media_download_url is not None
-        )
-        media_count = sum(
-            1 for m in messages if m.message_type in ("image", "video", "document")
-        )
-        media_with_url = sum(
-            1 for m in messages
-            if m.message_type in ("image", "video", "document")
-            and m.media_download_url is not None
-        )
-        _logger.info(
-            "process chat %s/%s version=%d: loaded %d messages, "
-            "transcriber=%s, audio=%d (with_url=%d), "
-            "media_summarizer=%s, media=%d (with_url=%d)",
-            user_id,
-            chat_id,
-            target_version,
-            len(messages),
-            type(self._transcriber).__name__ if self._transcriber else "None",
-            audio_count,
-            audio_with_url,
-            type(self._media_summarizer).__name__ if self._media_summarizer else "None",
-            media_count,
-            media_with_url,
-        )
-        if self._transcriber is not None and audio_with_url > 0:
-            messages = await self._transcribe_audio_messages(messages)
-        if self._media_summarizer is not None and media_with_url > 0:
-            messages = await self._summarize_media_messages(messages)
-        if self._media_summarizer is not None:
-            messages = await self._summarize_link_messages(messages)
+        effective_text: dict[str, str] = {message.id: message.text or "" for message in messages}
+        enrichment_views = None
+        if self._enrichment is not None:
+            enrichment_views = await self._enrichment.enrich(messages)
+            effective_text = {
+                view.message.id: view.effective_text for view in enrichment_views
+            }
+        else:
+            if self._media_url_resolver is not None:
+                await self._refresh_media_urls(messages)
+            if self._transcriber is not None:
+                messages = await self._transcribe_audio_messages(messages)
+            if self._media_summarizer is not None:
+                messages = await self._summarize_media_messages(messages)
+                messages = await self._summarize_link_messages(messages)
+            effective_text = {message.id: message.text or "" for message in messages}
 
         conversation = ConversationInput(
             user_id=user_id,
             chat_id=chat_id,
             target_version=target_version,
             messages=[
-                (m.direction.value, m.text or "", m.timestamp)
+                (m.direction.value, effective_text.get(m.id, m.text or ""), m.timestamp)
                 for m in messages
             ],
         )
@@ -298,12 +277,22 @@ class ChatAnalysisProcessor:
         # Build a conversation snapshot for training/feedback.
         # This is the exact conversation the model saw — not messages
         # loaded later when feedback arrives.
+        enrichment_metadata = {
+            view.message.id: {
+                "enrichment_status": view.enrichment.status.value,
+                "enrichment_version": view.enrichment.enrichment_version,
+                "enrichment_error": view.enrichment.error,
+            }
+            for view in enrichment_views or []
+            if view.enrichment is not None
+        }
         conversation_snapshot = {
             "messages": [
                 {
                     "direction": m.direction.value,
-                    "text": m.text or "",
+                    "text": effective_text.get(m.id, m.text or ""),
                     "timestamp": m.timestamp.isoformat() if m.timestamp else None,
+                    **enrichment_metadata.get(m.id, {}),
                 }
                 for m in messages
             ],

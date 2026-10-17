@@ -356,6 +356,7 @@ def create_app() -> FastAPI:
     from echo_v2.services.guard_simple_analyzer import SimpleSafetyAnalyzer
     from echo_v2.services.guard_simple_processor import GuardSimpleProcessor
     from echo_v2.services.guard_simple_worker import GuardSimpleAnalysisWorker
+    from echo_v2.services.media_enrichment import MediaEnrichmentService
     from echo_v2.services.media_summarizer import OpenAIMediaSummarizer
     from echo_v2.services.summary_rewriter import SummaryRewriter
     from echo_v2.services.transcription_factory import build_transcriber
@@ -373,6 +374,17 @@ def create_app() -> FastAPI:
         BaileysMediaUrlResolver(baileys_client)
         if baileys_client is not None
         else None
+    )
+    media_enrichment = MediaEnrichmentService(
+        message_repo=repos.messages,
+        enrichment_repo=repos.message_enrichments,
+        transcriber=transcriber,
+        media_summarizer=media_summarizer,
+        media_url_resolver=media_url_resolver,
+        enrichment_version=os.environ.get("MEDIA_ENRICHMENT_VERSION", "2026-10-17.1"),
+        lease_seconds=int(os.environ.get("MEDIA_ENRICHMENT_LEASE_SECONDS", "300")),
+        max_attempts=int(os.environ.get("MEDIA_ENRICHMENT_MAX_ATTEMPTS", "3")),
+        retry_base_seconds=int(os.environ.get("MEDIA_ENRICHMENT_RETRY_BASE_SECONDS", "60")),
     )
 
     summary_rewriter = SummaryRewriter(
@@ -397,6 +409,7 @@ def create_app() -> FastAPI:
         transcriber=transcriber,
         media_summarizer=media_summarizer,
         media_url_resolver=media_url_resolver,
+        enrichment_service=media_enrichment,
     )
     from echo_v2.services.analysis_judge import AnalysisJudge
 
@@ -443,6 +456,7 @@ def create_app() -> FastAPI:
         ),
         assessment_repo=repos.guard_simple_assessments,
         timezone_resolver=_ChildTimezoneResolver(),
+        enrichment_service=media_enrichment,
         max_messages=int(os.environ.get("GUARD_SIMPLE_MESSAGE_CAP", "100")),
     )
     simple_worker = GuardSimpleAnalysisWorker(

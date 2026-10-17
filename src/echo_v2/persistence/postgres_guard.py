@@ -205,6 +205,25 @@ class PostgresGuardChatStateRepository:
             await session.commit()
             return result.rowcount > 0
 
+    async def defer_analysis(
+        self, child_user_id: str, chat_id: str, target_version: int, *,
+        retry_at: datetime, reason: str, analyzed_at: datetime,
+    ) -> bool:
+        async with self._session_factory() as session:
+            stmt = update(GuardChatStateRow).where(
+                GuardChatStateRow.child_user_id == child_user_id,
+                GuardChatStateRow.chat_id == chat_id,
+                GuardChatStateRow.activity_version == target_version,
+            ).values(
+                next_analysis_at=retry_at,
+                next_analysis_reason=reason,
+                last_analysis_at=analyzed_at,
+                updated_at=analyzed_at,
+            )
+            result = cast(CursorResult[Any], await session.execute(stmt))
+            await session.commit()
+            return result.rowcount > 0
+
     @staticmethod
     def _to_domain(row: GuardChatStateRow) -> GuardChatState:
         return GuardChatState(

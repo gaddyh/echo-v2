@@ -107,7 +107,7 @@ class GuardSimpleAnalysisWorker:
             target_version=chat.activity_version,
             assessment=assessment,
         )
-        if status == "committed" and assessment_id and self._delivery is not None:
+        if status in {"committed", "completed"} and assessment_id and self._delivery is not None:
             try:
                 await self._delivery.evaluate_committed(
                     assessment=assessment,

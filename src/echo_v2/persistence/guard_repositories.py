@@ -78,6 +78,17 @@ class GuardChatStateRepository(Protocol):
         parent_should_know: bool | None = None,
     ) -> bool: ...
 
+    async def defer_analysis(
+        self,
+        child_user_id: str,
+        chat_id: str,
+        target_version: int,
+        *,
+        retry_at: datetime,
+        reason: str,
+        analyzed_at: datetime,
+    ) -> bool: ...
+
 
 @runtime_checkable
 class GuardAnalysisCommitRepository(Protocol):
@@ -284,6 +295,20 @@ class InMemoryGuardChatStateRepository:
             next_analysis_at=None,
             next_analysis_reason=None,
             updated_at=analyzed_at,
+        )
+        return True
+
+    async def defer_analysis(  # pragma: no cover - exercised by queue integration tests
+        self, child_user_id: str, chat_id: str, target_version: int, *,
+        retry_at: datetime, reason: str, analyzed_at: datetime,
+    ) -> bool:
+        key = (child_user_id, chat_id)
+        state = self._states.get(key)
+        if state is None or state.activity_version != target_version:
+            return False
+        self._states[key] = replace(
+            state, next_analysis_at=retry_at, next_analysis_reason=reason,
+            last_analysis_at=analyzed_at, updated_at=analyzed_at,
         )
         return True
 
