@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from dataclasses import replace
 from datetime import datetime, time, timezone
 from typing import Protocol
@@ -22,6 +23,8 @@ from echo_v2.persistence.guard_simple_repositories import (
 from echo_v2.services.guard_conversation import SimpleGuardConversationBuilder
 from echo_v2.services.guard_simple_analyzer import SimpleSafetyAnalyzer
 from echo_v2.services.media_enrichment import MediaEnrichmentService
+
+_logger = logging.getLogger("echo_v2.services.guard_simple_processor")
 
 DEFAULT_SIMPLE_GUARD_TIMEZONE = "Asia/Jerusalem"
 DEFAULT_SIMPLE_GUARD_MESSAGE_CAP = 100
@@ -62,6 +65,10 @@ class GuardSimpleProcessor:
         as_of: datetime | None = None,
     ) -> SafetyAssessment:
         observed_at = _aware_utc(as_of or datetime.now(timezone.utc))
+        _logger.info(
+            "guard simple processor start child_user_id=%s chat_id=%s as_of=%s",
+            child_user_id, chat_id, observed_at,
+        )
         timezone_name = await self._timezone(child_user_id)
         local_zone = ZoneInfo(timezone_name)
         local_now = observed_at.astimezone(local_zone)
@@ -73,6 +80,10 @@ class GuardSimpleProcessor:
             chat_id=chat_id,
             before=current_day_start,
         )
+        _logger.info(
+            "guard simple build conversation child_user_id=%s chat_id=%s timezone=%s prior_concern=%s",
+            child_user_id, chat_id, timezone_name, prior.id if prior is not None else None,
+        )
         conversation = await self._builder.build(
             child_user_id=child_user_id,
             child_name=child_name,
@@ -81,6 +92,11 @@ class GuardSimpleProcessor:
             timezone_name=timezone_name,
             as_of=observed_at,
             prior_concern=_prior_concern(prior),
+        )
+        _logger.info(
+            "guard simple conversation built child_user_id=%s chat_id=%s messages=%d usable=%s incomplete_media=%s identity_verified=%s",
+            child_user_id, chat_id, len(conversation.messages), conversation.usable_evidence,
+            conversation.incomplete_media_evidence, conversation.identity_verified,
         )
         if conversation.incomplete_media_evidence and not conversation.usable_evidence:
             current = SafetyAssessment(
@@ -95,7 +111,12 @@ class GuardSimpleProcessor:
                 diagnostics={"llm_skipped": True},
             )
         else:
+            _logger.info("guard simple analyzer start child_user_id=%s chat_id=%s", child_user_id, chat_id)
             current = await self._analyzer.analyze(conversation)
+            _logger.info(
+                "guard simple analyzer complete child_user_id=%s chat_id=%s parent_should_know=%s evidence_count=%d",
+                child_user_id, chat_id, current.parent_should_know, len(current.evidence_message_ids),
+            )
         parent_should_know = current.parent_should_know
         child_role = current.child_role
         summary = current.summary

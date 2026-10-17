@@ -58,6 +58,7 @@ class GuardSimpleAnalysisWorker:
 
     async def run_once(self, *, limit: int = 20) -> bool:
         due = await self._state.list_due(datetime.now(timezone.utc), limit=limit)
+        _logger.info("guard simple poll due_count=%d limit=%d", len(due), limit)
         touched = False
         for chat in due:
             if chat.chat_id in self._excluded:
@@ -94,6 +95,10 @@ class GuardSimpleAnalysisWorker:
             raise ValueError("Baseline B chat has no monitored connection")
         user_info = await self._users.get_user_info_by_id(chat.child_user_id)
         child_name = user_info[1] if user_info and user_info[1] else ""
+        _logger.info(
+            "guard simple analysis start child_user_id=%s chat_id=%s version=%d",
+            chat.child_user_id, chat.chat_id, chat.activity_version,
+        )
         assessment = await self._processor.process(
             child_user_id=chat.child_user_id,
             connection_id=chat.connection_id,
@@ -101,6 +106,11 @@ class GuardSimpleAnalysisWorker:
             child_name=child_name,
         )
         assessment = replace(assessment, chat_type="group" if chat.is_group else "private")
+        _logger.info(
+            "guard simple assessment prepared child_user_id=%s chat_id=%s parent_should_know=%s reason=%s input_count=%d",
+            chat.child_user_id, chat.chat_id, assessment.parent_should_know,
+            assessment.reason, len(assessment.input_message_ids),
+        )
         status, assessment_id = await self._commit.commit_if_current(
             child_user_id=chat.child_user_id,
             chat_id=chat.chat_id,
