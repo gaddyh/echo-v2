@@ -15,8 +15,10 @@ from echo_v2.domain.media_enrichment import (
     EnrichmentStatus,
     MessageEnrichment,
 )
+from echo_v2.domain.pipeline_event import PipelineEvent
 from echo_v2.persistence.chat_repositories import MessageRepository
 from echo_v2.persistence.media_enrichment import MessageEnrichmentRepository
+from echo_v2.persistence.pipeline_events import PipelineEventRepository
 from echo_v2.services.media_summarizer import (
     MediaSummarizer,
     extract_urls,
@@ -58,6 +60,7 @@ class MediaEnrichmentService:
         lease_seconds: int = 300,
         max_attempts: int = 3,
         retry_base_seconds: int = 60,
+        pipeline_events: PipelineEventRepository | None = None,
     ) -> None:
         self._messages = message_repo
         self._enrichments = enrichment_repo
@@ -68,6 +71,15 @@ class MediaEnrichmentService:
         self._lease_seconds = lease_seconds
         self._max_attempts = max_attempts
         self._retry_base = retry_base_seconds
+        self._pipeline_events = pipeline_events
+
+    async def _record_event(self, event: PipelineEvent) -> None:
+        if self._pipeline_events is None:
+            return
+        try:
+            await self._pipeline_events.record(event)
+        except Exception:
+            _logger.exception("pipeline event persistence failed event_name=%s", event.event_name)
 
     async def enrich(self, messages: list[Message]) -> list[EnrichedMessage]:
         _logger.info(
@@ -172,11 +184,16 @@ class MediaEnrichmentService:
             result = await self._enrichments.get(
                 message_id=message.id, enrichment_version=self._version
             )
+            duration_ms = (time.monotonic() - started) * 1000
             _logger.info(
                 "media enrichment success message_id=%s status=%s duration_ms=%.1f",
-                message.id, result.status.value if result else None,
-                (time.monotonic() - started) * 1000,
+                message.id, result.status.value if result else None, duration_ms,
             )
+            await self._record_event(PipelineEvent(
+                event_name="media.enrichment.completed", pipeline="media_enrichment", status="completed",
+                message_id=message.id, attempt=claimed.attempts, duration_ms=duration_ms,
+                metadata={"kind": kind.value, "model": model},
+            ))
             return EnrichedMessage(message, result, text)
         except Exception as exc:  # noqa: BLE001 - one bad media item must not abort a window
             attempts = claimed.attempts
@@ -201,6 +218,13 @@ class MediaEnrichmentService:
             result = await self._enrichments.get(
                 message_id=message.id, enrichment_version=self._version
             )
+            await self._record_event(PipelineEvent(
+                event_name="media.enrichment.failed", pipeline="media_enrichment",
+                status="terminal" if terminal else "retryable", message_id=message.id,
+                attempt=attempts, duration_ms=(time.monotonic() - started) * 1000,
+                error_type=type(exc).__name__, error_message=str(exc),
+                metadata={"retry_at": retry_at.isoformat() if retry_at else None},
+            ))
             return EnrichedMessage(message, result, message.text or "")
 
     @staticmethod
