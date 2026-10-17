@@ -387,6 +387,8 @@ def create_app() -> FastAPI:
         retry_base_seconds=int(os.environ.get("MEDIA_ENRICHMENT_RETRY_BASE_SECONDS", "60")),
     )
 
+    ingestion_service.set_media_enrichment_service(media_enrichment)
+
     summary_rewriter = SummaryRewriter(
         client=openai_client,
         model=os.environ.get(
