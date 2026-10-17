@@ -64,6 +64,7 @@ __all__ = [
     "GuardEvalJudgmentRow",
     "GuardEvalRunRow",
     "GuardEvalSnapshotRow",
+    "GuardExposureAssessmentRow",
     "GuardParentAttentionDeliveryOutcomeRow",
     "GuardParentAttentionDeliveryRow",
     "GuardSimpleAssessmentRow",
@@ -928,6 +929,48 @@ class GuardSimpleAssessmentRow(Base):
         ),
         Index(
             "ix_guard_simple_assessments_child_chat_created",
+            "child_user_id", "chat_id", "created_at",
+        ),
+    )
+
+
+class GuardExposureAssessmentRow(Base):
+    """Immutable group-level Exposure Guard shadow assessment."""
+
+    __tablename__ = "guard_exposure_assessments"
+
+    id: Mapped[str] = mapped_column(Uuid, primary_key=True, server_default=text("gen_random_uuid()"))
+    child_user_id: Mapped[str] = mapped_column(Uuid, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    connection_id: Mapped[str] = mapped_column(Uuid, ForeignKey("whatsapp_connections.id", ondelete="CASCADE"), nullable=False)
+    chat_id: Mapped[str] = mapped_column(Text, nullable=False)
+    chat_type: Mapped[str] = mapped_column(Text, nullable=False)
+    chat_name: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    timezone: Mapped[str] = mapped_column(Text, nullable=False)
+    window_start: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False)
+    window_end: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False)
+    target_version: Mapped[int] = mapped_column(nullable=False)
+    significant_exposure: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    category: Mapped[str | None] = mapped_column(Text, nullable=True)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    evidence_message_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    input_message_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    input_content_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
+    model: Mapped[str] = mapped_column(Text, nullable=False)
+    prompt_version: Mapped[str] = mapped_column(Text, nullable=False)
+    analyzer_version: Mapped[str] = mapped_column(Text, nullable=False)
+    truncated: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
+    omitted_message_count: Mapped[int] = mapped_column(nullable=False, server_default=text("0"))
+    diagnostics: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        CheckConstraint(
+            "category IS NULL OR category IN ('violence', 'bullying', 'sexual_harm', 'coercion')",
+            name="guard_exposure_assessments_category_check",
+        ),
+        Index(
+            "ix_guard_exposure_assessments_child_chat_created",
             "child_user_id", "chat_id", "created_at",
         ),
     )

@@ -10,6 +10,7 @@ from datetime import datetime, time, timezone
 from typing import Protocol
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from echo_v2.domain.guard_exposure import ExposureAssessment
 from echo_v2.domain.guard_simple import (
     ChildRole,
     PriorConcern,
@@ -21,6 +22,7 @@ from echo_v2.persistence.guard_simple_repositories import (
     GuardSimpleAssessmentRepository,
 )
 from echo_v2.services.guard_conversation import SimpleGuardConversationBuilder
+from echo_v2.services.guard_exposure_analyzer import ExposureAnalyzer
 from echo_v2.services.guard_simple_analyzer import SimpleSafetyAnalyzer
 from echo_v2.services.media_enrichment import MediaEnrichmentService
 
@@ -41,6 +43,7 @@ class GuardSimpleProcessor:
         message_repo: MessageRepository,
         analyzer: SimpleSafetyAnalyzer,
         assessment_repo: GuardSimpleAssessmentRepository,
+        exposure_analyzer: ExposureAnalyzer | None = None,
         timezone_resolver: ChildTimezoneResolver | None = None,
         conversation_builder: SimpleGuardConversationBuilder | None = None,
         enrichment_service: MediaEnrichmentService | None = None,
@@ -49,6 +52,7 @@ class GuardSimpleProcessor:
         if max_messages < 1:
             raise ValueError("max_messages must be positive")
         self._analyzer = analyzer
+        self._exposure_analyzer = exposure_analyzer
         self._assessments = assessment_repo
         self._timezone_resolver = timezone_resolver
         self._builder = conversation_builder or SimpleGuardConversationBuilder(
@@ -64,6 +68,47 @@ class GuardSimpleProcessor:
         child_name: str,
         as_of: datetime | None = None,
     ) -> SafetyAssessment:
+        child_assessment, _ = await self._process_internal(
+            child_user_id=child_user_id,
+            connection_id=connection_id,
+            chat_id=chat_id,
+            child_name=child_name,
+            as_of=as_of,
+            include_exposure=False,
+        )
+        return child_assessment
+
+    async def process_with_exposure(
+        self,
+        *,
+        child_user_id: str,
+        connection_id: str,
+        chat_id: str,
+        child_name: str,
+        as_of: datetime | None = None,
+        target_version: int | None = None,
+    ) -> tuple[SafetyAssessment, ExposureAssessment | None]:
+        return await self._process_internal(
+            child_user_id=child_user_id,
+            connection_id=connection_id,
+            chat_id=chat_id,
+            child_name=child_name,
+            as_of=as_of,
+            include_exposure=True,
+            target_version=target_version,
+        )
+
+    async def _process_internal(
+        self,
+        *,
+        child_user_id: str,
+        connection_id: str,
+        chat_id: str,
+        child_name: str,
+        as_of: datetime | None,
+        include_exposure: bool,
+        target_version: int | None = None,
+    ) -> tuple[SafetyAssessment, ExposureAssessment | None]:
         observed_at = _aware_utc(as_of or datetime.now(timezone.utc))
         _logger.info(
             "guard simple processor start child_user_id=%s chat_id=%s as_of=%s",
@@ -204,7 +249,60 @@ class GuardSimpleProcessor:
                 ),
             },
         )
-        return assessment
+        exposure = await self._exposure_assessment(
+            conversation=conversation,
+            child_user_id=child_user_id,
+            child_name=child_name,
+            connection_id=connection_id,
+            target_version=target_version,
+        ) if include_exposure else None
+        return assessment, exposure
+
+    async def _exposure_assessment(
+        self,
+        *,
+        conversation: SimpleConversation,
+        child_user_id: str,
+        child_name: str,
+        connection_id: str,
+        target_version: int | None,
+    ) -> ExposureAssessment | None:
+        if self._exposure_analyzer is None or conversation.chat_type != "group":
+            return None
+        exposure_conversation = replace(conversation, prior_concern=None)
+        try:
+            current = await self._exposure_analyzer.analyze(exposure_conversation)
+        except Exception as exc:
+            _logger.exception("Exposure analyzer failed for %s/%s", child_user_id, conversation.chat_id)
+            current = ExposureAssessment(
+                significant_exposure=None,
+                category=None,
+                summary="Exposure analysis could not produce a reliable determination.",
+                evidence_message_ids=(),
+                reason="exposure_analyzer_failed",
+                model="none",
+                prompt_version="none",
+                analyzer_version="none",
+                diagnostics={"error": str(exc)},
+            )
+        return replace(
+            current,
+            child_user_id=child_user_id,
+            child_name="",
+            connection_id=connection_id,
+            chat_id=conversation.chat_id,
+            chat_type=conversation.chat_type,
+            chat_name=conversation.chat_name,
+            timezone=conversation.timezone,
+            window_start=conversation.window_start,
+            window_end=conversation.window_end,
+            target_version=target_version,
+            input_message_ids=conversation.input_message_ids,
+            input_content_hash=_conversation_input_hash(conversation),
+            truncated=conversation.truncated,
+            omitted_message_count=conversation.omitted_message_count,
+            created_at=datetime.now(timezone.utc),
+        )
 
     async def _timezone(self, child_user_id: str) -> str:
         if self._timezone_resolver is None:

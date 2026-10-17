@@ -47,6 +47,7 @@ class GuardSimpleAssessmentRepository(Protocol):
         created_after: datetime | None = None,
         created_before: datetime | None = None,
         chat_id: str | None = None,
+        chat_name: str | None = None,
         decision: str | None = None,
         limit: int = 50,
         before: tuple[datetime, str] | None = None,
@@ -59,6 +60,7 @@ class GuardSimpleAssessmentRepository(Protocol):
         created_after: datetime | None = None,
         created_before: datetime | None = None,
         chat_id: str | None = None,
+        chat_name: str | None = None,
         decision: str | None = None,
     ) -> dict[str, int]: ...
 
@@ -114,6 +116,7 @@ class InMemoryGuardSimpleAssessmentRepository:
         created_after: datetime | None = None,
         created_before: datetime | None = None,
         chat_id: str | None = None,
+        chat_name: str | None = None,
         decision: str | None = None,
         limit: int = 50,
         before: tuple[datetime, str] | None = None,
@@ -126,6 +129,7 @@ class InMemoryGuardSimpleAssessmentRepository:
             and (created_after is None or (assessment.created_at or datetime.min.replace(tzinfo=timezone.utc)) >= created_after)
             and (created_before is None or (assessment.created_at or datetime.max.replace(tzinfo=timezone.utc)) < created_before)
             and (chat_id is None or assessment.chat_id == chat_id)
+            and _matches_chat_name(assessment.chat_name, chat_name)
             and _matches_decision(assessment, decision)
         ]
         rows.sort(
@@ -153,6 +157,7 @@ class InMemoryGuardSimpleAssessmentRepository:
         created_after: datetime | None = None,
         created_before: datetime | None = None,
         chat_id: str | None = None,
+        chat_name: str | None = None,
         decision: str | None = None,
     ) -> dict[str, int]:
         allowed = set(child_user_ids)
@@ -163,6 +168,7 @@ class InMemoryGuardSimpleAssessmentRepository:
             and (created_after is None or (assessment.created_at or datetime.min.replace(tzinfo=timezone.utc)) >= created_after)
             and (created_before is None or (assessment.created_at or datetime.max.replace(tzinfo=timezone.utc)) < created_before)
             and (chat_id is None or assessment.chat_id == chat_id)
+            and _matches_chat_name(assessment.chat_name, chat_name)
             and _matches_decision(assessment, decision)
         ]
         return {
@@ -261,6 +267,10 @@ class InMemoryGuardSimpleAssessmentCommitRepository:
             parent_should_know=assessment.parent_should_know,
         )
         return ("committed", assessment_id) if committed else ("stale", None)
+
+
+def _matches_chat_name(chat_value: str | None, chat_name: str | None) -> bool:
+    return not chat_name or chat_name.strip().casefold() in (chat_value or "").casefold()
 
 
 def _matches_decision(assessment: SafetyAssessment, decision: str | None) -> bool:

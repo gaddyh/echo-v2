@@ -354,6 +354,7 @@ def create_app() -> FastAPI:
     from echo_v2.services.guard_analysis import GuardAnalysisProcessor
     from echo_v2.services.guard_analysis_worker import GuardAnalysisWorker
     from echo_v2.services.guard_analyzer import LLMGuardAnalyzer
+    from echo_v2.services.guard_exposure_analyzer import ExposureAnalyzer
     from echo_v2.services.guard_simple_analyzer import SimpleSafetyAnalyzer
     from echo_v2.services.guard_simple_processor import GuardSimpleProcessor
     from echo_v2.services.guard_simple_worker import GuardSimpleAnalysisWorker
@@ -458,6 +459,10 @@ def create_app() -> FastAPI:
             client=openai_client,
             model=os.environ.get("GUARD_SIMPLE_LLM_MODEL", guard_model),
         ),
+        exposure_analyzer=ExposureAnalyzer(
+            client=openai_client,
+            model=os.environ.get("GUARD_EXPOSURE_LLM_MODEL", guard_model),
+        ),
         assessment_repo=repos.guard_simple_assessments,
         timezone_resolver=_ChildTimezoneResolver(),
         enrichment_service=media_enrichment,
@@ -468,6 +473,7 @@ def create_app() -> FastAPI:
         processor=simple_processor,
         commit_repo=repos.guard_simple_assessments,
         users=user_repo,
+        exposure_repo=repos.guard_exposure_assessments,
         poll_interval_seconds=float(os.environ.get("GUARD_SIMPLE_ANALYSIS_POLL_INTERVAL", "10")),
         excluded_chat_ids=excluded_chat_ids,
     )
@@ -748,6 +754,7 @@ def create_app() -> FastAPI:
         users=user_repo,
         chat_states=repos.guard_chat_state,
         assessments=repos.guard_simple_assessments,
+        exposure_assessments=repos.guard_exposure_assessments,
         outcomes=repos.parent_attention_delivery_outcomes,
         actions=repos.scheduled_actions,
         messages=repos.messages,

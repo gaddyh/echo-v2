@@ -8,10 +8,11 @@ import hashlib
 import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from echo_v2.domain.chat import Message
 from echo_v2.domain.guard import GuardChatState
+from echo_v2.domain.guard_exposure import ExposureAssessment
 from echo_v2.domain.guard_simple import SafetyAssessment
 from echo_v2.domain.parent_attention import (
     ParentAttentionDeliveryOutcome,
@@ -19,6 +20,9 @@ from echo_v2.domain.parent_attention import (
 )
 from echo_v2.domain.scheduling import ScheduledAction
 from echo_v2.persistence.chat_repositories import MessageRepository
+from echo_v2.persistence.guard_exposure_repositories import (
+    GuardExposureAssessmentRepository,
+)
 from echo_v2.persistence.guard_repositories import (
     GuardChatStateRepository,
     GuardianChildLinkRepository,
@@ -62,12 +66,14 @@ class GuardSimpleTelemetryService:
         outcomes: ParentAttentionDeliveryOutcomeRepository,
         actions: ScheduledActionRepository,
         messages: MessageRepository,
+        exposure_assessments: GuardExposureAssessmentRepository | None = None,
     ) -> None:
         self._tokens = token_service
         self._links = links
         self._users = users
         self._chat_states = chat_states
         self._assessments = assessments
+        self._exposure_assessments = exposure_assessments
         self._outcomes = outcomes
         self._actions = actions
         self._messages = messages
@@ -78,7 +84,9 @@ class GuardSimpleTelemetryService:
         session_id: str,
         child_user_id: str | None = None,
         chat_id: str | None = None,
+        chat_name: str | None = None,
         decision: str | None = None,
+        analyzer: str | None = None,
         date_from: datetime | None = None,
         date_to: datetime | None = None,
         limit: int = _DEFAULT_PAGE_SIZE,
@@ -100,17 +108,32 @@ class GuardSimpleTelemetryService:
         normalized_decision = _normalize_decision(decision)
         before = _decode_cursor(cursor) if cursor else None
         page_size = max(1, min(limit, _MAX_PAGE_SIZE))
-        rows = await self._assessments.list_for_children(
+        child_rows = [] if analyzer == "exposure" else await self._assessments.list_for_children(
             child_user_ids=child_ids,
             created_after=start,
             created_before=end,
             chat_id=chat_id,
+            chat_name=chat_name,
             decision=normalized_decision,
             limit=page_size + 1,
             before=before,
         )
-        has_more = len(rows) > page_size
-        rows = rows[:page_size]
+        exposure_rows = []
+        if analyzer != "child" and self._exposure_assessments is not None:
+            exposure_rows = await self._exposure_assessments.list_for_children(
+                child_user_ids=child_ids,
+                created_after=start,
+                created_before=end,
+                chat_id=chat_id,
+                decision=normalized_decision,
+                limit=page_size + 1,
+                before=before,
+            )
+        all_rows = [(item, "child") for item in child_rows] + [(item, "exposure") for item in exposure_rows]
+        all_rows.sort(key=lambda pair: (pair[0].created_at or datetime.min.replace(tzinfo=timezone.utc), pair[0].id or ""), reverse=True)
+        has_more = len(all_rows) > page_size
+        all_rows = all_rows[:page_size]
+        rows = [item for item, _ in all_rows]
         outcome_rows, states, child_names = await asyncio.gather(
             self._outcomes.list_for_assessments(
                 [assessment.id for assessment in rows if assessment.id is not None]
@@ -122,21 +145,32 @@ class GuardSimpleTelemetryService:
         state_by_chat = {(state.child_user_id, state.chat_id): state for state in states}
         analyses = tuple(
             _activity_view(
-                assessment,
+                cast(SafetyAssessment, assessment),
                 outcomes.get(assessment.id or ""),
                 state_by_chat.get((assessment.child_user_id, assessment.chat_id)),
                 child_names.get(assessment.child_user_id),
+            ) if kind == "child" else _exposure_activity_view(
+                cast(ExposureAssessment, assessment),
+                state_by_chat.get((assessment.child_user_id, assessment.chat_id)),
+                child_names.get(assessment.child_user_id),
             )
-            for assessment in rows
+            for assessment, kind in all_rows
         )
-        counts, notification_count = await asyncio.gather(
+        child_counts, exposure_counts, notification_count = await asyncio.gather(
             self._assessments.count_for_children(
                 child_user_ids=child_ids,
                 created_after=start,
                 created_before=end,
                 chat_id=chat_id,
                 decision=normalized_decision,
-            ),
+            ) if analyzer != "exposure" else _empty_counts(),
+            self._exposure_assessments.count_for_children(
+                child_user_ids=child_ids,
+                created_after=start,
+                created_before=end,
+                chat_id=chat_id,
+                decision=normalized_decision,
+            ) if self._exposure_assessments is not None and analyzer != "child" else _empty_counts(),
             self._outcomes.count_sent(
                 child_user_ids=child_ids,
                 created_after=start,
@@ -144,6 +178,10 @@ class GuardSimpleTelemetryService:
                 chat_id=chat_id,
             ),
         )
+        counts = {
+            key: child_counts[key] + exposure_counts[key]
+            for key in ("analyzed", "yes", "no", "unknown")
+        }
         counts["notifications"] = notification_count
         next_cursor = None
         if has_more and rows:
@@ -169,7 +207,12 @@ class GuardSimpleTelemetryService:
         if authorized is None:
             return None
         assessment = await self._assessments.get(assessment_id)
-        if assessment is None or assessment.child_user_id not in authorized:
+        if assessment is None:
+            exposure = await self._exposure_assessments.get(assessment_id) if self._exposure_assessments else None
+            if exposure is None or exposure.child_user_id not in authorized:
+                return None
+            return await _exposure_detail(exposure)
+        if assessment.child_user_id not in authorized:
             return None
         states = await self._chat_states.list_for_children([assessment.child_user_id])
         state = next(
@@ -226,7 +269,17 @@ class GuardSimpleTelemetryService:
         if authorized is None:
             return None
         assessment = await self._assessments.get(assessment_id)
-        if assessment is None or assessment.child_user_id not in authorized:
+        if assessment is None:
+            exposure = await self._exposure_assessments.get(assessment_id) if self._exposure_assessments else None
+            if exposure is None or exposure.child_user_id not in authorized:
+                return None
+            return {
+                "trust": "Exposure context is intentionally hidden",
+                "messages": [],
+                "missing_message_ids": list(exposure.input_message_ids),
+                "evidence_message_ids": list(exposure.evidence_message_ids),
+            }
+        if assessment.child_user_id not in authorized:
             return None
         if assessment.input_message_ids:
             messages = await self._messages.list_by_ids(
@@ -310,6 +363,64 @@ class GuardSimpleTelemetryService:
         return await self._actions.get(outcome.scheduled_action_id)
 
 
+async def _empty_counts() -> dict[str, int]:
+    return {"analyzed": 0, "yes": 0, "no": 0, "unknown": 0}
+
+
+def _exposure_activity_view(
+    assessment: ExposureAssessment,
+    state: GuardChatState | None,
+    child_name: str | None,
+) -> dict[str, Any]:
+    return {
+        "id": assessment.id,
+        "analyzer": "exposure",
+        "created_at": assessment.created_at,
+        "decision": _exposure_decision(assessment),
+        "category": assessment.category.value if assessment.category else None,
+        "child_user_id": assessment.child_user_id,
+        "child_name": child_name or assessment.child_user_id,
+        "chat_id": assessment.chat_id,
+        "chat_name": assessment.chat_name or (state.chat_name if state else None) or assessment.chat_id,
+        "chat_type": assessment.chat_type,
+        "message_count": len(assessment.input_message_ids) or None,
+        "summary": assessment.summary,
+        "reason": assessment.reason,
+        "evidence_message_ids": list(assessment.evidence_message_ids),
+        "delivery": {"status": "shadow", "label": "Shadow mode · No parent notification"},
+        "context_available": False,
+    }
+
+
+async def _exposure_detail(assessment: ExposureAssessment) -> dict[str, Any]:
+    return {
+        "id": assessment.id,
+        "analyzer": "exposure",
+        "decision": _exposure_decision(assessment),
+        "category": assessment.category.value if assessment.category else None,
+        "child_user_id": assessment.child_user_id,
+        "chat_id": assessment.chat_id,
+        "chat_name": assessment.chat_name,
+        "chat_type": assessment.chat_type,
+        "created_at": assessment.created_at,
+        "summary": assessment.summary,
+        "reason": assessment.reason,
+        "evidence_message_ids": list(assessment.evidence_message_ids),
+        "evidence_messages": [],
+        "context_message_count": len(assessment.input_message_ids),
+        "context_available": False,
+        "delivery": {"status": "shadow", "label": "Shadow mode · No parent notification"},
+    }
+
+
+def _exposure_decision(assessment: ExposureAssessment) -> str:
+    if assessment.significant_exposure is True:
+        return "yes"
+    if assessment.significant_exposure is False:
+        return "no"
+    return "unknown"
+
+
 def _activity_view(
     assessment: SafetyAssessment,
     outcome: ParentAttentionDeliveryOutcome | None,
@@ -318,6 +429,7 @@ def _activity_view(
 ) -> dict[str, Any]:
     return {
         "id": assessment.id,
+        "analyzer": "child",
         "created_at": assessment.created_at,
         "decision": _decision(assessment),
         "child_user_id": assessment.child_user_id,
