@@ -525,6 +525,57 @@ class MessageRow(Base):
     )
 
 
+# --- message_enrichments ---------------------------------------------------
+
+
+class MessageEnrichmentRow(Base):
+    """Versioned enrichment state for one immutable message."""
+
+    __tablename__ = "message_enrichments"
+
+    id: Mapped[str] = mapped_column(
+        Uuid, primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    message_id: Mapped[str] = mapped_column(
+        Uuid, ForeignKey("messages.id", ondelete="CASCADE"), nullable=False
+    )
+    enrichment_version: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default="pending")
+    kind: Mapped[str | None] = mapped_column(Text, nullable=True)
+    text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    model: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    attempts: Mapped[int] = mapped_column(nullable=False, server_default="0")
+    lease_owner: Mapped[str | None] = mapped_column(Text, nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    next_retry_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    enriched_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "message_id", "enrichment_version", name="message_enrichments_message_version_key"
+        ),
+        CheckConstraint(
+            "status IN ('pending','processing','completed','failed','terminal')",
+            name="message_enrichments_status_check",
+        ),
+        Index("ix_message_enrichments_retry", "status", "next_retry_at"),
+        Index("ix_message_enrichments_lease", "status", "lease_expires_at"),
+    )
+
+
 # --- chats -----------------------------------------------------------------
 
 

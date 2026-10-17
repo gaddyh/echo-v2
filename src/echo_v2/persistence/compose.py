@@ -32,6 +32,7 @@ from echo_v2.persistence.guard_eval import PostgresGuardEvalRepository
 from echo_v2.persistence.guard_operations import (
     PostgresGuardAnalysisTelemetryRepository,
 )
+from echo_v2.persistence.media_enrichment import PostgresMessageEnrichmentRepository
 from echo_v2.persistence.postgres_chat import (
     PostgresAnalysisCommitRepository,
     PostgresChatStateRepository,
@@ -96,6 +97,7 @@ class PostgresRepos:
     idempotency: PostgresIdempotencyStore[Any]
     scheduled_actions: PostgresScheduledActionRepository
     messages: PostgresMessageRepository
+    message_enrichments: PostgresMessageEnrichmentRepository
     chat_state: PostgresChatStateRepository
     ingestion: PostgresIngestionRepository
     wfm_results: PostgresWaitingForMeResultRepository
@@ -148,6 +150,7 @@ def build_postgres_repos(settings: DBSettings) -> PostgresRepos:
     idempotency: PostgresIdempotencyStore[Any] = PostgresIdempotencyStore(factory)
     scheduled_actions = PostgresScheduledActionRepository(factory)
     messages = PostgresMessageRepository(factory)
+    message_enrichments = PostgresMessageEnrichmentRepository(factory)
     chat_state = PostgresChatStateRepository(factory)
     ingestion = PostgresIngestionRepository(factory)
     wfm_results = PostgresWaitingForMeResultRepository(factory)
@@ -187,6 +190,7 @@ def build_postgres_repos(settings: DBSettings) -> PostgresRepos:
         idempotency=idempotency,
         scheduled_actions=scheduled_actions,
         messages=messages,
+        message_enrichments=message_enrichments,
         chat_state=chat_state,
         ingestion=ingestion,
         wfm_results=wfm_results,

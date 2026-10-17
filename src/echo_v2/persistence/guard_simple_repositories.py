@@ -244,12 +244,20 @@ class InMemoryGuardSimpleAssessmentCommitRepository:
                     updated_at=now,
                 )
             )
+        analyzed_at = datetime.now(timezone.utc)
+        retry_at_value = assessment.diagnostics.get("next_media_retry_at")
+        retry_at = retry_at_value if isinstance(retry_at_value, datetime) else None
+        retryable = assessment.diagnostics.get("retryable_media_evidence") is True and retry_at is not None
+        if retryable:
+            assert retry_at is not None
+            deferred = await self._state.defer_analysis(
+                child_user_id, chat_id, target_version,
+                retry_at=retry_at, reason="incomplete_media_evidence", analyzed_at=analyzed_at,
+            )
+            return ("deferred", assessment_id) if deferred else ("stale", None)
         committed = await self._state.mark_processed(
-            child_user_id,
-            chat_id,
-            target_version,
-            decision=GuardDecision.NONE,
-            analyzed_at=datetime.now(timezone.utc),
+            child_user_id, chat_id, target_version,
+            decision=GuardDecision.NONE, analyzed_at=analyzed_at,
             parent_should_know=assessment.parent_should_know,
         )
         return ("committed", assessment_id) if committed else ("stale", None)

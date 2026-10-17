@@ -21,6 +21,10 @@ class SimpleConversationMessage:
     sender: str
     text: str
     timestamp: datetime | None = None
+    enrichment_version: str | None = None
+    enrichment_status: str | None = None
+    enrichment_error: str | None = None
+    next_retry_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -58,6 +62,18 @@ class SimpleConversation:
     @property
     def input_message_ids(self) -> tuple[str, ...]:
         return tuple(message.id for message in self.messages)
+
+    @property
+    def incomplete_media_evidence(self) -> bool:
+        return any(
+            message.enrichment_status not in (None, "completed")
+            for message in self.messages
+            if message.enrichment_status is not None
+        )
+
+    @property
+    def usable_evidence(self) -> bool:
+        return any(message.text.strip() for message in self.messages)
 
 
 @dataclass(frozen=True)

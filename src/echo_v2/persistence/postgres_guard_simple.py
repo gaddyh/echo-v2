@@ -303,31 +303,46 @@ class PostgresGuardSimpleAssessmentRepository:
                     updated_at=now,
                 )
             )
+            now = datetime.now(timezone.utc)
+            retry_at = assessment.diagnostics.get("next_media_retry_at")
+            retryable = (
+                assessment.diagnostics.get("retryable_media_evidence") is True
+                and retry_at is not None
+            )
+            values_for_state: dict[str, Any] = {
+                "last_parent_should_know": assessment.parent_should_know,
+                "last_analysis_at": now,
+                "updated_at": now,
+            }
+            if retryable:
+                values_for_state.update(
+                    next_analysis_at=retry_at,
+                    next_analysis_reason="incomplete_media_evidence",
+                )
+            else:
+                values_for_state.update(
+                    last_analyzed_version=target_version,
+                    pending_since=None,
+                    next_analysis_at=None,
+                    next_analysis_reason=None,
+                )
             updated = cast(
                 CursorResult[Any],
                 await session.execute(
                     update(GuardChatStateRow)
-                .where(
-                    GuardChatStateRow.child_user_id == child_user_id,
-                    GuardChatStateRow.chat_id == chat_id,
-                    GuardChatStateRow.activity_version == target_version,
-                )
-                .values(
-                    last_analyzed_version=target_version,
-                    last_parent_should_know=assessment.parent_should_know,
-                    last_analysis_at=datetime.now(timezone.utc),
-                    pending_since=None,
-                    next_analysis_at=None,
-                    next_analysis_reason=None,
-                    updated_at=datetime.now(timezone.utc),
-                )
+                    .where(
+                        GuardChatStateRow.child_user_id == child_user_id,
+                        GuardChatStateRow.chat_id == chat_id,
+                        GuardChatStateRow.activity_version == target_version,
+                    )
+                    .values(**values_for_state)
                 ),
             )
             if updated.rowcount != 1:
                 await session.rollback()
                 return "stale", None
             await session.commit()
-            return "committed", str(result_id)
+            return ("deferred" if retryable else "committed"), str(result_id)
 
 
 def _to_domain(row: GuardSimpleAssessmentRow) -> SafetyAssessment:

@@ -21,6 +21,7 @@ from echo_v2.persistence.guard_simple_repositories import (
 )
 from echo_v2.services.guard_conversation import SimpleGuardConversationBuilder
 from echo_v2.services.guard_simple_analyzer import SimpleSafetyAnalyzer
+from echo_v2.services.media_enrichment import MediaEnrichmentService
 
 DEFAULT_SIMPLE_GUARD_TIMEZONE = "Asia/Jerusalem"
 DEFAULT_SIMPLE_GUARD_MESSAGE_CAP = 100
@@ -39,6 +40,7 @@ class GuardSimpleProcessor:
         assessment_repo: GuardSimpleAssessmentRepository,
         timezone_resolver: ChildTimezoneResolver | None = None,
         conversation_builder: SimpleGuardConversationBuilder | None = None,
+        enrichment_service: MediaEnrichmentService | None = None,
         max_messages: int = DEFAULT_SIMPLE_GUARD_MESSAGE_CAP,
     ) -> None:
         if max_messages < 1:
@@ -47,7 +49,7 @@ class GuardSimpleProcessor:
         self._assessments = assessment_repo
         self._timezone_resolver = timezone_resolver
         self._builder = conversation_builder or SimpleGuardConversationBuilder(
-            message_repo, max_messages=max_messages
+            message_repo, max_messages=max_messages, enrichment_service=enrichment_service
         )
 
     async def process(
@@ -80,12 +82,29 @@ class GuardSimpleProcessor:
             as_of=observed_at,
             prior_concern=_prior_concern(prior),
         )
-        current = await self._analyzer.analyze(conversation)
+        if conversation.incomplete_media_evidence and not conversation.usable_evidence:
+            current = SafetyAssessment(
+                parent_should_know=None,
+                child_role=ChildRole.UNKNOWN,
+                summary="Media evidence is not available yet.",
+                evidence_message_ids=(),
+                reason="incomplete_media_evidence",
+                model="none",
+                prompt_version="none",
+                analyzer_version="none",
+                diagnostics={"llm_skipped": True},
+            )
+        else:
+            current = await self._analyzer.analyze(conversation)
         parent_should_know = current.parent_should_know
         child_role = current.child_role
         summary = current.summary
         reason = current.reason
         evidence_ids = current.evidence_message_ids
+        if conversation.incomplete_media_evidence and parent_should_know is not True:
+            parent_should_know = None
+            reason = "incomplete_media_evidence"
+            summary = "Media evidence is incomplete; the conversation will be retried."
         if not conversation.messages:
             parent_should_know = None
             child_role = ChildRole.UNKNOWN
@@ -144,14 +163,27 @@ class GuardSimpleProcessor:
             created_at=datetime.now(timezone.utc),
             diagnostics={
                 **current.diagnostics,
+                "incomplete_media_evidence": conversation.incomplete_media_evidence,
+                "retryable_media_evidence": any(
+                    message.enrichment_status in {"pending", "processing", "failed"}
+                    for message in conversation.messages
+                    if message.enrichment_status is not None
+                ),
+                "next_media_retry_at": min(
+                    (
+                        message.next_retry_at
+                        for message in conversation.messages
+                        if message.next_retry_at is not None
+                    ),
+                    default=None,
+                ),
                 "prior_concern_id": prior.id if prior is not None else None,
                 "prior_concern_parent_should_know": (
                     prior.parent_should_know if prior is not None else None
                 ),
             },
         )
-        assessment_id = await self._assessments.save(assessment)
-        return replace(assessment, id=assessment_id)
+        return assessment
 
     async def _timezone(self, child_user_id: str) -> str:
         if self._timezone_resolver is None:
@@ -173,6 +205,9 @@ def _conversation_input_hash(conversation: SimpleConversation) -> str:
             "id": message.id,
             "text": message.text,
             "timestamp": message.timestamp.isoformat() if message.timestamp else None,
+            "enrichment_version": message.enrichment_version,
+            "enrichment_status": message.enrichment_status,
+            "enrichment_error": message.enrichment_error,
         }
         for message in messages
     ]
