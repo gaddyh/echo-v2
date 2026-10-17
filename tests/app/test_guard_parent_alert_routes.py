@@ -15,7 +15,7 @@ from echo_v2.services.waiting_list_token_service import WaitingListTokenService
 
 pytestmark = pytest.mark.asyncio
 
-NOW = datetime(2026, 10, 16, 12, tzinfo=timezone.utc)
+NOW = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
 
 
 class FakeUsers:
