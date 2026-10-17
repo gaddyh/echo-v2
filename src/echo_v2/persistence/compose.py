@@ -64,6 +64,7 @@ from echo_v2.persistence.postgres_parent_attention_delivery import (
     PostgresParentAttentionDeliveryOutcomeRepository,
     PostgresParentAttentionDeliveryRepository,
 )
+from echo_v2.persistence.postgres_pipeline_events import PostgresPipelineEventRepository
 from echo_v2.persistence.postgres_scheduled_actions import (
     PostgresScheduledActionRepository,
 )
@@ -98,6 +99,7 @@ class PostgresRepos:
     scheduled_actions: PostgresScheduledActionRepository
     messages: PostgresMessageRepository
     message_enrichments: PostgresMessageEnrichmentRepository
+    pipeline_events: PostgresPipelineEventRepository
     chat_state: PostgresChatStateRepository
     ingestion: PostgresIngestionRepository
     wfm_results: PostgresWaitingForMeResultRepository
@@ -151,6 +153,7 @@ def build_postgres_repos(settings: DBSettings) -> PostgresRepos:
     scheduled_actions = PostgresScheduledActionRepository(factory)
     messages = PostgresMessageRepository(factory)
     message_enrichments = PostgresMessageEnrichmentRepository(factory)
+    pipeline_events = PostgresPipelineEventRepository(factory)
     chat_state = PostgresChatStateRepository(factory)
     ingestion = PostgresIngestionRepository(factory)
     wfm_results = PostgresWaitingForMeResultRepository(factory)
@@ -191,6 +194,7 @@ def build_postgres_repos(settings: DBSettings) -> PostgresRepos:
         scheduled_actions=scheduled_actions,
         messages=messages,
         message_enrichments=message_enrichments,
+        pipeline_events=pipeline_events,
         chat_state=chat_state,
         ingestion=ingestion,
         wfm_results=wfm_results,

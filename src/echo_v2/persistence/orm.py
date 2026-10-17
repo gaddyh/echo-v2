@@ -576,6 +576,42 @@ class MessageEnrichmentRow(Base):
     )
 
 
+# --- pipeline_events -------------------------------------------------------
+
+
+class PipelineEventRow(Base):
+    """Structured, privacy-safe operational event for a pipeline stage."""
+
+    __tablename__ = "pipeline_events"
+
+    id: Mapped[str] = mapped_column(
+        Uuid, primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    event_name: Mapped[str] = mapped_column(Text, nullable=False)
+    pipeline: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    message_id: Mapped[str | None] = mapped_column(Uuid, nullable=True)
+    event_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    user_id_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
+    chat_id_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
+    attempt: Mapped[int | None] = mapped_column(nullable=True)
+    duration_ms: Mapped[float | None] = mapped_column(nullable=True)
+    error_type: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    event_metadata: Mapped[dict[str, Any]] = mapped_column(
+        "metadata", JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        Index("ix_pipeline_events_created_at", "created_at"),
+        Index("ix_pipeline_events_message_id", "message_id"),
+        Index("ix_pipeline_events_pipeline_status", "pipeline", "status"),
+    )
+
+
 # --- chats -----------------------------------------------------------------
 
 

@@ -385,6 +385,7 @@ def create_app() -> FastAPI:
         lease_seconds=int(os.environ.get("MEDIA_ENRICHMENT_LEASE_SECONDS", "300")),
         max_attempts=int(os.environ.get("MEDIA_ENRICHMENT_MAX_ATTEMPTS", "3")),
         retry_base_seconds=int(os.environ.get("MEDIA_ENRICHMENT_RETRY_BASE_SECONDS", "60")),
+        pipeline_events=repos.pipeline_events,
     )
 
     ingestion_service.set_media_enrichment_service(media_enrichment)
