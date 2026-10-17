@@ -1222,15 +1222,28 @@ class OnboardingService:
         if conn is None or child_phone is None:
             return False
         account_phone: str | None = None
-        get_account_phone = getattr(self._green_client, "get_account_phone", None)
-        if get_account_phone is not None:
+        if conn.ref.provider == "baileys":
             try:
-                api_token = conn.credentials.data.decode("utf-8")
-                account_phone = await get_account_phone(
-                    conn.ref.provider_connection_id, api_token
+                snapshot = await self._provisioner.get_status(conn.ref)
+                account_phone = snapshot.phone_number
+                _logger.info(
+                    "onboarding child phone verification provider=baileys "
+                    "match=%s",
+                    account_phone is not None
+                    and self._normalize_phone(account_phone) == child_phone,
                 )
             except Exception:
                 _logger.exception("onboarding: failed to verify connected child phone")
+        else:
+            get_account_phone = getattr(self._green_client, "get_account_phone", None)
+            if get_account_phone is not None:
+                try:
+                    api_token = conn.credentials.data.decode("utf-8")
+                    account_phone = await get_account_phone(
+                        conn.ref.provider_connection_id, api_token
+                    )
+                except Exception:
+                    _logger.exception("onboarding: failed to verify connected child phone")
         if account_phone is None or self._normalize_phone(account_phone) != child_phone:
             guardian_phone = await self._lookup_phone(link.guardian_user_id)
             if guardian_phone is not None:

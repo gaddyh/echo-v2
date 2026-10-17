@@ -21,6 +21,7 @@ import base64
 import secrets
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -30,7 +31,12 @@ from echo_v2.persistence.whatsapp_connections import (
     InMemoryWhatsAppConnectionRepository,
 )
 from echo_v2.ports.bot import BotContact, BotEvent, BotEventType
-from echo_v2.ports.whatsapp import ConnectionRef, ConnectionStatus, ProviderCredentials
+from echo_v2.ports.whatsapp import (
+    ConnectionRef,
+    ConnectionStatus,
+    ConnectionStatusSnapshot,
+    ProviderCredentials,
+)
 from echo_v2.services.onboarding import OnboardingContext, OnboardingService
 
 __all__ = []
@@ -465,6 +471,30 @@ async def test_child_activation_rejects_phone_mismatch(fakes):
     assert await links.get_active_for_pair(
         guardian_user_id=parent[0], child_user_id=child[0]
     ) is None
+
+
+async def test_baileys_activation_uses_provider_phone(fakes):
+    service, bot, user_repo, connection_repo, _green_client = fakes
+    links = InMemoryGuardianChildLinkRepository()
+    provisioner = AsyncMock()
+    service = OnboardingService(
+        bot=bot, user_repo=user_repo, connection_repo=connection_repo,
+        provisioner=provisioner, green_client=None,
+        webhook_base_url="https://echo.example.com", guardian_child_links=links,
+    )
+    guardian = await user_repo.create_user("+972546610653", first_name="Dana", onboarding_status="active")
+    child = await user_repo.create_user("+972546610654", first_name="ללוש", onboarding_status="pending")
+    await links.upsert_pending(guardian_user_id=guardian, child_user_id=child, now=datetime.now(timezone.utc))
+    await links.authorize_guardian(guardian_user_id=guardian, child_user_id=child, now=datetime.now(timezone.utc))
+    await service._save_connection(
+        child, ConnectionRef("baileys", "child-connection"),
+        ProviderCredentials(data=b""), b"hash", ConnectionStatus.CONNECTED,
+    )
+    provisioner.get_status.return_value = ConnectionStatusSnapshot(
+        status=ConnectionStatus.CONNECTED, phone_number="0546610654"
+    )
+    assert await service._activate_child_connection(child) is True
+    assert any("Guard פעיל" in text for _phone, text in bot.sent)
 
 
 async def test_parent_flow_ignores_events_without_guardian_state(fakes):
