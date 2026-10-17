@@ -71,6 +71,31 @@ def _make_service(
 # --- New inbound message ---------------------------------------------------
 
 
+async def test_eager_media_enrichment_runs_for_all_media_types():
+    class _Enrichment:
+        def __init__(self) -> None:
+            self.messages = []
+
+        async def enrich(self, messages):
+            self.messages.extend(messages)
+            return []
+
+    enrichment = _Enrichment()
+    message_repo = InMemoryMessageRepository()
+    chat_state_repo = InMemoryChatStateRepository()
+    service = ChatIngestionService(
+        InMemoryIngestionRepository(message_repo, chat_state_repo),
+        media_enrichment_service=enrichment,  # type: ignore[arg-type]
+    )
+    for kind in (MessageKind.AUDIO, MessageKind.IMAGE, MessageKind.VIDEO, MessageKind.DOCUMENT):
+        event = _make_event(provider_message_id=f"{kind.value}-1")
+        event = event.__class__(**{**event.__dict__, "kind": kind, "media_download_url": "https://media.test/item"})
+        assert await service.ingest_message(event, user_id="user-1", connection_id="connection")
+    assert [message.message_type for message in enrichment.messages] == [
+        "audio", "image", "video", "document"
+    ]
+
+
 async def test_private_inbound_sender_name_becomes_chat_name():
     service = _make_service()
     event = _make_event(sender_name="Sara Henquin")
