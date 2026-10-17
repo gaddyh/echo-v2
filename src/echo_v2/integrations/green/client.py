@@ -208,8 +208,10 @@ class GreenClient:
         wid = data.get("wid") or data.get("phone") or data.get("phoneNumber")
         if not isinstance(wid, str):
             return None
-        phone = wid.split("@", 1)[0]
-        return phone if phone.startswith("+") else f"+{phone}"
+        phone = wid.split("@", 1)[0].strip()
+        if phone.startswith(("+", "0")):
+            return phone
+        return f"+{phone}"
 
     async def logout(self, id_instance: str, api_token: str) -> None:
         """Per-instance ``Logout``. Irreversible write (unpairs phone)."""

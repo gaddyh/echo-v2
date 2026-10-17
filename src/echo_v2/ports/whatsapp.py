@@ -179,6 +179,7 @@ class ConnectionStatusSnapshot:
 
     status: ConnectionStatus
     provider_raw_status: str | None = None
+    phone_number: str | None = None
     checked_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
