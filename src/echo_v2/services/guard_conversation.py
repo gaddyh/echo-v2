@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -14,6 +15,8 @@ from echo_v2.domain.guard_simple import (
 from echo_v2.persistence.chat_repositories import MessageRepository
 from echo_v2.services.guard_analyzer import GuardAnalysisInput, GuardMessage
 from echo_v2.services.media_enrichment import MediaEnrichmentService
+
+_logger = logging.getLogger("echo_v2.services.guard_conversation")
 
 __all__ = [
     "GuardConversation",
@@ -151,6 +154,10 @@ class SimpleGuardConversationBuilder:
             limit=self._max_messages,
         )
         messages = list(window.messages)
+        _logger.info(
+            "guard conversation window child_user_id=%s chat_id=%s count=%d truncated=%s",
+            child_user_id, chat_id, len(messages), window.truncated,
+        )
         enriched = await self._enrichment.enrich(messages) if self._enrichment is not None else None
         enriched_by_id = {item.message.id: item for item in enriched or ()}
         connections = set(window.connection_ids)

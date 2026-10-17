@@ -231,6 +231,10 @@ class ChatAnalysisProcessor:
         chat_id: str,
         target_version: int,
     ) -> PreparedAnalysis:
+        _logger.info(
+            "wfm analysis start user_id=%s chat_id=%s version=%d",
+            user_id, chat_id, target_version,
+        )
         messages = await self._messages.list_for_analysis(
             user_id=user_id,
             chat_id=chat_id,
@@ -238,10 +242,13 @@ class ChatAnalysisProcessor:
             max_no_outbound=self._max_no_outbound,
         )
 
+        _logger.info("wfm messages loaded user_id=%s chat_id=%s count=%d", user_id, chat_id, len(messages))
         effective_text: dict[str, str] = {message.id: message.text or "" for message in messages}
         enrichment_views = None
         if self._enrichment is not None:
+            _logger.info("wfm enrichment start user_id=%s chat_id=%s count=%d", user_id, chat_id, len(messages))
             enrichment_views = await self._enrichment.enrich(messages)
+            _logger.info("wfm enrichment complete user_id=%s chat_id=%s", user_id, chat_id)
             effective_text = {
                 view.message.id: view.effective_text for view in enrichment_views
             }
@@ -264,6 +271,7 @@ class ChatAnalysisProcessor:
                 for m in messages
             ],
         )
+        _logger.info("wfm analyzer start user_id=%s chat_id=%s input_count=%d", user_id, chat_id, len(messages))
         result = await self._analyzer.analyze(conversation)
         _logger.info(
             "analysis for chat %s/%s (version %d): %s (confidence=%s)",
