@@ -39,7 +39,6 @@ class BaileysMessageConsumer:
         self._worker_id = worker_id or f"echo-baileys-message-{socket.gethostname()}"
 
     async def run_once(self) -> int:
-        _logger.info("baileys message batch claim start worker_id=%s batch_size=%d", self._worker_id, self._batch_size)
         claimed = await self._repository.claim_batch(
             self._worker_id,
             batch_size=self._batch_size,
@@ -48,7 +47,8 @@ class BaileysMessageConsumer:
             event_type="message",
         )
         processed = 0
-        _logger.info("baileys message batch claimed count=%d", len(claimed))
+        if claimed:
+            _logger.info("baileys message batch claimed count=%d", len(claimed))
         for item in claimed:
             try:
                 if not isinstance(item.event, BaileysMessageEnvelope):

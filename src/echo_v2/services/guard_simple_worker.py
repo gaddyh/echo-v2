@@ -58,7 +58,8 @@ class GuardSimpleAnalysisWorker:
 
     async def run_once(self, *, limit: int = 20) -> bool:
         due = await self._state.list_due(datetime.now(timezone.utc), limit=limit)
-        _logger.info("guard simple poll due_count=%d limit=%d", len(due), limit)
+        if due:
+            _logger.info("guard simple poll due_count=%d limit=%d", len(due), limit)
         touched = False
         for chat in due:
             if chat.chat_id in self._excluded:
