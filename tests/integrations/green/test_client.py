@@ -76,6 +76,18 @@ async def test_get_account_phone_extracts_wid():
         await client.aclose()
 
 
+async def test_get_account_phone_preserves_local_leading_zero():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert "getWaSettings" in request.url.path
+        return _ok({"phone": "0546610654"})
+
+    client = _client_with_handler(handler)
+    try:
+        assert await client.get_account_phone("123", "api-tok") == "0546610654"
+    finally:
+        await client.aclose()
+
+
 async def test_get_state_instance_returns_none_when_missing():
     def handler(request: httpx.Request) -> httpx.Response:
         return _ok({})

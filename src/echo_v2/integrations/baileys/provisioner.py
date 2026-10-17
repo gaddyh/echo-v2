@@ -52,9 +52,11 @@ class BaileysProvisioner:
         data = await self._client.get_status(connection.provider_connection_id)
         raw_status = data.get("provider_raw_status") or data.get("status")
         status = _status(data.get("status"))
+        raw_phone = data.get("phone_number") or data.get("phone")
         return ConnectionStatusSnapshot(
             status=status,
             provider_raw_status=str(raw_status) if raw_status is not None else None,
+            phone_number=str(raw_phone) if raw_phone is not None else None,
         )
 
     async def get_pairing_qr(self, connection: ConnectionRef) -> PairingResult:

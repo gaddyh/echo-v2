@@ -68,7 +68,11 @@ async def test_create_uses_opaque_id_and_empty_credentials():
 async def test_status_and_qr_are_normalized():
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/status"):
-            return httpx.Response(200, json={"status": "connected", "provider_raw_status": "open"})
+            return httpx.Response(200, json={
+                "status": "connected",
+                "provider_raw_status": "open",
+                "phone_number": "0546610654",
+            })
         return httpx.Response(200, json={"outcome": "qr_ready", "image_base64": "abc"})
 
     client = BaileysClient(
@@ -81,6 +85,7 @@ async def test_status_and_qr_are_normalized():
     result = await provisioner.get_pairing_qr(ref)
     assert snapshot.status is ConnectionStatus.CONNECTED
     assert snapshot.provider_raw_status == "open"
+    assert snapshot.phone_number == "0546610654"
     assert result.outcome is PairingOutcome.QR_READY
     assert result.qr is not None and result.qr.image_base64 == "abc"
     await client.aclose()
