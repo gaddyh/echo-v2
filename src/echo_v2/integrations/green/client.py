@@ -193,6 +193,24 @@ class GreenClient:
         )
         return data.get("stateInstance") if isinstance(data, dict) else None
 
+    async def get_account_phone(self, id_instance: str, api_token: str) -> str | None:
+        """Return the connected WhatsApp number from Green ``getWaSettings``."""
+        url = f"{self._settings.partner_api_url}/waInstance{id_instance}/getWaSettings/{api_token}"
+        data = await self._request_json(
+            "GET",
+            url,
+            operation="get_account_phone",
+            connection_id=id_instance,
+            is_write=False,
+        )
+        if not isinstance(data, dict):
+            return None
+        wid = data.get("wid") or data.get("phone") or data.get("phoneNumber")
+        if not isinstance(wid, str):
+            return None
+        phone = wid.split("@", 1)[0]
+        return phone if phone.startswith("+") else f"+{phone}"
+
     async def logout(self, id_instance: str, api_token: str) -> None:
         """Per-instance ``Logout``. Irreversible write (unpairs phone)."""
         url = f"{self._settings.partner_api_url}/waInstance{id_instance}/Logout/{api_token}"

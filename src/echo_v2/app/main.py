@@ -223,6 +223,7 @@ def create_app() -> FastAPI:
         green_client=green_client,
         webhook_base_url=webhook_base_url,
         pool=pool,
+        guardian_child_links=repos.guardian_child_links,
     )
 
     # --- scheduling service (executes due actions) ------------------------

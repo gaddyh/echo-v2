@@ -64,6 +64,18 @@ async def test_get_state_instance_returns_state_string():
         await client.aclose()
 
 
+async def test_get_account_phone_extracts_wid():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert "getWaSettings" in request.url.path
+        return _ok({"wid": "972501234567@c.us"})
+
+    client = _client_with_handler(handler)
+    try:
+        assert await client.get_account_phone("123", "api-tok") == "+972501234567"
+    finally:
+        await client.aclose()
+
+
 async def test_get_state_instance_returns_none_when_missing():
     def handler(request: httpx.Request) -> httpx.Response:
         return _ok({})

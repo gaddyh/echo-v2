@@ -40,20 +40,24 @@ import asyncio
 import base64
 import hashlib
 import logging
+import re
 import secrets
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from langsmith import traceable
 from langsmith.run_helpers import get_current_run_tree
 
+from echo_v2.domain.guard import GuardianChildLink
 from echo_v2.observability.privacy import correlation_id
+from echo_v2.persistence.guard_repositories import GuardianChildLinkRepository
 from echo_v2.persistence.identity import PhoneParseError, normalize_phone_e164
 from echo_v2.persistence.whatsapp_connections import (
     StoredConnection,
     WhatsAppConnectionRepository,
 )
-from echo_v2.ports.bot import BotChannel, BotEvent, BotEventType
+from echo_v2.ports.bot import BotChannel, BotContact, BotEvent, BotEventType
 from echo_v2.ports.whatsapp import (
     ConnectionConfig,
     ConnectionRef,
@@ -178,6 +182,22 @@ _INFO_BODY = (
 _ONBOARDING_START_BUTTON = {"id": "onboarding:start", "title": "חברו אותי"}
 _ONBOARDING_INFO_BUTTON = {"id": "onboarding:info", "title": "איך זה עובד?"}
 
+_PARENT_CONTACT_PROMPT = "כדי לחבר את הילד/ה, שלח/י עכשיו את איש הקשר שלו/ה ב-WhatsApp."
+_GUARD_AUTHORIZATION_BODY = (
+    "לפני החיבור, חשוב לאשר שאת/ה ההורה או האפוטרופוס של הילד/ה.\n\n"
+    "Guard מנתח את שיחות ה-WhatsApp של הילד/ה כדי לזהות סימני מצוקה, "
+    "בריונות, לחץ או פגיעה אפשרית. הוא שולח לך רק התראות כשנדרש לשים לב — "
+    "לא את כל השיחות.\n\n"
+    "האם לאשר אחריות הורית ולהפעיל את Guard?"
+)
+_GUARD_AUTH_BUTTON = {"id": "onboarding:authorize", "title": "אני מאשר/ת"}
+_CHILD_CONNECT_BODY = "האישור התקבל. לחץ/י על Connect כדי לחבר את WhatsApp של הילד/ה."
+_PARENT_SUCCESS = "החיבור הושלם בהצלחה. מספר WhatsApp של {name} אומת ו-Guard פעיל."
+_PHONE_MISMATCH = "מספר ה-WhatsApp שחובר לא תואם לאיש הקשר ששלחת. לא הפעלתי את Guard."
+_PARENT_IDENTITY_RE = re.compile(
+    r"^\s*אני\s+(?P<name>[\u0590-\u05FFA-Za-z][\u0590-\u05FFA-Za-z' -]{0,48}?)(?:\s+אמא\s+של|\s+אבא\s+של|\s+הורה\s+של)\s+.+$"
+)
+
 _CONSENT_PHRASE = "חברו אותי"
 
 
@@ -268,6 +288,7 @@ class OnboardingService:
         poll_interval: float = 5.0,
         poll_max_attempts: int = 60,
         pool: GreenInstancePool | None = None,
+        guardian_child_links: GuardianChildLinkRepository | None = None,
     ) -> None:
         self._bot = bot
         self._user_repo = user_repo
@@ -278,6 +299,8 @@ class OnboardingService:
         self._poll_interval = poll_interval
         self._poll_max_attempts = poll_max_attempts
         self._pool = pool
+        self._guardian_child_links = guardian_child_links
+        self._pending_contacts: dict[str, BotContact] = {}
         # Background instance-preparation tasks (pool miss path), keyed by
         # user_id. Prevents double-click from creating two instances.
         self._prepare_tasks: dict[str, asyncio.Task[None]] = {}
@@ -323,7 +346,132 @@ class OnboardingService:
             connection=connection,
         )
 
+    async def _register_guardian(self, phone: str, name: str) -> None:
+        """Register a bot-only guardian and ask for the child's contact."""
+        normalized = self._normalize_phone(phone)
+        if normalized is None:
+            return
+        existing = await self._user_repo.get_by_phone(normalized)
+        if existing is None:
+            user_id = await self._user_repo.create_user(
+                normalized,
+                timezone=_DEFAULT_TIMEZONE,
+                first_name=name[:50],
+                onboarding_status="active",
+            )
+        else:
+            user_id, _status, _old_name = existing
+            await self._user_repo.update_first_name(user_id, name[:50])
+            await self._user_repo.update_onboarding_status(user_id, "active")
+        await self._bot.send_text(normalized, _PARENT_CONTACT_PROMPT)
+
+    async def _start_child_flow(self, ctx: OnboardingContext, contact: BotContact) -> None:
+        child_phone = self._normalize_phone(contact.phone)
+        if child_phone is None or child_phone == ctx.phone:
+            await self._bot.send_text(ctx.phone, "לא הצלחתי לזהות איש קשר תקין של ילד/ה. נסה/י שוב.")
+            return
+        if not contact.name.strip():
+            self._pending_contacts[ctx.user_id] = contact
+            await self._bot.send_text(ctx.phone, "איך קוראים לילד/ה? שלח/י את השם.")
+            return
+        await self._create_child_from_contact(ctx, contact, contact.name)
+
+    async def _create_child_from_contact(
+        self,
+        ctx: OnboardingContext,
+        contact: BotContact,
+        child_name: str | None = None,
+    ) -> None:
+        if self._guardian_child_links is None:
+            return
+        child_phone = self._normalize_phone(contact.phone)
+        if child_phone is None:
+            await self._bot.send_text(ctx.phone, "לא הצלחתי לזהות איש קשר תקין של ילד/ה. נסה/י שוב.")
+            return
+        name = (child_name or contact.name).strip()[:50]
+        if not name:
+            await self._bot.send_text(ctx.phone, "צריך שם לילד/ה כדי להמשיך.")
+            return
+        existing = await self._user_repo.get_by_phone(child_phone)
+        if existing is None:
+            child_id = await self._user_repo.create_user(
+                child_phone,
+                timezone=_DEFAULT_TIMEZONE,
+                first_name=name,
+                onboarding_status="active",
+            )
+        else:
+            child_id, _status, old_name = existing
+            if not old_name:
+                await self._user_repo.update_first_name(child_id, name)
+        link = await self._guardian_child_links.upsert_pending(
+            guardian_user_id=ctx.user_id,
+            child_user_id=child_id,
+            now=datetime.now(timezone.utc),
+        )
+        self._pending_contacts.pop(ctx.user_id, None)
+        if link.status.value == "active":
+            await self._bot.send_text(ctx.phone, f"{name} כבר מחובר/ת ל-Guard.")
+            return
+        await self._bot.send_buttons(
+            ctx.phone,
+            body_text=_GUARD_AUTHORIZATION_BODY,
+            buttons=[_GUARD_AUTH_BUTTON],
+        )
+
+    async def _pending_for_guardian(
+        self, guardian_id: str
+    ) -> GuardianChildLink | None:
+        if self._guardian_child_links is None:
+            return None
+        pending = await self._guardian_child_links.get_pending_for_guardian(guardian_id)
+        authorized = [link for link in pending if link.guardian_authorized_at is not None]
+        return (authorized or pending)[-1] if (authorized or pending) else None
+
+    async def handle_onboarding_authorize(self, phone: str) -> None:
+        """Record guardian authorization and expose the child Connect action."""
+        if self._guardian_child_links is None:
+            return
+        ctx = await self.resolve_context(phone)
+        if ctx is None:
+            return
+        link = await self._pending_for_guardian(ctx.user_id)
+        if link is None:
+            await self._bot.send_text(ctx.phone, _PARENT_CONTACT_PROMPT)
+            return
+        await self._guardian_child_links.authorize_guardian(
+            guardian_user_id=ctx.user_id,
+            child_user_id=link.child_user_id,
+            now=datetime.now(timezone.utc),
+        )
+        await self._bot.send_buttons(
+            ctx.phone,
+            body_text=_CHILD_CONNECT_BODY,
+            buttons=[_CONNECT_BUTTON],
+        )
+
     # --- Unknown user entry (consent / intro) --------------------------------
+
+    async def handle_parent_event(self, event: BotEvent) -> bool:
+        """Handle parent registration and child-contact events.
+
+        Returns ``True`` when the parent-child flow owns the event. This is
+        intentionally separate from the legacy single-user onboarding path.
+        """
+        if self._guardian_child_links is None:
+            return False
+        ctx = await self.resolve_context(event.user_phone)
+        if ctx is None or ctx.onboarding_status != "active":
+            return False
+        if event.type is BotEventType.CONTACT and event.contact is not None:
+            await self._start_child_flow(ctx, event.contact)
+            return True
+        if event.type is BotEventType.TEXT and event.text:
+            pending = getattr(self, "_pending_contacts", {}).get(ctx.user_id)
+            if pending is not None:
+                await self._create_child_from_contact(ctx, pending, event.text)
+                return True
+        return False
 
     async def handle_unknown_event(self, event: BotEvent) -> None:
         """Handle an event from a user with no DB row — consent-first.
@@ -344,6 +492,12 @@ class OnboardingService:
             phone_hash,
             event.button_id,
         )
+
+        if event.type is BotEventType.TEXT and event.text:
+            match = _PARENT_IDENTITY_RE.match(event.text.strip())
+            if match is not None and self._guardian_child_links is not None:
+                await self._register_guardian(phone, match.group("name").strip())
+                return
 
         if event.type is BotEventType.BUTTON_REPLY:
             if event.button_id == "onboarding:start":
@@ -1056,16 +1210,54 @@ class OnboardingService:
 
     # --- Connection established (webhook or poll) ----------------------------
 
+    async def _activate_child_connection(self, child_user_id: str) -> bool:
+        """Verify the connected child phone and activate its guardian link."""
+        if self._guardian_child_links is None:
+            return False
+        link = await self._guardian_child_links.get_pending_for_child(child_user_id)
+        if link is None or link.guardian_authorized_at is None:
+            return False
+        conn = await self._connection_repo.get_by_user(child_user_id)
+        child_phone = await self._lookup_phone(child_user_id)
+        if conn is None or child_phone is None:
+            return False
+        account_phone: str | None = None
+        get_account_phone = getattr(self._green_client, "get_account_phone", None)
+        if get_account_phone is not None:
+            try:
+                api_token = conn.credentials.data.decode("utf-8")
+                account_phone = await get_account_phone(
+                    conn.ref.provider_connection_id, api_token
+                )
+            except Exception:
+                _logger.exception("onboarding: failed to verify connected child phone")
+        if account_phone is None or self._normalize_phone(account_phone) != child_phone:
+            guardian_phone = await self._lookup_phone(link.guardian_user_id)
+            if guardian_phone is not None:
+                await self._bot.send_text(guardian_phone, _PHONE_MISMATCH)
+            return True
+        await self._guardian_child_links.activate(
+            guardian_user_id=link.guardian_user_id,
+            child_user_id=child_user_id,
+            now=datetime.now(timezone.utc),
+        )
+        guardian_phone = await self._lookup_phone(link.guardian_user_id)
+        if guardian_phone is not None:
+            child = await self._user_repo.get_by_phone(child_phone)
+            child_name = child[2] if child and child[2] else child_phone
+            await self._bot.send_text(
+                guardian_phone, _PARENT_SUCCESS.format(name=child_name)
+            )
+        return True
+
     async def handle_connection_established(
         self,
         user_id: str,
         phone: str,
     ) -> None:
-        """Called when Green API confirms the connection (authorized).
-
-        Updates onboarding status to ``active`` and sends the welcome message.
-        Idempotent: if onboarding is already ``active``, skip.
-        """
+        """Complete either child-link activation or legacy onboarding."""
+        if await self._activate_child_connection(user_id):
+            return
         self._trace_funnel_event("authorized", user_id)
         _logger.info(
             "onboarding connection established user_hash=%s",
@@ -1161,11 +1353,19 @@ class OnboardingService:
         await self.start_onboarding(phone)
 
     async def handle_onboarding_connect(self, phone: str) -> None:
-        """Handle [חבר אותי] button — start pairing.
-
-        Guards against stale/forged callbacks: if the user has no name yet,
-        re-ask for the name instead of starting pairing.
-        """
+        """Handle Connect for either legacy or parent-child onboarding."""
+        if self._guardian_child_links is not None:
+            parent_ctx = await self.resolve_context(phone)
+            if parent_ctx is not None and parent_ctx.onboarding_status == "active":
+                link = await self._pending_for_guardian(parent_ctx.user_id)
+                if link is not None:
+                    if link.guardian_authorized_at is None:
+                        await self._bot.send_text(parent_ctx.phone, _GUARD_AUTHORIZATION_BODY)
+                        return
+                    await self.start_pairing(link.child_user_id, parent_ctx.phone)
+                    return
+                await self._bot.send_text(parent_ctx.phone, _PARENT_CONTACT_PROMPT)
+                return
         ctx = await self.resolve_context(phone)
         if ctx is None:
             # Unknown user — start fresh onboarding (will ask for name).
@@ -1180,9 +1380,14 @@ class OnboardingService:
         await self.start_pairing(ctx.user_id, ctx.phone)
 
     async def handle_onboarding_show_qr(self, phone: str) -> None:
-        """Handle [הצג QR] button — fetch + send QR for an existing connection."""
+        """Handle [הצג QR] for either legacy or child pairing."""
         ctx = await self.resolve_context(phone)
         if ctx is None:
+            return
+        if self._guardian_child_links is not None and ctx.onboarding_status == "active":
+            link = await self._pending_for_guardian(ctx.user_id)
+            if link is not None and link.guardian_authorized_at is not None:
+                await self.show_pairing_qr(link.child_user_id, ctx.phone)
             return
         if ctx.onboarding_status == "active":
             return

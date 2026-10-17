@@ -40,6 +40,30 @@ class GuardianChildLinkRepository(Protocol):
 
     async def list_active_for_guardian(self, guardian_user_id: str) -> list[GuardianChildLink]: ...
 
+    async def get_pending_for_guardian(
+        self, guardian_user_id: str
+    ) -> list[GuardianChildLink]: ...
+
+    async def get_pending_for_pair(
+        self, *, guardian_user_id: str, child_user_id: str
+    ) -> GuardianChildLink | None: ...
+
+    async def get_pending_for_child(
+        self, child_user_id: str
+    ) -> GuardianChildLink | None: ...
+
+    async def upsert_pending(
+        self, *, guardian_user_id: str, child_user_id: str, now: datetime
+    ) -> GuardianChildLink: ...
+
+    async def authorize_guardian(
+        self, *, guardian_user_id: str, child_user_id: str, now: datetime
+    ) -> GuardianChildLink: ...
+
+    async def activate(
+        self, *, guardian_user_id: str, child_user_id: str, now: datetime
+    ) -> GuardianChildLink: ...
+
     async def upsert_active(
         self, *, guardian_user_id: str, child_user_id: str, now: datetime
     ) -> GuardianChildLink: ...
@@ -185,6 +209,96 @@ class InMemoryGuardianChildLinkRepository:
             if link.guardian_user_id == guardian_user_id and link.is_guard_enabled
         ]
 
+    async def get_pending_for_guardian(
+        self, guardian_user_id: str
+    ) -> list[GuardianChildLink]:
+        return [
+            link for link in self._links.values()
+            if link.guardian_user_id == guardian_user_id
+            and link.status is GuardianChildLinkStatus.PENDING
+        ]
+
+    async def get_pending_for_pair(
+        self, *, guardian_user_id: str, child_user_id: str
+    ) -> GuardianChildLink | None:
+        link = self._links.get((guardian_user_id, child_user_id))
+        return link if link is not None and link.status is GuardianChildLinkStatus.PENDING else None
+
+    async def get_pending_for_child(
+        self, child_user_id: str
+    ) -> GuardianChildLink | None:
+        for link in self._links.values():
+            if link.child_user_id == child_user_id and link.status is GuardianChildLinkStatus.PENDING:
+                return link
+        return None
+
+    def _upsert(
+        self,
+        *,
+        guardian_user_id: str,
+        child_user_id: str,
+        now: datetime,
+        status: GuardianChildLinkStatus,
+        guardian_authorized_at: datetime | None = None,
+        safety_enabled_at: datetime | None = None,
+    ) -> GuardianChildLink:
+        key = (guardian_user_id, child_user_id)
+        existing = self._links.get(key)
+        link = GuardianChildLink(
+            id=existing.id if existing else f"link-{len(self._links) + 1}",
+            guardian_user_id=guardian_user_id,
+            child_user_id=child_user_id,
+            status=status,
+            guardian_authorized_at=(
+                guardian_authorized_at
+                if guardian_authorized_at is not None
+                else existing.guardian_authorized_at if existing else None
+            ),
+            safety_enabled_at=safety_enabled_at,
+            created_at=existing.created_at if existing else now,
+            updated_at=now,
+        )
+        self._links[key] = link
+        return link
+
+    async def upsert_pending(
+        self, *, guardian_user_id: str, child_user_id: str, now: datetime
+    ) -> GuardianChildLink:
+        existing = self._links.get((guardian_user_id, child_user_id))
+        if existing is not None and existing.status is GuardianChildLinkStatus.ACTIVE:
+            return existing
+        return self._upsert(
+            guardian_user_id=guardian_user_id,
+            child_user_id=child_user_id,
+            now=now,
+            status=GuardianChildLinkStatus.PENDING,
+        )
+
+    async def authorize_guardian(
+        self, *, guardian_user_id: str, child_user_id: str, now: datetime
+    ) -> GuardianChildLink:
+        return self._upsert(
+            guardian_user_id=guardian_user_id,
+            child_user_id=child_user_id,
+            now=now,
+            status=GuardianChildLinkStatus.PENDING,
+            guardian_authorized_at=now,
+        )
+
+    async def activate(
+        self, *, guardian_user_id: str, child_user_id: str, now: datetime
+    ) -> GuardianChildLink:
+        existing = self._links.get((guardian_user_id, child_user_id))
+        if existing is None or existing.guardian_authorized_at is None:
+            raise ValueError("guardian authorization is required before activation")
+        return self._upsert(
+            guardian_user_id=guardian_user_id,
+            child_user_id=child_user_id,
+            now=now,
+            status=GuardianChildLinkStatus.ACTIVE,
+            safety_enabled_at=now,
+        )
+
     async def upsert_active(
         self, *, guardian_user_id: str, child_user_id: str, now: datetime
     ) -> GuardianChildLink:
@@ -195,7 +309,7 @@ class InMemoryGuardianChildLinkRepository:
             guardian_user_id=guardian_user_id,
             child_user_id=child_user_id,
             status=GuardianChildLinkStatus.ACTIVE,
-            child_consented_at=now,
+            guardian_authorized_at=existing.guardian_authorized_at if existing else now,
             safety_enabled_at=now,
             created_at=existing.created_at if existing else now,
             updated_at=now,

@@ -171,6 +171,37 @@ async def test_postgres_guard_link_reads_active_rows() -> None:
     assert child_link is not None and child_link.guardian_user_id == "guardian"
 
 
+async def test_postgres_guard_link_pending_authorize_and_activate() -> None:
+    pending_row = SimpleNamespace(
+        id="link-id", guardian_user_id="guardian", child_user_id="child",
+        status="pending", guardian_authorized_at=NOW,
+        safety_enabled_at=None, created_at=NOW, updated_at=NOW,
+    )
+    active_row = SimpleNamespace(
+        id="link-id", guardian_user_id="guardian", child_user_id="child",
+        status="active", guardian_authorized_at=NOW,
+        safety_enabled_at=NOW, created_at=NOW, updated_at=NOW,
+    )
+    session = FakeSession([
+        FakeResult(row=None), FakeResult(row=pending_row),
+        FakeResult(row=pending_row), FakeResult(row=pending_row),
+        FakeResult(row=active_row),
+    ])
+    repository = PostgresGuardianChildLinkRepository(FakeSessionFactory(session))
+    created = await repository.upsert_pending(
+        guardian_user_id="guardian", child_user_id="child", now=NOW
+    )
+    authorized = await repository.authorize_guardian(
+        guardian_user_id="guardian", child_user_id="child", now=NOW
+    )
+    activated = await repository.activate(
+        guardian_user_id="guardian", child_user_id="child", now=NOW
+    )
+    assert created.status.value == "pending"
+    assert authorized.guardian_authorized_at == NOW
+    assert activated.is_guard_enabled
+
+
 async def test_legacy_guard_commit_handles_missing_and_stale_state() -> None:
     missing = PostgresGuardAnalysisCommitRepository(
         FakeSessionFactory(FakeSession([FakeResult(row=None)]))

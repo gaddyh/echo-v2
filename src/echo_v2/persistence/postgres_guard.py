@@ -73,28 +73,69 @@ class PostgresGuardianChildLinkRepository:
             rows = (await session.execute(stmt)).scalars().all()
             return [self._to_domain(row) for row in rows]
 
-    async def upsert_active(
-        self, *, guardian_user_id: str, child_user_id: str, now: datetime
+    async def get_pending_for_guardian(
+        self, guardian_user_id: str
+    ) -> list[GuardianChildLink]:
+        async with self._session_factory() as session:
+            stmt = select(GuardianChildLinkRow).where(
+                GuardianChildLinkRow.guardian_user_id == guardian_user_id,
+                GuardianChildLinkRow.status == GuardianChildLinkStatus.PENDING.value,
+            )
+            rows = (await session.execute(stmt)).scalars().all()
+            return [self._to_domain(row) for row in rows]
+
+    async def get_pending_for_pair(
+        self, *, guardian_user_id: str, child_user_id: str
+    ) -> GuardianChildLink | None:
+        async with self._session_factory() as session:
+            stmt = select(GuardianChildLinkRow).where(
+                GuardianChildLinkRow.guardian_user_id == guardian_user_id,
+                GuardianChildLinkRow.child_user_id == child_user_id,
+                GuardianChildLinkRow.status == GuardianChildLinkStatus.PENDING.value,
+            )
+            row = (await session.execute(stmt)).scalar_one_or_none()
+            return self._to_domain(row) if row else None
+
+    async def get_pending_for_child(
+        self, child_user_id: str
+    ) -> GuardianChildLink | None:
+        async with self._session_factory() as session:
+            stmt = select(GuardianChildLinkRow).where(
+                GuardianChildLinkRow.child_user_id == child_user_id,
+                GuardianChildLinkRow.status == GuardianChildLinkStatus.PENDING.value,
+            ).limit(1)
+            row = (await session.execute(stmt)).scalar_one_or_none()
+            return self._to_domain(row) if row else None
+
+    async def _upsert(
+        self,
+        *,
+        guardian_user_id: str,
+        child_user_id: str,
+        now: datetime,
+        status: GuardianChildLinkStatus,
+        guardian_authorized_at: datetime | None = None,
+        safety_enabled_at: datetime | None = None,
     ) -> GuardianChildLink:
         async with self._session_factory() as session:
+            values: dict[str, Any] = {
+                "guardian_user_id": guardian_user_id,
+                "child_user_id": child_user_id,
+                "status": status.value,
+                "updated_at": now,
+            }
+            if guardian_authorized_at is not None:
+                values["guardian_authorized_at"] = guardian_authorized_at
+            if safety_enabled_at is not None:
+                values["safety_enabled_at"] = safety_enabled_at
             stmt = (
                 pg_insert(GuardianChildLinkRow)
-                .values(
-                    guardian_user_id=guardian_user_id,
-                    child_user_id=child_user_id,
-                    status=GuardianChildLinkStatus.ACTIVE.value,
-                    child_consented_at=now,
-                    safety_enabled_at=now,
-                    updated_at=now,
-                )
+                .values(**values)
                 .on_conflict_do_update(
                     index_elements=["guardian_user_id", "child_user_id"],
-                    set_={
-                        "status": GuardianChildLinkStatus.ACTIVE.value,
-                        "child_consented_at": now,
-                        "safety_enabled_at": now,
-                        "updated_at": now,
-                    },
+                    set_={key: value for key, value in values.items() if key not in {
+                        "guardian_user_id", "child_user_id"
+                    }},
                 )
                 .returning(GuardianChildLinkRow)
             )
@@ -102,12 +143,83 @@ class PostgresGuardianChildLinkRepository:
             await session.commit()
             return self._to_domain(row)
 
+    async def upsert_pending(
+        self, *, guardian_user_id: str, child_user_id: str, now: datetime
+    ) -> GuardianChildLink:
+        existing = await self.get_pending_for_pair(
+            guardian_user_id=guardian_user_id, child_user_id=child_user_id
+        )
+        if existing is not None:
+            return existing
+        active = await self.get_active_for_pair(
+            guardian_user_id=guardian_user_id, child_user_id=child_user_id
+        )
+        if active is not None:
+            return active
+        return await self._upsert(
+            guardian_user_id=guardian_user_id,
+            child_user_id=child_user_id,
+            now=now,
+            status=GuardianChildLinkStatus.PENDING,
+        )
+
+    async def authorize_guardian(
+        self, *, guardian_user_id: str, child_user_id: str, now: datetime
+    ) -> GuardianChildLink:
+        return await self._upsert(
+            guardian_user_id=guardian_user_id,
+            child_user_id=child_user_id,
+            now=now,
+            status=GuardianChildLinkStatus.PENDING,
+            guardian_authorized_at=now,
+        )
+
+    async def activate(
+        self, *, guardian_user_id: str, child_user_id: str, now: datetime
+    ) -> GuardianChildLink:
+        existing = await self.get_pending_for_pair(
+            guardian_user_id=guardian_user_id, child_user_id=child_user_id
+        )
+        if existing is None or existing.guardian_authorized_at is None:
+            active = await self.get_active_for_pair(
+                guardian_user_id=guardian_user_id, child_user_id=child_user_id
+            )
+            if active is not None:
+                return active
+            raise ValueError("guardian authorization is required before activation")
+        return await self._upsert(
+            guardian_user_id=guardian_user_id,
+            child_user_id=child_user_id,
+            now=now,
+            status=GuardianChildLinkStatus.ACTIVE,
+            guardian_authorized_at=existing.guardian_authorized_at,
+            safety_enabled_at=now,
+        )
+
+    async def upsert_active(
+        self, *, guardian_user_id: str, child_user_id: str, now: datetime
+    ) -> GuardianChildLink:
+        existing = await self.get_pending_for_pair(
+            guardian_user_id=guardian_user_id, child_user_id=child_user_id
+        )
+        return await self._upsert(
+            guardian_user_id=guardian_user_id,
+            child_user_id=child_user_id,
+            now=now,
+            status=GuardianChildLinkStatus.ACTIVE,
+            guardian_authorized_at=existing.guardian_authorized_at if existing else now,
+            safety_enabled_at=now,
+        )
+
     @staticmethod
     def _to_domain(row: GuardianChildLinkRow) -> GuardianChildLink:
         return GuardianChildLink(
             id=str(row.id), guardian_user_id=str(row.guardian_user_id),
             child_user_id=str(row.child_user_id), status=GuardianChildLinkStatus(row.status),
-            child_consented_at=row.child_consented_at, safety_enabled_at=row.safety_enabled_at,
+            guardian_authorized_at=getattr(
+                row, "guardian_authorized_at", getattr(row, "child_consented_at", None)
+            ),
+            safety_enabled_at=row.safety_enabled_at,
             created_at=row.created_at, updated_at=row.updated_at,
         )
 
