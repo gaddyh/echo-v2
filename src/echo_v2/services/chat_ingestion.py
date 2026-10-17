@@ -110,9 +110,15 @@ class ChatIngestionService:
         Returns ``True`` if a new message was stored, ``False`` if it was
         a duplicate or skipped (e.g. group chat with ``private_only``).
         """
+        _logger.info(
+            "message ingestion start provider_message_id=%s chat_id=%s direction=%s type=%s timestamp=%s",
+            event.provider_message_id, event.chat_id, event.direction.value,
+            event.kind.value, event.timestamp,
+        )
         # Skip excluded service chats (e.g. the Echo bot's own chat) before
         # any scheduling — prevents self-referential analysis loops.
         if event.chat_id in self._excluded_chat_ids:
+            _logger.info("message ingestion skipped reason=excluded_chat chat_id=%s", event.chat_id)
             return False
 
         # Prefer provider-supplied classification. The suffix fallback keeps
@@ -130,6 +136,7 @@ class ChatIngestionService:
                 previous_guard_state = await self._guard_state.get(user_id, event.chat_id)
 
         if self._private_only and is_group and not guard_enabled:
+            _logger.info("message ingestion skipped reason=group_chat chat_id=%s", event.chat_id)
             return False
 
         message_time = event.timestamp
@@ -201,6 +208,10 @@ class ChatIngestionService:
             media_file_name=event.media_file_name,
         )
 
+        _logger.info(
+            "message ingestion persist message_id=%s target=%s next_analysis_at=%s guard_enabled=%s",
+            message.id, analysis_target.value, next_analysis_at, guard_enabled,
+        )
         inserted = await self._ingestion_repo.ingest_if_new(
             message=message,
             direction=event.direction,
@@ -211,13 +222,17 @@ class ChatIngestionService:
             analysis_target=analysis_target,
             guard_schedule_reason=guard_schedule_reason,
         )
+        _logger.info("message ingestion persisted message_id=%s inserted=%s", message.id, inserted)
         if (
             inserted
             and self._media_enrichment is not None
             and message.message_type in {"audio", "image", "video", "document"}
         ):
             try:
+                _logger.info("message ingestion eager enrichment start message_id=%s", message.id)
                 await self._media_enrichment.enrich([message])
+                _logger.info("message ingestion eager enrichment complete message_id=%s", message.id)
             except Exception:
                 _logger.exception("eager audio enrichment failed for message %s", message.id)
+        _logger.info("message ingestion complete message_id=%s inserted=%s", message.id, inserted)
         return inserted

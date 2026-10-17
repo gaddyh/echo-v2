@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -69,25 +70,53 @@ class MediaEnrichmentService:
         self._retry_base = retry_base_seconds
 
     async def enrich(self, messages: list[Message]) -> list[EnrichedMessage]:
-        return [await self._enrich_message(message) for message in messages]
+        _logger.info(
+            "media enrichment batch start count=%d version=%s message_ids=%s",
+            len(messages), self._version, [message.id for message in messages],
+        )
+        results = [await self._enrich_message(message) for message in messages]
+        _logger.info(
+            "media enrichment batch complete count=%d statuses=%s",
+            len(results), [
+                result.enrichment.status.value if result.enrichment is not None else "not_required"
+                for result in results
+            ],
+        )
+        return results
 
     async def _enrich_message(self, message: Message) -> EnrichedMessage:
+        started = time.monotonic()
         target = self._target(message)
+        _logger.info(
+            "media enrichment start message_id=%s type=%s target=%s has_text=%s has_url=%s has_reference=%s",
+            message.id, message.message_type, target.value if target else "none",
+            bool(message.text), bool(message.media_download_url), bool(message.media_reference),
+        )
         if target is None:
+            _logger.info("media enrichment skip message_id=%s reason=not_required", message.id)
             return EnrichedMessage(message=message, effective_text=message.text or "")
 
         current = await self._enrichments.get(
             message_id=message.id, enrichment_version=self._version
         )
+        if current is not None:
+            _logger.info(
+                "media enrichment existing message_id=%s status=%s attempts=%d next_retry_at=%s",
+                message.id, current.status.value, current.attempts, current.next_retry_at,
+            )
         if current is not None and current.status is EnrichmentStatus.COMPLETED:
+            _logger.info("media enrichment cache hit message_id=%s", message.id)
             return EnrichedMessage(message, current, current.text or message.text or "")
         if current is not None and current.status is EnrichmentStatus.TERMINAL:
+            _logger.warning("media enrichment terminal message_id=%s error=%s", message.id, current.error)
             return EnrichedMessage(message, current, message.text or "")
         now = datetime.now(timezone.utc)
         if current is not None and current.next_retry_at is not None and current.next_retry_at > now:
+            _logger.info("media enrichment defer message_id=%s until=%s", message.id, current.next_retry_at)
             return EnrichedMessage(message, current, message.text or "")
 
         owner = str(uuid.uuid4())
+        _logger.info("media enrichment claiming message_id=%s owner=%s", message.id, owner)
         claimed = await self._enrichments.claim(
             message_id=message.id,
             enrichment_version=self._version,
@@ -96,35 +125,57 @@ class MediaEnrichmentService:
             now=now,
         )
         if claimed is None or claimed.lease_owner != owner:
+            _logger.info(
+                "media enrichment claim lost message_id=%s owner=%s claimed_owner=%s",
+                message.id, owner, claimed.lease_owner if claimed else None,
+            )
             current = await self._enrichments.get(
                 message_id=message.id, enrichment_version=self._version
             )
             return EnrichedMessage(message, current, message.text or "")
 
         try:
+            _logger.info(
+                "media enrichment claimed message_id=%s attempt=%d lease_expires_at=%s",
+                message.id, claimed.attempts, claimed.lease_expires_at,
+            )
             working = message
             if working.media_reference and not working.media_download_url:
+                _logger.info("media enrichment resolving url message_id=%s", message.id)
                 if self._resolver is None:
                     raise RuntimeError("media URL resolver is not configured")
                 url = await self._resolver.resolve(working)  # type: ignore[attr-defined]
                 if url:
                     working = dataclasses.replace(working, media_download_url=url)
+                    _logger.info("media enrichment url resolved message_id=%s", message.id)
             if target is not EnrichmentKind.LINK_SUMMARY and not working.media_download_url:
                 raise RuntimeError("media download URL is unavailable")
+            _logger.info("media enrichment provider start message_id=%s kind=%s", message.id, target.value)
             kind, text, model = await self._produce(working, target)
+            _logger.info(
+                "media enrichment provider complete message_id=%s kind=%s model=%s output_chars=%d",
+                message.id, kind.value, model, len(text),
+            )
             if not text.strip():
                 raise RuntimeError("enrichment provider returned empty text")
             completed = await self._enrichments.complete(
                 message_id=message.id, enrichment_version=self._version,
                 owner=owner, kind=kind, text=text, model=model, now=datetime.now(timezone.utc),
             )
+            _logger.info("media enrichment persisted message_id=%s kind=%s", message.id, kind.value)
             if not completed:
+                _logger.warning("media enrichment completion lost message_id=%s", message.id)
                 current = await self._enrichments.get(
                     message_id=message.id, enrichment_version=self._version
                 )
                 return EnrichedMessage(message, current, message.text or "")
             result = await self._enrichments.get(
                 message_id=message.id, enrichment_version=self._version
+            )
+            _logger.info(
+                "media enrichment success message_id=%s status=%s duration_ms=%.1f",
+                message.id, result.status.value if result else None,
+                (time.monotonic() - started) * 1000,
             )
             return EnrichedMessage(message, result, text)
         except Exception as exc:  # noqa: BLE001 - one bad media item must not abort a window
@@ -139,9 +190,12 @@ class MediaEnrichmentService:
                 terminal=terminal, now=datetime.now(timezone.utc),
             )
             _logger.warning(
-                "media enrichment %s for message %s: %s",
-                "terminally failed" if terminal else "failed",
+                "media enrichment %s message_id=%s attempts=%d retry_at=%s duration_ms=%.1f error=%s",
+                "terminally_failed" if terminal else "failed",
                 message.id,
+                attempts,
+                retry_at,
+                (time.monotonic() - started) * 1000,
                 exc,
             )
             result = await self._enrichments.get(
