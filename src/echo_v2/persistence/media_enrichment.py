@@ -149,7 +149,7 @@ class PostgresMessageEnrichmentRepository:  # pragma: no cover - exercised by Po
             insert = pg_insert(MessageEnrichmentRow).values(
                 id=str(uuid.uuid4()), message_id=message_id,
                 enrichment_version=enrichment_version, status=EnrichmentStatus.PROCESSING.value,
-                lease_owner=None, lease_expires_at=None, attempts=0,
+                lease_owner=owner, lease_expires_at=expires, attempts=1,
                 updated_at=now,
             ).on_conflict_do_nothing(index_elements=["message_id", "enrichment_version"])
             await session.execute(insert)
