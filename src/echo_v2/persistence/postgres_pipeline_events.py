@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import uuid
+
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -17,6 +19,7 @@ class PostgresPipelineEventRepository:
         async with self._session_factory() as session:
             await session.execute(
                 pg_insert(PipelineEventRow).values(
+                    id=str(uuid.uuid4()),
                     event_name=event.event_name,
                     pipeline=event.pipeline,
                     status=event.status,

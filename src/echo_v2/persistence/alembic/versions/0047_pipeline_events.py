@@ -19,7 +19,7 @@ depends_on = None
 def upgrade() -> None:
     op.create_table(
         "pipeline_events",
-        sa.Column("id", postgresql.UUID(as_uuid=False), nullable=False),
+        sa.Column("id", postgresql.UUID(as_uuid=False), server_default=sa.text("gen_random_uuid()"), nullable=False),
         sa.Column("event_name", sa.Text(), nullable=False),
         sa.Column("pipeline", sa.Text(), nullable=False),
         sa.Column("status", sa.Text(), nullable=False),
