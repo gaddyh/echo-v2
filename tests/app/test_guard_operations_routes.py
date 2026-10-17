@@ -13,6 +13,7 @@ from echo_v2.services.waiting_list_token_service import WaitingListTokenService
 
 class FakeOperationsService:
     def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
         self.response = GuardActivityResponse(
             guardian_user_id="guardian",
             generated_at=datetime(2026, 10, 15, tzinfo=timezone.utc),
@@ -34,6 +35,7 @@ class FakeOperationsService:
         )
 
     async def list_activity(self, **kwargs):
+        self.calls.append(kwargs)
         if kwargs["session_id"] == "expired":
             return None
         return self.response
@@ -82,6 +84,45 @@ async def test_operations_route_requires_session_and_serializes_activity() -> No
     assert "Conversation snapshot" in page.text
     assert "Decision transitions" not in page.text
     assert "Relevant messages for this transition" not in page.text
+    assert "function resetFilters" in page.text
+    assert "renderChildren(data.children)" in page.text
+    assert "cursor=null;" in page.text
+    assert "addEventListener('change',resetFilters)" in page.text
+
+
+async def test_operations_route_forwards_all_filters_and_pagination() -> None:
+    sessions = InMemoryWaitingListSessionRepository()
+    tokens = WaitingListTokenService(sessions)
+    session_id, _ = await tokens.issue(user_id="guardian")
+    service = FakeOperationsService()
+    async with _client(service, tokens) as client:
+        response = await client.get(
+            "/api/debug/guard/operations",
+            params={
+                "child_id": "child-2",
+                "chat_id": "chat-2",
+                "decision": "yes",
+                "date_from": "2026-10-01",
+                "date_to": "2026-10-15",
+                "limit": "10",
+                "cursor": "next-page",
+            },
+            cookies={"wls": session_id},
+        )
+
+    assert response.status_code == 200
+    assert service.calls == [
+        {
+            "session_id": session_id,
+            "child_user_id": "child-2",
+            "chat_id": "chat-2",
+            "decision": "yes",
+            "date_from": datetime(2026, 10, 1, tzinfo=timezone.utc),
+            "date_to": datetime(2026, 10, 16, tzinfo=timezone.utc),
+            "limit": 10,
+            "cursor": "next-page",
+        }
+    ]
 
 
 async def test_operations_token_exchange_sets_session_cookie_for_valid_token() -> None:

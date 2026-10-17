@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import json
@@ -110,13 +111,15 @@ class GuardSimpleTelemetryService:
         )
         has_more = len(rows) > page_size
         rows = rows[:page_size]
-        outcome_rows = await self._outcomes.list_for_assessments(
-            [assessment.id for assessment in rows if assessment.id is not None]
+        outcome_rows, states, child_names = await asyncio.gather(
+            self._outcomes.list_for_assessments(
+                [assessment.id for assessment in rows if assessment.id is not None]
+            ),
+            self._chat_states.list_for_children(child_ids),
+            self._child_names(linked_child_ids),
         )
         outcomes = {outcome.assessment_id: outcome for outcome in outcome_rows}
-        states = await self._chat_states.list_for_children(child_ids)
         state_by_chat = {(state.child_user_id, state.chat_id): state for state in states}
-        child_names = await self._child_names(child_ids)
         analyses = tuple(
             _activity_view(
                 assessment,
@@ -126,19 +129,22 @@ class GuardSimpleTelemetryService:
             )
             for assessment in rows
         )
-        counts = await self._assessments.count_for_children(
-            child_user_ids=child_ids,
-            created_after=start,
-            created_before=end,
-            chat_id=chat_id,
-            decision=normalized_decision,
+        counts, notification_count = await asyncio.gather(
+            self._assessments.count_for_children(
+                child_user_ids=child_ids,
+                created_after=start,
+                created_before=end,
+                chat_id=chat_id,
+                decision=normalized_decision,
+            ),
+            self._outcomes.count_sent(
+                child_user_ids=child_ids,
+                created_after=start,
+                created_before=end,
+                chat_id=chat_id,
+            ),
         )
-        counts["notifications"] = await self._outcomes.count_sent(
-            child_user_ids=child_ids,
-            created_after=start,
-            created_before=end,
-            chat_id=chat_id,
-        )
+        counts["notifications"] = notification_count
         next_cursor = None
         if has_more and rows:
             last = rows[-1]
@@ -150,7 +156,7 @@ class GuardSimpleTelemetryService:
             summary=counts,
             children=tuple(
                 {"id": child_id, "name": child_names.get(child_id, child_id)}
-                for child_id in child_ids
+                for child_id in linked_child_ids
             ),
             analyses=analyses,
             next_cursor=next_cursor,
@@ -288,11 +294,13 @@ class GuardSimpleTelemetryService:
         return {link.child_user_id for link in links}
 
     async def _child_names(self, child_ids: list[str]) -> dict[str, str]:
-        names: dict[str, str] = {}
-        for child_id in child_ids:
-            info = await self._users.get_user_info_by_id(child_id)
-            names[child_id] = (info[1] if info and info[1] else child_id)
-        return names
+        infos = await asyncio.gather(
+            *(self._users.get_user_info_by_id(child_id) for child_id in child_ids)
+        )
+        return {
+            child_id: (info[1] if info and info[1] else child_id)
+            for child_id, info in zip(child_ids, infos)
+        }
 
     async def _action_for(
         self, outcome: ParentAttentionDeliveryOutcome | None

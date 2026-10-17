@@ -176,6 +176,28 @@ async def test_activity_filters_and_cursor_are_scoped_to_linked_children() -> No
     assert unauthorized is not None and unauthorized.analyses == ()
 
 
+async def test_activity_keeps_all_child_options_when_one_child_is_selected() -> None:
+    service, session_id, _ = await setup()
+    await service._links.upsert_active(
+        guardian_user_id="guardian", child_user_id="child-2", now=NOW
+    )
+    second = replace(
+        assessment("a2", decision=False),
+        child_user_id="child-2",
+        child_name="Noa",
+    )
+    await service._assessments.save(second)
+
+    selected = await service.list_activity(session_id=session_id, child_user_id="child")
+    switched = await service.list_activity(session_id=session_id, child_user_id="child-2")
+
+    assert selected is not None and switched is not None
+    assert [child["id"] for child in selected.children] == ["child", "child-2"]
+    assert [child["id"] for child in switched.children] == ["child", "child-2"]
+    assert {row["child_user_id"] for row in selected.analyses} == {"child"}
+    assert {row["child_user_id"] for row in switched.analyses} == {"child-2"}
+
+
 async def test_detail_and_context_report_exact_verified_content() -> None:
     service, session_id, _ = await setup()
 
