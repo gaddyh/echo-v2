@@ -588,10 +588,14 @@ When `LANGSMITH_TRACING=true`:
 
 ### LangSmith dashboards
 
-Two dashboards created via `scripts/setup_langsmith_dashboard.py`:
+Dashboards created via `scripts/setup_langsmith_dashboard.py`:
 
 - **echo v2 overview** (days/weeks) — analysis runs, decisions, latency, error rates
 - **echo v2 realtime** (1-5h) — recent runs, judge scores, ingestion events
+- **echo v2 quality** — semantic outcomes, detection quality, and onboarding funnel
+- **echo v2 health** — Baileys connection states, reauthorization signals, Guard Security/Exposure analyzer volume and latency, analyzer errors, and legacy pipeline comparison
+
+Guard-specific health traces use `guard.baileys.state.*`, `guard.analyzer.security`, and `guard.analyzer.exposure`; the dashboard is scoped to the production `echo-v2-prod` tracing project.
 
 ### Alert checker
 
