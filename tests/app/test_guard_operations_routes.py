@@ -81,6 +81,8 @@ async def test_operations_route_requires_session_and_serializes_activity() -> No
     assert page.status_code == 200
     assert "Echo Guard — Activity" in page.text
     assert "Confirmed notifications" in page.text
+    assert 'placeholder="Chat name"' in page.text
+    assert "chat_name" in page.text
     assert "Conversation snapshot" in page.text
     assert "Decision transitions" not in page.text
     assert "Relevant messages for this transition" not in page.text
@@ -101,6 +103,7 @@ async def test_operations_route_forwards_all_filters_and_pagination() -> None:
             params={
                 "child_id": "child-2",
                 "chat_id": "chat-2",
+                "chat_name": "Class",
                 "decision": "yes",
                 "date_from": "2026-10-01",
                 "date_to": "2026-10-15",
@@ -116,6 +119,7 @@ async def test_operations_route_forwards_all_filters_and_pagination() -> None:
             "session_id": session_id,
             "child_user_id": "child-2",
             "chat_id": "chat-2",
+            "chat_name": "Class",
             "decision": "yes",
             "date_from": datetime(2026, 10, 1, tzinfo=timezone.utc),
             "date_to": datetime(2026, 10, 16, tzinfo=timezone.utc),

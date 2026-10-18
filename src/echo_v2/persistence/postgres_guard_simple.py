@@ -114,6 +114,8 @@ class PostgresGuardSimpleAssessmentRepository:
             filters.append(GuardSimpleAssessmentRow.created_at < created_before)
         if chat_id is not None:
             filters.append(GuardSimpleAssessmentRow.chat_id == chat_id)
+        if chat_name and chat_name.strip():
+            filters.append(GuardSimpleAssessmentRow.chat_name.icontains(chat_name.strip(), autoescape=True))
         if decision == "yes":
             filters.append(GuardSimpleAssessmentRow.parent_should_know.is_(True))
         elif decision == "no":
@@ -164,6 +166,8 @@ class PostgresGuardSimpleAssessmentRepository:
             filters.append(GuardSimpleAssessmentRow.created_at < created_before)
         if chat_id is not None:
             filters.append(GuardSimpleAssessmentRow.chat_id == chat_id)
+        if chat_name and chat_name.strip():
+            filters.append(GuardSimpleAssessmentRow.chat_name.icontains(chat_name.strip(), autoescape=True))
         if decision == "yes":
             filters.append(GuardSimpleAssessmentRow.parent_should_know.is_(True))
         elif decision == "no":

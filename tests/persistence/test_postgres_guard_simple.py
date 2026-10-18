@@ -40,13 +40,20 @@ async def connection(session_factory, user_id: str) -> str:
 
 
 def assessment(
-    child: str, connection_id: str, *, parent_should_know: bool | None, created_at: datetime
+    child: str,
+    connection_id: str,
+    *,
+    parent_should_know: bool | None,
+    created_at: datetime,
+    chat_id: str = "group@g.us",
+    chat_name: str = "Class group",
 ) -> SafetyAssessment:
     return SafetyAssessment(
         child_user_id=child,
         connection_id=connection_id,
-        chat_id="group@g.us",
+        chat_id=chat_id,
         chat_type="group",
+        chat_name=chat_name,
         timezone="Asia/Jerusalem",
         window_start=NOW.replace(hour=0),
         window_end=NOW,
@@ -81,6 +88,16 @@ async def test_assessments_are_isolated_and_resolution_is_separate(
             created_at=NOW.replace(hour=11),
         )
     )
+    await repository.save(
+        assessment(
+            child,
+            connection_id,
+            parent_should_know=True,
+            created_at=NOW.replace(hour=12),
+            chat_id="other@g.us",
+            chat_name="Other group",
+        )
+    )
 
     current = await repository.latest_unresolved(child_user_id=child, chat_id="group@g.us")
     assert current is not None
@@ -97,6 +114,12 @@ async def test_assessments_are_isolated_and_resolution_is_separate(
     assert len(listed) == 2
     assert listed[0].resolved_at == NOW
     assert listed[0].summary == "summary"
+    filtered = await repository.list_for_children(
+        child_user_ids=[child], chat_name="class", limit=10
+    )
+    assert len(filtered) == 2
+    counts = await repository.count_for_children(child_user_ids=[child], chat_name="class")
+    assert counts == {"analyzed": 2, "yes": 1, "no": 1, "unknown": 0}
 
 
 async def test_postgres_message_window_reports_bounds_connections_and_unknown_senders(

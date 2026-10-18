@@ -197,6 +197,54 @@ async def test_activity_merges_exposure_without_message_content() -> None:
     assert context is not None and context["messages"] == []
 
 
+async def test_activity_chat_name_filter_spans_analyzers_and_paginates() -> None:
+    service, session_id, _ = await setup()
+    await service._assessments.save(
+        replace(
+            assessment("other", decision=True, created_at=NOW + timedelta(minutes=2)),
+            chat_id="other@g.us",
+            chat_name="Other group",
+        )
+    )
+    exposure = InMemoryGuardExposureAssessmentRepository()
+    matching = ExposureAssessment(
+        id="matching-exposure",
+        significant_exposure=True,
+        category=ExposureCategory.BULLYING,
+        summary="Repeated targeting.",
+        evidence_message_ids=(),
+        reason="Targeted humiliation.",
+        input_message_ids=(),
+        child_user_id="child",
+        connection_id="connection",
+        chat_id="class@g.us",
+        chat_type="group",
+        chat_name="Class group",
+        timezone="UTC",
+        window_start=NOW,
+        window_end=NOW,
+        created_at=NOW + timedelta(minutes=3),
+    )
+    await exposure.save(matching)
+    await exposure.save(replace(matching, id="other-exposure", chat_id="other@g.us", chat_name="Other group"))
+    service._exposure_assessments = exposure
+
+    first = await service.list_activity(session_id=session_id, chat_name="  cLaSs  ", limit=2)
+    assert first is not None
+    assert len(first.analyses) == 2
+    assert first.summary["analyzed"] == 4
+    assert first.next_cursor is not None
+    assert [row["chat_name"] for row in first.analyses] == ["Class group", "Class group"]
+
+    second = await service.list_activity(
+        session_id=session_id, chat_name="class", limit=2, cursor=first.next_cursor
+    )
+    assert second is not None
+    assert len(second.analyses) == 2
+    assert second.next_cursor is None
+    assert all("class" in row["chat_name"].casefold() for row in second.analyses)
+
+
 async def test_activity_filters_and_cursor_are_scoped_to_linked_children() -> None:
     service, session_id, _ = await setup()
 

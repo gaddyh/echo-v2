@@ -66,7 +66,7 @@ class PostgresGuardExposureAssessmentRepository:
     async def list_for_children(
         self, *, child_user_ids: list[str], created_after: datetime | None = None,
         created_before: datetime | None = None, chat_id: str | None = None,
-        decision: str | None = None, limit: int = 50,
+        chat_name: str | None = None, decision: str | None = None, limit: int = 50,
         before: tuple[datetime, str] | None = None,
     ) -> list[ExposureAssessment]:
         if not child_user_ids or limit <= 0:
@@ -78,6 +78,12 @@ class PostgresGuardExposureAssessmentRepository:
             filters.append(GuardExposureAssessmentRow.created_at < created_before)
         if chat_id is not None:
             filters.append(GuardExposureAssessmentRow.chat_id == chat_id)
+        if chat_name and chat_name.strip():
+            filters.append(
+                GuardExposureAssessmentRow.chat_name.icontains(
+                    chat_name.strip(), autoescape=True
+                )
+            )
         if decision == "yes":
             filters.append(GuardExposureAssessmentRow.significant_exposure.is_(True))
         elif decision == "no":
@@ -104,12 +110,12 @@ class PostgresGuardExposureAssessmentRepository:
     async def count_for_children(
         self, *, child_user_ids: list[str], created_after: datetime | None = None,
         created_before: datetime | None = None, chat_id: str | None = None,
-        decision: str | None = None,
+        chat_name: str | None = None, decision: str | None = None,
     ) -> dict[str, int]:
         rows = await self.list_for_children(
             child_user_ids=child_user_ids, created_after=created_after,
-            created_before=created_before, chat_id=chat_id, decision=decision,
-            limit=1_000_000,
+            created_before=created_before, chat_id=chat_id, chat_name=chat_name,
+            decision=decision, limit=1_000_000,
         )
         return {
             "analyzed": len(rows),
