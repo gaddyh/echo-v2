@@ -544,8 +544,8 @@ def build_health_dashboard(section_id: str) -> None:
     """Operational health dashboard for Baileys and Guard pipeline traces."""
     charts: list[dict] = [
         {
-            "title": "Baileys State Events",
-            "description": "Connection lifecycle events, including connected, degraded, and pairing_required",
+            "title": "Baileys Connection Lifecycle",
+            "description": "All Baileys connection states; this is not a reauthorization count",
             "chart_type": "line",
             "series": [
                 {
@@ -558,8 +558,17 @@ def build_health_dashboard(section_id: str) -> None:
             ],
         },
         {
+            "title": "Connected State Events",
+            "description": "Count of connected-state events in the selected time range; not a current connection count",
+            "chart_type": "kpi",
+            "series": [count_series(
+                "connected events",
+                'search("guard.baileys.state.connected")',
+            )],
+        },
+        {
             "title": "Baileys Reauthorization Signals",
-            "description": "pairing_required and logged-out state events that can require a new QR",
+            "description": "pairing_required state events that can require a new QR",
             "chart_type": "bar",
             "series": [
                 count_series("pairing required", 'search("guard.baileys.state.pairing_required")'),
