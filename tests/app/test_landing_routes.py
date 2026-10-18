@@ -298,15 +298,23 @@ async def test_guard_v2_landing_page_uses_security_and_exposure_copy():
         resp = await client.get("/guard-v2")
     assert resp.status_code == 200
     html = resp.text
-    assert "לדעת כשמשהו לא בסדר" in html
+    assert "לדעת לפני שמשהו מסוכן" in html
+    assert "גם כשהילד לא מספר" in html
+    assert "מה קורה לילד" in html
+    assert "מה קורה סביבו" in html
     assert "Security" in html
     assert "Exposure" in html
-    assert "קישור מכשיר וסריקת QR" in html
+    assert "מכשירים מקושרים וסריקת QR" in html
+    assert "בלי להתקין אפליקציה נפרדת ובלי לקנות חומרה" in html
     assert "חיבור WhatsApp לא רשמי" in html
     assert "שירותי AI בענן" in html
+    assert "המחשה בלבד" in html
+    assert "signup-disclosure" in html
+    assert "עדכנו אותי כשהפיילוט נפתח" in html
     assert 'src="/og-guard-v3.png"' in html
     assert "wl-preference" not in html
     assert "preference" not in html.split("<script>", 1)[1]
+    assert html.index('class="hero-outcomes"') < html.index('class="hero-art"')
     assert html.index('id="layers"') < html.index('id="how"')
     assert html.index('id="how"') < html.index('id="join"')
     assert html.index('id="join"') < html.index('id="trust"')
