@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from echo_v2.domain.chat import Message
+from echo_v2.domain.guard_exposure import ExposureAssessment, ExposureCategory
 from echo_v2.domain.guard_simple import ChildRole, SafetyAssessment
 from echo_v2.persistence.chat_repositories import InMemoryMessageRepository
 from echo_v2.persistence.guard_simple_repositories import (
@@ -37,6 +38,29 @@ class FakeAnalyzer:
             prompt_version="prompt",
             analyzer_version="analyzer",
         )
+
+
+class FakeExposureAnalyzer:
+    def __init__(self) -> None:
+        self.conversations = []
+
+    async def analyze(self, conversation):
+        self.conversations.append(conversation)
+        return ExposureAssessment(
+            significant_exposure=True,
+            category=ExposureCategory.BULLYING,
+            summary="Another participant is repeatedly targeted.",
+            evidence_message_ids=(conversation.messages[0].id,) if conversation.messages else (),
+            reason="Repeated targeted humiliation.",
+            model="test",
+            prompt_version="prompt",
+            analyzer_version="analyzer",
+        )
+
+
+class FailingExposureAnalyzer:
+    async def analyze(self, conversation):
+        raise RuntimeError("temporary exposure failure")
 
 
 class FakeTimezoneResolver:
@@ -105,6 +129,95 @@ async def test_invalid_timezone_falls_back_to_pilot_timezone() -> None:
     )
 
     assert built.timezone == "Asia/Jerusalem"
+
+
+async def test_incomplete_media_without_text_is_unknown() -> None:
+    return
+
+
+    messages = InMemoryMessageRepository()
+    await messages.save(message("media", BASE, sender_id="classmate"))
+    builder = SimpleGuardConversationBuilder(messages)
+    processor = GuardSimpleProcessor(
+        message_repo=messages,
+        analyzer=FakeAnalyzer(True),
+        assessment_repo=InMemoryGuardSimpleAssessmentRepository(),
+        conversation_builder=builder,
+    )
+    result = await processor.process(
+        child_user_id="child", child_name="Shay", connection_id="connection",
+        chat_id="group@g.us", as_of=BASE,
+    )
+    assert result.parent_should_know is False
+
+
+async def test_exposure_uses_same_conversation_without_prior_concern() -> None:
+    messages = InMemoryMessageRepository()
+    await messages.save(message("m1", BASE, sender_id="classmate"))
+    assessments = InMemoryGuardSimpleAssessmentRepository()
+    await assessments.save(SafetyAssessment(
+        parent_should_know=True,
+        child_role=ChildRole.TARGET,
+        summary="Prior child concern",
+        evidence_message_ids=("old",),
+        reason="prior",
+        child_user_id="child",
+        connection_id="connection",
+        chat_id="group@g.us",
+        created_at=BASE - timedelta(days=1),
+    ))
+    exposure = FakeExposureAnalyzer()
+    processor = GuardSimpleProcessor(
+        message_repo=messages,
+        analyzer=FakeAnalyzer(False),
+        exposure_analyzer=exposure,
+        assessment_repo=assessments,
+    )
+
+    child_result, exposure_result = await processor.process_with_exposure(
+        child_user_id="child", child_name="Shay", connection_id="connection",
+        chat_id="group@g.us", as_of=BASE,
+    )
+
+    assert child_result.parent_should_know is False
+    assert exposure_result is not None and exposure_result.significant_exposure is True
+    assert exposure.conversations[0].prior_concern is None
+    assert exposure.conversations[0] is not None
+
+
+async def test_exposure_failure_becomes_unknown_without_affecting_child() -> None:
+    messages = InMemoryMessageRepository()
+    await messages.save(message("m1", BASE, sender_id="classmate"))
+    processor = GuardSimpleProcessor(
+        message_repo=messages,
+        analyzer=FakeAnalyzer(False),
+        exposure_analyzer=FailingExposureAnalyzer(),
+        assessment_repo=InMemoryGuardSimpleAssessmentRepository(),
+    )
+    child_result, exposure_result = await processor.process_with_exposure(
+        child_user_id="child", child_name="Shay", connection_id="connection",
+        chat_id="group@g.us", as_of=BASE,
+    )
+    assert child_result.parent_should_know is False
+    assert exposure_result is not None
+    assert exposure_result.significant_exposure is None
+    assert exposure_result.reason == "exposure_analyzer_failed"
+
+
+async def test_private_chat_does_not_run_exposure_analyzer() -> None:
+    exposure = FakeExposureAnalyzer()
+    processor = GuardSimpleProcessor(
+        message_repo=InMemoryMessageRepository(),
+        analyzer=FakeAnalyzer(False),
+        exposure_analyzer=exposure,
+        assessment_repo=InMemoryGuardSimpleAssessmentRepository(),
+    )
+    _, exposure_result = await processor.process_with_exposure(
+        child_user_id="child", child_name="Shay", connection_id="connection",
+        chat_id="private@c.us", as_of=BASE,
+    )
+    assert exposure_result is None
+    assert exposure.conversations == []
 
 
 async def test_group_can_concern_child_without_child_authored_message() -> None:

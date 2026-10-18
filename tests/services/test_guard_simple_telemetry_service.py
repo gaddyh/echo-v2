@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from echo_v2.domain.chat import Message
+from echo_v2.domain.guard_exposure import ExposureAssessment, ExposureCategory
 from echo_v2.domain.guard_simple import ChildRole, SafetyAssessment
 from echo_v2.domain.parent_attention import (
     ParentAttentionDeliveryOutcome,
@@ -17,6 +18,9 @@ from echo_v2.domain.scheduling import (
     ScheduledActionType,
 )
 from echo_v2.persistence.chat_repositories import InMemoryMessageRepository
+from echo_v2.persistence.guard_exposure_repositories import (
+    InMemoryGuardExposureAssessmentRepository,
+)
 from echo_v2.persistence.guard_repositories import (
     InMemoryGuardChatStateRepository,
     InMemoryGuardianChildLinkRepository,
@@ -157,6 +161,40 @@ async def test_activity_lists_recent_rows_and_confirmed_counter() -> None:
     assert [row["id"] for row in response.analyses] == ["a1", "a2", "a3"]
     assert response.analyses[0]["delivery"]["label"] == "Sent"
     assert response.analyses[1]["delivery"]["label"] == "Unknown (historical)"
+
+
+async def test_activity_merges_exposure_without_message_content() -> None:
+    service, session_id, _ = await setup()
+    exposure = InMemoryGuardExposureAssessmentRepository()
+    await exposure.save(ExposureAssessment(
+        id="e1",
+        significant_exposure=True,
+        category=ExposureCategory.BULLYING,
+        summary="Repeated targeting.",
+        evidence_message_ids=("m1",),
+        reason="Targeted humiliation.",
+        input_message_ids=("m1",),
+        child_user_id="child",
+        connection_id="connection",
+        chat_id="class@g.us",
+        chat_type="group",
+        chat_name="Class group",
+        timezone="UTC",
+        window_start=NOW - timedelta(hours=1),
+        window_end=NOW,
+        created_at=NOW + timedelta(minutes=1),
+    ))
+    service._exposure_assessments = exposure
+
+    response = await service.list_activity(session_id=session_id, analyzer="exposure")
+    assert response is not None
+    assert response.summary["yes"] == 1
+    assert response.analyses[0]["analyzer"] == "exposure"
+    detail = await service.get_analysis(session_id=session_id, assessment_id="e1")
+    assert detail is not None
+    assert detail["evidence_messages"] == []
+    context = await service.get_context(session_id=session_id, assessment_id="e1")
+    assert context is not None and context["messages"] == []
 
 
 async def test_activity_filters_and_cursor_are_scoped_to_linked_children() -> None:

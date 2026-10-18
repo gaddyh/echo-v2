@@ -6,7 +6,11 @@ from datetime import datetime, timezone
 
 import pytest
 
+from echo_v2.domain.guard_exposure import ExposureAssessment, ExposureCategory
 from echo_v2.domain.guard_simple import ChildRole, SafetyAssessment
+from echo_v2.persistence.guard_exposure_repositories import (
+    InMemoryGuardExposureAssessmentRepository,
+)
 from echo_v2.persistence.guard_repositories import InMemoryGuardChatStateRepository
 from echo_v2.persistence.guard_simple_repositories import (
     InMemoryGuardSimpleAssessmentCommitRepository,
@@ -44,6 +48,24 @@ class FakeProcessor:
             chat_id=kwargs["chat_id"],
             created_at=NOW,
         )
+
+
+class FakeExposureProcessor(FakeProcessor):
+    async def process_with_exposure(self, **kwargs):
+        child = await self.process(**kwargs)
+        exposure = ExposureAssessment(
+            significant_exposure=True,
+            category=ExposureCategory.BULLYING,
+            summary="Repeated targeting.",
+            evidence_message_ids=("m1",),
+            reason="Targeted humiliation.",
+            child_user_id=kwargs["child_user_id"],
+            connection_id=kwargs["connection_id"],
+            chat_id=kwargs["chat_id"],
+            chat_type="group",
+            target_version=kwargs["target_version"],
+        )
+        return child, exposure
 
 
 class FakeDelivery:
@@ -90,6 +112,48 @@ async def test_worker_commits_current_version_and_delivers() -> None:
     assert state is not None
     assert state.last_parent_should_know is True
     assert state.last_analyzed_version == state.activity_version
+
+
+async def test_worker_commits_exposure_after_child_commit_for_same_version() -> None:
+    states = InMemoryGuardChatStateRepository()
+    await states.upsert_on_message(
+        child_user_id="child", chat_id="group@g.us", observed_at=NOW,
+        next_analysis_at=NOW, pending_since=NOW, connection_id="connection",
+        is_group=True,
+    )
+    child_assessments = InMemoryGuardSimpleAssessmentRepository()
+    exposure_assessments = InMemoryGuardExposureAssessmentRepository(states)
+    worker = GuardSimpleAnalysisWorker(
+        state_repo=states,
+        processor=FakeExposureProcessor(),
+        commit_repo=InMemoryGuardSimpleAssessmentCommitRepository(states, child_assessments),
+        exposure_repo=exposure_assessments,
+        users=FakeUsers(),
+    )
+
+    assert await worker.run_once()
+    assert len(child_assessments.assessments) == 1
+    assert len(exposure_assessments.assessments) == 1
+    assert exposure_assessments.assessments[0].target_version == 1
+
+
+async def test_worker_handles_exposure_commit_stale() -> None:
+    states = InMemoryGuardChatStateRepository()
+    await states.upsert_on_message(
+        child_user_id="child", chat_id="group@g.us", observed_at=NOW,
+        next_analysis_at=NOW, pending_since=NOW, connection_id="connection", is_group=True,
+    )
+    class StaleExposureRepository(InMemoryGuardExposureAssessmentRepository):
+        async def commit_if_current(self, **kwargs):
+            return "stale", None
+    worker = GuardSimpleAnalysisWorker(
+        state_repo=states, processor=FakeExposureProcessor(),
+        commit_repo=InMemoryGuardSimpleAssessmentCommitRepository(
+            states, InMemoryGuardSimpleAssessmentRepository()
+        ),
+        exposure_repo=StaleExposureRepository(states), users=FakeUsers(),
+    )
+    assert await worker.run_once()
 
 
 async def test_worker_handles_processor_failure() -> None:

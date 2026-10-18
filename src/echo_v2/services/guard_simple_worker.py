@@ -10,6 +10,9 @@ from typing import Protocol
 
 from echo_v2.domain.guard import GuardChatState
 from echo_v2.domain.guard_simple import SafetyAssessment
+from echo_v2.persistence.guard_exposure_repositories import (
+    GuardExposureAssessmentRepository,
+)
 from echo_v2.persistence.guard_repositories import GuardChatStateRepository
 from echo_v2.persistence.guard_simple_repositories import (
     GuardSimpleAssessmentCommitRepository,
@@ -41,6 +44,7 @@ class GuardSimpleAnalysisWorker:
         processor: GuardSimpleProcessor,
         commit_repo: GuardSimpleAssessmentCommitRepository,
         users: ChildNameResolver,
+        exposure_repo: GuardExposureAssessmentRepository | None = None,
         delivery: ParentAttentionDelivery | None = None,
         poll_interval_seconds: float = 10.0,
         excluded_chat_ids: frozenset[str] = frozenset(),
@@ -48,6 +52,7 @@ class GuardSimpleAnalysisWorker:
         self._state = state_repo
         self._processor = processor
         self._commit = commit_repo
+        self._exposure = exposure_repo
         self._users = users
         self._delivery = delivery
         self._poll_interval = poll_interval_seconds
@@ -100,12 +105,22 @@ class GuardSimpleAnalysisWorker:
             "guard simple analysis start child_user_id=%s chat_id=%s version=%d",
             chat.child_user_id, chat.chat_id, chat.activity_version,
         )
-        assessment = await self._processor.process(
-            child_user_id=chat.child_user_id,
-            connection_id=chat.connection_id,
-            chat_id=chat.chat_id,
-            child_name=child_name,
-        )
+        if self._exposure is not None and chat.is_group:
+            assessment, exposure = await self._processor.process_with_exposure(
+                child_user_id=chat.child_user_id,
+                connection_id=chat.connection_id,
+                chat_id=chat.chat_id,
+                child_name=child_name,
+                target_version=chat.activity_version,
+            )
+        else:
+            assessment = await self._processor.process(
+                child_user_id=chat.child_user_id,
+                connection_id=chat.connection_id,
+                chat_id=chat.chat_id,
+                child_name=child_name,
+            )
+            exposure = None
         assessment = replace(assessment, chat_type="group" if chat.is_group else "private")
         _logger.info(
             "guard simple assessment prepared child_user_id=%s chat_id=%s parent_should_know=%s reason=%s input_count=%d",
@@ -118,6 +133,24 @@ class GuardSimpleAnalysisWorker:
             target_version=chat.activity_version,
             assessment=assessment,
         )
+        if (
+            exposure is not None
+            and self._exposure is not None
+            and status in {"committed", "completed", "deferred"}
+        ):
+            exposure_status, _ = await self._exposure.commit_if_current(
+                child_user_id=chat.child_user_id,
+                chat_id=chat.chat_id,
+                target_version=chat.activity_version,
+                assessment=exposure,
+            )
+            if exposure_status == "stale":
+                _logger.info(
+                    "Exposure assessment skipped as stale for %s/%s version=%d",
+                    chat.child_user_id,
+                    chat.chat_id,
+                    chat.activity_version,
+                )
         if status in {"committed", "completed"} and assessment_id and self._delivery is not None:
             try:
                 await self._delivery.evaluate_committed(

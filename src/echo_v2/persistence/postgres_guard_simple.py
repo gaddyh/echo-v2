@@ -100,6 +100,7 @@ class PostgresGuardSimpleAssessmentRepository:
         created_after: datetime | None = None,
         created_before: datetime | None = None,
         chat_id: str | None = None,
+        chat_name: str | None = None,
         decision: str | None = None,
         limit: int = 50,
         before: tuple[datetime, str] | None = None,
@@ -151,6 +152,7 @@ class PostgresGuardSimpleAssessmentRepository:
         created_after: datetime | None = None,
         created_before: datetime | None = None,
         chat_id: str | None = None,
+        chat_name: str | None = None,
         decision: str | None = None,
     ) -> dict[str, int]:
         if not child_user_ids:

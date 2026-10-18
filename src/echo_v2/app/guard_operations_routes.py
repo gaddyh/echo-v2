@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from datetime import date, datetime, time, timedelta, timezone
+from typing import Any
 
 from fastapi import APIRouter, Cookie, HTTPException
 from fastapi.encoders import jsonable_encoder
@@ -61,7 +62,9 @@ def build_guard_operations_router(
         wls: str | None = Cookie(default=None, alias=_SESSION_COOKIE),
         child_id: str | None = None,
         chat_id: str | None = None,
+        chat_name: str | None = None,
         decision: str | None = None,
+        analyzer: str | None = None,
         date_from: date | None = None,
         date_to: date | None = None,
         limit: int = 50,
@@ -69,16 +72,21 @@ def build_guard_operations_router(
     ) -> JSONResponse:
         if wls is None:
             raise HTTPException(status_code=401, detail="no session")
-        result = await service.list_activity(
-            session_id=wls,
-            child_user_id=child_id,
-            chat_id=chat_id,
-            decision=decision,
-            date_from=_date_start(date_from),
-            date_to=_date_end(date_to),
-            limit=limit,
-            cursor=cursor,
-        )
+        activity_kwargs: dict[str, Any] = {
+            "session_id": wls,
+            "child_user_id": child_id,
+            "chat_id": chat_id,
+            "decision": decision,
+            "date_from": _date_start(date_from),
+            "date_to": _date_end(date_to),
+            "limit": limit,
+            "cursor": cursor,
+        }
+        if analyzer is not None:
+            activity_kwargs["analyzer"] = analyzer
+        if chat_name is not None:
+            activity_kwargs["chat_name"] = chat_name
+        result = await service.list_activity(**activity_kwargs)
         if result is None:
             raise HTTPException(status_code=401, detail="session expired")
         return JSONResponse(
