@@ -30,6 +30,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from echo_v2.app.landing_page import LANDING_PAGE
 from echo_v2.app.landing_page_echo_guard_clean import LANDING_PAGE as GUARD_LANDING_PAGE
+from echo_v2.app.landing_page_echo_guard_v2 import LANDING_PAGE as GUARD_V2_LANDING_PAGE
 from echo_v2.persistence.identity import PhoneParseError, normalize_phone_e164
 from echo_v2.persistence.waitlist import WaitlistRepository
 from echo_v2.services.waitlist_notifier import WaitlistNotifier
@@ -55,6 +56,7 @@ _OG_IMAGE_PATH = Path(__file__).parent / "static" / "og.png"
 # The source asset has no extension but is a valid PNG; keep the public URL
 # versioned so future artwork can use og-guard-v3.png without cache ambiguity.
 _OG_GUARD_IMAGE_PATH = Path(__file__).parent / "static" / "og.guard.png"
+_OG_GUARD_V3_IMAGE_PATH = Path(__file__).parent / "static" / "og-guard-v3.png"
 
 
 class WaitlistRequest(BaseModel):
@@ -68,8 +70,8 @@ class WaitlistRequest(BaseModel):
     preference: Literal["android", "box", "both"] | None = Field(
         None, description="Echo Guard connection preference"
     )
-    # Echo Guard pilot fields (optional — only sent from the /guard landing page).
-    # Not yet persisted; used only to format the owner's WhatsApp notification.
+    # Echo Guard pilot fields (optional — only sent from a Guard landing page).
+    # Persisted for pilot onboarding and also included in the owner notification.
     children_count: str | None = Field(
         None, max_length=16, description="Echo Guard: number of children to enroll"
     )
@@ -188,6 +190,19 @@ def build_landing_router(
         )
         return HTMLResponse(content=html, headers=_security_headers())
 
+    @router.get("/guard-v2", response_class=HTMLResponse)
+    async def guard_v2_landing() -> HTMLResponse:
+        count = await waitlist_repo.count()
+        counter_html = ""
+        if count >= _COUNTER_DISPLAY_THRESHOLD:
+            counter_html = f'<div class="counter">🔥 {count} כבר ברשימה</div>'
+        html = (
+            GUARD_V2_LANDING_PAGE
+            .replace("{{COUNTER}}", counter_html)
+            .replace("{{BASE_URL}}", base_url.rstrip("/"))
+        )
+        return HTMLResponse(content=html, headers=_security_headers())
+
     @router.get("/og.png")
     async def og_image() -> FileResponse:
         if not _OG_IMAGE_PATH.exists():
@@ -204,6 +219,16 @@ def build_landing_router(
             raise HTTPException(status_code=404, detail="not found")
         return FileResponse(
             _OG_GUARD_IMAGE_PATH,
+            media_type="image/png",
+            headers={"Cache-Control": "public, max-age=86400"},
+        )
+
+    @router.get("/og-guard-v3.png")
+    async def og_guard_v3_image() -> FileResponse:
+        if not _OG_GUARD_V3_IMAGE_PATH.exists():
+            raise HTTPException(status_code=404, detail="not found")
+        return FileResponse(
+            _OG_GUARD_V3_IMAGE_PATH,
             media_type="image/png",
             headers={"Cache-Control": "public, max-age=86400"},
         )
@@ -239,6 +264,8 @@ def build_landing_router(
             phone_number=phone_e164,
             willingness_to_pay=body.wtp,
             preference=body.preference,
+            children_count=body.children_count,
+            children_ages=body.children_ages,
         )
         # Duplicates get the same response as new signups — the endpoint
         # must not leak whether a number is already on the list.

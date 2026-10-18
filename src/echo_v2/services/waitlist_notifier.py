@@ -74,11 +74,16 @@ class Dialog360WaitlistNotifier:
         children_ages: str | None = None,
     ) -> None:
         if children_count is not None:
+            preference_line = (
+                f"העדפה: {_PREFERENCE_LABELS[preference]}\n"
+                if preference in _PREFERENCE_LABELS
+                else ""
+            )
             text = (
                 "🛡️ Echo Guard — נרשם חדש לפיילוט\n"
                 f"שם: {name}\n"
                 f"טלפון: {phone}\n"
-                f"העדפה: {_PREFERENCE_LABELS.get(preference or '', '—')}\n"
+                f"{preference_line}"
                 f"ילדים: {children_count}\n"
                 f"גילאים: {children_ages or '—'}"
             )
