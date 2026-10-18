@@ -7,10 +7,16 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from langsmith import traceable
 from pydantic import BaseModel, ConfigDict, StrictBool, StrictStr, ValidationError
 
 from echo_v2.domain.guard_exposure import ExposureAssessment, ExposureCategory
 from echo_v2.domain.guard_simple import SimpleConversation
+from echo_v2.observability.sanitizers import (
+    safe_guard_analysis_inputs,
+    safe_guard_analysis_output,
+)
+from echo_v2.observability.tracing import tracing_client
 
 _logger = logging.getLogger("echo_v2.services.guard_exposure_analyzer")
 
@@ -98,6 +104,12 @@ class ExposureAnalyzer:
     async def analyze(self, conversation: SimpleConversation) -> ExposureAssessment:
         return (await self.analyze_with_raw(conversation)).assessment
 
+    @traceable(
+        name="guard.analyzer.exposure",
+        client=tracing_client,
+        process_inputs=safe_guard_analysis_inputs,
+        process_outputs=safe_guard_analysis_output,
+    )
     async def analyze_with_raw(self, conversation: SimpleConversation) -> ExposureAnalysisRun:
         if not conversation.messages:
             return ExposureAnalysisRun(self._empty_assessment(conversation), "")

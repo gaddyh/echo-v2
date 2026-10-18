@@ -24,6 +24,7 @@ class BaileysConnectionStateEvent:
     status: ConnectionStatus
     provider_raw_status: str | None
     timestamp: datetime
+    runtime_state: str | None = None
     state_version: int | None = None
 
     @classmethod
@@ -52,6 +53,9 @@ class BaileysConnectionStateEvent:
         raw = payload.get("provider_raw_status")
         if raw is not None and not isinstance(raw, str):
             raise ValueError("event has invalid provider_raw_status")
+        runtime_state = payload.get("runtime_state")
+        if runtime_state is not None and not isinstance(runtime_state, str):
+            raise ValueError("event has invalid runtime_state")
         version = payload.get("state_version")
         if version is not None and not isinstance(version, int):
             raise ValueError("event has invalid state_version")
@@ -61,6 +65,7 @@ class BaileysConnectionStateEvent:
             connection_id=connection_id,
             status=normalized_status,
             provider_raw_status=raw,
+            runtime_state=runtime_state,
             timestamp=event_timestamp,
             state_version=version,
         )

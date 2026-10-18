@@ -22,6 +22,7 @@ def _payload(**overrides: object) -> dict[str, object]:
         "connection_id": "connection",
         "status": "pairing_required",
         "provider_raw_status": "logged_out:401",
+        "runtime_state": "stopped",
         "state_version": 42,
         "timestamp": "2026-10-03T00:00:00Z",
     }
