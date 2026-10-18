@@ -562,9 +562,9 @@ def build_health_dashboard(section_id: str) -> None:
             "description": "pairing_required and logged-out state events that can require a new QR",
             "chart_type": "bar",
             "series": [
-                count_series("pairing required", 'eq(name, "guard.baileys.state.pairing_required")'),
-                count_series("connected", 'eq(name, "guard.baileys.state.connected")'),
-                count_series("degraded", 'eq(name, "guard.baileys.state.degraded")'),
+                count_series("pairing required", 'search("guard.baileys.state.pairing_required")'),
+                count_series("connected", 'search("guard.baileys.state.connected")'),
+                count_series("degraded", 'search("guard.baileys.state.degraded")'),
             ],
         },
         {
@@ -608,19 +608,6 @@ def build_health_dashboard(section_id: str) -> None:
                     "errors",
                     'and(eq(status, "error"), or('
                     'search("guard.baileys."), search("guard.analyzer.")))',
-                )
-            ],
-        },
-        {
-            "title": "Legacy Pipeline Errors",
-            "description": "WFM traces retained for comparison during the Guard migration",
-            "chart_type": "line",
-            "series": [
-                count_series(
-                    "errors",
-                    'and(eq(status, "error"), or('
-                    'search("wfm.analysis"), search("wfm.scheduling"), '
-                    'search("wfm.http.")))',
                 )
             ],
         },

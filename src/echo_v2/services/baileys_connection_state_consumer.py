@@ -28,9 +28,10 @@ _DISCONNECTED_MESSAGE = (
 
 async def _trace_connection_state(event: Any, *, processed: bool) -> dict[str, Any]:
     status = getattr(getattr(event, "status", None), "value", "unknown")
+    runtime_state = getattr(event, "runtime_state", None) or "unknown"
 
     @traceable(
-        name=f"guard.baileys.state.{status}",
+        name=f"guard.baileys.state.{status}.{runtime_state}",
         client=tracing_client,
         process_inputs=safe_baileys_connection_inputs,
         process_outputs=safe_baileys_connection_output,
@@ -39,6 +40,7 @@ async def _trace_connection_state(event: Any, *, processed: bool) -> dict[str, A
         return {
             "status": getattr(getattr(event, "status", None), "value", None),
             "provider_raw_status": getattr(event, "provider_raw_status", None),
+            "runtime_state": getattr(event, "runtime_state", None),
             "processed": processed,
         }
 

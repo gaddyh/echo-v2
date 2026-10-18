@@ -202,6 +202,7 @@ def safe_baileys_connection_inputs(inputs: dict[str, Any]) -> dict[str, Any]:
     return {
         "status": getattr(getattr(event, "status", None), "value", None),
         "provider_raw_status": getattr(event, "provider_raw_status", None),
+        "runtime_state": getattr(event, "runtime_state", None),
         "connection_id_hash": _hash_if_present(connection_id),
     }
 
@@ -211,6 +212,7 @@ def safe_baileys_connection_output(output: dict[str, Any]) -> dict[str, Any]:
     return {
         "status": output.get("status"),
         "provider_raw_status": output.get("provider_raw_status"),
+        "runtime_state": output.get("runtime_state"),
         "processed": bool(output.get("processed")),
     }
 
