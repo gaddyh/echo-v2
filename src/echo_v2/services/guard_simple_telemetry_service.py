@@ -91,11 +91,16 @@ class GuardSimpleTelemetryService:
         date_to: datetime | None = None,
         limit: int = _DEFAULT_PAGE_SIZE,
         cursor: str | None = None,
+        admin: bool = False,
     ) -> GuardActivityResponse | None:
         resolved = await self._tokens.resolve_session(session_id)
         if resolved is None:
             return None
-        links = await self._links.list_active_for_guardian(resolved.user_id)
+        links = (
+            await self._links.list_all_active()
+            if admin
+            else await self._links.list_active_for_guardian(resolved.user_id)
+        )
         linked_child_ids = [link.child_user_id for link in links]
         child_ids = linked_child_ids
         if child_user_id is not None:
@@ -135,12 +140,13 @@ class GuardSimpleTelemetryService:
         has_more = len(all_rows) > page_size
         all_rows = all_rows[:page_size]
         rows = [item for item, _ in all_rows]
-        outcome_rows, states, child_names = await asyncio.gather(
+        outcome_rows, states, child_names, parent_names = await asyncio.gather(
             self._outcomes.list_for_assessments(
                 [assessment.id for assessment in rows if assessment.id is not None]
             ),
             self._chat_states.list_for_children(child_ids),
             self._child_names(linked_child_ids),
+            self._user_names([link.guardian_user_id for link in links]),
         )
         outcomes = {outcome.assessment_id: outcome for outcome in outcome_rows}
         state_by_chat = {(state.child_user_id, state.chat_id): state for state in states}
@@ -196,17 +202,21 @@ class GuardSimpleTelemetryService:
             generated_at=now,
             summary=counts,
             children=tuple(
-                {"id": child_id, "name": child_names.get(child_id, child_id)}
-                for child_id in linked_child_ids
+                {
+                    "id": link.child_user_id,
+                    "name": child_names.get(link.child_user_id, link.child_user_id),
+                    "parent_name": parent_names.get(link.guardian_user_id, link.guardian_user_id),
+                }
+                for link in links
             ),
             analyses=analyses,
             next_cursor=next_cursor,
         )
 
     async def get_analysis(
-        self, *, session_id: str, assessment_id: str
+        self, *, session_id: str, assessment_id: str, admin: bool = False
     ) -> dict[str, Any] | None:
-        authorized = await self._authorized_child_ids(session_id)
+        authorized = await self._authorized_child_ids(session_id, admin=admin)
         if authorized is None:
             return None
         assessment = await self._assessments.get(assessment_id)
@@ -266,9 +276,9 @@ class GuardSimpleTelemetryService:
         }
 
     async def get_context(
-        self, *, session_id: str, assessment_id: str
+        self, *, session_id: str, assessment_id: str, admin: bool = False
     ) -> dict[str, Any] | None:
-        authorized = await self._authorized_child_ids(session_id)
+        authorized = await self._authorized_child_ids(session_id, admin=admin)
         if authorized is None:
             return None
         assessment = await self._assessments.get(assessment_id)
@@ -342,21 +352,31 @@ class GuardSimpleTelemetryService:
             "omitted_message_count": window.omitted_message_count,
         }
 
-    async def _authorized_child_ids(self, session_id: str) -> set[str] | None:
+    async def _authorized_child_ids(
+        self, session_id: str, *, admin: bool = False
+    ) -> set[str] | None:
         resolved = await self._tokens.resolve_session(session_id)
         if resolved is None:
             return None
-        links = await self._links.list_active_for_guardian(resolved.user_id)
+        links = (
+            await self._links.list_all_active()
+            if admin
+            else await self._links.list_active_for_guardian(resolved.user_id)
+        )
         return {link.child_user_id for link in links}
 
-    async def _child_names(self, child_ids: list[str]) -> dict[str, str]:
+    async def _user_names(self, user_ids: list[str]) -> dict[str, str]:
+        unique_ids = list(dict.fromkeys(user_ids))
         infos = await asyncio.gather(
-            *(self._users.get_user_info_by_id(child_id) for child_id in child_ids)
+            *(self._users.get_user_info_by_id(user_id) for user_id in unique_ids)
         )
         return {
-            child_id: (info[1] if info and info[1] else child_id)
-            for child_id, info in zip(child_ids, infos)
+            user_id: (info[1] if info and info[1] else user_id)
+            for user_id, info in zip(unique_ids, infos)
         }
+
+    async def _child_names(self, child_ids: list[str]) -> dict[str, str]:
+        return await self._user_names(child_ids)
 
     async def _action_for(
         self, outcome: ParentAttentionDeliveryOutcome | None

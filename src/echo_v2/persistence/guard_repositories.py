@@ -40,6 +40,8 @@ class GuardianChildLinkRepository(Protocol):
 
     async def list_active_for_guardian(self, guardian_user_id: str) -> list[GuardianChildLink]: ...
 
+    async def list_all_active(self) -> list[GuardianChildLink]: ...
+
     async def get_pending_for_guardian(
         self, guardian_user_id: str
     ) -> list[GuardianChildLink]: ...
@@ -208,6 +210,9 @@ class InMemoryGuardianChildLinkRepository:
             link for link in self._links.values()
             if link.guardian_user_id == guardian_user_id and link.is_guard_enabled
         ]
+
+    async def list_all_active(self) -> list[GuardianChildLink]:
+        return [link for link in self._links.values() if link.is_guard_enabled]
 
     async def get_pending_for_guardian(
         self, guardian_user_id: str
