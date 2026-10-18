@@ -19,6 +19,8 @@ from echo_v2.observability.privacy import correlation_id
 __all__ = [
     "safe_action_inputs",
     "safe_action_output",
+    "safe_baileys_connection_inputs",
+    "safe_baileys_connection_output",
     "safe_bot_send_inputs",
     "safe_bot_send_output",
     "safe_dialog360_http_inputs",
@@ -27,6 +29,8 @@ __all__ = [
     "safe_feedback_handle_output",
     "safe_green_http_inputs",
     "safe_green_http_output",
+    "safe_guard_analysis_inputs",
+    "safe_guard_analysis_output",
     "safe_ingest_green_inputs",
     "safe_ingest_green_output",
     "safe_scheduling_execute_inputs",
@@ -189,7 +193,61 @@ def safe_webhook_output(output: dict[str, Any]) -> dict[str, Any]:
     return {"status": str(output)}
 
 
+def safe_baileys_connection_inputs(inputs: dict[str, Any]) -> dict[str, Any]:
+    """Keep only safe Baileys connection-state fields."""
+    event = inputs.get("event")
+    if event is None:
+        return {}
+    connection_id = getattr(event, "connection_id", None)
+    return {
+        "status": getattr(getattr(event, "status", None), "value", None),
+        "provider_raw_status": getattr(event, "provider_raw_status", None),
+        "connection_id_hash": _hash_if_present(connection_id),
+    }
+
+
+def safe_baileys_connection_output(output: dict[str, Any]) -> dict[str, Any]:
+    """Keep the operational result of a Baileys state event."""
+    return {
+        "status": output.get("status"),
+        "provider_raw_status": output.get("provider_raw_status"),
+        "processed": bool(output.get("processed")),
+    }
+
+
+def safe_guard_analysis_inputs(inputs: dict[str, Any]) -> dict[str, Any]:
+    """Keep safe Guard analyzer dimensions without conversation content."""
+    conversation = inputs.get("conversation")
+    if conversation is None:
+        return {}
+    return {
+        "child_user_id_hash": _hash_if_present(getattr(conversation, "child_user_id", None)),
+        "chat_type": getattr(conversation, "chat_type", None),
+        "message_count": len(getattr(conversation, "messages", ()) or ()),
+    }
+
+
+def safe_guard_analysis_output(output: Any) -> dict[str, Any]:
+    """Keep analyzer outcome dimensions without summaries or evidence IDs."""
+    assessment = getattr(output, "assessment", output)
+    decision = getattr(assessment, "parent_should_know", None)
+    if decision is None:
+        decision_value = "unknown"
+    else:
+        decision_value = str(decision).lower()
+    exposure = getattr(assessment, "significant_exposure", None)
+    if exposure is None:
+        exposure_value = "unknown"
+    else:
+        exposure_value = str(exposure).lower()
+    return {
+        "parent_should_know": decision_value,
+        "significant_exposure": exposure_value,
+    }
+
+
 def safe_ingest_green_inputs(inputs: dict[str, Any]) -> dict[str, Any]:
+
     """Sanitize ChatEventDispatcher.dispatch inputs.
 
     Shows meaningful message metadata (direction, kind, text, phone) for
