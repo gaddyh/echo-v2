@@ -47,9 +47,19 @@ class FakeOperationsService:
         return {"trust": "exact message selection, verified content", "messages": []}
 
 
-def _client(service: FakeOperationsService, tokens: WaitingListTokenService) -> AsyncClient:
+def _client(
+    service: FakeOperationsService,
+    tokens: WaitingListTokenService,
+    admin_user_ids: set[str] | None = None,
+) -> AsyncClient:
     app = FastAPI()
-    app.include_router(build_guard_operations_router(service=service, token_service=tokens))
+    app.include_router(
+        build_guard_operations_router(
+            service=service,
+            token_service=tokens,
+            admin_user_ids=admin_user_ids or set(),
+        )
+    )
     return AsyncClient(transport=ASGITransport(app=app), base_url="https://test")
 
 
@@ -61,7 +71,7 @@ async def test_operations_route_requires_session_and_serializes_activity() -> No
     async with _client(service, tokens) as client:
         unauthorized = await client.get("/api/debug/guard/operations")
         response = await client.get(
-            "/api/debug/guard/operations", cookies={"wls": "valid"}
+            "/api/debug/guard/operations", cookies={"wls": session_id}
         )
         detail = await client.get(
             "/api/debug/guard/operations/assessment-1", cookies={"wls": session_id}
@@ -88,8 +98,23 @@ async def test_operations_route_requires_session_and_serializes_activity() -> No
     assert "Relevant messages for this transition" not in page.text
     assert "function resetFilters" in page.text
     assert "renderChildren(data.children)" in page.text
+    assert "parent_name" in page.text
     assert "cursor=null;" in page.text
     assert "addEventListener('change',resetFilters)" in page.text
+
+
+async def test_admin_session_forwards_admin_scope() -> None:
+    sessions = InMemoryWaitingListSessionRepository()
+    tokens = WaitingListTokenService(sessions)
+    session_id, _ = await tokens.issue(user_id="admin")
+    service = FakeOperationsService()
+    async with _client(service, tokens, {"admin"}) as client:
+        response = await client.get(
+            "/api/debug/guard/operations", cookies={"wls": session_id}
+        )
+
+    assert response.status_code == 200
+    assert service.calls[0]["admin"] is True
 
 
 async def test_operations_route_forwards_all_filters_and_pagination() -> None:
@@ -125,6 +150,7 @@ async def test_operations_route_forwards_all_filters_and_pagination() -> None:
             "date_to": datetime(2026, 10, 16, tzinfo=timezone.utc),
             "limit": 10,
             "cursor": "next-page",
+            "admin": False,
         }
     ]
 

@@ -30,7 +30,10 @@ def _headers() -> dict[str, str]:
 
 
 def build_guard_operations_router(
-    *, service: GuardSimpleTelemetryService, token_service: WaitingListTokenService
+    *,
+    service: GuardSimpleTelemetryService,
+    token_service: WaitingListTokenService,
+    admin_user_ids: set[str] | frozenset[str] = frozenset(),
 ) -> APIRouter:
     router = APIRouter()
 
@@ -72,6 +75,9 @@ def build_guard_operations_router(
     ) -> JSONResponse:
         if wls is None:
             raise HTTPException(status_code=401, detail="no session")
+        resolved = await token_service.resolve_session(wls)
+        if resolved is None:
+            raise HTTPException(status_code=401, detail="session expired")
         activity_kwargs: dict[str, Any] = {
             "session_id": wls,
             "child_user_id": child_id,
@@ -81,6 +87,7 @@ def build_guard_operations_router(
             "date_to": _date_end(date_to),
             "limit": limit,
             "cursor": cursor,
+            "admin": resolved.user_id in admin_user_ids,
         }
         if analyzer is not None:
             activity_kwargs["analyzer"] = analyzer
@@ -101,9 +108,14 @@ def build_guard_operations_router(
     ) -> JSONResponse:
         if wls is None:
             raise HTTPException(status_code=401, detail="no session")
-        if await token_service.resolve_session(wls) is None:
+        resolved = await token_service.resolve_session(wls)
+        if resolved is None:
             raise HTTPException(status_code=401, detail="session expired")
-        result = await service.get_context(session_id=wls, assessment_id=assessment_id)
+        result = await service.get_context(
+            session_id=wls,
+            assessment_id=assessment_id,
+            admin=resolved.user_id in admin_user_ids,
+        )
         if result is None:
             raise HTTPException(status_code=404, detail="analysis not found")
         return JSONResponse(content=jsonable_encoder(result), headers=_headers())
@@ -115,9 +127,14 @@ def build_guard_operations_router(
     ) -> JSONResponse:
         if wls is None:
             raise HTTPException(status_code=401, detail="no session")
-        if await token_service.resolve_session(wls) is None:
+        resolved = await token_service.resolve_session(wls)
+        if resolved is None:
             raise HTTPException(status_code=401, detail="session expired")
-        result = await service.get_analysis(session_id=wls, assessment_id=assessment_id)
+        result = await service.get_analysis(
+            session_id=wls,
+            assessment_id=assessment_id,
+            admin=resolved.user_id in admin_user_ids,
+        )
         if result is None:
             raise HTTPException(status_code=404, detail="analysis not found")
         return JSONResponse(content=jsonable_encoder(result), headers=_headers())

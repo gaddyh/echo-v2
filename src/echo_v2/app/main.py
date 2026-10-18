@@ -781,7 +781,13 @@ def create_app() -> FastAPI:
         messages=repos.messages,
     )
     guard_operations_router = build_guard_operations_router(
-        service=guard_activity_service, token_service=token_service
+        service=guard_activity_service,
+        token_service=token_service,
+        admin_user_ids=frozenset(
+            user_id.strip()
+            for user_id in os.environ.get("GUARD_OPERATIONS_ADMIN_USER_IDS", "").split(",")
+            if user_id.strip()
+        ),
     )
     guard_demo_router = build_guard_demo_router(live_compare=guard_live_compare)
 
