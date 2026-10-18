@@ -24,6 +24,9 @@ import os
 import sys
 
 import httpx
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # --- config ----------------------------------------------------------------
 
@@ -537,14 +540,104 @@ def build_usage_dashboard(section_id: str) -> None:
         create_chart(section_id, chart, i)
 
 
+def build_health_dashboard(section_id: str) -> None:
+    """Operational health dashboard for Baileys and Guard pipeline traces."""
+    charts: list[dict] = [
+        {
+            "title": "Baileys State Events",
+            "description": "Connection lifecycle events, including connected, degraded, and pairing_required",
+            "chart_type": "line",
+            "series": [
+                {
+                    "name": "state events",
+                    "metric_definition": {"type": "count"},
+                    "filter_definition": project_filter(),
+                    "filters": {"filter": 'search("guard.baileys.state.")'},
+                    "group_by_definitions": group_by_name(),
+                }
+            ],
+        },
+        {
+            "title": "Baileys Reauthorization Signals",
+            "description": "pairing_required and logged-out state events that can require a new QR",
+            "chart_type": "bar",
+            "series": [
+                count_series("pairing required", 'eq(name, "guard.baileys.state.pairing_required")'),
+                count_series("connected", 'eq(name, "guard.baileys.state.connected")'),
+                count_series("degraded", 'eq(name, "guard.baileys.state.degraded")'),
+            ],
+        },
+        {
+            "title": "Security Analyzer Volume",
+            "description": "Guard child-level Security analyzer executions",
+            "chart_type": "line",
+            "series": [count_series("security", 'eq(name, "guard.analyzer.security")')],
+        },
+        {
+            "title": "Exposure Analyzer Volume",
+            "description": "Guard group-level Exposure analyzer executions",
+            "chart_type": "line",
+            "series": [count_series("exposure", 'eq(name, "guard.analyzer.exposure")')],
+        },
+        {
+            "title": "Guard Analyzer Latency",
+            "description": "p95 latency for Security and Exposure analyzers",
+            "chart_type": "line",
+            "series": [
+                latency_series("security p95", 0.95, 'eq(name, "guard.analyzer.security")'),
+                latency_series("exposure p95", 0.95, 'eq(name, "guard.analyzer.exposure")'),
+            ],
+        },
+        {
+            "title": "Guard Analyzer Errors",
+            "description": "Analyzer traces that failed or exhausted retries",
+            "chart_type": "bar",
+            "series": [
+                count_series(
+                    "analyzer errors",
+                    'and(eq(status, "error"), search("guard.analyzer."))',
+                )
+            ],
+        },
+        {
+            "title": "Guard and Baileys Errors",
+            "description": "Errors across connection-state and Guard analyzer traces",
+            "chart_type": "line",
+            "series": [
+                count_series(
+                    "errors",
+                    'and(eq(status, "error"), or('
+                    'search("guard.baileys."), search("guard.analyzer.")))',
+                )
+            ],
+        },
+        {
+            "title": "Legacy Pipeline Errors",
+            "description": "WFM traces retained for comparison during the Guard migration",
+            "chart_type": "line",
+            "series": [
+                count_series(
+                    "errors",
+                    'and(eq(status, "error"), or('
+                    'search("wfm.analysis"), search("wfm.scheduling"), '
+                    'search("wfm.http.")))',
+                )
+            ],
+        },
+    ]
+    for i, chart in enumerate(charts):
+        create_chart(section_id, chart, i)
+
+
 # --- main ------------------------------------------------------------------
 
 
 def main() -> None:
     global PROJECT_ID
-    # Parse args: project_id, org_id, and optional --clean flag.
-    args = [a for a in sys.argv[1:] if a != "--clean"]
+    # Parse args: project_id, org_id, and optional --clean/--health-only flags.
+    args = [a for a in sys.argv[1:] if a not in {"--clean", "--health-only"}]
     clean = "--clean" in sys.argv
+    health_only = "--health-only" in sys.argv
     project_id = args[0] if len(args) > 0 else PROJECT_ID
     org_id = args[1] if len(args) > 1 else "default"
     # Override the module-level PROJECT_ID used by project_filter()
@@ -555,6 +648,17 @@ def main() -> None:
     print(f"  API: {API_BASE}")
     if clean:
         print("  --clean: will delete existing charts before recreating")
+    if health_only:
+        print("  --health-only: will build only the health dashboard")
+
+    if health_only:
+        health_title = "echo v2 health"
+        health_id = get_or_create_section(health_title)
+        if clean:
+            clean_section(health_id, health_title)
+        build_health_dashboard(health_id)
+        print(f"Health dashboard: https://smith.langchain.com/o/{org_id}/monitor/dashboards/{health_id}")
+        return
 
     # Overview dashboard (days/weeks)
     overview_title = "echo v2 overview"
@@ -579,6 +683,14 @@ def main() -> None:
         clean_section(quality_id, quality_title)
     build_usage_dashboard(quality_id)
     print(f"Quality dashboard: https://smith.langchain.com/o/{org_id}/monitor/dashboards/{quality_id}")
+
+    # Operational health dashboard.
+    health_title = "echo v2 health"
+    health_id = get_or_create_section(health_title)
+    if clean:
+        clean_section(health_id, health_title)
+    build_health_dashboard(health_id)
+    print(f"Health dashboard: https://smith.langchain.com/o/{org_id}/monitor/dashboards/{health_id}")
     print("  (Monitoring tab in the left sidebar -> Dashboards)")
 
 
