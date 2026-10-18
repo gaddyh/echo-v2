@@ -40,6 +40,7 @@ import asyncio
 import base64
 import hashlib
 import logging
+import os
 import re
 import secrets
 from dataclasses import dataclass
@@ -76,6 +77,17 @@ if TYPE_CHECKING:
 __all__ = ["OnboardingContext", "OnboardingService", "UserRepository"]
 
 _logger = logging.getLogger("echo_v2.services.onboarding")
+
+
+def _phone_log_value(phone: str | None) -> str | None:
+    """Return a searchable phone value only when temporary debug logging is enabled."""
+    if phone is None:
+        return None
+    if os.environ.get("ECHO_DEBUG_PHONE_LOGGING", "false").lower() in (
+        "1", "true", "yes"
+    ):
+        return phone
+    return f"hash:{_safe_correlation_id(phone)}"
 
 
 def _safe_correlation_id(value: str) -> str:
@@ -1226,12 +1238,6 @@ class OnboardingService:
             try:
                 snapshot = await self._provisioner.get_status(conn.ref)
                 account_phone = snapshot.phone_number
-                _logger.info(
-                    "onboarding child phone verification provider=baileys "
-                    "match=%s",
-                    account_phone is not None
-                    and self._normalize_phone(account_phone) == child_phone,
-                )
             except Exception:
                 _logger.exception("onboarding: failed to verify connected child phone")
         else:
@@ -1244,7 +1250,36 @@ class OnboardingService:
                     )
                 except Exception:
                     _logger.exception("onboarding: failed to verify connected child phone")
-        if account_phone is None or self._normalize_phone(account_phone) != child_phone:
+
+        normalized_account_phone = (
+            self._normalize_phone(account_phone) if account_phone is not None else None
+        )
+        if account_phone is None:
+            verification_reason = "provider_phone_missing"
+        elif normalized_account_phone is None:
+            verification_reason = "provider_phone_invalid"
+        elif normalized_account_phone != child_phone:
+            verification_reason = "provider_phone_mismatch"
+        else:
+            verification_reason = "match"
+        _logger.info(
+            "onboarding child phone verification provider=%s reason=%s "
+            "child_phone=%s account_phone=%s",
+            conn.ref.provider,
+            verification_reason,
+            _phone_log_value(child_phone),
+            _phone_log_value(normalized_account_phone),
+        )
+        if verification_reason != "match":
+            _logger.warning(
+                "onboarding child connection rejected provider=%s reason=%s "
+                "child_phone=%s account_phone=%s connection_hash=%s",
+                conn.ref.provider,
+                verification_reason,
+                _phone_log_value(child_phone),
+                _phone_log_value(normalized_account_phone),
+                _safe_correlation_id(conn.ref.provider_connection_id),
+            )
             guardian_phone = await self._lookup_phone(link.guardian_user_id)
             if guardian_phone is not None:
                 await self._bot.send_text(guardian_phone, _PHONE_MISMATCH)
@@ -1629,9 +1664,16 @@ class OnboardingService:
 
     @staticmethod
     def _normalize_phone(phone: str) -> str | None:
-        """Normalize to E.164. Returns None if invalid."""
+        """Normalize a user phone or provider WhatsApp JID to E.164.
+
+        Baileys may report the connected account as a WhatsApp JID such as
+        ``972501234567:0@s.whatsapp.net`` rather than a plain phone number.
+        Strip the device and domain suffix before applying the canonical phone
+        parser used by the users table.
+        """
+        raw_phone = phone.strip().split("@", 1)[0].split(":", 1)[0]
         try:
-            return normalize_phone_e164(phone)
+            return normalize_phone_e164(raw_phone)
         except PhoneParseError:
             return None
 

@@ -491,7 +491,8 @@ async def test_baileys_activation_uses_provider_phone(fakes):
         ProviderCredentials(data=b""), b"hash", ConnectionStatus.CONNECTED,
     )
     provisioner.get_status.return_value = ConnectionStatusSnapshot(
-        status=ConnectionStatus.CONNECTED, phone_number="0546610654"
+        status=ConnectionStatus.CONNECTED,
+        phone_number="972546610654:0@s.whatsapp.net",
     )
     assert await service._activate_child_connection(child) is True
     assert any("Guard פעיל" in text for _phone, text in bot.sent)
