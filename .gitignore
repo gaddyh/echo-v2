@@ -26,6 +26,9 @@ htmlcov/
 # Local env
 .env
 
+# Local admin helpers
+scripts/create_guard_operations_token.py
+
 # Evaluation run results (per-run JSON + Markdown)
 tests/evaluation/results/
 
