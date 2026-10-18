@@ -80,6 +80,23 @@ class FakeDelivery:
     async def reconcile_pending(self, *, limit: int) -> int:
         return self.recovered
 
+    async def mark_evaluation_failed(self, *, assessment_id: str, error: str) -> None:
+        return None
+
+
+class FakeExposureDelivery(FakeDelivery):
+    def __init__(self, recovered: int = 0) -> None:
+        super().__init__(recovered)
+        self.security_assessments = []
+
+    async def cancel_overlapping_security(self, assessment) -> int:
+        return 0
+
+    async def evaluate_committed(self, *, assessment, assessment_id: str, security_assessment=None) -> str:
+        self.assessments.append((assessment, assessment_id))
+        self.security_assessments.append(security_assessment)
+        return "scheduled"
+
 
 async def test_worker_commits_current_version_and_delivers() -> None:
     states = InMemoryGuardChatStateRepository()
@@ -135,6 +152,31 @@ async def test_worker_commits_exposure_after_child_commit_for_same_version() -> 
     assert len(child_assessments.assessments) == 1
     assert len(exposure_assessments.assessments) == 1
     assert exposure_assessments.assessments[0].target_version == 1
+
+
+async def test_worker_delivers_committed_exposure_and_reconciles_both_channels() -> None:
+    states = InMemoryGuardChatStateRepository()
+    await states.upsert_on_message(
+        child_user_id="child", chat_id="group@g.us", observed_at=NOW,
+        next_analysis_at=NOW, pending_since=NOW, connection_id="connection", is_group=True,
+    )
+    child_assessments = InMemoryGuardSimpleAssessmentRepository()
+    exposure_assessments = InMemoryGuardExposureAssessmentRepository(states)
+    security_delivery = FakeDelivery(recovered=1)
+    exposure_delivery = FakeExposureDelivery(recovered=1)
+    worker = GuardSimpleAnalysisWorker(
+        state_repo=states,
+        processor=FakeExposureProcessor(),
+        commit_repo=InMemoryGuardSimpleAssessmentCommitRepository(states, child_assessments),
+        exposure_repo=exposure_assessments,
+        users=FakeUsers(),
+        delivery=security_delivery,
+        exposure_delivery=exposure_delivery,
+    )
+    assert await worker.run_once()
+    assert len(security_delivery.assessments) == 1
+    assert len(exposure_delivery.assessments) == 1
+    assert exposure_delivery.security_assessments[0].parent_should_know is True
 
 
 async def test_worker_handles_exposure_commit_stale() -> None:
