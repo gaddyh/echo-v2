@@ -292,6 +292,55 @@ async def test_guard_landing_page_remains_available():
     assert html.index('id="trust-title"') < html.index('class="fineprint"')
 
 
+async def test_guard_v2_landing_page_uses_security_and_exposure_copy():
+    app, _ = _make_app()
+    async with _client(app) as client:
+        resp = await client.get("/guard-v2")
+    assert resp.status_code == 200
+    html = resp.text
+    assert "לדעת כשמשהו לא בסדר" in html
+    assert "Security" in html
+    assert "Exposure" in html
+    assert "קישור מכשיר וסריקת QR" in html
+    assert "חיבור WhatsApp לא רשמי" in html
+    assert "שירותי AI בענן" in html
+    assert 'src="/og-guard-v3.png"' in html
+    assert "wl-preference" not in html
+    assert "preference" not in html.split("<script>", 1)[1]
+    assert html.index('id="layers"') < html.index('id="how"')
+    assert html.index('id="how"') < html.index('id="join"')
+    assert html.index('id="join"') < html.index('id="trust"')
+
+
+async def test_guard_v2_signup_persists_child_details_without_legacy_signals():
+    app, repo = _make_app()
+    async with _client(app) as client:
+        resp = await client.post(
+            "/api/waitlist",
+            json={
+                "name": "דני כהן",
+                "phone": "0546610653",
+                "children_count": "2",
+                "children_ages": "8, 11",
+            },
+        )
+    assert resp.status_code == 200
+    signup = (await repo.list_all())[0]
+    assert signup.children_count == "2"
+    assert signup.children_ages == "8, 11"
+    assert signup.preference is None
+    assert signup.willingness_to_pay is None
+
+
+async def test_guard_v3_og_image_endpoint_serves_png():
+    app, _ = _make_app()
+    async with _client(app) as client:
+        resp = await client.get("/og-guard-v3.png")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "image/png"
+    assert resp.content[:8] == b"\x89PNG\r\n\x1a\n"
+
+
 async def test_landing_page_has_og_tags_and_counter():
     app, _ = _make_app()
     async with _client(app) as client:

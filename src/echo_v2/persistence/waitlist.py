@@ -39,6 +39,8 @@ class WaitlistSignup:
     created_at: datetime
     willingness_to_pay: str | None = None
     preference: str | None = None
+    children_count: str | None = None
+    children_ages: str | None = None
 
 
 @runtime_checkable
@@ -52,6 +54,8 @@ class WaitlistRepository(Protocol):
         phone_number: str,
         willingness_to_pay: str | None = None,
         preference: str | None = None,
+        children_count: str | None = None,
+        children_ages: str | None = None,
     ) -> bool:
         """Insert a signup. Returns ``True`` if inserted, ``False`` if the
         phone number is already on the list (no-op)."""
@@ -79,6 +83,8 @@ class InMemoryWaitlistRepository:
         phone_number: str,
         willingness_to_pay: str | None = None,
         preference: str | None = None,
+        children_count: str | None = None,
+        children_ages: str | None = None,
     ) -> bool:
         import uuid
 
@@ -91,6 +97,8 @@ class InMemoryWaitlistRepository:
             created_at=datetime.now(timezone.utc),
             willingness_to_pay=willingness_to_pay,
             preference=preference,
+            children_count=children_count,
+            children_ages=children_ages,
         )
         return True
 
@@ -119,6 +127,8 @@ class PostgresWaitlistRepository:
         phone_number: str,
         willingness_to_pay: str | None = None,
         preference: str | None = None,
+        children_count: str | None = None,
+        children_ages: str | None = None,
     ) -> bool:
         async with self._session_factory() as session:
             stmt = (
@@ -128,6 +138,8 @@ class PostgresWaitlistRepository:
                     phone_number=phone_number,
                     willingness_to_pay=willingness_to_pay,
                     preference=preference,
+                    children_count=children_count,
+                    children_ages=children_ages,
                 )
                 .on_conflict_do_nothing(constraint="uq_waitlist_phone")
                 .returning(WaitlistSignupRow.id)
@@ -148,6 +160,8 @@ class PostgresWaitlistRepository:
                     created_at=r.created_at,
                     willingness_to_pay=r.willingness_to_pay,
                     preference=r.preference,
+                    children_count=r.children_count,
+                    children_ages=r.children_ages,
                 )
                 for r in rows
             ]

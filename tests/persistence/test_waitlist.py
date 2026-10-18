@@ -58,6 +58,26 @@ async def test_add_with_preference(waitlist_repo):
     assert signups[0].preference == "box"
 
 
+async def test_add_with_guard_child_details(waitlist_repo):
+    inserted = await waitlist_repo.add(
+        name="דנה",
+        phone_number="+972501234567",
+        children_count="2",
+        children_ages="8, 11",
+    )
+    assert inserted is True
+    signup = (await waitlist_repo.list_all())[0]
+    assert signup.children_count == "2"
+    assert signup.children_ages == "8, 11"
+
+
+async def test_add_without_guard_child_details_defaults_null(waitlist_repo):
+    await waitlist_repo.add(name="דנה", phone_number="+972501234567")
+    signup = (await waitlist_repo.list_all())[0]
+    assert signup.children_count is None
+    assert signup.children_ages is None
+
+
 async def test_add_with_willingness_to_pay(waitlist_repo):
     inserted = await waitlist_repo.add(
         name="דנה",

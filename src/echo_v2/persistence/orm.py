@@ -1836,6 +1836,8 @@ class WaitlistSignupRow(Base):
     phone_number: Mapped[str] = mapped_column(Text, nullable=False)
     willingness_to_pay: Mapped[str | None] = mapped_column(Text, nullable=True)
     preference: Mapped[str | None] = mapped_column(Text, nullable=True)
+    children_count: Mapped[str | None] = mapped_column(Text, nullable=True)
+    children_ages: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True),
         nullable=False,
