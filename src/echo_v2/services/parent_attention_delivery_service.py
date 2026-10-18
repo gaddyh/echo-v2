@@ -42,6 +42,10 @@ class SchedulingCreator(Protocol):
     ) -> tuple[ScheduledAction, bool]: ...
 
 
+class ExposurePrecedence(Protocol):
+    async def cancel_overlapping_security(self, assessment: SafetyAssessment) -> int: ...
+
+
 class ParentAttentionDeliveryService:
     def __init__(
         self,
@@ -53,7 +57,8 @@ class ParentAttentionDeliveryService:
         assessments: GuardSimpleAssessmentRepository,
         actions: ScheduledActionRepository,
         scheduling: SchedulingCreator,
-        template_name: str = "guard_parent_attention_v1",
+        exposure_precedence: ExposurePrecedence | None = None,
+        template_name: str = "guard_security_alert_he",
         template_language: str = "he",
         enabled: bool = False,
     ) -> None:
@@ -64,6 +69,7 @@ class ParentAttentionDeliveryService:
         self._assessments = assessments
         self._actions = actions
         self._scheduling = scheduling
+        self._exposure_precedence = exposure_precedence
         self._template_name = template_name
         self._template_language = template_language
         self._enabled = enabled
@@ -86,6 +92,9 @@ class ParentAttentionDeliveryService:
                 reason="not_parent_attention",
             )
             return "not_parent_attention"
+
+        if self._exposure_precedence is not None:
+            await self._exposure_precedence.cancel_overlapping_security(assessment)
 
         current = await self._delivery.get(
             child_user_id=assessment.child_user_id,
@@ -142,11 +151,7 @@ class ParentAttentionDeliveryService:
                 "template": {
                     "name": self._template_name,
                     "language": self._template_language,
-                    "body_params": [
-                        assessment.child_name,
-                        description,
-                        assessment.chat_name or assessment.chat_id,
-                    ],
+                    "body_params": [assessment.child_name, description],
                 },
             },
         )
