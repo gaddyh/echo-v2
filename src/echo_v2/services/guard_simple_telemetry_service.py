@@ -126,6 +126,7 @@ class GuardSimpleTelemetryService:
                 created_before=end,
                 chat_id=chat_id,
                 decision=normalized_decision,
+                chat_name=chat_name,
                 limit=page_size + 1,
                 before=before,
             )
@@ -162,6 +163,7 @@ class GuardSimpleTelemetryService:
                 created_after=start,
                 created_before=end,
                 chat_id=chat_id,
+                chat_name=chat_name,
                 decision=normalized_decision,
             ) if analyzer != "exposure" else _empty_counts(),
             self._exposure_assessments.count_for_children(
@@ -169,6 +171,7 @@ class GuardSimpleTelemetryService:
                 created_after=start,
                 created_before=end,
                 chat_id=chat_id,
+                chat_name=chat_name,
                 decision=normalized_decision,
             ) if self._exposure_assessments is not None and analyzer != "child" else _empty_counts(),
             self._outcomes.count_sent(

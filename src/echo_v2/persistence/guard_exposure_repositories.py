@@ -23,6 +23,7 @@ class GuardExposureAssessmentRepository(Protocol):
         created_after: datetime | None = None,
         created_before: datetime | None = None,
         chat_id: str | None = None,
+        chat_name: str | None = None,
         decision: str | None = None,
         limit: int = 50,
         before: tuple[datetime, str] | None = None,
@@ -35,6 +36,7 @@ class GuardExposureAssessmentRepository(Protocol):
         created_after: datetime | None = None,
         created_before: datetime | None = None,
         chat_id: str | None = None,
+        chat_name: str | None = None,
         decision: str | None = None,
     ) -> dict[str, int]: ...
 
@@ -73,6 +75,7 @@ class InMemoryGuardExposureAssessmentRepository:
         created_after: datetime | None = None,
         created_before: datetime | None = None,
         chat_id: str | None = None,
+        chat_name: str | None = None,
         decision: str | None = None,
         limit: int = 50,
         before: tuple[datetime, str] | None = None,
@@ -84,6 +87,7 @@ class InMemoryGuardExposureAssessmentRepository:
             and (created_after is None or (item.created_at or datetime.min.replace(tzinfo=timezone.utc)) >= created_after)
             and (created_before is None or (item.created_at or datetime.max.replace(tzinfo=timezone.utc)) < created_before)
             and (chat_id is None or item.chat_id == chat_id)
+            and _matches_chat_name(item.chat_name, chat_name)
             and _matches_decision(item, decision)
         ]
         rows.sort(
@@ -107,6 +111,7 @@ class InMemoryGuardExposureAssessmentRepository:
         created_after: datetime | None = None,
         created_before: datetime | None = None,
         chat_id: str | None = None,
+        chat_name: str | None = None,
         decision: str | None = None,
     ) -> dict[str, int]:
         rows = await self.list_for_children(
@@ -114,6 +119,7 @@ class InMemoryGuardExposureAssessmentRepository:
             created_after=created_after,
             created_before=created_before,
             chat_id=chat_id,
+            chat_name=chat_name,
             decision=decision,
             limit=len(self.assessments),
         )
@@ -138,6 +144,10 @@ class InMemoryGuardExposureAssessmentRepository:
                 return "stale", None
         assessment_id = await self.save(replace(assessment, target_version=target_version))
         return "committed", assessment_id
+
+
+def _matches_chat_name(chat_value: str | None, chat_name: str | None) -> bool:
+    return not chat_name or chat_name.strip().casefold() in (chat_value or "").casefold()
 
 
 def _matches_decision(item: ExposureAssessment, decision: str | None) -> bool:
