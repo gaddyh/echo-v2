@@ -9,9 +9,17 @@ from datetime import datetime, timezone
 import pytest
 
 from echo_v2.domain.guard_exposure import ExposureAssessment, ExposureCategory
+from echo_v2.domain.parent_attention import ParentAttentionOutcomeStatus
+from echo_v2.persistence.guard_exposure_delivery import (
+    ExposureDeliveryOutcome,
+    ExposureDeliveryState,
+)
 from echo_v2.persistence.postgres_guard_exposure import (
     PostgresGuardExposureAssessmentRepository,
     _json_safe,
+)
+from echo_v2.persistence.postgres_guard_exposure_delivery import (
+    PostgresExposureDeliveryRepository,
 )
 from tests.persistence.conftest import insert_user
 
@@ -94,6 +102,64 @@ async def test_exposure_repository_round_trip_and_queries(session_factory, clean
     assert loaded is not None and loaded.category is ExposureCategory.BULLYING
     assert listed[0].id == saved_id
     assert counts == {"analyzed": 3, "yes": 1, "no": 1, "unknown": 1}
+
+
+async def test_exposure_delivery_repository_round_trip_and_overlap(session_factory, clean_db) -> None:
+    child = await insert_user(session_factory, "+972546610692")
+    connection_id = await connection(session_factory, child)
+    exposure_repo = PostgresGuardExposureAssessmentRepository(session_factory)
+    assessment_id = await exposure_repo.save(assessment(child, connection_id, decision=True))
+    repository = PostgresExposureDeliveryRepository(session_factory)
+
+    state = ExposureDeliveryState(
+        child_user_id=child,
+        chat_id="class@g.us",
+        last_scheduled_assessment_id=assessment_id,
+        last_scheduled_evidence_ids=("m1",),
+        updated_at=NOW,
+    )
+    assert await repository.reserve_state(state)
+    assert not await repository.reserve_state(
+        replace(state, last_scheduled_evidence_ids=("m1", "m2"))
+    )
+    loaded_state = await repository.get_state(child_user_id=child, chat_id="class@g.us")
+    assert loaded_state is not None
+    assert loaded_state.last_scheduled_evidence_ids == state.last_scheduled_evidence_ids
+    assert loaded_state.last_scheduled_assessment_id == assessment_id
+    await repository.save_state(replace(state, last_scheduled_evidence_ids=("m2",)))
+
+    outcome = ExposureDeliveryOutcome(
+        assessment_id=assessment_id,
+        child_user_id=child,
+        chat_id="class@g.us",
+        evidence_message_ids=("m1", "m2"),
+        status=ParentAttentionOutcomeStatus.SCHEDULED,
+        reason="scheduled",
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    await repository.save_outcome(outcome)
+    loaded_outcome = await repository.get_outcome(assessment_id)
+    assert loaded_outcome is not None
+    assert loaded_outcome.evidence_message_ids == outcome.evidence_message_ids
+    assert loaded_outcome.status is outcome.status
+    assert loaded_outcome.reason == outcome.reason
+    assert loaded_outcome.updated_at is not None
+    overlapping = await repository.list_overlapping(
+        child_user_id=child,
+        chat_id="class@g.us",
+        evidence_message_ids=("m2",),
+        pending_only=True,
+    )
+    assert len(overlapping) == 1
+    assert overlapping[0].assessment_id == assessment_id
+    reconcilable = await repository.list_reconcilable(limit=10)
+    assert len(reconcilable) == 1
+    assert reconcilable[0].assessment_id == assessment_id
+    await repository.save_outcome(
+        replace(outcome, status=ParentAttentionOutcomeStatus.SENT, reason="sent")
+    )
+    assert await repository.list_reconcilable(limit=10) == []
 
 
 async def test_exposure_commit_requires_current_guard_state(session_factory, clean_db) -> None:

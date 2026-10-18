@@ -58,6 +58,9 @@ from echo_v2.persistence.postgres_guard_alert import PostgresGuardAlertRepositor
 from echo_v2.persistence.postgres_guard_exposure import (
     PostgresGuardExposureAssessmentRepository,
 )
+from echo_v2.persistence.postgres_guard_exposure_delivery import (
+    PostgresExposureDeliveryRepository,
+)
 from echo_v2.persistence.postgres_guard_feedback import PostgresGuardFeedbackRepository
 from echo_v2.persistence.postgres_guard_simple import (
     PostgresGuardSimpleAssessmentRepository,
@@ -115,6 +118,7 @@ class PostgresRepos:
     guard_analysis_telemetry: PostgresGuardAnalysisTelemetryRepository
     guard_simple_assessments: PostgresGuardSimpleAssessmentRepository
     guard_exposure_assessments: PostgresGuardExposureAssessmentRepository
+    guard_exposure_delivery: PostgresExposureDeliveryRepository
     parent_attention_delivery: PostgresParentAttentionDeliveryRepository
     parent_attention_delivery_outcomes: PostgresParentAttentionDeliveryOutcomeRepository
     guard_alerts: PostgresGuardAlertRepository
@@ -170,6 +174,7 @@ def build_postgres_repos(settings: DBSettings) -> PostgresRepos:
     guard_analysis_telemetry = PostgresGuardAnalysisTelemetryRepository(factory)
     guard_simple_assessments = PostgresGuardSimpleAssessmentRepository(factory)
     guard_exposure_assessments = PostgresGuardExposureAssessmentRepository(factory)
+    guard_exposure_delivery = PostgresExposureDeliveryRepository(factory)
     parent_attention_delivery = PostgresParentAttentionDeliveryRepository(factory)
     parent_attention_delivery_outcomes = PostgresParentAttentionDeliveryOutcomeRepository(factory)
     guard_alerts = PostgresGuardAlertRepository(factory)
@@ -212,6 +217,7 @@ def build_postgres_repos(settings: DBSettings) -> PostgresRepos:
         guard_analysis_telemetry=guard_analysis_telemetry,
         guard_simple_assessments=guard_simple_assessments,
         guard_exposure_assessments=guard_exposure_assessments,
+        guard_exposure_delivery=guard_exposure_delivery,
         parent_attention_delivery=parent_attention_delivery,
         parent_attention_delivery_outcomes=parent_attention_delivery_outcomes,
         guard_alerts=guard_alerts,

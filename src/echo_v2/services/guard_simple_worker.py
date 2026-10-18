@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from typing import Protocol
 
 from echo_v2.domain.guard import GuardChatState
+from echo_v2.domain.guard_exposure import ExposureAssessment
 from echo_v2.domain.guard_simple import SafetyAssessment
 from echo_v2.persistence.guard_exposure_repositories import (
     GuardExposureAssessmentRepository,
@@ -36,6 +37,19 @@ class ParentAttentionDelivery(Protocol):
     async def mark_evaluation_failed(self, *, assessment_id: str, error: str) -> None: ...
 
 
+class ExposureDelivery(Protocol):
+    async def cancel_overlapping_security(self, assessment: SafetyAssessment) -> int: ...
+
+    async def evaluate_committed(
+        self, *, assessment: ExposureAssessment, assessment_id: str,
+        security_assessment: SafetyAssessment | None = None,
+    ) -> str: ...
+
+    async def reconcile_pending(self, *, limit: int) -> int: ...
+
+    async def mark_evaluation_failed(self, *, assessment_id: str, error: str) -> None: ...
+
+
 class GuardSimpleAnalysisWorker:
     def __init__(
         self,
@@ -46,6 +60,7 @@ class GuardSimpleAnalysisWorker:
         users: ChildNameResolver,
         exposure_repo: GuardExposureAssessmentRepository | None = None,
         delivery: ParentAttentionDelivery | None = None,
+        exposure_delivery: ExposureDelivery | None = None,
         poll_interval_seconds: float = 10.0,
         excluded_chat_ids: frozenset[str] = frozenset(),
     ) -> None:
@@ -55,11 +70,15 @@ class GuardSimpleAnalysisWorker:
         self._exposure = exposure_repo
         self._users = users
         self._delivery = delivery
+        self._exposure_delivery = exposure_delivery
         self._poll_interval = poll_interval_seconds
         self._excluded = excluded_chat_ids
 
     def set_delivery(self, delivery: ParentAttentionDelivery) -> None:
         self._delivery = delivery
+
+    def set_exposure_delivery(self, delivery: ExposureDelivery) -> None:
+        self._exposure_delivery = delivery
 
     async def run_once(self, *, limit: int = 20) -> bool:
         due = await self._state.list_due(datetime.now(timezone.utc), limit=limit)
@@ -83,6 +102,9 @@ class GuardSimpleAnalysisWorker:
             touched = True
         if self._delivery is not None:
             recovered = await self._delivery.reconcile_pending(limit=limit)
+            touched = touched or recovered > 0
+        if self._exposure_delivery is not None:
+            recovered = await self._exposure_delivery.reconcile_pending(limit=limit)
             touched = touched or recovered > 0
         return touched
 
@@ -133,12 +155,13 @@ class GuardSimpleAnalysisWorker:
             target_version=chat.activity_version,
             assessment=assessment,
         )
+        exposure_id: str | None = None
         if (
             exposure is not None
             and self._exposure is not None
             and status in {"committed", "completed", "deferred"}
         ):
-            exposure_status, _ = await self._exposure.commit_if_current(
+            exposure_status, exposure_id = await self._exposure.commit_if_current(
                 child_user_id=chat.child_user_id,
                 chat_id=chat.chat_id,
                 target_version=chat.activity_version,
@@ -160,6 +183,19 @@ class GuardSimpleAnalysisWorker:
             except Exception as exc:
                 await self._delivery.mark_evaluation_failed(
                     assessment_id=assessment_id,
+                    error=str(exc),
+                )
+                raise
+        if exposure_id and exposure is not None and self._exposure_delivery is not None:
+            try:
+                await self._exposure_delivery.evaluate_committed(
+                    assessment=exposure,
+                    assessment_id=exposure_id,
+                    security_assessment=assessment,
+                )
+            except Exception as exc:
+                await self._exposure_delivery.mark_evaluation_failed(
+                    assessment_id=exposure_id,
                     error=str(exc),
                 )
                 raise

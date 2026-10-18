@@ -183,7 +183,7 @@ async def test_sends_once_then_only_on_new_evidence_without_url_suffix() -> None
     ) == "scheduled"
     assert len(scheduling.actions) == 2
     template = scheduling.actions[0].payload["template"]
-    assert template["body_params"] == ["Shay", "Classmates repeatedly mock Shay.", "Class"]
+    assert template["body_params"] == ["Shay", "Classmates repeatedly mock Shay."]
     assert "url_suffix" not in template
     assert (await outcomes.get("a2")).reason == "already_notified"
     assert await delivery.evaluate_committed(

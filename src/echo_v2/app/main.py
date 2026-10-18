@@ -528,6 +528,7 @@ def create_app() -> FastAPI:
     )
 
     from echo_v2.services.guard_alert_service import GuardAlertService
+    from echo_v2.services.guard_exposure_delivery_service import ExposureDeliveryService
     from echo_v2.services.parent_attention_delivery_service import (
         ParentAttentionDeliveryService,
     )
@@ -547,6 +548,20 @@ def create_app() -> FastAPI:
         notify_ttl_seconds=int(os.environ.get("GUARD_ALERT_NOTIFY_TTL_SECONDS", "3600")),
         urgent_ttl_seconds=int(os.environ.get("GUARD_ALERT_URGENT_TTL_SECONDS", "900")),
     )
+    exposure_delivery = ExposureDeliveryService(
+        links=repos.guardian_child_links,
+        users=user_repo,
+        security_assessments=repos.guard_simple_assessments,
+        delivery=repos.guard_exposure_delivery,
+        actions=repos.scheduled_actions,
+        scheduling=scheduling_service,
+        template_name=os.environ.get(
+            "GUARD_EXPOSURE_ALERT_TEMPLATE_NAME", "guard_exposure_alert_he"
+        ),
+        template_language=os.environ.get("GUARD_EXPOSURE_ALERT_TEMPLATE_LANGUAGE", "he"),
+        enabled=os.environ.get("GUARD_EXPOSURE_DELIVERY_ENABLED", "false").lower()
+        in ("1", "true", "yes"),
+    )
     parent_attention_delivery = ParentAttentionDeliveryService(
         links=repos.guardian_child_links,
         users=user_repo,
@@ -555,18 +570,24 @@ def create_app() -> FastAPI:
         assessments=repos.guard_simple_assessments,
         actions=repos.scheduled_actions,
         scheduling=scheduling_service,
+        exposure_precedence=exposure_delivery,
         template_name=os.environ.get(
-            "GUARD_PARENT_ATTENTION_TEMPLATE_NAME", "guard_parent_attention_v1"
+            "GUARD_SECURITY_ALERT_TEMPLATE_NAME", "guard_security_alert_he"
         ),
-        template_language=os.environ.get("GUARD_PARENT_ATTENTION_TEMPLATE_LANGUAGE", "he"),
+        template_language=os.environ.get("GUARD_SECURITY_ALERT_TEMPLATE_LANGUAGE", "he"),
         enabled=os.environ.get("GUARD_SIMPLE_DELIVERY_ENABLED", "false").lower()
         in ("1", "true", "yes"),
     )
     simple_worker.set_delivery(parent_attention_delivery)
+    simple_worker.set_exposure_delivery(exposure_delivery)
+
+    async def _guard_send_validator(payload: dict[str, object]) -> bool:
+        if payload.get("kind") == "guard_exposure_alert":
+            return await exposure_delivery.validate_before_send(payload)
+        return await parent_attention_delivery.validate_before_send(payload)
+
     if guard_simple_enabled:
-        scheduling_service.set_guard_send_validator(
-            parent_attention_delivery.validate_before_send
-        )
+        scheduling_service.set_guard_send_validator(_guard_send_validator)
     else:
         guard_worker.set_alert_processor(guard_alert_service)
         scheduling_service.set_guard_send_validator(guard_alert_service.validate_before_send)
