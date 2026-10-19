@@ -125,6 +125,7 @@ _CONNECT_BUTTON = {"id": "onboarding:connect", "title": "חבר אותי"}
 
 # Button sent with _READY_FOR_QR (fetch QR after background creation).
 _SHOW_QR_BUTTON = {"id": "onboarding:show_qr", "title": "הצג QR"}
+_GUARD_QR_BUTTON_BODY = "ההוראות מוכנות. כשתהיו ליד שני הטלפונים, לחצו כדי להציג את ה־QR."
 
 # Onboarding instructions sent to the user (OTP fallback path).
 _OTP_INSTRUCTIONS = (
@@ -416,11 +417,18 @@ class OnboardingService:
             link = await self._pending_for_guardian(user_id)
             if link is None:
                 await self._bot.send_text(normalized, _PARENT_CONTACT_PROMPT)
-            else:
+            elif link.guardian_authorized_at is None:
                 await self._bot.send_buttons(
                     normalized,
                     body_text=_GUARD_AUTHORIZATION_BODY,
                     buttons=[_GUARD_AUTH_BUTTON],
+                )
+            else:
+                await self._send_guard_scan_instructions(link, normalized)
+                await self._bot.send_buttons(
+                    normalized,
+                    body_text=_GUARD_QR_BUTTON_BODY,
+                    buttons=[_SHOW_QR_BUTTON],
                 )
         elif status == "pending" and name is None:
             await self._bot.send_text(normalized, _NAME_PROMPT)
@@ -505,7 +513,7 @@ class OnboardingService:
         )
 
     async def handle_onboarding_authorize(self, phone: str) -> None:
-        """Record guardian authorization and expose the child Connect action."""
+        """Record guardian authorization and expose the QR action."""
         if self._guardian_child_links is None:
             return
         ctx = await self.resolve_context(phone)
@@ -515,13 +523,18 @@ class OnboardingService:
         if link is None:
             await self._bot.send_text(ctx.phone, _PARENT_CONTACT_PROMPT)
             return
-        await self._guardian_child_links.authorize_guardian(
-            guardian_user_id=ctx.user_id,
-            child_user_id=link.child_user_id,
-            now=datetime.now(timezone.utc),
-        )
+        if link.guardian_authorized_at is None:
+            await self._guardian_child_links.authorize_guardian(
+                guardian_user_id=ctx.user_id,
+                child_user_id=link.child_user_id,
+                now=datetime.now(timezone.utc),
+            )
         await self._send_guard_scan_instructions(link, ctx.phone)
-        await self.start_pairing(link.child_user_id, ctx.phone)
+        await self._bot.send_buttons(
+            ctx.phone,
+            body_text=_GUARD_QR_BUTTON_BODY,
+            buttons=[_SHOW_QR_BUTTON],
+        )
 
     # --- Unknown user entry (consent / intro) --------------------------------
 
@@ -704,16 +717,24 @@ class OnboardingService:
     # --- Name response → store name + start provisioning --------------------
 
     async def handle_name_response(self, phone: str, name: str) -> bool:
-        """Handle a text message from a pending user who hasn't set a name.
+        """Handle a text message from a user in a name-collection step.
 
-        If the user is ``pending`` and has no name, treat the message as
-        their name, store it, and start provisioning in the background.
+        Guard guardians use ``awaiting_guardian_name`` and become active after
+        their name is stored; legacy users use ``pending`` and continue to the
+        existing pairing flow.
 
         Returns ``True`` if this was handled as a name response.
         """
         ctx = await self.resolve_context(phone)
         if ctx is None:
             return False
+        if name.strip() == _GUARD_JOIN_PHRASE:
+            if ctx.onboarding_status == "awaiting_guardian_name":
+                await self._bot.send_text(ctx.phone, _GUARD_NAME_PROMPT)
+                return True
+            if ctx.onboarding_status == "active" and self._guardian_child_links is not None:
+                await self._start_guardian_onboarding(ctx.phone)
+                return True
         if ctx.onboarding_status == "awaiting_guardian_name":
             clean_name = name.strip()[:50]
             if not clean_name:
@@ -1495,7 +1516,11 @@ class OnboardingService:
                         await self._bot.send_text(parent_ctx.phone, _GUARD_AUTHORIZATION_BODY)
                         return
                     await self._send_guard_scan_instructions(link, parent_ctx.phone)
-                    await self.start_pairing(link.child_user_id, parent_ctx.phone)
+                    await self._bot.send_buttons(
+                        parent_ctx.phone,
+                        body_text=_GUARD_QR_BUTTON_BODY,
+                        buttons=[_SHOW_QR_BUTTON],
+                    )
                     return
                 await self._bot.send_text(parent_ctx.phone, _PARENT_CONTACT_PROMPT)
                 return

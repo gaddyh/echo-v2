@@ -52,10 +52,12 @@ class FakeBot:
     sent: list[tuple[str, str]] = field(default_factory=list)
     sent_images: list[tuple[str, bytes, str | None]] = field(default_factory=list)
     sent_buttons: list[tuple[str, str, list[dict]]] = field(default_factory=list)
+    events: list[tuple[str, str]] = field(default_factory=list)
     send_image_should_fail: bool = False
 
     async def send_text(self, user_phone: str, text: str) -> None:
         self.sent.append((user_phone, text))
+        self.events.append(("text", text))
 
     async def send_image(
         self,
@@ -68,6 +70,7 @@ class FakeBot:
         if self.send_image_should_fail:
             raise RuntimeError("image boom")
         self.sent_images.append((user_phone, image_bytes, caption))
+        self.events.append(("image", caption or ""))
         return "fake-image-msg-id"
 
     async def send_template(
@@ -88,6 +91,7 @@ class FakeBot:
         buttons: list[dict],
     ) -> str:
         self.sent_buttons.append((user_phone, body_text, buttons))
+        self.events.append(("buttons", body_text))
         return "fake-buttons-msg-id"
 
 
@@ -270,7 +274,21 @@ async def test_guard_click_to_chat_persists_name_then_adds_child(fakes):
     assert parent[1] == "awaiting_guardian_name"
     assert any("איך קוראים לך" in text for _phone, text in bot.sent)
 
-    assert await service.handle_name_response(parent_phone, "דנה") is True
+    assert await service.handle_name_response(parent_phone, "היי, אני רוצה להצטרף לאקו גארד") is True
+    repeated = await user_repo.get_by_phone(parent_phone)
+    assert repeated is not None and repeated[1] == "awaiting_guardian_name" and repeated[2] is None
+
+    restarted = OnboardingService(
+        bot=bot,
+        user_repo=user_repo,
+        connection_repo=connection_repo,
+        provisioner=service._provisioner,
+        green_client=green_client,
+        webhook_base_url="https://echo.example.com",
+        guardian_child_links=links,
+    )
+    assert await restarted.handle_name_response(parent_phone, "דנה") is True
+    assert await service.handle_name_response(parent_phone, "דנה") is False
     parent = await user_repo.get_by_phone(parent_phone)
     assert parent is not None and parent[1] == "active" and parent[2] == "דנה"
     assert any("איש קשר" in text for _phone, text in bot.sent)
@@ -286,7 +304,8 @@ async def test_guard_click_to_chat_persists_name_then_adds_child(fakes):
         if "מכשירים מקושרים" in text
     )
     assert instruction_index < len(bot.sent)
-    assert any("מכין חיבור חדש" in text for _phone, text in bot.sent)
+    assert any("הצג QR" in title for _phone, _body, buttons in bot.sent_buttons for title in [buttons[0]["title"]])
+    assert not bot.sent_images
 
 
 async def test_existing_guardian_click_to_chat_does_not_restart_or_rename(fakes):
@@ -360,9 +379,15 @@ async def test_parent_registers_child_authorizes_and_activates(fakes):
     pending = await links.get_pending_for_guardian(parent_id)
     assert pending[0].guardian_authorized_at is not None
 
+    await service.handle_parent_event(BotEvent(
+        event_id="join-after-auth", user_phone=parent_phone,
+        type=BotEventType.TEXT, text="היי, אני רוצה להצטרף לאקו גארד",
+    ))
+    assert bot.sent_buttons[-1][2] == [{"id": "onboarding:show_qr", "title": "הצג QR"}]
+
     green_client.set_state_sequence(["notAuthorized", "authorized"])
     green_client.account_phone = child_phone
-    await service.handle_onboarding_connect(parent_phone)
+    await service.handle_onboarding_show_qr(parent_phone)
     await asyncio.sleep(0.1)
     await service.handle_onboarding_show_qr(parent_phone)
     await asyncio.sleep(0.2)
@@ -373,6 +398,13 @@ async def test_parent_registers_child_authorizes_and_activates(fakes):
         guardian_user_id=parent_id, child_user_id=child[0]
     )
     assert active is not None
+    assert bot.sent_images
+    instruction_event = next(
+        index for index, (_kind, text) in enumerate(bot.events)
+        if "מכשירים מקושרים" in text
+    )
+    qr_event = next(index for index, (kind, _text) in enumerate(bot.events) if kind == "image")
+    assert instruction_event < qr_event
     assert any("Guard פעיל" in text for _phone, text in bot.sent)
 
 
