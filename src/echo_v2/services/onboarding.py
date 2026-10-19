@@ -1231,7 +1231,10 @@ class OnboardingService:
             return False
         conn = await self._connection_repo.get_by_user(child_user_id)
         child_phone = await self._lookup_phone(child_user_id)
-        if conn is None or child_phone is None:
+        normalized_child_phone = (
+            self._normalize_phone(child_phone) if child_phone is not None else None
+        )
+        if conn is None or normalized_child_phone is None:
             return False
         account_phone: str | None = None
         if conn.ref.provider == "baileys":
@@ -1258,7 +1261,7 @@ class OnboardingService:
             verification_reason = "provider_phone_missing"
         elif normalized_account_phone is None:
             verification_reason = "provider_phone_invalid"
-        elif normalized_account_phone != child_phone:
+        elif normalized_account_phone != normalized_child_phone:
             verification_reason = "provider_phone_mismatch"
         else:
             verification_reason = "match"
@@ -1267,7 +1270,7 @@ class OnboardingService:
             "child_phone=%s account_phone=%s",
             conn.ref.provider,
             verification_reason,
-            _phone_log_value(child_phone),
+            _phone_log_value(normalized_child_phone),
             _phone_log_value(normalized_account_phone),
         )
         if verification_reason != "match":
@@ -1276,7 +1279,7 @@ class OnboardingService:
                 "child_phone=%s account_phone=%s connection_hash=%s",
                 conn.ref.provider,
                 verification_reason,
-                _phone_log_value(child_phone),
+                _phone_log_value(normalized_child_phone),
                 _phone_log_value(normalized_account_phone),
                 _safe_correlation_id(conn.ref.provider_connection_id),
             )
@@ -1291,8 +1294,10 @@ class OnboardingService:
         )
         guardian_phone = await self._lookup_phone(link.guardian_user_id)
         if guardian_phone is not None:
-            child = await self._user_repo.get_by_phone(child_phone)
-            child_name = child[2] if child and child[2] else child_phone
+            child = await self._user_repo.get_by_phone(normalized_child_phone)
+            child_name = (
+                child[2] if child and child[2] else normalized_child_phone
+            )
             await self._bot.send_text(
                 guardian_phone, _PARENT_SUCCESS.format(name=child_name)
             )

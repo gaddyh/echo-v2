@@ -52,7 +52,11 @@ class BaileysProvisioner:
         data = await self._client.get_status(connection.provider_connection_id)
         raw_status = data.get("provider_raw_status") or data.get("status")
         status = _status(data.get("status"))
-        raw_phone = data.get("phone_number") or data.get("phone")
+        raw_phone = (
+            data.get("account_phone_number")
+            or data.get("phone_number")
+            or data.get("phone")
+        )
         return ConnectionStatusSnapshot(
             status=status,
             provider_raw_status=str(raw_status) if raw_status is not None else None,

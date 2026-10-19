@@ -71,7 +71,7 @@ async def test_status_and_qr_are_normalized():
             return httpx.Response(200, json={
                 "status": "connected",
                 "provider_raw_status": "open",
-                "phone_number": "0546610654",
+                "account_phone_number": "0546610654",
             })
         return httpx.Response(200, json={"outcome": "qr_ready", "image_base64": "abc"})
 
