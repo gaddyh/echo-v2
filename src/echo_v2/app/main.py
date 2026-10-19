@@ -719,6 +719,9 @@ def create_app() -> FastAPI:
     from echo_v2.app.guard_parent_alert_routes import build_guard_parent_alert_router
     from echo_v2.app.waiting_list_routes import build_waiting_list_router
     from echo_v2.services.debug_analysis_service import DebugAnalysisService
+    from echo_v2.services.guard_admin_dashboard_service import (
+        GuardAdminDashboardService,
+    )
     from echo_v2.services.guard_parent_alert_service import GuardParentAlertService
     from echo_v2.services.guard_review_service import GuardReviewService
     from echo_v2.services.guard_simple_telemetry_service import (
@@ -780,14 +783,21 @@ def create_app() -> FastAPI:
         actions=repos.scheduled_actions,
         messages=repos.messages,
     )
+    admin_user_ids = frozenset(
+        user_id.strip()
+        for user_id in os.environ.get("GUARD_OPERATIONS_ADMIN_USER_IDS", "").split(",")
+        if user_id.strip()
+    )
+    guard_admin_dashboard_service = GuardAdminDashboardService(
+        connections=repos.connections,
+        events=repos.baileys_events,
+        provisioner=provisioner if whatsapp_provider == "baileys" else None,
+    )
     guard_operations_router = build_guard_operations_router(
         service=guard_activity_service,
         token_service=token_service,
-        admin_user_ids=frozenset(
-            user_id.strip()
-            for user_id in os.environ.get("GUARD_OPERATIONS_ADMIN_USER_IDS", "").split(",")
-            if user_id.strip()
-        ),
+        admin_user_ids=admin_user_ids,
+        admin_dashboard_service=guard_admin_dashboard_service,
     )
     guard_demo_router = build_guard_demo_router(live_compare=guard_live_compare)
 

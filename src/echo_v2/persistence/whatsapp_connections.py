@@ -72,6 +72,8 @@ class WhatsAppConnectionRepository:
     async def save(self, conn: StoredConnection) -> None: ...
     async def get(self, ref: ConnectionRef) -> StoredConnection | None: ...
     async def get_by_user(self, user_id: str) -> StoredConnection | None: ...
+    async def list_for_provider(self, provider: str) -> list[StoredConnection]:
+        raise NotImplementedError
     async def get_by_provider_id(
         self,
         provider: str,
@@ -115,6 +117,9 @@ class InMemoryWhatsAppConnectionRepository(WhatsAppConnectionRepository):
     async def get_by_user(self, user_id: str) -> StoredConnection | None:
         key = self._by_user.get(user_id)
         return self._by_ref.get(key) if key else None
+
+    async def list_for_provider(self, provider: str) -> list[StoredConnection]:
+        return [conn for conn in self._by_ref.values() if conn.ref.provider == provider]
 
     async def get_by_provider_id(
         self,

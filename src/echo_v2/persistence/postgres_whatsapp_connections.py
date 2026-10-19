@@ -134,6 +134,14 @@ class PostgresWhatsAppConnectionRepository(WhatsAppConnectionRepository):
             row = (await session.execute(stmt)).scalar_one_or_none()
             return self._row_to_domain(row) if row else None
 
+    async def list_for_provider(self, provider: str) -> list[StoredConnection]:
+        async with self._session() as session:
+            stmt = select(WhatsAppConnectionRow).where(
+                WhatsAppConnectionRow.provider == provider
+            ).order_by(WhatsAppConnectionRow.updated_at.desc())
+            rows = (await session.execute(stmt)).scalars().all()
+            return [self._row_to_domain(row) for row in rows]
+
     async def get_by_provider_id(
         self,
         provider: str,
