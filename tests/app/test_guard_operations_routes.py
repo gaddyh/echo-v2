@@ -47,10 +47,16 @@ class FakeOperationsService:
         return {"trust": "exact message selection, verified content", "messages": []}
 
 
+class FakeAdminDashboardService:
+    async def snapshot(self):
+        return {"counts": {"total": 0}, "connections": [], "alerts": []}
+
+
 def _client(
     service: FakeOperationsService,
     tokens: WaitingListTokenService,
     admin_user_ids: set[str] | None = None,
+    admin_dashboard_service: FakeAdminDashboardService | None = None,
 ) -> AsyncClient:
     app = FastAPI()
     app.include_router(
@@ -58,6 +64,7 @@ def _client(
             service=service,
             token_service=tokens,
             admin_user_ids=admin_user_ids or set(),
+            admin_dashboard_service=admin_dashboard_service,
         )
     )
     return AsyncClient(transport=ASGITransport(app=app), base_url="https://test")
@@ -180,6 +187,41 @@ async def test_operations_detail_and_context_reject_expired_session() -> None:
         )
     assert detail.status_code == 401
     assert context.status_code == 401
+
+
+async def test_admin_route_requires_admin_session_and_returns_snapshot() -> None:
+    sessions = InMemoryWaitingListSessionRepository()
+    tokens = WaitingListTokenService(sessions)
+    session_id, _ = await tokens.issue(user_id="admin")
+    service = FakeOperationsService()
+    dashboard = FakeAdminDashboardService()
+    async with _client(service, tokens, {"admin"}, dashboard) as client:
+        no_cookie = await client.get("/api/debug/guard/admin")
+        response = await client.get(
+            "/api/debug/guard/admin", cookies={"wls": session_id}
+        )
+
+    assert no_cookie.status_code == 401
+    assert response.status_code == 200
+    assert response.json()["counts"]["total"] == 0
+
+
+async def test_admin_route_rejects_non_admin_and_missing_service() -> None:
+    sessions = InMemoryWaitingListSessionRepository()
+    tokens = WaitingListTokenService(sessions)
+    session_id, _ = await tokens.issue(user_id="guardian")
+    service = FakeOperationsService()
+    async with _client(service, tokens, {"admin"}, FakeAdminDashboardService()) as client:
+        response = await client.get(
+            "/api/debug/guard/admin", cookies={"wls": session_id}
+        )
+    async with _client(service, tokens, {"admin"}) as client:
+        missing = await client.get(
+            "/api/debug/guard/admin", cookies={"wls": session_id}
+        )
+
+    assert response.status_code == 401
+    assert missing.status_code == 401
 
 
 async def test_operations_token_exchange_rejects_expired_token() -> None:

@@ -127,6 +127,10 @@ def build_router(
                 if handled:
                     return
 
+            handle_parent_event = getattr(onboarding_service, "handle_parent_event", None)
+            if handle_parent_event is not None and await handle_parent_event(event):
+                return
+
             is_onboarding = await onboarding_service.is_onboarding(event.user_phone)
             if is_onboarding:
                 # Handle name response (after connection).

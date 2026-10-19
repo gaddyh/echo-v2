@@ -126,7 +126,7 @@ class UserRow(Base):
         ),
         CheckConstraint(
             "onboarding_status IS NULL "
-            "OR onboarding_status IN ('pending','failed','active')",
+            "OR onboarding_status IN ('pending','failed','active','awaiting_guardian_name')",
             name="users_onboarding_status_check",
         ),
     )
