@@ -10,7 +10,9 @@ from fastapi import APIRouter, Cookie, HTTPException
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
+from echo_v2.app.guard_admin_dashboard_page import ADMIN_DASHBOARD_PAGE
 from echo_v2.app.guard_operations_page import GUARD_ACTIVITY_PAGE
+from echo_v2.services.guard_admin_dashboard_service import GuardAdminDashboardService
 from echo_v2.services.guard_simple_telemetry_service import GuardSimpleTelemetryService
 from echo_v2.services.waiting_list_token_service import WaitingListTokenService
 
@@ -34,6 +36,7 @@ def build_guard_operations_router(
     service: GuardSimpleTelemetryService,
     token_service: WaitingListTokenService,
     admin_user_ids: set[str] | frozenset[str] = frozenset(),
+    admin_dashboard_service: GuardAdminDashboardService | None = None,
 ) -> APIRouter:
     router = APIRouter()
 
@@ -59,6 +62,24 @@ def build_guard_operations_router(
     @router.get("/debug/guard/operations", response_class=HTMLResponse)
     async def operations_page() -> HTMLResponse:
         return HTMLResponse(content=GUARD_ACTIVITY_PAGE, headers=_headers())
+
+    @router.get("/debug/guard/admin", response_class=HTMLResponse)
+    async def admin_page() -> HTMLResponse:
+        return HTMLResponse(content=ADMIN_DASHBOARD_PAGE, headers=_headers())
+
+    @router.get("/api/debug/guard/admin")
+    async def admin_data(
+        wls: str | None = Cookie(default=None, alias=_SESSION_COOKIE),
+    ) -> JSONResponse:
+        if wls is None or admin_dashboard_service is None:
+            raise HTTPException(status_code=401, detail="admin access required")
+        resolved = await token_service.resolve_session(wls)
+        if resolved is None or resolved.user_id not in admin_user_ids:
+            raise HTTPException(status_code=401, detail="admin access required")
+        return JSONResponse(
+            content=jsonable_encoder(await admin_dashboard_service.snapshot()),
+            headers=_headers(),
+        )
 
     @router.get("/api/debug/guard/operations")
     async def operations_data(

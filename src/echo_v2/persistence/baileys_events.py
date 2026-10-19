@@ -126,6 +126,34 @@ class BaileysEventRepository:
                     claimed.append(ClaimedBaileysEvent(event=event, worker_id=worker_id))
                 return claimed
 
+    async def recent_connection_events(self, *, limit: int = 100) -> list[dict[str, Any]]:
+        async with self._session_factory() as session:
+            result = await session.execute(
+                text("""
+                    SELECT event_id, connection_id, payload, received_at, processed_at
+                    FROM whatsapp_connector.event_inbox
+                    WHERE event_type = 'connection_state'
+                    ORDER BY received_at DESC
+                    LIMIT :limit
+                """),
+                {"limit": max(1, min(limit, 500))},
+            )
+            return [dict(row) for row in result.mappings().all()]
+
+    async def recent_processing_failures(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        async with self._session_factory() as session:
+            result = await session.execute(
+                text("""
+                    SELECT event_id, status, attempt_count, last_error, updated_at
+                    FROM baileys_connector_event_processing
+                    WHERE status = 'failed' OR last_error IS NOT NULL
+                    ORDER BY updated_at DESC
+                    LIMIT :limit
+                """),
+                {"limit": max(1, min(limit, 200))},
+            )
+            return [dict(row) for row in result.mappings().all()]
+
     async def resolve_message_user(self, event: ProviderMessageEvent) -> tuple[str, str] | None:
         async with self._session_factory() as session:
             result = await session.execute(
