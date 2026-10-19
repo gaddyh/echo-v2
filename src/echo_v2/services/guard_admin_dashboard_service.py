@@ -70,6 +70,7 @@ class GuardAdminDashboardService:
         events = await self._events.recent_connection_events(limit=100)
         errors = await self._events.recent_processing_failures(limit=50)
         alerts = [
+<<<<<<< HEAD
             {"kind": "security", **_assessment_view(item)}
             for item in security
             if item.parent_should_know is True
@@ -77,6 +78,10 @@ class GuardAdminDashboardService:
             {"kind": "exposure", **_assessment_view(item)}
             for item in exposure
             if item.significant_exposure is True
+=======
+            *[{"kind": "security", **_assessment_view(item)} for item in security],
+            *[{"kind": "exposure", **_assessment_view(item)} for item in exposure],
+>>>>>>> origin/main
         ]
         alerts.sort(key=lambda item: item.get("created_at") or "", reverse=True)
         counts = {
