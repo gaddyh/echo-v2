@@ -792,6 +792,9 @@ def create_app() -> FastAPI:
         connections=repos.connections,
         events=repos.baileys_events,
         provisioner=provisioner if whatsapp_provider == "baileys" else None,
+        users=user_repo,
+        security=repos.guard_simple_assessments,
+        exposure=repos.guard_exposure_assessments,
     )
     guard_operations_router = build_guard_operations_router(
         service=guard_activity_service,
