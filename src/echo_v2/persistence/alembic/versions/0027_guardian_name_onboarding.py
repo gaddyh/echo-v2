@@ -1,14 +1,14 @@
 """Add a persistent state for the Guard guardian-name step.
 
-Revision ID: 0027_guardian_name_onboarding
-Revises: 0026_chat_not_interested_clicks
+Revision ID: 0053_guardian_name_onboarding
+Revises: 0052_waitlist_guard_children
 Create Date: 2026-10-20
 """
 
 from alembic import op
 
-revision = "0027_guardian_name_onboarding"
-down_revision = "0026_chat_not_interested_clicks"
+revision = "0053_guardian_name_onboarding"
+down_revision = "0052_waitlist_guard_children"
 branch_labels = None
 depends_on = None
 

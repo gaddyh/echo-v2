@@ -73,8 +73,8 @@ def _docker_daemon_running() -> bool:
 def _skip_or_fail(reason: str) -> None:
     """Skip locally, fail in CI."""
     if _IS_CI:
-        pytest.fail(f"Postgres persistence tests cannot run in CI: {reason}", allow_module_level=True)
-    pytest.skip(reason, allow_module_level=True)
+        pytest.fail(f"Postgres persistence tests cannot run in CI: {reason}")
+    pytest.skip(reason)
 
 
 # --- session-scoped container + engine --------------------------------------
