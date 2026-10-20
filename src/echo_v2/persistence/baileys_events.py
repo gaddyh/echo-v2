@@ -270,8 +270,22 @@ class BaileysEventRepository:
                         UPDATE whatsapp_connections
                            SET connection_status = :status,
                                provider_raw_status = :raw_status,
-                               updated_at = :updated_at,
-                               last_authenticated_at = CASE
+                               updated_at = :updated_at
+                         WHERE id = :id
+                        """
+                    ),
+                    {
+                        "status": event.status.value,
+                        "raw_status": event.provider_raw_status,
+                        "updated_at": now,
+                        "id": connection["id"],
+                    },
+                )
+                await session.execute(
+                    text(
+                        """
+                        UPDATE whatsapp_connections
+                           SET last_authenticated_at = CASE
                                    WHEN :status = 'connected' THEN :updated_at
                                    ELSE last_authenticated_at
                                END,
@@ -284,7 +298,6 @@ class BaileysEventRepository:
                     ),
                     {
                         "status": event.status.value,
-                        "raw_status": event.provider_raw_status,
                         "updated_at": now,
                         "id": connection["id"],
                     },
