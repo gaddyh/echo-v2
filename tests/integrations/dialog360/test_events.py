@@ -55,6 +55,19 @@ def test_parse_template_quick_reply_as_text():
     assert event.text == "חיבור מחדש"
 
 
+def test_parse_template_quick_reply_payload():
+    adapter = Dialog360EventAdapter()
+    payload = {"entry": [{"changes": [{"value": {"messages": [{
+        "id": "wamid.PAYLOAD", "from": "972500000001", "type": "button",
+        "button": {"text": "חיבור מחדש", "payload": "guard:reconnect:req-1"},
+    }]}}]}]}
+    event = adapter.parse(payload)
+    assert event is not None
+    assert event.type is BotEventType.BUTTON_REPLY
+    assert event.button_id == "guard:reconnect:req-1"
+    assert event.button_payload == "guard:reconnect:req-1"
+
+
 def test_parse_contact_message():
     adapter = Dialog360EventAdapter()
     payload = {

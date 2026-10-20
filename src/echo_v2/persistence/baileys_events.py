@@ -508,6 +508,7 @@ class BaileysEventRepository:
                     UPDATE guardian_child_links
                        SET status = 'active', safety_enabled_at = now(), updated_at = now()
                      WHERE child_user_id = :child_user_id
+                       AND status = 'active'
                        AND guardian_authorized_at IS NOT NULL
                     """
                 ),
