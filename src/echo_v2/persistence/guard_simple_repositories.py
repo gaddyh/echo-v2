@@ -8,10 +8,6 @@ from typing import Protocol, runtime_checkable
 
 from echo_v2.domain.guard import GuardChatState
 from echo_v2.domain.guard_simple import SafetyAssessment
-from echo_v2.domain.parent_attention import (
-    ParentAttentionDeliveryOutcome,
-    ParentAttentionOutcomeStatus,
-)
 from echo_v2.persistence.guard_repositories import GuardChatStateRepository
 from echo_v2.persistence.parent_attention_delivery import (
     ParentAttentionDeliveryOutcomeRepository,
@@ -237,19 +233,6 @@ class InMemoryGuardSimpleAssessmentCommitRepository:
         if state is None or state.activity_version != target_version:
             return "stale", None
         assessment_id = await self._assessments.save(assessment)
-        if self._outcomes is not None:
-            now = datetime.now(timezone.utc)
-            await self._outcomes.save(
-                ParentAttentionDeliveryOutcome(
-                    assessment_id=assessment_id,
-                    child_user_id=assessment.child_user_id,
-                    chat_id=assessment.chat_id,
-                    status=ParentAttentionOutcomeStatus.NOT_SENT,
-                    reason="pending_evaluation",
-                    created_at=now,
-                    updated_at=now,
-                )
-            )
         analyzed_at = datetime.now(timezone.utc)
         retry_at_value = assessment.diagnostics.get("next_media_retry_at")
         retry_at = retry_at_value if isinstance(retry_at_value, datetime) else None

@@ -514,7 +514,6 @@ async def test_simple_postgres_commit_rejects_lost_activity_update() -> None:
     session = FakeSession([
         FakeResult(row=SimpleNamespace(activity_version=3)),
         FakeResult(scalar="assessment-id"),
-        FakeResult(),
         FakeResult(rowcount=0),
     ])
     repository = PostgresGuardSimpleAssessmentRepository(FakeSessionFactory(session))
