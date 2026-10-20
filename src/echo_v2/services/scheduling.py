@@ -360,9 +360,11 @@ class SchedulingService:
                 idempotency_store=self._idempotency_store,
             )
         except IndeterminateError as exc:
+            await self._record_reconnect_delivery(action, "reconnect.template_indeterminate", "indeterminate")
             await self._action_repo.mark_indeterminate(action.id, str(exc))
             raise
         except PermanentError as exc:
+            await self._record_reconnect_delivery(action, "reconnect.template_failed", "failed")
             await self._action_repo.mark_failed(action.id, str(exc))
             raise
 
@@ -372,11 +374,26 @@ class SchedulingService:
             await self._baileys_event_repo.mark_notification_sent(
                 str(baileys_event_id)
             )
+            await self._record_reconnect_delivery(action, "reconnect.template_sent", "sent")
         await self._action_repo.mark_succeeded(
             action.id,
             {"sent": True, "provider_message_id": provider_message_id},
         )
         return provider_message_id or "bot_sent"
+
+    async def _record_reconnect_delivery(
+        self, action: ScheduledAction, name: str, status: str
+    ) -> None:
+        request_id = action.payload.get("reconnect_request_id")
+        if self._baileys_event_repo is None or request_id is None:
+            return
+        try:
+            await self._baileys_event_repo.record_reconnect_event(
+                name, child_id=str(action.payload["reconnect_child_id"]),
+                request_id=str(request_id), status=status,
+            )
+        except Exception:
+            _logger.exception("reconnect delivery event persistence failed action_id=%s", action.id)
 
     async def _send_operation(self, inp: _SendInput) -> str:
         """The actual send, called by ``runtime.execute``."""

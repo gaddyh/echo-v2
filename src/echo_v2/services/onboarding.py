@@ -51,9 +51,11 @@ from langsmith import traceable
 from langsmith.run_helpers import get_current_run_tree
 
 from echo_v2.domain.guard import GuardianChildLink
+from echo_v2.domain.pipeline_event import PipelineEvent
 from echo_v2.observability.privacy import correlation_id
 from echo_v2.persistence.guard_repositories import GuardianChildLinkRepository
 from echo_v2.persistence.identity import PhoneParseError, normalize_phone_e164
+from echo_v2.persistence.pipeline_events import PipelineEventRepository
 from echo_v2.persistence.whatsapp_connections import (
     StoredConnection,
     WhatsAppConnectionRepository,
@@ -344,6 +346,7 @@ class OnboardingService:
         pool: GreenInstancePool | None = None,
         guardian_child_links: GuardianChildLinkRepository | None = None,
         reconnect_requests: ReconnectRequestRepository | None = None,
+        pipeline_events: PipelineEventRepository | None = None,
     ) -> None:
         self._bot = bot
         self._user_repo = user_repo
@@ -356,6 +359,7 @@ class OnboardingService:
         self._pool = pool
         self._guardian_child_links = guardian_child_links
         self._reconnect_requests = reconnect_requests
+        self._pipeline_events = pipeline_events
         self._pending_contacts: dict[str, BotContact] = {}
         # Background instance-preparation tasks (pool miss path), keyed by
         # user_id. Prevents double-click from creating two instances.
@@ -970,6 +974,25 @@ class OnboardingService:
             return
         await self._send_qr_and_poll(user_id, phone, conn)
 
+    async def _record_reconnect_event(
+        self, name: str, *, child_id: str, request_id: str | None = None,
+        outcome: str = "recorded",
+    ) -> None:
+        child_hash = _safe_correlation_id(child_id)
+        _logger.info(
+            "reconnect event=%s request_id=%s child_hash=%s outcome=%s",
+            name, request_id, child_hash, outcome,
+        )
+        if self._pipeline_events is not None:
+            try:
+                await self._pipeline_events.record(PipelineEvent(
+                    event_name=name, pipeline="guard_reconnect", status=outcome,
+                    event_id=request_id, user_id_hash=child_hash,
+                    metadata={"request_id": request_id} if request_id is not None else {},
+                ))
+            except Exception:
+                _logger.exception("reconnect event persistence failed event=%s", name)
+
     async def handle_guard_reconnect(
         self, phone: str, request_id: str | None = None
     ) -> None:
@@ -981,13 +1004,16 @@ class OnboardingService:
         request: dict[str, object] | None = None
         if request_id is not None:
             candidate = await self._reconnect_requests.get_reconnect_request(request_id)
-            if candidate is not None and candidate.get("guardian_user_id") == ctx.user_id:
+            if candidate is not None and str(candidate.get("guardian_user_id")) == ctx.user_id:
                 request = candidate
         else:
             requests = await self._reconnect_requests.list_open_reconnect_requests(ctx.user_id)
             if requests:
                 request = requests[0]
         if request is None:
+            await self._record_reconnect_event(
+                "reconnect.request_rejected", child_id=ctx.user_id, outcome="unknown_request",
+            )
             await self._bot.send_text(phone, "החיבור כבר חודש או שהבקשה אינה זמינה.")
             return
         child_name = str(request.get("first_name") or "הילד/ה")
@@ -1009,15 +1035,28 @@ class OnboardingService:
                 and str(conn.id) != str(request.get("connection_id"))
             )
         ):
+            await self._record_reconnect_event(
+                "reconnect.request_rejected", child_id=child_id,
+                request_id=str(request["id"]), outcome="not_authorized_or_connection_changed",
+            )
             await self._bot.send_text(phone, "הבקשה אינה זמינה.")
             return
         if request.get("status") != "open":
+            await self._record_reconnect_event(
+                "reconnect.request_closed", child_id=child_id, request_id=str(request["id"]),
+            )
             await self._bot.send_text(phone, _RECONNECT_ALREADY_ACTIVE.format(name=child_name))
             return
         if conn.status is ConnectionStatus.CONNECTED:
+            await self._record_reconnect_event(
+                "reconnect.account_unverified", child_id=child_id, request_id=str(request["id"]),
+            )
             await self._bot.send_text(phone, _RECONNECT_UNVERIFIED)
             return
         reconnect_id = str(request["id"])
+        await self._record_reconnect_event(
+            "reconnect.parent_requested", child_id=child_id, request_id=reconnect_id,
+        )
         await self._bot.send_buttons(
             phone,
             body_text=_RECONNECT_INSTRUCTIONS.format(name=child_name),
@@ -1029,7 +1068,7 @@ class OnboardingService:
             return
         ctx = await self.resolve_context(phone)
         request = await self._reconnect_requests.get_reconnect_request(request_id)
-        if ctx is None or request is None or request.get("guardian_user_id") != ctx.user_id:
+        if ctx is None or request is None or str(request.get("guardian_user_id")) != ctx.user_id:
             await self._bot.send_text(phone, "הבקשה אינה זמינה.")
             return
         child_id = str(request["child_user_id"])
@@ -1047,32 +1086,71 @@ class OnboardingService:
             and request.get("connection_id") is not None
             and str(conn.id) != str(request.get("connection_id"))
         ):
+            await self._record_reconnect_event(
+                "reconnect.request_rejected", child_id=child_id,
+                request_id=str(request["id"]), outcome="not_authorized_or_connection_changed",
+            )
             await self._bot.send_text(phone, "הבקשה אינה זמינה.")
             return
         if request.get("status") != "open":
+            await self._record_reconnect_event(
+                "reconnect.request_closed", child_id=child_id, request_id=str(request["id"]),
+            )
             await self._bot.send_text(phone, _RECONNECT_ALREADY_ACTIVE.format(name=child_name))
             return
         if conn.status is ConnectionStatus.CONNECTED:
+            await self._record_reconnect_event(
+                "reconnect.account_unverified", child_id=child_id, request_id=str(request["id"]),
+            )
             await self._bot.send_text(phone, _RECONNECT_UNVERIFIED)
             return
         if conn is None:
             await self._bot.send_text(phone, "החיבור אינו זמין כרגע. נסו שוב מאוחר יותר.")
             return
-        result = await self._provisioner.get_pairing_qr(conn.ref)
+        await self._record_reconnect_event(
+            "reconnect.qr_requested", child_id=child_id, request_id=request_id,
+        )
+        try:
+            result = await self._provisioner.get_pairing_qr(conn.ref)
+        except Exception as exc:
+            await self._record_reconnect_event(
+                "reconnect.qr_failed", child_id=child_id,
+                request_id=request_id, outcome=type(exc).__name__,
+            )
+            raise
         if result.outcome is PairingOutcome.ALREADY_AUTHORIZED:
+            await self._record_reconnect_event(
+                "reconnect.qr_already_authorized", child_id=child_id, request_id=request_id,
+            )
             await self.handle_connection_established_by_id(child_id)
             return
         if result.outcome is PairingOutcome.PREPARING:
+            await self._record_reconnect_event(
+                "reconnect.qr_preparing", child_id=child_id, request_id=request_id,
+            )
             await self._bot.send_text(phone, _RECONNECT_PREPARING.format(name=child_name))
             return
         if result.outcome is not PairingOutcome.QR_READY or result.qr is None:
+            await self._record_reconnect_event(
+                "reconnect.qr_unavailable", child_id=child_id, request_id=request_id,
+            )
             await self._bot.send_text(phone, "לא הצלחתי להכין את קוד החיבור. נסו שוב מאוחר יותר.")
             return
-        await self._bot.send_image(
-            phone,
-            image_bytes=base64.b64decode(result.qr.image_base64),
-            mime_type="image/png",
-            caption=_QR_CAPTION,
+        try:
+            await self._bot.send_image(
+                phone,
+                image_bytes=base64.b64decode(result.qr.image_base64),
+                mime_type="image/png",
+                caption=_QR_CAPTION,
+            )
+        except Exception as exc:
+            await self._record_reconnect_event(
+                "reconnect.qr_delivery_failed", child_id=child_id,
+                request_id=request_id, outcome=type(exc).__name__,
+            )
+            raise
+        await self._record_reconnect_event(
+            "reconnect.qr_sent", child_id=child_id, request_id=request_id,
         )
         self._ensure_provider_poll_task(child_id, phone, conn.ref)
 
@@ -1492,6 +1570,10 @@ class OnboardingService:
                 )
             except Exception:
                 _logger.exception("onboarding: failed to verify connected child phone")
+                if self._reconnect_requests is not None and await self._reconnect_requests.list_open_reconnect_requests_for_child(
+                    child_user_id
+                ):
+                    raise
         else:
             get_account_phone = getattr(self._green_client, "get_account_phone", None)
             if get_account_phone is not None:
@@ -1532,6 +1614,15 @@ class OnboardingService:
                 _phone_log_value(normalized_account_phone),
                 _safe_correlation_id(conn.ref.provider_connection_id),
             )
+            if self._reconnect_requests is not None:
+                open_requests = await self._reconnect_requests.list_open_reconnect_requests_for_child(
+                    child_user_id
+                )
+                for request in open_requests:
+                    await self._record_reconnect_event(
+                        "reconnect.account_rejected", child_id=child_user_id,
+                        request_id=str(request["id"]), outcome=verification_reason,
+                    )
             guardian_phone = await self._lookup_phone(link.guardian_user_id)
             if guardian_phone is not None:
                 await self._bot.send_text(guardian_phone, _PHONE_MISMATCH)
@@ -1543,6 +1634,11 @@ class OnboardingService:
         )
         if open_requests and self._reconnect_requests is not None:
             await self._reconnect_requests.complete_verified_reconnect(child_user_id)
+            for request in open_requests:
+                await self._record_reconnect_event(
+                    "reconnect.verified", child_id=child_user_id,
+                    request_id=str(request["id"]), outcome="completed",
+                )
         else:
             await self._guardian_child_links.activate(
                 guardian_user_id=link.guardian_user_id,

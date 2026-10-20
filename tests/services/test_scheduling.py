@@ -361,6 +361,7 @@ class FakeBot:
         body_params: list[str],
         *,
         url_suffix: str | None = None,
+        quick_reply_payload: str | None = None,
     ) -> str:
         self.template_sends.append(
             (user_phone, template_name, language, body_params, url_suffix)

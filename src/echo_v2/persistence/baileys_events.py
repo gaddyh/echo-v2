@@ -3,18 +3,22 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, cast
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from sqlalchemy import CursorResult, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from echo_v2.integrations.baileys.events import (
-    BaileysConnectionStateEvent,
-)
+from echo_v2.integrations.baileys.events import BaileysConnectionStateEvent
+from echo_v2.observability.privacy import correlation_id
+from echo_v2.persistence.orm import PipelineEventRow
 from echo_v2.ports.whatsapp import ConnectionStatus, ProviderMessageEvent
+
+_logger = logging.getLogger("echo_v2.persistence.baileys_events")
 
 
 @dataclass(frozen=True)
@@ -36,6 +40,30 @@ class BaileysEventRepository:
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
+
+    @staticmethod
+    async def _record_reconnect_event(
+        session: AsyncSession, name: str, *, event_id: str, child_id: str,
+        status: str, request_id: str | None = None, state_version: int | None = None,
+    ) -> None:
+        try:
+            child_hash = correlation_id(child_id)
+        except RuntimeError:
+            child_hash = None
+        metadata: dict[str, str | int] = {"connection_status": status}
+        if request_id is not None:
+            metadata["request_id"] = request_id
+        if state_version is not None:
+            metadata["state_version"] = state_version
+        await session.execute(pg_insert(PipelineEventRow).values(
+            id=str(uuid4()), event_name=name, pipeline="guard_reconnect",
+            status="recorded", event_id=event_id, user_id_hash=child_hash,
+            event_metadata=metadata,
+        ))
+        _logger.info(
+            "reconnect event=%s event_id=%s request_id=%s child_hash=%s connection_status=%s",
+            name, event_id, request_id, child_hash, status,
+        )
 
     async def claim_batch(
         self,
@@ -125,6 +153,32 @@ class BaileysEventRepository:
                         )
                     claimed.append(ClaimedBaileysEvent(event=event, worker_id=worker_id))
                 return claimed
+
+    async def reconnect_child_for_event(
+        self, connection_id: str, state_version: int | None
+    ) -> str | None:
+        async with self._session_factory() as session:
+            result = await session.execute(
+                text(
+                    """
+                    SELECT c.user_id
+                      FROM whatsapp_connections c
+                     WHERE c.provider = 'baileys'
+                       AND c.provider_connection_id = :connection_id
+                       AND c.auth_loss_episode_key IS NOT NULL
+                       AND (c.baileys_state_version IS NULL
+                            OR (:state_version IS NOT NULL
+                                AND c.baileys_state_version < :state_version))
+                       AND EXISTS (
+                           SELECT 1 FROM guard_reconnect_requests r
+                            WHERE r.connection_id = c.id AND r.status = 'open'
+                       )
+                    """
+                ),
+                {"connection_id": connection_id, "state_version": state_version},
+            )
+            child_id = result.scalar_one_or_none()
+            return str(child_id) if child_id is not None else None
 
     async def recent_connection_events(self, *, limit: int = 100) -> list[dict[str, Any]]:
         async with self._session_factory() as session:
@@ -256,6 +310,11 @@ class BaileysEventRepository:
                 if last_version is not None and (
                     event.state_version is None or event.state_version <= last_version
                 ):
+                    await self._record_reconnect_event(
+                        session, "reconnect.state_ignored", event_id=event.event_id,
+                        child_id=str(connection["user_id"]), status=event.status.value,
+                        state_version=event.state_version,
+                    )
                     await session.execute(
                         text(
                             """
@@ -304,6 +363,18 @@ class BaileysEventRepository:
                     },
                 )
                 created_actions = 0
+                if auth_loss:
+                    await self._record_reconnect_event(
+                        session, "reconnect.auth_lost" if should_notify else "reconnect.auth_loss_duplicate",
+                        event_id=event.event_id, child_id=str(connection["user_id"]),
+                        status=event.status.value, state_version=event.state_version,
+                    )
+                elif connection["auth_loss_episode_key"] is not None:
+                    await self._record_reconnect_event(
+                        session, "reconnect.provider_state", event_id=event.event_id,
+                        child_id=str(connection["user_id"]), status=event.status.value,
+                        state_version=event.state_version,
+                    )
                 if should_notify:
                     episode = (
                         await session.execute(
@@ -403,6 +474,7 @@ class BaileysEventRepository:
                                         "idempotency_key": notification_key,
                                         "baileys_event_id": event.event_id,
                                         "reconnect_request_id": str(request),
+                                        "reconnect_child_id": str(connection["user_id"]),
                                     }
                                 ),
                                 "created_at": now,
@@ -410,6 +482,12 @@ class BaileysEventRepository:
                             },
                         ))
                         created_actions += int(action.rowcount or 0)
+                        if action.rowcount:
+                            await self._record_reconnect_event(
+                                session, "reconnect.notification_queued", event_id=event.event_id,
+                                child_id=str(connection["user_id"]), status=event.status.value,
+                                request_id=str(request), state_version=event.state_version,
+                            )
                 notification_state = "pending" if created_actions else "none"
                 await session.execute(
                     text(
@@ -511,6 +589,16 @@ class BaileysEventRepository:
                     """
                 ),
                 {"child_user_id": child_user_id},
+            )
+
+    async def record_reconnect_event(
+        self, name: str, *, child_id: str, request_id: str | None = None,
+        status: str = "recorded",
+    ) -> None:
+        async with self._session_factory() as session, session.begin():
+            await self._record_reconnect_event(
+                session, name, event_id=request_id or "reconnect", child_id=child_id,
+                status=status, request_id=request_id,
             )
 
     async def mark_verified_child_connection(self, child_user_id: str) -> None:

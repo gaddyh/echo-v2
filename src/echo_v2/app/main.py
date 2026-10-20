@@ -225,6 +225,7 @@ def create_app() -> FastAPI:
         pool=pool,
         guardian_child_links=repos.guardian_child_links,
         reconnect_requests=repos.baileys_events,
+        pipeline_events=repos.pipeline_events,
     )
 
     # --- scheduling service (executes due actions) ------------------------
@@ -292,6 +293,7 @@ def create_app() -> FastAPI:
             batch_size=int(os.environ.get("BAILEYS_EVENT_BATCH_SIZE", "50")),
             lease_seconds=int(os.environ.get("BAILEYS_EVENT_LEASE_SECONDS", "60")),
             max_attempts=int(os.environ.get("BAILEYS_EVENT_MAX_ATTEMPTS", "10")),
+            onboarding_service=onboarding_service,
         )
 
     # --- chat ingestion (saves messages + manages analysis queue) ----------

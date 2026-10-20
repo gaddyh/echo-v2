@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -43,6 +44,11 @@ class FakeEventRepository:
     async def mark_failed(self, event_id: str, worker_id: str, error: str):
         self.failed.append((event_id, worker_id, error))
 
+    async def reconnect_child_for_event(
+        self, connection_id: str, state_version: int | None
+    ) -> str | None:
+        return "child-1"
+
 
 class ExplodingEventRepository(FakeEventRepository):
     def __init__(self) -> None:
@@ -66,6 +72,65 @@ async def test_run_once_processes_claimed_event() -> None:
 
 
 @pytest.mark.asyncio
+async def test_connected_event_verifies_reconnect_before_durable_completion() -> None:
+    repository = FakeEventRepository()
+    order: list[str] = []
+    repository.processed = order
+    onboarding = AsyncMock()
+    onboarding.handle_connection_established_by_id.side_effect = lambda child_id: order.append(
+        f"verified:{child_id}"
+    )
+    consumer = BaileysConnectionStateConsumer(
+        repository, worker_id="worker-1", onboarding_service=onboarding
+    )
+    original_claim_batch = repository.claim_batch
+
+    async def connected_batch(worker_id: str, **kwargs):
+        claimed = await original_claim_batch(worker_id, **kwargs)
+        if claimed:
+            event = claimed[0].event
+            claimed[0] = ClaimedBaileysEvent(
+                event=BaileysConnectionStateEvent(
+                    event_id=event.event_id, inbox_id=event.inbox_id,
+                    connection_id=event.connection_id, status=ConnectionStatus.CONNECTED,
+                    provider_raw_status="open", timestamp=event.timestamp, state_version=1,
+                ), worker_id=worker_id,
+            )
+        return claimed
+
+    repository.claim_batch = connected_batch
+    assert await consumer.run_once() == 1
+    assert order == ["verified:child-1", "state:c:1"]
+
+
+async def test_connected_verification_error_keeps_event_retryable() -> None:
+    repository = FakeEventRepository()
+    onboarding = AsyncMock()
+    onboarding.handle_connection_established_by_id.side_effect = RuntimeError("verification unavailable")
+    consumer = BaileysConnectionStateConsumer(
+        repository, worker_id="worker-1", onboarding_service=onboarding
+    )
+    original_claim_batch = repository.claim_batch
+
+    async def connected_batch(worker_id: str, **kwargs):
+        claimed = await original_claim_batch(worker_id, **kwargs)
+        if claimed:
+            event = claimed[0].event
+            claimed[0] = ClaimedBaileysEvent(
+                event=BaileysConnectionStateEvent(
+                    event_id=event.event_id, inbox_id=event.inbox_id,
+                    connection_id=event.connection_id, status=ConnectionStatus.CONNECTED,
+                    provider_raw_status="open", timestamp=event.timestamp, state_version=1,
+                ), worker_id=worker_id,
+            )
+        return claimed
+
+    repository.claim_batch = connected_batch
+    assert await consumer.run_once() == 0
+    assert repository.processed == []
+    assert repository.failed == [("state:c:1", "worker-1", "verification unavailable")]
+
+
 async def test_run_once_records_event_failure_and_continues() -> None:
     repository = FakeEventRepository(fail=True)
     consumer = BaileysConnectionStateConsumer(repository, worker_id="worker-1")
