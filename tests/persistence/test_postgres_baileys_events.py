@@ -201,6 +201,30 @@ async def test_consumer_claims_updates_and_enqueues_once(
     assert await repository.process_claimed_event(connected_claim, notification_message="reauth") is False
 
 
+async def test_reconnect_request_queries_and_atomic_close(session_factory, clean_db):
+    child_id = str(uuid.uuid4())
+    guardian_id = str(uuid.uuid4())
+    connection_id = str(uuid.uuid4())
+    request_id = str(uuid.uuid4())
+    async with session_factory() as session:
+        await session.execute(text("INSERT INTO users(id, phone_number, first_name, onboarding_status) VALUES (:id, :phone, 'Auria', 'active')"), {"id": child_id, "phone": "972500000010"})
+        await session.execute(text("INSERT INTO users(id, phone_number, onboarding_status) VALUES (:id, :phone, 'active')"), {"id": guardian_id, "phone": "972500000011"})
+        await session.execute(text("INSERT INTO whatsapp_connections(id, user_id, provider, provider_connection_id, credentials, webhook_token_hash, connection_status) VALUES (:id, :user_id, 'baileys', :provider_id, :credentials, :token, 'pairing_required')"), {"id": connection_id, "user_id": child_id, "provider_id": str(uuid.uuid4()), "credentials": b"", "token": b""})
+        await session.execute(text("INSERT INTO guardian_child_links(guardian_user_id, child_user_id, status, guardian_authorized_at, safety_enabled_at) VALUES (:guardian, :child, 'active', now(), now())"), {"guardian": guardian_id, "child": child_id})
+        await session.execute(text("INSERT INTO guard_reconnect_requests(id, child_user_id, guardian_user_id, episode_key, connection_id) VALUES (:id, :child, :guardian, 'episode-queries', :connection)"), {"id": request_id, "child": child_id, "guardian": guardian_id, "connection": connection_id})
+        await session.commit()
+    repository = BaileysEventRepository(session_factory)
+    assert str((await repository.list_open_reconnect_requests(guardian_id))[0]["id"]) == request_id
+    assert str((await repository.list_open_reconnect_requests_for_child(child_id))[0]["guardian_user_id"]) == guardian_id
+    loaded = await repository.get_reconnect_request(request_id)
+    assert loaded is not None and loaded["first_name"] == "Auria"
+    await repository.close_reconnect_episode(child_id, "episode-queries")
+    assert await repository.list_open_reconnect_requests(guardian_id) == []
+    await repository.close_open_reconnect_requests(child_id)
+    await repository.activate_and_close_reconnect(guardian_user_id=guardian_id, child_user_id=child_id)
+    assert await repository.list_open_reconnect_requests(guardian_id) == []
+
+
 async def test_message_event_claim_and_connection_resolution(session_factory, clean_db):
     await _create_connector_tables(session_factory)
     user_id = str(uuid.uuid4())

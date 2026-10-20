@@ -2020,6 +2020,23 @@ async def test_provider_qr_send_failure_marks_failed() -> None:
     assert (await user_repo.get_by_phone(PHONE))[1] == "failed"
 
 
+async def test_provider_qr_preparing_does_not_fail_onboarding() -> None:
+    service, bot, user_repo, conn_repo, _green_client = _make_service()
+    user_id = await user_repo.create_user(PHONE, first_name="Dana")
+    conn = StoredConnection(
+        user_id=user_id, ref=ConnectionRef("baileys", "child-connection"),
+        credentials=ProviderCredentials(data=b"token"), webhook_token_hash=b"hash",
+        status=ConnectionStatus.PAIRING_REQUIRED,
+    )
+    await conn_repo.save(conn)
+    provisioner = AsyncMock()
+    provisioner.get_pairing_qr.return_value = PairingResult(outcome=PairingOutcome.PREPARING)
+    service._provisioner = provisioner
+    await service._send_provider_qr_and_poll(user_id, PHONE, conn)
+    assert (await user_repo.get_by_phone(PHONE))[1] == "pending"
+    assert any("מכינים" in text for _phone, text in bot.sent)
+
+
 async def test_provider_qr_non_qr_outcome_marks_failed() -> None:
     service, bot, user_repo, conn_repo, _green_client = _make_service()
     user_id = await user_repo.create_user(PHONE, first_name="Dana")
@@ -2147,16 +2164,57 @@ async def test_guard_reconnect_callback_and_qr_preparing_without_onboarding():
         "first_name": "אוריה",
     }
     reconnect = FakeReconnectRepository(request)
+    provisioner = FakeBaileysProvisioner(PairingResult(outcome=PairingOutcome.PREPARING))
     service = OnboardingService(
         bot=bot, user_repo=users, connection_repo=connections,
-        provisioner=FakeBaileysProvisioner(PairingResult(outcome=PairingOutcome.PREPARING)),
-        green_client=None, webhook_base_url="https://echo.example.com",
+        provisioner=provisioner, green_client=None,
+        webhook_base_url="https://echo.example.com",
         guardian_child_links=links, reconnect_requests=reconnect,
     )
     await service.handle_guard_reconnect(PHONE)
     assert bot.sent_buttons[0][2][0]["id"] == "guard:reconnect_qr:request-1"
     await service.handle_guard_reconnect_qr(PHONE, "request-1")
     assert any("מכינים" in text for _phone, text in bot.sent)
+    provisioner.result = PairingResult(
+        outcome=PairingOutcome.QR_READY,
+        qr=PairingQr(image_base64=base64.b64encode(b"qr").decode()),
+    )
+    await service.handle_guard_reconnect_qr(PHONE, "request-1")
+    await asyncio.sleep(0.05)
+    assert len(bot.sent_images) == 1
+    assert reconnect.closed is True
+    assert reconnect.activated is True
+    reconnect.closed = False
+    request["status"] = "open"
+    provisioner.result = PairingResult(outcome=PairingOutcome.ALREADY_AUTHORIZED)
+    await service.handle_guard_reconnect_qr(PHONE, "request-1")
+    assert reconnect.closed is True
+
+
+async def test_guard_reconnect_handles_invalid_and_unavailable_requests():
+    service, bot, _users, _connections, _green_client = _make_service()
+    await service.handle_guard_reconnect(PHONE)
+    await service.handle_guard_reconnect_qr(PHONE, "missing")
+    assert bot.sent == []
+
+    users = FakeUserRepo()
+    connections = InMemoryWhatsAppConnectionRepository()
+    guardian = await users.create_user(PHONE, onboarding_status="active")
+    request = {
+        "id": "request-3", "child_user_id": "child-3", "guardian_user_id": guardian,
+        "status": "open", "connection_status": ConnectionStatus.PAIRING_REQUIRED.value,
+        "first_name": "אוריה",
+    }
+    reconnect = FakeReconnectRepository(request)
+    service = OnboardingService(
+        bot=bot, user_repo=users, connection_repo=connections,
+        provisioner=FakeBaileysProvisioner(PairingResult(outcome=PairingOutcome.TIMEOUT)),
+        green_client=None, webhook_base_url="https://echo.example.com",
+        reconnect_requests=reconnect,
+    )
+    await service.handle_guard_reconnect(PHONE, "wrong-request")
+    await service.handle_guard_reconnect_qr(PHONE, "request-3")
+    assert any("זמינה" in text for _phone, text in bot.sent)
 
 
 async def test_guard_reconnect_rejects_closed_request():
