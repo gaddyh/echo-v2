@@ -12,7 +12,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from echo_v2.domain.guard_simple import ChildRole, SafetyAssessment
 from echo_v2.persistence.orm import (
     GuardChatStateRow,
-    GuardParentAttentionDeliveryOutcomeRow,
     GuardSimpleAssessmentRow,
 )
 
@@ -297,18 +296,6 @@ class PostgresGuardSimpleAssessmentRepository:
                     .returning(GuardSimpleAssessmentRow.id)
                 )
             ).scalar_one()
-            now = datetime.now(timezone.utc)
-            await session.execute(
-                pg_insert(GuardParentAttentionDeliveryOutcomeRow).values(
-                    assessment_id=result_id,
-                    child_user_id=assessment.child_user_id,
-                    chat_id=assessment.chat_id,
-                    status="not_sent",
-                    reason="pending_evaluation",
-                    created_at=now,
-                    updated_at=now,
-                )
-            )
             now = datetime.now(timezone.utc)
             retry_at_value = assessment.diagnostics.get("next_media_retry_at")
             if isinstance(retry_at_value, str):
