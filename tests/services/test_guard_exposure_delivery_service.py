@@ -9,7 +9,10 @@ import pytest
 
 from echo_v2.domain.guard_exposure import ExposureAssessment, ExposureCategory
 from echo_v2.domain.guard_simple import ChildRole, SafetyAssessment
-from echo_v2.domain.parent_attention import ParentAttentionOutcomeStatus
+from echo_v2.domain.parent_attention import (
+    ParentAttentionDeliveryOutcome,
+    ParentAttentionOutcomeStatus,
+)
 from echo_v2.domain.scheduling import (
     ScheduledAction,
     ScheduledActionStatus,
@@ -356,3 +359,44 @@ async def test_reconcile_updates_all_terminal_action_outcomes() -> None:
     assert (await delivery.get_outcome("reconcile-2", guardian_user_id="guardian")).status is ParentAttentionOutcomeStatus.NOT_SENT
     assert (await delivery.get_outcome("reconcile-3", guardian_user_id="guardian")).status is ParentAttentionOutcomeStatus.FAILED
     assert (await delivery.get_outcome("reconcile-4", guardian_user_id="guardian")).status is ParentAttentionOutcomeStatus.INDETERMINATE
+
+
+async def test_already_sent_outcome_is_not_rescheduled() -> None:
+    """An already-SENT exposure outcome is not re-evaluated."""
+    service, delivery, _ = await setup()
+    # First schedule.
+    assert await service.evaluate_committed(
+        assessment=exposure(assessment_id="sent"), assessment_id="sent"
+    ) == "scheduled"
+    # Mark as sent.
+    sent_outcome = await delivery.get_outcome("sent", guardian_user_id="guardian")
+    assert sent_outcome is not None
+    await delivery.save_outcome(
+        replace(sent_outcome, status=ParentAttentionOutcomeStatus.SENT, reason="provider_confirmed")
+    )
+    # Re-evaluate: should return already_sent.
+    result = await service.evaluate_committed(
+        assessment=exposure(assessment_id="sent"), assessment_id="sent"
+    )
+    assert result == "already_sent"
+
+
+async def test_terminal_not_sent_outcome_is_not_retried() -> None:
+    """A terminal NOT_SENT exposure outcome (not pending) is not retried."""
+    service, delivery, _ = await setup()
+    await delivery.save_outcome(
+        ParentAttentionDeliveryOutcome(
+            assessment_id="terminal",
+            guardian_user_id="guardian",
+            child_user_id="child",
+            chat_id="class@g.us",
+            status=ParentAttentionOutcomeStatus.NOT_SENT,
+            reason="no_guardian_phone",
+            created_at=NOW,
+            updated_at=NOW,
+        )
+    )
+    result = await service.evaluate_committed(
+        assessment=exposure(assessment_id="terminal"), assessment_id="terminal"
+    )
+    assert result == "no_guardian_phone"

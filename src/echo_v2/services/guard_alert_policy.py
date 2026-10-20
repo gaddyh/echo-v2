@@ -21,7 +21,7 @@ from echo_v2.services.guard_taxonomy import (
     GuardSignal,
 )
 
-GUARD_ALERT_POLICY_VERSION = "2026-10-15.1"
+GUARD_ALERT_POLICY_VERSION = "2026-10-20.multi-guardian"
 
 __all__ = [
     "AlertKind",

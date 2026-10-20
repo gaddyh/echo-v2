@@ -330,3 +330,34 @@ async def test_pre_send_check_rejects_expired_alert_and_revoked_link() -> None:
     link = links._links[("guardian", "child")]
     links._links[("guardian", "child")] = replace(link, safety_enabled_at=None)
     assert await service.validate_before_send(action.payload) is False
+
+
+async def test_two_guardians_one_without_phone_still_schedules_other() -> None:
+    """Two guardians: one has a phone, the other doesn't. Only the one with phone is scheduled."""
+    alerts = InMemoryGuardAlertRepository()
+    actions = InMemoryScheduledActionRepository()
+    links = InMemoryGuardianChildLinkRepository()
+    await links.upsert_active(guardian_user_id="guardian", child_user_id="child", now=BASE)
+    await links.upsert_active(guardian_user_id="guardian-2", child_user_id="child", now=BASE)
+    service = GuardAlertService(
+        links=links,
+        users=FakeUsers(),  # returns phone only for "guardian", None for "guardian-2"
+        token_service=FakeTokens(),
+        unit_of_work=FakeUowFactory(alerts, actions),
+        alerts=alerts,
+        analyses=FakeAnalyses(),
+        base_url="https://example.test",
+        enabled=True,
+    )
+    result = await service.evaluate_committed(
+        record=record(result_id="result-1", version=1, at=BASE),
+        result_id="result-1",
+        now=BASE,
+    )
+    assert result == "scheduled"
+    # Guardian-1 has an alert; guardian-2 has NO_ACTION evaluation (no phone).
+    eval_1 = await alerts.get_evaluation("result-1", "guardian")
+    eval_2 = await alerts.get_evaluation("result-1", "guardian-2")
+    assert eval_1 is not None and eval_1.outcome.name == "SCHEDULED"
+    assert eval_2 is not None and eval_2.outcome.name == "NO_ACTION"
+    assert len(alerts.alerts) == 1  # only one alert for guardian-1

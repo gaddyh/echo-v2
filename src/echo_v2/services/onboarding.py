@@ -1537,10 +1537,11 @@ class OnboardingService:
     # --- Connection established (webhook or poll) ----------------------------
 
     async def _activate_child_connection(self, child_user_id: str) -> bool:
-        """Verify the connected child phone and activate its guardian link."""
+        """Verify the connected child phone and activate all guardian links."""
         if self._guardian_child_links is None:
             return False
-        link = await self._guardian_child_links.get_pending_for_child(child_user_id)
+        pending_links = await self._guardian_child_links.list_pending_for_child(child_user_id)
+        link: GuardianChildLink | None = pending_links[0] if pending_links else None
         if link is None and self._reconnect_requests is not None:
             open_requests = await self._reconnect_requests.list_open_reconnect_requests_for_child(
                 child_user_id
@@ -1640,11 +1641,13 @@ class OnboardingService:
                     request_id=str(request["id"]), outcome="completed",
                 )
         else:
-            await self._guardian_child_links.activate(
-                guardian_user_id=link.guardian_user_id,
-                child_user_id=child_user_id,
-                now=datetime.now(timezone.utc),
-            )
+            now_utc = datetime.now(timezone.utc)
+            for pending_link in pending_links:
+                await self._guardian_child_links.activate(
+                    guardian_user_id=pending_link.guardian_user_id,
+                    child_user_id=child_user_id,
+                    now=now_utc,
+                )
             if conn.ref.provider == "baileys" and self._reconnect_requests is not None:
                 await self._reconnect_requests.mark_verified_child_connection(child_user_id)
         child = await self._user_repo.get_by_phone(normalized_child_phone)
@@ -1652,7 +1655,7 @@ class OnboardingService:
         guardian_ids = (
             [str(request["guardian_user_id"]) for request in open_requests]
             if open_requests
-            else [link.guardian_user_id]
+            else [pl.guardian_user_id for pl in pending_links] or ([link.guardian_user_id] if link else [])
         )
         for guardian_id in dict.fromkeys(guardian_ids):
             if open_requests and await self._guardian_child_links.get_active_for_pair(

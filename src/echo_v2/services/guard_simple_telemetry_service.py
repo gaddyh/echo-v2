@@ -148,14 +148,14 @@ class GuardSimpleTelemetryService:
             self._child_names(linked_child_ids),
             self._user_names([link.guardian_user_id for link in links]),
         )
-        outcomes: dict[str, ParentAttentionDeliveryOutcome] = {}
+        outcomes: dict[str, list[ParentAttentionDeliveryOutcome]] = {}
         for outcome in outcome_rows:
-            outcomes.setdefault(outcome.assessment_id, outcome)
+            outcomes.setdefault(outcome.assessment_id, []).append(outcome)
         state_by_chat = {(state.child_user_id, state.chat_id): state for state in states}
         analyses = tuple(
             _activity_view(
                 cast(SafetyAssessment, assessment),
-                outcomes.get(assessment.id or ""),
+                outcomes.get(assessment.id, []) if assessment.id is not None else [],
                 state_by_chat.get((assessment.child_user_id, assessment.chat_id)),
                 child_names.get(assessment.child_user_id),
             ) if kind == "child" else _exposure_activity_view(
@@ -449,10 +449,15 @@ def _exposure_decision(assessment: ExposureAssessment) -> str:
 
 def _activity_view(
     assessment: SafetyAssessment,
-    outcome: ParentAttentionDeliveryOutcome | None,
+    outcome_list: list[ParentAttentionDeliveryOutcome] | None,
     state: GuardChatState | None,
     child_name: str | None,
 ) -> dict[str, Any]:
+    deliveries = [
+        _delivery_view(outcome, None) for outcome in (outcome_list or [])
+    ]
+    # Pick the most informative outcome for the aggregate delivery field.
+    primary = _pick_primary_outcome(outcome_list or [])
     return {
         "id": assessment.id,
         "analyzer": "child",
@@ -465,8 +470,33 @@ def _activity_view(
         "chat_type": assessment.chat_type,
         "message_count": len(assessment.input_message_ids) or None,
         "summary": assessment.summary,
-        "delivery": _delivery_view(outcome, None),
+        "delivery": _delivery_view(primary, None),
+        "deliveries": deliveries,
     }
+
+
+def _pick_primary_outcome(
+    outcome_list: list[ParentAttentionDeliveryOutcome],
+) -> ParentAttentionDeliveryOutcome | None:
+    """Pick the most informative outcome for the aggregate delivery field."""
+    if not outcome_list:
+        return None
+    # Prefer non-placeholder outcomes (guardian_user_id != "").
+    real = [o for o in outcome_list if o.guardian_user_id]
+    if real:
+        # Prefer sent > scheduled > others.
+        for status in (
+            ParentAttentionOutcomeStatus.SENT,
+            ParentAttentionOutcomeStatus.SCHEDULED,
+            ParentAttentionOutcomeStatus.FAILED,
+            ParentAttentionOutcomeStatus.INDETERMINATE,
+            ParentAttentionOutcomeStatus.NOT_SENT,
+        ):
+            for outcome in real:
+                if outcome.status is status:
+                    return outcome
+        return real[0]
+    return outcome_list[0]
 
 
 def _delivery_view(
