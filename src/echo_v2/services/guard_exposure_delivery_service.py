@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
-from typing import Protocol
+from typing import Any, Protocol
 from uuid import NAMESPACE_URL, uuid5
 
 from echo_v2.domain.guard_exposure import ExposureAssessment
@@ -69,14 +69,13 @@ class ExposureDeliveryService:
         security_assessment: SafetyAssessment | None = None,
     ) -> str:
         now = datetime.now(timezone.utc)
-        link = await self._links.get_active_for_child(assessment.child_user_id)
-        guardian_user_id = link.guardian_user_id if link is not None else ""
-        outcome = await self._ensure_outcome(assessment, assessment_id, now, guardian_user_id=guardian_user_id)
+        links = await self._links.list_active_for_child(assessment.child_user_id)
+
         if not self._enabled:
-            await self._save(outcome, status=ParentAttentionOutcomeStatus.NOT_SENT, reason="disabled")
+            await self._fan_out_terminal(links, assessment, assessment_id, now, reason="disabled")
             return "disabled"
         if assessment.significant_exposure is not True:
-            await self._save(outcome, status=ParentAttentionOutcomeStatus.NOT_SENT, reason="not_exposure")
+            await self._fan_out_terminal(links, assessment, assessment_id, now, reason="not_exposure")
             return "not_exposure"
 
         security_rows = await self._security_assessments.list_for_chat(
@@ -89,8 +88,85 @@ class ExposureDeliveryService:
             and _overlaps(assessment.evidence_message_ids, row.evidence_message_ids)
             for row in security_rows
         ):
-            await self._save(outcome, status=ParentAttentionOutcomeStatus.NOT_SENT, reason="security_precedence")
+            await self._fan_out_terminal(links, assessment, assessment_id, now, reason="security_precedence")
             return "security_precedence"
+
+        if not links:
+            outcome = await self._ensure_outcome(assessment, assessment_id, now, guardian_user_id="")
+            await self._save(outcome, status=ParentAttentionOutcomeStatus.NOT_SENT, reason="no_active_link")
+            return "no_active_link"
+
+        any_scheduled = False
+        results: list[str] = []
+        for link in links:
+            try:
+                result = await self._evaluate_for_guardian(
+                    assessment=assessment,
+                    assessment_id=assessment_id,
+                    link=link,
+                    now=now,
+                )
+                results.append(result)
+                if result == "scheduled":
+                    any_scheduled = True
+            except Exception:  # noqa: BLE001 - isolate per-guardian failures
+                outcome = await self._ensure_outcome(
+                    assessment, assessment_id, now, guardian_user_id=link.guardian_user_id
+                )
+                await self._save(
+                    outcome,
+                    status=ParentAttentionOutcomeStatus.FAILED,
+                    reason="delivery_evaluation_error",
+                    failed_at=datetime.now(timezone.utc),
+                )
+                results.append("failed")
+
+        if any_scheduled:
+            return "scheduled"
+        for priority in ("duplicate_evidence", "no_guardian_phone", "already_scheduled", "already_sent"):
+            if priority in results:
+                return priority
+        return "no_action"
+
+    async def _fan_out_terminal(
+        self,
+        links: list[Any],
+        assessment: ExposureAssessment,
+        assessment_id: str,
+        now: datetime,
+        *,
+        reason: str,
+    ) -> None:
+        if not links:
+            outcome = await self._ensure_outcome(assessment, assessment_id, now, guardian_user_id="")
+            await self._save(outcome, status=ParentAttentionOutcomeStatus.NOT_SENT, reason=reason)
+            return
+        for link in links:
+            outcome = await self._ensure_outcome(
+                assessment, assessment_id, now, guardian_user_id=link.guardian_user_id
+            )
+            await self._save(outcome, status=ParentAttentionOutcomeStatus.NOT_SENT, reason=reason)
+
+    async def _evaluate_for_guardian(
+        self,
+        *,
+        assessment: ExposureAssessment,
+        assessment_id: str,
+        link: Any,
+        now: datetime,
+    ) -> str:
+        guardian_user_id = link.guardian_user_id
+        outcome = await self._ensure_outcome(
+            assessment, assessment_id, now, guardian_user_id=guardian_user_id
+        )
+        # State machine: SCHEDULED/SENT check dedup but don't reschedule.
+        if outcome.status is ParentAttentionOutcomeStatus.SENT:
+            return "already_sent"
+        if (
+            outcome.status is ParentAttentionOutcomeStatus.NOT_SENT
+            and outcome.reason != "pending_evaluation"
+        ):
+            return outcome.reason
 
         duplicates = await self._delivery.list_overlapping(
             guardian_user_id=guardian_user_id,
@@ -105,19 +181,16 @@ class ExposureDeliveryService:
             await self._save(outcome, status=ParentAttentionOutcomeStatus.NOT_SENT, reason="already_notified")
             return "duplicate_evidence"
 
-        if link is None:
-            await self._save(outcome, status=ParentAttentionOutcomeStatus.NOT_SENT, reason="no_active_link")
-            return "no_active_link"
-        guardian_phone = await self._users.get_phone_by_id(link.guardian_user_id)
+        guardian_phone = await self._users.get_phone_by_id(guardian_user_id)
         if guardian_phone is None:
             await self._save(outcome, status=ParentAttentionOutcomeStatus.NOT_SENT, reason="no_guardian_phone")
             return "no_guardian_phone"
 
-        request_id = f"guard-exposure:{assessment.child_user_id}:{assessment.chat_id}:{assessment_id}"
-        action_id = str(uuid5(NAMESPACE_URL, f"echo:send:{link.guardian_user_id}:{request_id}"))
+        request_id = f"guard-exposure:{guardian_user_id}:{assessment.child_user_id}:{assessment.chat_id}:{assessment_id}"
+        action_id = str(uuid5(NAMESPACE_URL, f"echo:send:{guardian_user_id}:{request_id}"))
         reserved = await self._delivery.reserve_state(
             ExposureDeliveryState(
-                guardian_user_id=link.guardian_user_id,
+                guardian_user_id=guardian_user_id,
                 child_user_id=assessment.child_user_id,
                 chat_id=assessment.chat_id,
                 last_scheduled_assessment_id=assessment_id,
@@ -135,14 +208,14 @@ class ExposureDeliveryService:
             return "duplicate_evidence"
         action, _created = await self._scheduling.create_once(
             request_id=request_id,
-            user_id=link.guardian_user_id,
+            user_id=guardian_user_id,
             type=ScheduledActionType.SEND_BOT_MESSAGE,
             execute_at_utc=now,
             timezone_name="UTC",
             payload={
                 "kind": "guard_exposure_alert",
                 "chat_id": guardian_phone,
-                "guardian_user_id": link.guardian_user_id,
+                "guardian_user_id": guardian_user_id,
                 "child_user_id": assessment.child_user_id,
                 "exposure_assessment_id": assessment_id,
                 "evidence_message_ids": list(assessment.evidence_message_ids),

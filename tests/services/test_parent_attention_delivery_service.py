@@ -188,7 +188,7 @@ async def test_sends_once_then_only_on_new_evidence_without_url_suffix() -> None
     assert (await outcomes.get("a2", guardian_user_id="guardian")).reason == "already_notified"
     assert await delivery.evaluate_committed(
         assessment=assessment(evidence=("m1",), parent_should_know=True), assessment_id="a1"
-    ) == "duplicate_evidence"
+    ) == "already_scheduled"
     await delivery.mark_evaluation_failed(assessment_id="a1", error="late failure", guardian_user_id="guardian")
     assert (await outcomes.get("a1", guardian_user_id="guardian")).status is ParentAttentionOutcomeStatus.FAILED
     await delivery.mark_evaluation_failed(assessment_id="missing", error="ignored", guardian_user_id="guardian")
@@ -204,17 +204,15 @@ async def test_delivery_evaluation_failure_is_recorded() -> None:
     await links.upsert_active(guardian_user_id="guardian", child_user_id="child", now=NOW)
     outcomes = InMemoryParentAttentionDeliveryOutcomeRepository()
     delivery, _, _ = service(links=links, scheduling=FailingScheduling(), outcomes=outcomes)
-    with pytest.raises(RuntimeError, match="delivery evaluation failed"):
-        await delivery.evaluate_committed(
-            assessment=assessment(evidence=("m1",), parent_should_know=True),
-            assessment_id="failed-evaluation",
-        )
-    outcome = await outcomes.get("failed-evaluation", guardian_user_id="guardian")
-    assert outcome is not None and outcome.reason == "pending_evaluation"
-    await delivery.mark_evaluation_failed(
-        assessment_id="failed-evaluation", error="delivery evaluation failed", guardian_user_id="guardian"
+    # Per-guardian exceptions are isolated; the outcome is marked FAILED automatically.
+    result = await delivery.evaluate_committed(
+        assessment=assessment(evidence=("m1",), parent_should_know=True),
+        assessment_id="failed-evaluation",
     )
-    assert (await outcomes.get("failed-evaluation", guardian_user_id="guardian")).status is ParentAttentionOutcomeStatus.FAILED
+    assert result == "no_action"
+    outcome = await outcomes.get("failed-evaluation", guardian_user_id="guardian")
+    assert outcome is not None and outcome.status is ParentAttentionOutcomeStatus.FAILED
+    assert outcome.reason == "delivery_evaluation_error"
 
 
 async def test_reconcile_handles_pending_missing_and_suppressed_actions() -> None:
@@ -462,3 +460,110 @@ async def test_reconcile_distinguishes_sent_failed_and_indeterminate() -> None:
     assert (await outcomes.get("sent", guardian_user_id="guardian")).status is ParentAttentionOutcomeStatus.SENT
     assert (await outcomes.get("failed", guardian_user_id="guardian")).status is ParentAttentionOutcomeStatus.FAILED
     assert (await outcomes.get("unknown", guardian_user_id="guardian")).status is ParentAttentionOutcomeStatus.INDETERMINATE
+
+
+async def test_disabled_with_link_creates_per_guardian_outcome() -> None:
+    """Disabled service with an active link creates NOT_SENT outcome per guardian."""
+    links = InMemoryGuardianChildLinkRepository()
+    await links.upsert_active(guardian_user_id="guardian", child_user_id="child", now=NOW)
+    delivery, outcomes, _ = service(links=links, enabled=False)
+    assert await delivery.evaluate_committed(
+        assessment=assessment(evidence=("m1",), parent_should_know=True), assessment_id="a1"
+    ) == "disabled"
+    outcome = await outcomes.get("a1", guardian_user_id="guardian")
+    assert outcome is not None and outcome.reason == "disabled"
+
+
+async def test_not_parent_attention_with_link_creates_per_guardian_outcome() -> None:
+    """not_parent_attention with an active link creates NOT_SENT outcome per guardian."""
+    links = InMemoryGuardianChildLinkRepository()
+    await links.upsert_active(guardian_user_id="guardian", child_user_id="child", now=NOW)
+    delivery, outcomes, _ = service(links=links)
+    assert await delivery.evaluate_committed(
+        assessment=assessment(evidence=("m1",), parent_should_know=False), assessment_id="a1"
+    ) == "not_parent_attention"
+    outcome = await outcomes.get("a1", guardian_user_id="guardian")
+    assert outcome is not None and outcome.reason == "not_parent_attention"
+
+
+async def test_no_active_link_creates_placeholder_outcome() -> None:
+    """No active link creates a placeholder outcome with guardian_user_id=''."""
+    delivery, outcomes, _ = service()
+    assert await delivery.evaluate_committed(
+        assessment=assessment(evidence=("m1",), parent_should_know=True), assessment_id="a1"
+    ) == "no_active_link"
+    outcome = await outcomes.get("a1", guardian_user_id="")
+    assert outcome is not None and outcome.reason == "no_active_link"
+
+
+async def test_already_sent_outcome_is_not_rescheduled() -> None:
+    """An already-SENT outcome is not re-evaluated."""
+    links = InMemoryGuardianChildLinkRepository()
+    await links.upsert_active(guardian_user_id="guardian", child_user_id="child", now=NOW)
+    outcomes = InMemoryParentAttentionDeliveryOutcomeRepository()
+    await outcomes.save(
+        ParentAttentionDeliveryOutcome(
+            assessment_id="a1",
+            guardian_user_id="guardian",
+            child_user_id="child",
+            chat_id="class@g.us",
+            status=ParentAttentionOutcomeStatus.SENT,
+            reason="provider_confirmed",
+            created_at=NOW,
+            updated_at=NOW,
+            sent_at=NOW,
+        )
+    )
+    delivery, _, _ = service(links=links, outcomes=outcomes)
+    result = await delivery.evaluate_committed(
+        assessment=assessment(evidence=("m1",), parent_should_know=True), assessment_id="a1"
+    )
+    assert result == "already_sent"
+
+
+async def test_cleanup_placeholder_marks_pending_as_fan_out_complete() -> None:
+    """The commit-time placeholder (guardian_user_id='') is cleaned up after fan-out."""
+    links = InMemoryGuardianChildLinkRepository()
+    await links.upsert_active(guardian_user_id="guardian", child_user_id="child", now=NOW)
+    outcomes = InMemoryParentAttentionDeliveryOutcomeRepository()
+    # Simulate commit-time placeholder.
+    await outcomes.save(
+        ParentAttentionDeliveryOutcome(
+            assessment_id="a1",
+            guardian_user_id="",
+            child_user_id="child",
+            chat_id="class@g.us",
+            status=ParentAttentionOutcomeStatus.NOT_SENT,
+            reason="pending_evaluation",
+            created_at=NOW,
+            updated_at=NOW,
+        )
+    )
+    delivery, outcomes, _ = service(links=links, outcomes=outcomes)
+    await delivery.evaluate_committed(
+        assessment=assessment(evidence=("m1",), parent_should_know=True), assessment_id="a1"
+    )
+    placeholder = await outcomes.get("a1", guardian_user_id="")
+    assert placeholder is not None
+    assert placeholder.status is ParentAttentionOutcomeStatus.NOT_SENT
+    assert placeholder.reason == "fan_out_complete"
+
+
+async def test_not_parent_attention_with_no_links_creates_placeholder() -> None:
+    """not_parent_attention with no links creates a placeholder outcome."""
+    delivery, outcomes, _ = service()
+    assert await delivery.evaluate_committed(
+        assessment=assessment(evidence=("m1",), parent_should_know=False), assessment_id="a1"
+    ) == "not_parent_attention"
+    outcome = await outcomes.get("a1", guardian_user_id="")
+    assert outcome is not None and outcome.reason == "not_parent_attention"
+
+
+async def test_disabled_with_no_links_creates_placeholder() -> None:
+    """Disabled with no links creates a placeholder outcome (not per-guardian)."""
+    delivery, outcomes, _ = service(enabled=False)
+    assert await delivery.evaluate_committed(
+        assessment=assessment(evidence=("m1",), parent_should_know=True), assessment_id="a1"
+    ) == "disabled"
+    outcome = await outcomes.get("a1", guardian_user_id="")
+    assert outcome is not None and outcome.reason == "disabled"

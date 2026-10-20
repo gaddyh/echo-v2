@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime, timezone
-from typing import Protocol
+from typing import Any, Protocol
 
 from echo_v2.domain.guard_simple import SafetyAssessment
 from echo_v2.domain.parent_attention import (
@@ -77,26 +77,117 @@ class ParentAttentionDeliveryService:
     async def evaluate_committed(
         self, *, assessment: SafetyAssessment, assessment_id: str
     ) -> str:
-        link = await self._links.get_active_for_child(assessment.child_user_id)
-        guardian_user_id = link.guardian_user_id if link is not None else ""
-        outcome = await self._ensure_outcome(assessment, assessment_id, guardian_user_id=guardian_user_id)
+        links = await self._links.list_active_for_child(assessment.child_user_id)
+
         if not self._enabled:
-            await self._save_outcome(
-                outcome,
-                status=ParentAttentionOutcomeStatus.NOT_SENT,
-                reason="disabled",
-            )
+            if not links:
+                outcome = await self._ensure_outcome(assessment, assessment_id, guardian_user_id="")
+                await self._save_outcome(
+                    outcome,
+                    status=ParentAttentionOutcomeStatus.NOT_SENT,
+                    reason="disabled",
+                )
+            for link in links:
+                outcome = await self._ensure_outcome(
+                    assessment, assessment_id, guardian_user_id=link.guardian_user_id
+                )
+                await self._save_outcome(
+                    outcome,
+                    status=ParentAttentionOutcomeStatus.NOT_SENT,
+                    reason="disabled",
+                )
+            await self._cleanup_placeholder(assessment_id)
             return "disabled"
+
         if assessment.parent_should_know is not True:
-            await self._save_outcome(
-                outcome,
-                status=ParentAttentionOutcomeStatus.NOT_SENT,
-                reason="not_parent_attention",
-            )
+            if not links:
+                outcome = await self._ensure_outcome(assessment, assessment_id, guardian_user_id="")
+                await self._save_outcome(
+                    outcome,
+                    status=ParentAttentionOutcomeStatus.NOT_SENT,
+                    reason="not_parent_attention",
+                )
+            for link in links:
+                outcome = await self._ensure_outcome(
+                    assessment, assessment_id, guardian_user_id=link.guardian_user_id
+                )
+                await self._save_outcome(
+                    outcome,
+                    status=ParentAttentionOutcomeStatus.NOT_SENT,
+                    reason="not_parent_attention",
+                )
+            await self._cleanup_placeholder(assessment_id)
             return "not_parent_attention"
 
         if self._exposure_precedence is not None:
             await self._exposure_precedence.cancel_overlapping_security(assessment)
+
+        if not links:
+            outcome = await self._ensure_outcome(assessment, assessment_id, guardian_user_id="")
+            await self._save_outcome(
+                outcome,
+                status=ParentAttentionOutcomeStatus.NOT_SENT,
+                reason="no_active_link",
+            )
+            await self._cleanup_placeholder(assessment_id)
+            return "no_active_link"
+
+        any_scheduled = False
+        results: list[str] = []
+        for link in links:
+            try:
+                result = await self._evaluate_for_guardian(
+                    assessment=assessment,
+                    assessment_id=assessment_id,
+                    link=link,
+                )
+                results.append(result)
+                if result == "scheduled":
+                    any_scheduled = True
+            except Exception:  # noqa: BLE001 - isolate per-guardian failures
+                outcome = await self._ensure_outcome(
+                    assessment, assessment_id, guardian_user_id=link.guardian_user_id
+                )
+                await self._save_outcome(
+                    outcome,
+                    status=ParentAttentionOutcomeStatus.FAILED,
+                    reason="delivery_evaluation_error",
+                    failed_at=datetime.now(timezone.utc),
+                )
+                results.append("failed")
+
+        await self._cleanup_placeholder(assessment_id)
+        if any_scheduled:
+            return "scheduled"
+        # Return the most informative non-scheduled result.
+        for priority in ("duplicate_evidence", "no_guardian_phone", "already_scheduled", "already_sent"):
+            if priority in results:
+                return priority
+        return "no_action"
+
+    async def _evaluate_for_guardian(
+        self,
+        *,
+        assessment: SafetyAssessment,
+        assessment_id: str,
+        link: Any,
+    ) -> str:
+        guardian_user_id = link.guardian_user_id
+        outcome = await self._ensure_outcome(
+            assessment, assessment_id, guardian_user_id=guardian_user_id
+        )
+        # State machine: SCHEDULED outcomes check delivery-state dedup but don't reschedule.
+        if outcome.status is ParentAttentionOutcomeStatus.SENT:
+            return "already_sent"
+        if outcome.status is ParentAttentionOutcomeStatus.SCHEDULED:
+            # Already scheduled — don't reschedule or dedup-mark.
+            return "already_scheduled"
+        if (
+            outcome.status is ParentAttentionOutcomeStatus.NOT_SENT
+            and outcome.reason != "pending_evaluation"
+        ):
+            # Terminal NOT_SENT (e.g. no_guardian_phone, already_notified) — don't retry.
+            return outcome.reason
 
         current = await self._delivery.get(
             guardian_user_id=guardian_user_id,
@@ -113,14 +204,7 @@ class ParentAttentionDeliveryService:
             )
             return "duplicate_evidence"
 
-        if link is None:
-            await self._save_outcome(
-                outcome,
-                status=ParentAttentionOutcomeStatus.NOT_SENT,
-                reason="no_active_link",
-            )
-            return "no_active_link"
-        guardian_phone = await self._users.get_phone_by_id(link.guardian_user_id)
+        guardian_phone = await self._users.get_phone_by_id(guardian_user_id)
         if guardian_phone is None:
             await self._save_outcome(
                 outcome,
@@ -132,19 +216,20 @@ class ParentAttentionDeliveryService:
         now = datetime.now(timezone.utc)
         description = assessment.summary or assessment.reason
         request_id = (
-            f"guard-parent-attention:{assessment.child_user_id}:"
+            f"guard-parent-attention:{guardian_user_id}:"
+            f"{assessment.child_user_id}:"
             f"{assessment.chat_id}:{assessment_id}"
         )
         action, _created = await self._scheduling.create_once(
             request_id=request_id,
-            user_id=link.guardian_user_id,
+            user_id=guardian_user_id,
             type=ScheduledActionType.SEND_BOT_MESSAGE,
             execute_at_utc=now,
             timezone_name="UTC",
             payload={
                 "kind": "guard_parent_attention",
                 "chat_id": guardian_phone,
-                "guardian_user_id": link.guardian_user_id,
+                "guardian_user_id": guardian_user_id,
                 "child_user_id": assessment.child_user_id,
                 "assessment_id": assessment_id,
                 "evidence_message_ids": list(assessment.evidence_message_ids),
@@ -159,7 +244,7 @@ class ParentAttentionDeliveryService:
         )
         await self._delivery.save(
             ParentAttentionDeliveryState(
-                guardian_user_id=link.guardian_user_id,
+                guardian_user_id=guardian_user_id,
                 child_user_id=assessment.child_user_id,
                 chat_id=assessment.chat_id,
                 last_delivered_assessment_id=assessment_id,
@@ -177,6 +262,16 @@ class ParentAttentionDeliveryService:
             scheduled_at=now,
         )
         return "scheduled"
+
+    async def _cleanup_placeholder(self, assessment_id: str) -> None:
+        """Mark the commit-time placeholder outcome (guardian_user_id='') as not_sent."""
+        placeholder = await self._outcomes.get(assessment_id, guardian_user_id="")
+        if placeholder is not None and placeholder.reason == "pending_evaluation":
+            await self._save_outcome(
+                placeholder,
+                status=ParentAttentionOutcomeStatus.NOT_SENT,
+                reason="fan_out_complete",
+            )
 
     async def mark_evaluation_failed(
         self, *, assessment_id: str, error: str, guardian_user_id: str = ""

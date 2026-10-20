@@ -91,7 +91,7 @@ class GuardAlertService:
         result_id: str,
         now: datetime | None = None,
     ) -> str:
-        """Evaluate one committed result and atomically schedule at most one alert."""
+        """Evaluate one committed result and atomically schedule per-guardian alerts."""
         if not self._enabled:
             return "disabled"
         current = now or datetime.now(timezone.utc)
@@ -100,18 +100,21 @@ class GuardAlertService:
         ):
             return "before_rollout"
 
-        link = await self._links.get_active_for_child(record.child_user_id)
-        if link is None:
+        links = await self._links.list_active_for_child(record.child_user_id)
+        if not links:
             return "no_active_link"
-        guardian_phone = await self._users.get_phone_by_id(link.guardian_user_id)
-        if guardian_phone is None:
+        guardian_phones: dict[str, str | None] = {}
+        for link in links:
+            guardian_phones[link.guardian_user_id] = await self._users.get_phone_by_id(
+                link.guardian_user_id
+            )
+        if not any(phone is not None for phone in guardian_phones.values()):
             return "no_guardian_phone"
 
         async with self._uow_factory() as uow:
             alerts: GuardAlertRepository = uow.guard_alerts
-            if await alerts.get_evaluation(result_id, link.guardian_user_id) is not None:
-                return "already_evaluated"
 
+            # Shared threshold-state evaluation (child/chat scoped, not per guardian).
             state_rows = await alerts.list_threshold_states(
                 child_user_id=record.child_user_id,
                 chat_id=record.chat_id,
@@ -145,7 +148,6 @@ class GuardAlertService:
                 signal_state=signal_state,
             )
             family = outcome.threshold_family
-            alert: GuardAlert | None = None
 
             for state in state_rows:
                 if state.last_processed_version >= record.target_version:
@@ -155,6 +157,7 @@ class GuardAlertService:
                 updated = self._advance_negative_state(state, record.target_version, current)
                 await alerts.save_threshold_state(updated)
 
+            should_alert = False
             if family is not None and outcome.should_alert:
                 state = await alerts.get_threshold_state(
                     child_user_id=record.child_user_id,
@@ -189,53 +192,85 @@ class GuardAlertService:
                         updated_at=current,
                     )
                     await alerts.save_threshold_state(state)
-                    if should_alert:
-                        alert = await self._build_alert(
-                            record=record,
-                            result_id=result_id,
-                            guardian_user_id=link.guardian_user_id,
-                            guardian_phone=guardian_phone,
-                            outcome=outcome,
-                            episode_start_version=state.episode_start_version or record.target_version,
-                            detected_at=record.created_at or current,
-                            now=current,
+                    episode_start_version = state.episode_start_version or record.target_version
+                else:
+                    episode_start_version = state.episode_start_version or record.target_version
+            else:
+                episode_start_version = record.target_version
+
+            # Fan out to each guardian independently.
+            any_scheduled = False
+            any_evaluated = True
+            for link in links:
+                guardian_user_id = link.guardian_user_id
+                guardian_phone = guardian_phones.get(guardian_user_id)
+                if await alerts.get_evaluation(result_id, guardian_user_id) is not None:
+                    continue
+                any_evaluated = False
+                if guardian_phone is None:
+                    await alerts.save_evaluation(
+                        GuardAlertEvaluation(
+                            analysis_result_id=result_id,
+                            guardian_user_id=guardian_user_id,
+                            child_user_id=record.child_user_id,
+                            chat_id=record.chat_id,
+                            target_version=record.target_version,
+                            policy_version=GUARD_ALERT_POLICY_VERSION,
+                            outcome=GuardAlertEvaluationOutcome.NO_ACTION,
+                            evaluated_at=current,
                         )
-
-            if alert is None:
-                await alerts.save_evaluation(
-                    GuardAlertEvaluation(
-                        analysis_result_id=result_id,
-                        guardian_user_id=link.guardian_user_id,
-                        child_user_id=record.child_user_id,
-                        chat_id=record.chat_id,
-                        target_version=record.target_version,
-                        policy_version=GUARD_ALERT_POLICY_VERSION,
-                        outcome=(
-                            GuardAlertEvaluationOutcome.NO_ACTION
-                            if not outcome.should_alert
-                            else GuardAlertEvaluationOutcome.SUPPRESSED
-                        ),
-                        evaluated_at=current,
                     )
-                )
-                return "no_action"
+                    continue
+                if should_alert:
+                    alert = await self._build_alert(
+                        record=record,
+                        result_id=result_id,
+                        guardian_user_id=guardian_user_id,
+                        guardian_phone=guardian_phone,
+                        outcome=outcome,
+                        episode_start_version=episode_start_version,
+                        detected_at=record.created_at or current,
+                        now=current,
+                    )
+                    await uow.scheduled_actions.create_once(self._scheduled_action(alert, guardian_phone))
+                    await alerts.save_alert(alert)
+                    await alerts.save_evaluation(
+                        GuardAlertEvaluation(
+                            analysis_result_id=result_id,
+                            guardian_user_id=guardian_user_id,
+                            child_user_id=record.child_user_id,
+                            chat_id=record.chat_id,
+                            target_version=record.target_version,
+                            policy_version=GUARD_ALERT_POLICY_VERSION,
+                            outcome=GuardAlertEvaluationOutcome.SCHEDULED,
+                            evaluated_at=current,
+                            alert_id=alert.id,
+                        )
+                    )
+                    any_scheduled = True
+                else:
+                    await alerts.save_evaluation(
+                        GuardAlertEvaluation(
+                            analysis_result_id=result_id,
+                            guardian_user_id=guardian_user_id,
+                            child_user_id=record.child_user_id,
+                            chat_id=record.chat_id,
+                            target_version=record.target_version,
+                            policy_version=GUARD_ALERT_POLICY_VERSION,
+                            outcome=(
+                                GuardAlertEvaluationOutcome.NO_ACTION
+                                if not outcome.should_alert
+                                else GuardAlertEvaluationOutcome.SUPPRESSED
+                            ),
+                            evaluated_at=current,
+                        )
+                    )
 
-            await uow.scheduled_actions.create_once(self._scheduled_action(alert, guardian_phone))
-            await alerts.save_alert(alert)
-            await alerts.save_evaluation(
-                GuardAlertEvaluation(
-                    analysis_result_id=result_id,
-                    guardian_user_id=link.guardian_user_id,
-                    child_user_id=record.child_user_id,
-                    chat_id=record.chat_id,
-                    target_version=record.target_version,
-                    policy_version=GUARD_ALERT_POLICY_VERSION,
-                    outcome=GuardAlertEvaluationOutcome.SCHEDULED,
-                    evaluated_at=current,
-                    alert_id=alert.id,
-                )
-            )
-            return "scheduled"
+            if any_scheduled:
+                return "scheduled"
+            if any_evaluated:
+                return "already_evaluated"
+            return "no_action"
 
     async def reconcile_pending(self, *, limit: int = 20) -> int:
         if not self._enabled:
@@ -296,6 +331,7 @@ class GuardAlertService:
                 str(outcome.threshold_family),
                 str(episode_start_version),
                 kind.value,
+                guardian_user_id,
             )
         )
         alert_id = str(uuid.uuid5(_NAMESPACE, event_key))
