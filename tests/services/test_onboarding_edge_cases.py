@@ -2244,6 +2244,37 @@ async def test_reconnect_qr_outcomes_keep_wrong_number_unresolved():
     assert request["status"] == "open"
 
 
+async def test_reconnect_verification_transport_failure_remains_retryable():
+    service, _bot, _users, _connections, _links, provisioner, requests, _request, _ref = (
+        await _reconnect_fixture()
+    )
+    provisioner.get_status.side_effect = RuntimeError("connector unavailable")
+    with pytest.raises(RuntimeError, match="connector unavailable"):
+        await service.handle_connection_established_by_id(
+            str(requests.request["child_user_id"])
+        )
+    assert requests.closed is False
+
+
+async def test_reconnect_clicks_record_safe_structured_events():
+    service, bot, _users, _connections, _links, provisioner, _requests, _request, _ref = (
+        await _reconnect_fixture()
+    )
+    recorded = []
+    events = AsyncMock()
+    events.record.side_effect = recorded.append
+    service._pipeline_events = events
+    provisioner.get_pairing_qr.return_value = PairingResult(outcome=PairingOutcome.PREPARING)
+    await service.handle_guard_reconnect(PHONE, "reconnect-request")
+    await service.handle_guard_reconnect_qr(PHONE, "reconnect-request")
+    assert [item.event_name for item in recorded] == [
+        "reconnect.parent_requested", "reconnect.qr_requested", "reconnect.qr_preparing"
+    ]
+    assert all(item.pipeline == "guard_reconnect" for item in recorded)
+    assert all(PHONE not in str(item.metadata) for item in recorded)
+    assert bot.sent_buttons
+
+
 async def test_guard_reconnect_callback_and_qr_preparing_without_onboarding():
     bot = FakeBot()
     users = FakeUserRepo()

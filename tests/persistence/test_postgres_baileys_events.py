@@ -12,11 +12,17 @@ from sqlalchemy import text
 from echo_v2.integrations.baileys.events import BaileysMessageEvent
 from echo_v2.persistence.baileys_events import BaileysEventRepository
 from echo_v2.persistence.postgres_guard import PostgresGuardianChildLinkRepository
+from echo_v2.persistence.postgres_pipeline_events import PostgresPipelineEventRepository
 from echo_v2.persistence.postgres_whatsapp_connections import (
     PostgresWhatsAppConnectionRepository,
 )
 from echo_v2.persistence.user_repository import PostgresUserRepository
-from echo_v2.ports.whatsapp import ConnectionStatus, ConnectionStatusSnapshot
+from echo_v2.ports.whatsapp import (
+    ConnectionStatus,
+    ConnectionStatusSnapshot,
+    PairingOutcome,
+    PairingResult,
+)
 from echo_v2.services.onboarding import OnboardingService
 
 pytestmark = pytest.mark.asyncio
@@ -181,6 +187,15 @@ async def test_consumer_claims_updates_and_enqueues_once(
         ).one()
 
     assert status == "pairing_required"
+    async with session_factory() as session:
+        events = (await session.execute(
+            text("SELECT event_name, event_id, metadata FROM pipeline_events WHERE pipeline='guard_reconnect' ORDER BY created_at, id")
+        )).all()
+    assert {row.event_name for row in events} >= {
+        "reconnect.auth_lost", "reconnect.notification_queued"
+    }
+    assert any(row.event_id == event_id for row in events)
+    assert all("phone" not in str(row.metadata) and "qr" not in str(row.metadata) for row in events)
     assert action["template"]["name"] == "guard_reconnect_v1"
     assert action["reconnect_request_id"]
     assert action["idempotency_key"].startswith("baileys-reauth:")
@@ -220,8 +235,8 @@ async def test_reconnect_request_queries_and_atomic_close(session_factory, clean
     connection_id = str(uuid.uuid4())
     request_id = str(uuid.uuid4())
     async with session_factory() as session:
-        await session.execute(text("INSERT INTO users(id, phone_number, first_name, onboarding_status) VALUES (:id, :phone, 'Auria', 'active')"), {"id": child_id, "phone": "972500000010"})
-        await session.execute(text("INSERT INTO users(id, phone_number, onboarding_status) VALUES (:id, :phone, 'active')"), {"id": guardian_id, "phone": "972500000011"})
+        await session.execute(text("INSERT INTO users(id, phone_number, first_name, onboarding_status) VALUES (:id, :phone, 'Auria', 'active')"), {"id": child_id, "phone": "+972500000010"})
+        await session.execute(text("INSERT INTO users(id, phone_number, onboarding_status) VALUES (:id, :phone, 'active')"), {"id": guardian_id, "phone": "+972500000011"})
         await session.execute(text("INSERT INTO whatsapp_connections(id, user_id, provider, provider_connection_id, credentials, webhook_token_hash, connection_status) VALUES (:id, :user_id, 'baileys', :provider_id, :credentials, :token, 'pairing_required')"), {"id": connection_id, "user_id": child_id, "provider_id": str(uuid.uuid4()), "credentials": b"", "token": b""})
         await session.execute(text("INSERT INTO guardian_child_links(guardian_user_id, child_user_id, status, guardian_authorized_at, safety_enabled_at) VALUES (:guardian, :child, 'active', now(), now())"), {"guardian": guardian_id, "child": child_id})
         await session.execute(text("INSERT INTO guard_reconnect_requests(id, child_user_id, guardian_user_id, episode_key, connection_id) VALUES (:id, :child, :guardian, 'episode-queries', :connection)"), {"id": request_id, "child": child_id, "guardian": guardian_id, "connection": connection_id})
@@ -231,6 +246,19 @@ async def test_reconnect_request_queries_and_atomic_close(session_factory, clean
     assert str((await repository.list_open_reconnect_requests_for_child(child_id))[0]["guardian_user_id"]) == guardian_id
     loaded = await repository.get_reconnect_request(request_id)
     assert loaded is not None and loaded["first_name"] == "Auria"
+    bot, provisioner = AsyncMock(), AsyncMock()
+    provisioner.get_pairing_qr.return_value = PairingResult(outcome=PairingOutcome.PREPARING)
+    onboarding = OnboardingService(
+        bot=bot, user_repo=PostgresUserRepository(session_factory),
+        connection_repo=PostgresWhatsAppConnectionRepository(session_factory),
+        provisioner=provisioner, webhook_base_url="https://echo.example.com",
+        guardian_child_links=PostgresGuardianChildLinkRepository(session_factory),
+        reconnect_requests=repository,
+    )
+    await onboarding.handle_guard_reconnect("972500000011", request_id)
+    assert bot.send_buttons.await_count == 1
+    await onboarding.handle_guard_reconnect_qr("972500000011", request_id)
+    provisioner.get_pairing_qr.assert_awaited_once()
     await repository.close_reconnect_episode(child_id, "episode-queries")
     assert await repository.list_open_reconnect_requests(guardian_id) == []
     await repository.close_open_reconnect_requests(child_id)
@@ -346,6 +374,8 @@ async def test_wrong_account_keeps_reconnect_episode_until_verified_recovery(
     assert await episode_state() == (episode, 2, 1)
     assert await apply_state(12, "connected", "open") is False
     assert await links.get_active_for_child(child_id) is None
+    assert await repository.reconnect_child_for_event(connector_id, 12) is None
+    assert await repository.reconnect_child_for_event(connector_id, 13) == child_id
 
     bot, provisioner = AsyncMock(), AsyncMock()
     provisioner.get_status.return_value = ConnectionStatusSnapshot(
@@ -383,8 +413,15 @@ async def test_wrong_account_keeps_reconnect_episode_until_verified_recovery(
     provisioner.get_status.return_value = ConnectionStatusSnapshot(
         status=ConnectionStatus.CONNECTED, phone_number=child_phone
     )
+    onboarding._pipeline_events = PostgresPipelineEventRepository(session_factory)
     await onboarding.handle_connection_established(child_id, child_phone)
     assert await episode_state() == (None, 0, 1)
+    async with session_factory() as session:
+        logged = (await session.execute(
+            text("SELECT event_name, metadata FROM pipeline_events WHERE pipeline='guard_reconnect' AND event_name='reconnect.verified'")
+        )).all()
+    assert len(logged) == 2
+    assert all("phone" not in str(item.metadata) for item in logged)
     assert await links.get_active_for_child(child_id) is not None
     assert bot.send_text.call_count == 3
     assert bot.send_text.call_args.args[0] == guardian2_phone

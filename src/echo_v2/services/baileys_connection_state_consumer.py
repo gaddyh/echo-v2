@@ -15,6 +15,7 @@ from echo_v2.observability.sanitizers import (
 )
 from echo_v2.observability.tracing import tracing_client
 from echo_v2.persistence.baileys_events import BaileysEventRepository
+from echo_v2.ports.whatsapp import ConnectionStatus
 
 __all__ = ["BaileysConnectionStateConsumer"]
 
@@ -57,12 +58,14 @@ class BaileysConnectionStateConsumer:
         lease_seconds: int = 60,
         max_attempts: int = 10,
         worker_id: str | None = None,
+        onboarding_service: Any | None = None,
     ) -> None:
         self._repository = repository
         self._poll_interval = poll_interval_seconds
         self._batch_size = batch_size
         self._lease_seconds = lease_seconds
         self._max_attempts = max_attempts
+        self._onboarding = onboarding_service
         self._worker_id = worker_id or f"echo-baileys-{socket.gethostname()}"
 
     async def run_once(self) -> int:
@@ -75,6 +78,12 @@ class BaileysConnectionStateConsumer:
         processed = 0
         for item in claimed:
             try:
+                if item.event.status is ConnectionStatus.CONNECTED and self._onboarding is not None:
+                    child_id = await self._repository.reconnect_child_for_event(
+                        item.event.connection_id, item.event.state_version
+                    )
+                    if child_id is not None:
+                        await self._onboarding.handle_connection_established_by_id(child_id)
                 await self._repository.process_claimed_event(
                     item,
                     notification_message=_DISCONNECTED_MESSAGE,
