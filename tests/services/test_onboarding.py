@@ -30,6 +30,7 @@ from echo_v2.integrations.green.provisioner import GreenProvisioner
 from echo_v2.persistence.guard_repositories import InMemoryGuardianChildLinkRepository
 from echo_v2.persistence.whatsapp_connections import (
     InMemoryWhatsAppConnectionRepository,
+    StoredConnection,
 )
 from echo_v2.ports.bot import BotContact, BotEvent, BotEventType
 from echo_v2.ports.whatsapp import (
@@ -1571,3 +1572,321 @@ async def test_qr_already_authorized_completes_onboarding(fakes):
     assert len(bot.sent) >= 1
     _phone, welcome = bot.sent[0]
     assert "היי" in welcome
+
+
+# --- Multi-guardian onboarding shortcut tests ------------------------------
+
+
+async def _setup_two_guardians(fakes):
+    """Set up two guardians and one child with a pending link for guardian-a."""
+    service, bot, user_repo, connection_repo, green_client = fakes
+    links = InMemoryGuardianChildLinkRepository()
+    service = OnboardingService(
+        bot=bot,
+        user_repo=user_repo,
+        connection_repo=connection_repo,
+        provisioner=service._provisioner,
+        green_client=green_client,
+        webhook_base_url="https://echo.example.com",
+        poll_interval=0.01,
+        poll_max_attempts=3,
+        guardian_child_links=links,
+    )
+    guardian_a_phone = "+972546610653"
+    guardian_b_phone = "+972546610660"
+    child_phone = "+972546610654"
+    guardian_a_id = await user_repo.create_user(
+        guardian_a_phone, first_name="Dana", onboarding_status="active"
+    )
+    guardian_b_id = await user_repo.create_user(
+        guardian_b_phone, first_name="Moshe", onboarding_status="active"
+    )
+    child_id = await user_repo.create_user(
+        child_phone, first_name="Uri", onboarding_status="active"
+    )
+    return service, bot, user_repo, connection_repo, green_client, links, {
+        "guardian_a_phone": guardian_a_phone,
+        "guardian_b_phone": guardian_b_phone,
+        "child_phone": child_phone,
+        "guardian_a_id": guardian_a_id,
+        "guardian_b_id": guardian_b_id,
+        "child_id": child_id,
+    }
+
+
+async def test_second_guardian_authorizes_skips_qr_when_child_connected(fakes):
+    """Scenario: child already connected, second guardian authorizes → activated immediately, no QR."""
+    service, bot, _user_repo, connection_repo, green_client, links, ids = await _setup_two_guardians(fakes)
+
+    # Guardian-a already has an active link (child was connected through them).
+    await links.upsert_active(
+        guardian_user_id=ids["guardian_a_id"],
+        child_user_id=ids["child_id"],
+        now=datetime.now(timezone.utc),
+    )
+    # Child's WhatsApp is already connected.
+    await connection_repo.save(StoredConnection(
+        user_id=ids["child_id"],
+        ref=ConnectionRef(provider="green", provider_connection_id="child-inst"),
+        credentials=ProviderCredentials(data=b"child-token"),
+        webhook_token_hash=b"hash",
+        status=ConnectionStatus.CONNECTED,
+    ))
+    green_client.account_phone = ids["child_phone"]
+
+    # Guardian-b sends child contact → pending link created.
+    await service.handle_parent_event(BotEvent(
+        event_id="contact", user_phone=ids["guardian_b_phone"],
+        type=BotEventType.CONTACT,
+        contact=BotContact(phone=ids["child_phone"], name="Uri"),
+    ))
+    pending_b = await links.get_pending_for_guardian(ids["guardian_b_id"])
+    assert len(pending_b) == 1
+
+    # Guardian-b authorizes → should skip QR and activate immediately.
+    await service.handle_onboarding_authorize(ids["guardian_b_phone"])
+
+    # Guardian-b's link is now active.
+    active_b = await links.get_active_for_pair(
+        guardian_user_id=ids["guardian_b_id"], child_user_id=ids["child_id"]
+    )
+    assert active_b is not None
+    # Guardian-b received success message.
+    assert any("Guard פעיל" in text for phone, text in bot.sent if phone == ids["guardian_b_phone"])
+    # No QR scan instructions sent to guardian-b.
+    assert not any(
+        "מכשירים מקושרים" in text
+        for phone, text in bot.sent
+        if phone == ids["guardian_b_phone"]
+    )
+    # No QR button sent to guardian-b.
+    assert not any(
+        phone == ids["guardian_b_phone"] and any(b["id"] == "onboarding:show_qr" for b in buttons)
+        for phone, _body, buttons in bot.sent_buttons
+    )
+
+
+async def test_second_guardian_authorizes_shows_preparing_when_child_provisioning(fakes):
+    """Scenario: child connection is PROVISIONING, second guardian gets 'still preparing'."""
+    service, bot, _user_repo, connection_repo, _green_client, links, ids = await _setup_two_guardians(fakes)
+
+    # Guardian-b sends child contact → pending link.
+    await service.handle_parent_event(BotEvent(
+        event_id="contact", user_phone=ids["guardian_b_phone"],
+        type=BotEventType.CONTACT,
+        contact=BotContact(phone=ids["child_phone"], name="Uri"),
+    ))
+
+    # Child's connection is PROVISIONING (guardian-a started but not finished).
+    await connection_repo.save(StoredConnection(
+        user_id=ids["child_id"],
+        ref=ConnectionRef(provider="green", provider_connection_id="child-inst"),
+        credentials=ProviderCredentials(data=b"child-token"),
+        webhook_token_hash=b"hash",
+        status=ConnectionStatus.PROVISIONING,
+    ))
+
+    # Guardian-b authorizes → should get "still preparing", not QR.
+    await service.handle_onboarding_authorize(ids["guardian_b_phone"])
+
+    # Guardian-b's link is still pending (not activated).
+    active_b = await links.get_active_for_pair(
+        guardian_user_id=ids["guardian_b_id"], child_user_id=ids["child_id"]
+    )
+    assert active_b is None
+    # Guardian-b received "still preparing" message.
+    assert any(
+        "בהכנה" in text and phone == ids["guardian_b_phone"]
+        for phone, text in bot.sent
+    )
+    # No QR scan instructions.
+    assert not any(
+        "מכשירים מקושרים" in text
+        for phone, text in bot.sent
+        if phone == ids["guardian_b_phone"]
+    )
+
+
+async def test_second_guardian_authorizes_shows_qr_when_no_child_connection(fakes):
+    """Scenario: no child connection exists, second guardian gets QR flow (existing behavior)."""
+    service, bot, _user_repo, _connection_repo, _green_client, links, ids = await _setup_two_guardians(fakes)
+
+    # Guardian-b sends child contact → pending link.
+    await service.handle_parent_event(BotEvent(
+        event_id="contact", user_phone=ids["guardian_b_phone"],
+        type=BotEventType.CONTACT,
+        contact=BotContact(phone=ids["child_phone"], name="Uri"),
+    ))
+
+    # No connection exists for the child.
+    await service.handle_onboarding_authorize(ids["guardian_b_phone"])
+
+    # Guardian-b's link is still pending.
+    active_b = await links.get_active_for_pair(
+        guardian_user_id=ids["guardian_b_id"], child_user_id=ids["child_id"]
+    )
+    assert active_b is None
+    # Guardian-b received QR scan instructions.
+    assert any(
+        "מכשירים מקושרים" in text and phone == ids["guardian_b_phone"]
+        for phone, text in bot.sent
+    )
+    # Guardian-b received QR button.
+    assert any(
+        phone == ids["guardian_b_phone"] and any(b["id"] == "onboarding:show_qr" for b in buttons)
+        for phone, _body, buttons in bot.sent_buttons
+    )
+
+
+async def test_second_guardian_authorizes_gets_phone_mismatch_when_connected_wrong_phone(fakes):
+    """Scenario: child connected but phone doesn't match → second guardian gets mismatch."""
+    service, bot, _user_repo, connection_repo, green_client, links, ids = await _setup_two_guardians(fakes)
+
+    # Guardian-b sends child contact → pending link.
+    await service.handle_parent_event(BotEvent(
+        event_id="contact", user_phone=ids["guardian_b_phone"],
+        type=BotEventType.CONTACT,
+        contact=BotContact(phone=ids["child_phone"], name="Uri"),
+    ))
+
+    # Child's connection is CONNECTED but with a different phone.
+    await connection_repo.save(StoredConnection(
+        user_id=ids["child_id"],
+        ref=ConnectionRef(provider="green", provider_connection_id="child-inst"),
+        credentials=ProviderCredentials(data=b"child-token"),
+        webhook_token_hash=b"hash",
+        status=ConnectionStatus.CONNECTED,
+    ))
+    green_client.account_phone = "+972501111111"  # Different from child_phone
+
+    # Guardian-b authorizes → _activate_child_connection detects mismatch.
+    await service.handle_onboarding_authorize(ids["guardian_b_phone"])
+
+    # Guardian-b's link is NOT activated.
+    active_b = await links.get_active_for_pair(
+        guardian_user_id=ids["guardian_b_id"], child_user_id=ids["child_id"]
+    )
+    assert active_b is None
+    # Guardian-b received phone mismatch message.
+    assert any(
+        "לא תואם" in text and phone == ids["guardian_b_phone"]
+        for phone, text in bot.sent
+    )
+
+
+async def test_both_guardians_pending_activate_when_child_connects(fakes):
+    """Scenario: both guardians authorized and pending, child connects → both activated."""
+    service, bot, _user_repo, connection_repo, green_client, links, ids = await _setup_two_guardians(fakes)
+
+    # Both guardians send child contact and authorize.
+    for g_phone, g_id in [
+        (ids["guardian_a_phone"], ids["guardian_a_id"]),
+        (ids["guardian_b_phone"], ids["guardian_b_id"]),
+    ]:
+        await service.handle_parent_event(BotEvent(
+            event_id=f"contact-{g_id}", user_phone=g_phone,
+            type=BotEventType.CONTACT,
+            contact=BotContact(phone=ids["child_phone"], name="Uri"),
+        ))
+        await service.handle_onboarding_authorize(g_phone)
+
+    # Both should have pending, authorized links.
+    for g_id in [ids["guardian_a_id"], ids["guardian_b_id"]]:
+        pending = await links.get_pending_for_guardian(g_id)
+        assert pending and pending[0].guardian_authorized_at is not None
+
+    # Child's connection becomes CONNECTED (no existing connection → QR flow was shown).
+    # Simulate the connection being established.
+    await connection_repo.save(StoredConnection(
+        user_id=ids["child_id"],
+        ref=ConnectionRef(provider="green", provider_connection_id="child-inst"),
+        credentials=ProviderCredentials(data=b"child-token"),
+        webhook_token_hash=b"hash",
+        status=ConnectionStatus.CONNECTED,
+    ))
+    green_client.account_phone = ids["child_phone"]
+
+    # _activate_child_connection activates ALL pending links.
+    result = await service._activate_child_connection(ids["child_id"])
+    assert result is True
+
+    # Both guardians have active links.
+    for g_id in [ids["guardian_a_id"], ids["guardian_b_id"]]:
+        active = await links.get_active_for_pair(
+            guardian_user_id=g_id, child_user_id=ids["child_id"]
+        )
+        assert active is not None
+
+    # Both guardians received success messages.
+    for g_phone in [ids["guardian_a_phone"], ids["guardian_b_phone"]]:
+        assert any(
+            "Guard פעיל" in text and phone == g_phone
+            for phone, text in bot.sent
+        )
+
+
+async def test_second_guardian_sends_already_connected_child_contact(fakes):
+    """Scenario: guardian-b sends contact of child they already have an active link for."""
+    service, bot, _user_repo, _connection_repo, _green_client, links, ids = await _setup_two_guardians(fakes)
+
+    # Guardian-b already has an active link to the child.
+    await links.upsert_active(
+        guardian_user_id=ids["guardian_b_id"],
+        child_user_id=ids["child_id"],
+        now=datetime.now(timezone.utc),
+    )
+
+    # Guardian-b sends the same child's contact again.
+    await service.handle_parent_event(BotEvent(
+        event_id="contact-again", user_phone=ids["guardian_b_phone"],
+        type=BotEventType.CONTACT,
+        contact=BotContact(phone=ids["child_phone"], name="Uri"),
+    ))
+
+    # Guardian-b sees "already connected" message.
+    assert any(
+        "כבר מחובר" in text and phone == ids["guardian_b_phone"]
+        for phone, text in bot.sent
+    )
+
+
+async def test_reauthorized_guardian_with_connected_child_skips_qr(fakes):
+    """Scenario: guardian re-authorizes (e.g. after restart) when child is already connected."""
+    service, bot, _user_repo, connection_repo, green_client, links, ids = await _setup_two_guardians(fakes)
+
+    # Guardian-a sends child contact.
+    await service.handle_parent_event(BotEvent(
+        event_id="contact", user_phone=ids["guardian_a_phone"],
+        type=BotEventType.CONTACT,
+        contact=BotContact(phone=ids["child_phone"], name="Uri"),
+    ))
+
+    # Child's connection is already CONNECTED (e.g. from a previous session).
+    await connection_repo.save(StoredConnection(
+        user_id=ids["child_id"],
+        ref=ConnectionRef(provider="green", provider_connection_id="child-inst"),
+        credentials=ProviderCredentials(data=b"child-token"),
+        webhook_token_hash=b"hash",
+        status=ConnectionStatus.CONNECTED,
+    ))
+    green_client.account_phone = ids["child_phone"]
+
+    # Guardian-a authorizes → should skip QR and activate.
+    await service.handle_onboarding_authorize(ids["guardian_a_phone"])
+
+    # Guardian-a's link is active.
+    active_a = await links.get_active_for_pair(
+        guardian_user_id=ids["guardian_a_id"], child_user_id=ids["child_id"]
+    )
+    assert active_a is not None
+    # Guardian-a received success message.
+    assert any(
+        "Guard פעיל" in text and phone == ids["guardian_a_phone"]
+        for phone, text in bot.sent
+    )
+    # No QR instructions.
+    assert not any(
+        "מכשירים מקושרים" in text
+        for phone, text in bot.sent
+        if phone == ids["guardian_a_phone"]
+    )
