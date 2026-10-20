@@ -133,6 +133,7 @@ async def test_empty_qr_is_a_timeout_and_lifecycle_calls_delegate():
 async def test_pairing_outcomes_are_normalized():
     responses = iter([
         {"outcome": "already_authorized"},
+        {"outcome": "preparing"},
         {"outcome": "timeout", "message": "not yet"},
     ])
 

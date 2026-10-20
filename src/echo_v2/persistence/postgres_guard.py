@@ -50,6 +50,16 @@ class PostgresGuardianChildLinkRepository:
             row = (await session.execute(stmt)).scalar_one_or_none()
             return self._to_domain(row) if row else None
 
+    async def list_active_for_child(self, child_user_id: str) -> list[GuardianChildLink]:
+        async with self._session_factory() as session:
+            stmt = select(GuardianChildLinkRow).where(
+                GuardianChildLinkRow.child_user_id == child_user_id,
+                GuardianChildLinkRow.status == GuardianChildLinkStatus.ACTIVE.value,
+                GuardianChildLinkRow.safety_enabled_at.is_not(None),
+            )
+            rows = (await session.execute(stmt)).scalars().all()
+            return [self._to_domain(row) for row in rows]
+
     async def get_active_for_pair(
         self, *, guardian_user_id: str, child_user_id: str
     ) -> GuardianChildLink | None:

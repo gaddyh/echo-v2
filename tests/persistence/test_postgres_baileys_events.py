@@ -56,6 +56,7 @@ async def test_consumer_claims_updates_and_enqueues_once(
 ):
     await _create_connector_tables(session_factory)
     user_id = str(uuid.uuid4())
+    guardian_id = str(uuid.uuid4())
     connection_id = str(uuid.uuid4())
     connector_id = str(uuid.uuid4())
     event_id = f"state:{connector_id}:42"
@@ -75,6 +76,14 @@ async def test_consumer_claims_updates_and_enqueues_once(
         await session.execute(
             text("INSERT INTO users(id, phone_number, onboarding_status) VALUES (:id, :phone, 'active')"),
             {"id": user_id, "phone": "972500000001"},
+        )
+        await session.execute(
+            text("INSERT INTO users(id, phone_number, onboarding_status) VALUES (:id, :phone, 'active')"),
+            {"id": guardian_id, "phone": "972500000009"},
+        )
+        await session.execute(
+            text("INSERT INTO guardian_child_links(guardian_user_id, child_user_id, status, guardian_authorized_at, safety_enabled_at) VALUES (:guardian, :child, 'active', now(), now())"),
+            {"guardian": guardian_id, "child": user_id},
         )
         await session.execute(
             text(
@@ -152,7 +161,7 @@ async def test_consumer_claims_updates_and_enqueues_once(
                 text(
                     "SELECT payload FROM scheduled_actions WHERE user_id=:user_id"
                 ),
-                {"user_id": user_id},
+                {"user_id": guardian_id},
             )
         ).scalar_one()
         ledger = (
@@ -165,7 +174,9 @@ async def test_consumer_claims_updates_and_enqueues_once(
         ).one()
 
     assert status == "pairing_required"
-    assert action["idempotency_key"] == f"baileys-reauth:{event_id}"
+    assert action["template"]["name"] == "guard_reconnect_v1"
+    assert action["reconnect_request_id"]
+    assert action["idempotency_key"].startswith("baileys-reauth:")
     assert ledger == ("processed", "pending")
     await repository.mark_notification_sent(event_id)
     async with session_factory() as session:

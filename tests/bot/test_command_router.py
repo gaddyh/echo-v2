@@ -15,6 +15,8 @@ from echo_v2.bot import (
     BotCommandRouter,
     Cancel,
     DigestOpen,
+    GuardReconnect,
+    GuardReconnectQr,
     ListDone,
     OnboardingAuthorize,
     OnboardingCode,
@@ -117,6 +119,14 @@ def test_parse_onboarding_authorize():
     assert isinstance(cmd, OnboardingAuthorize)
 
 
+def test_parse_reconnect_callbacks():
+    parser = BotCommandParser()
+    assert isinstance(parser.parse(_button_event("guard:reconnect")), GuardReconnect)
+    qr = parser.parse(_button_event("guard:reconnect_qr:req-1"))
+    assert isinstance(qr, GuardReconnectQr)
+    assert qr.request_id == "req-1"
+
+
 def test_parse_unknown_callback():
     parser = BotCommandParser()
     cmd = parser.parse(_button_event("unknown:foo:bar"))
@@ -124,6 +134,11 @@ def test_parse_unknown_callback():
 
 
 # --- Parser: text keywords --------------------------------------------------
+
+
+def test_parse_text_reconnect_button():
+    parser = BotCommandParser()
+    assert isinstance(parser.parse(_text_event("חיבור מחדש")), GuardReconnect)
 
 
 def test_parse_text_code():

@@ -39,6 +39,22 @@ def test_parse_text_message():
     assert event.timestamp is not None
 
 
+def test_parse_template_quick_reply_as_text():
+    adapter = Dialog360EventAdapter()
+    payload = {
+        "entry": [{"changes": [{"value": {"messages": [{
+            "id": "wamid.RECONNECT",
+            "from": "972500000001",
+            "type": "button",
+            "button": {"text": "חיבור מחדש"},
+        }]}}]}]
+    }
+    event = adapter.parse(payload)
+    assert event is not None
+    assert event.type is BotEventType.TEXT
+    assert event.text == "חיבור מחדש"
+
+
 def test_parse_contact_message():
     adapter = Dialog360EventAdapter()
     payload = {

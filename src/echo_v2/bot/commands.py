@@ -35,6 +35,8 @@ __all__ = [
     "Cancel",
     "DigestOpen",
     "GuardOpen",
+    "GuardReconnect",
+    "GuardReconnectQr",
     "ListDone",
     "OnboardingAuthorize",
     "OnboardingCode",
@@ -122,6 +124,20 @@ class OnboardingInfo:
 
 
 @dataclass(frozen=True)
+class GuardReconnect:
+    """Parent tapped the reconnect action from a disconnect notification."""
+
+    request_id: str | None = None
+
+
+@dataclass(frozen=True)
+class GuardReconnectQr:
+    """Parent requested a QR for a reconnect request."""
+
+    request_id: str
+
+
+@dataclass(frozen=True)
 class OnboardingCode:
     """Known user sent 'קוד' — resend OTP."""
 
@@ -143,6 +159,8 @@ BotCommand = (
     | ResponsibilityList
     | DigestOpen
     | GuardOpen
+    | GuardReconnect
+    | GuardReconnectQr
     | ListDone
     | OnboardingStart
     | OnboardingConnect
@@ -163,6 +181,7 @@ _QR_KEYWORD = "qr"
 _DIGEST_KEYWORD = "סיכום חדש"
 _DIGEST_KEYWORDS = ("סיכום חדש", "סיכום שיחה", "חדש")
 _GUARD_KEYWORD = "guard"
+_RECONNECT_BUTTON_TEXT = "חיבור מחדש"
 _VIEW_DETAILS_BUTTON = "צפה בשיחות"
 _LIST_DONE_TEXT = "סיימתי לעבור על רשימת ההמתנה"
 _CANCEL_KEYWORDS = {"cancel", "בטל", "ביטול", "stop"}
@@ -227,6 +246,14 @@ class BotCommandParser:
             )
 
         # onboarding:start, onboarding:info, onboarding:connect, onboarding:show_qr
+        if callback_id == "guard:reconnect":
+            return GuardReconnect()
+        if callback_id.startswith("guard:reconnect:"):
+            request_id = callback_id.removeprefix("guard:reconnect:")
+            return GuardReconnect(request_id=request_id) if request_id else None
+        if callback_id.startswith("guard:reconnect_qr:"):
+            request_id = callback_id.removeprefix("guard:reconnect_qr:")
+            return GuardReconnectQr(request_id=request_id) if request_id else None
         if callback_id == "onboarding:start":
             return OnboardingStart()
         if callback_id == "onboarding:connect":
@@ -250,6 +277,8 @@ class BotCommandParser:
             return OnboardingQr()
         if stripped.lower() == _GUARD_KEYWORD:
             return GuardOpen()
+        if stripped == _RECONNECT_BUTTON_TEXT:
+            return GuardReconnect()
         if any(kw in stripped for kw in _DIGEST_KEYWORDS):
             return DigestOpen()
         if stripped.strip("[]") == _VIEW_DETAILS_BUTTON:

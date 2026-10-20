@@ -224,6 +224,7 @@ def create_app() -> FastAPI:
         webhook_base_url=webhook_base_url,
         pool=pool,
         guardian_child_links=repos.guardian_child_links,
+        reconnect_requests=repos.baileys_events,
     )
 
     # --- scheduling service (executes due actions) ------------------------

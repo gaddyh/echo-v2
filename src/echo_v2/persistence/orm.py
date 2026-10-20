@@ -69,6 +69,7 @@ __all__ = [
     "GuardExposureDeliveryRow",
     "GuardParentAttentionDeliveryOutcomeRow",
     "GuardParentAttentionDeliveryRow",
+    "GuardReconnectRequestRow",
     "GuardSimpleAssessmentRow",
     "GuardThresholdStateRow",
     "GuardianChildLinkRow",
@@ -716,6 +717,29 @@ class GuardianChildLinkRow(Base):
             name="guardian_child_links_status_check",
         ),
         Index("ix_guardian_child_links_child_status", "child_user_id", "status"),
+    )
+
+
+class GuardReconnectRequestRow(Base):
+    __tablename__ = "guard_reconnect_requests"
+
+    id: Mapped[str] = mapped_column(Uuid, primary_key=True, server_default=text("gen_random_uuid()"))
+    child_user_id: Mapped[str] = mapped_column(Uuid, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    guardian_user_id: Mapped[str] = mapped_column(Uuid, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    episode_key: Mapped[str] = mapped_column(Text, nullable=False)
+    connection_id: Mapped[str] = mapped_column(Uuid, ForeignKey("whatsapp_connections.id", ondelete="CASCADE"), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'open'"))
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, server_default=func.now())
+    closed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "guardian_user_id", "child_user_id", "episode_key",
+            name="guard_reconnect_requests_guardian_child_episode_key",
+        ),
+        CheckConstraint("status IN ('open', 'closed')", name="guard_reconnect_requests_status_check"),
+        Index("ix_guard_reconnect_requests_open_child_episode", "child_user_id", "episode_key"),
     )
 
 

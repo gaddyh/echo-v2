@@ -29,6 +29,8 @@ from echo_v2.bot.commands import (
     Cancel,
     DigestOpen,
     GuardOpen,
+    GuardReconnect,
+    GuardReconnectQr,
     ListDone,
     OnboardingAuthorize,
     OnboardingCode,
@@ -112,6 +114,10 @@ class OnboardingEntry(Protocol):
     async def handle_onboarding_start(self, phone: str) -> None: ...
 
     async def handle_onboarding_info(self, phone: str) -> None: ...
+
+    async def handle_guard_reconnect(self, phone: str, request_id: str | None) -> None: ...
+
+    async def handle_guard_reconnect_qr(self, phone: str, request_id: str) -> None: ...
 
 
 class FlowRegistry(Protocol):
@@ -253,6 +259,10 @@ class BotCommandRouter:
                 await self._handlers.handle_digest_open(event)
             case GuardOpen():
                 await self._handlers.handle_guard_open(event)
+            case GuardReconnect(request_id=request_id):
+                await self._onboarding.handle_guard_reconnect(event.user_phone, request_id)
+            case GuardReconnectQr(request_id=request_id):
+                await self._onboarding.handle_guard_reconnect_qr(event.user_phone, request_id)
             case ListDone():
                 await self._handlers.handle_list_done(event)
             case OnboardingCode():

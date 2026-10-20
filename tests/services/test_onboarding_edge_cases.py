@@ -22,6 +22,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from echo_v2.integrations.green.provisioner import GreenProvisioner
+from echo_v2.persistence.guard_repositories import InMemoryGuardianChildLinkRepository
 from echo_v2.persistence.whatsapp_connections import (
     InMemoryWhatsAppConnectionRepository,
     StoredConnection,
@@ -270,6 +271,40 @@ class FailingProvisioner:
 
     async def create_connection(self, config: ConnectionConfig) -> CreatedConnection:
         raise RuntimeError("provision boom")
+
+
+class FakeReconnectRepository:
+    def __init__(self, request: dict[str, object]) -> None:
+        self.request = request
+        self.closed = False
+        self.activated = False
+
+    async def list_open_reconnect_requests(self, guardian_user_id: str) -> list[dict[str, object]]:
+        return [self.request] if self.request["guardian_user_id"] == guardian_user_id and not self.closed else []
+
+    async def list_open_reconnect_requests_for_child(self, child_user_id: str) -> list[dict[str, object]]:
+        return [self.request] if self.request["child_user_id"] == child_user_id and not self.closed else []
+
+    async def get_reconnect_request(self, request_id: str) -> dict[str, object] | None:
+        return self.request if self.request["id"] == request_id else None
+
+    async def close_open_reconnect_requests(self, child_user_id: str) -> None:
+        self.closed = True
+
+    async def activate_and_close_reconnect(self, *, guardian_user_id: str, child_user_id: str) -> None:
+        self.activated = True
+        self.closed = True
+
+
+class FakeBaileysProvisioner:
+    def __init__(self, result: PairingResult) -> None:
+        self.result = result
+
+    async def get_pairing_qr(self, connection: ConnectionRef) -> PairingResult:
+        return self.result
+
+    async def get_status(self, connection: ConnectionRef) -> ConnectionStatusSnapshot:
+        return ConnectionStatusSnapshot(ConnectionStatus.CONNECTED, "open", "+972546610654")
 
 
 # --- Fixtures --------------------------------------------------------------
@@ -2089,3 +2124,58 @@ async def test_provider_status_poll_times_out() -> None:
     service._provisioner = provisioner
     await service._poll_provider_status(user_id, PHONE, conn.ref)
     assert any("לא התחברת בזמן" in text for _phone, text in bot.sent)
+
+
+async def test_guard_reconnect_callback_and_qr_preparing_without_onboarding():
+    bot = FakeBot()
+    users = FakeUserRepo()
+    connections = InMemoryWhatsAppConnectionRepository()
+    links = InMemoryGuardianChildLinkRepository()
+    guardian = await users.create_user(PHONE, first_name="Dana", onboarding_status="active")
+    child = await users.create_user("+972546610654", first_name="אוריה", onboarding_status="active")
+    from datetime import datetime, timezone
+    await links.upsert_active(guardian_user_id=guardian, child_user_id=child, now=datetime.now(timezone.utc))
+    await connections.save(StoredConnection(
+        user_id=child, ref=ConnectionRef("baileys", "child-connection"),
+        credentials=ProviderCredentials(data=b""), webhook_token_hash=b"",
+        status=ConnectionStatus.PAIRING_REQUIRED,
+    ))
+    request = {
+        "id": "request-1", "child_user_id": child, "guardian_user_id": guardian,
+        "episode_key": "episode-1", "connection_id": "connection-row",
+        "status": "open", "connection_status": ConnectionStatus.PAIRING_REQUIRED.value,
+        "first_name": "אוריה",
+    }
+    reconnect = FakeReconnectRepository(request)
+    service = OnboardingService(
+        bot=bot, user_repo=users, connection_repo=connections,
+        provisioner=FakeBaileysProvisioner(PairingResult(outcome=PairingOutcome.PREPARING)),
+        green_client=None, webhook_base_url="https://echo.example.com",
+        guardian_child_links=links, reconnect_requests=reconnect,
+    )
+    await service.handle_guard_reconnect(PHONE)
+    assert bot.sent_buttons[0][2][0]["id"] == "guard:reconnect_qr:request-1"
+    await service.handle_guard_reconnect_qr(PHONE, "request-1")
+    assert any("מכינים" in text for _phone, text in bot.sent)
+
+
+async def test_guard_reconnect_rejects_closed_request():
+    bot = FakeBot()
+    users = FakeUserRepo()
+    connections = InMemoryWhatsAppConnectionRepository()
+    guardian = await users.create_user(PHONE, onboarding_status="active")
+    request = {
+        "id": "request-2", "child_user_id": "child-2", "guardian_user_id": guardian,
+        "status": "closed", "connection_status": ConnectionStatus.CONNECTED.value,
+        "first_name": "אוריה",
+    }
+    reconnect = FakeReconnectRepository(request)
+    service = OnboardingService(
+        bot=bot, user_repo=users, connection_repo=connections,
+        provisioner=FakeBaileysProvisioner(PairingResult(outcome=PairingOutcome.TIMEOUT)),
+        green_client=None, webhook_base_url="https://echo.example.com",
+        reconnect_requests=reconnect,
+    )
+    await service.handle_guard_reconnect(PHONE, "request-2")
+    await service.handle_guard_reconnect_qr(PHONE, "request-2")
+    assert len(bot.sent) == 2
