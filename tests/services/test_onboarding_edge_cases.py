@@ -2213,6 +2213,33 @@ async def test_guard_reconnect_handles_invalid_and_unavailable_requests():
     assert any("זמינה" in text for _phone, text in bot.sent)
 
 
+async def test_guard_reconnect_handles_missing_and_terminal_states():
+    service, bot, _users, _connections, _green_client = _make_service()
+    await service.handle_guard_reconnect(PHONE)
+    assert bot.sent == []
+
+    users = FakeUserRepo()
+    connections = InMemoryWhatsAppConnectionRepository()
+    guardian = await users.create_user(PHONE, onboarding_status="active")
+    request = {
+        "id": "request-4", "child_user_id": "child-4", "guardian_user_id": guardian,
+        "status": "open", "connection_status": ConnectionStatus.PAIRING_REQUIRED.value,
+        "first_name": "אוריה",
+    }
+    reconnect = FakeReconnectRepository(request)
+    reconnect.closed = True
+    service = OnboardingService(
+        bot=bot, user_repo=users, connection_repo=connections,
+        provisioner=FakeBaileysProvisioner(PairingResult(outcome=PairingOutcome.TIMEOUT)),
+        green_client=None, webhook_base_url="https://echo.example.com",
+        reconnect_requests=reconnect,
+    )
+    await service.handle_guard_reconnect(PHONE)
+    assert any("אינה זמינה" in text for _phone, text in bot.sent)
+    await service.handle_guard_reconnect_qr(PHONE, "request-4")
+    assert any("כבר" in text for _phone, text in bot.sent)
+
+
 async def test_guard_reconnect_rejects_closed_request():
     bot = FakeBot()
     users = FakeUserRepo()

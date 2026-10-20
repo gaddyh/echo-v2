@@ -201,6 +201,12 @@ async def test_consumer_claims_updates_and_enqueues_once(
     assert await repository.process_claimed_event(connected_claim, notification_message="reauth") is False
 
 
+async def test_recent_event_queries(session_factory, clean_db):
+    repository = BaileysEventRepository(session_factory)
+    assert isinstance(await repository.recent_connection_events(), list)
+    assert isinstance(await repository.recent_processing_failures(), list)
+
+
 async def test_reconnect_request_queries_and_atomic_close(session_factory, clean_db):
     child_id = str(uuid.uuid4())
     guardian_id = str(uuid.uuid4())
