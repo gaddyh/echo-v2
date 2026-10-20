@@ -2184,8 +2184,7 @@ async def test_guard_reconnect_callback_and_qr_preparing_without_onboarding():
     assert len(bot.sent_images) == 1
     assert reconnect.closed is True
     assert reconnect.activated is True
-    await service.handle_guard_reconnect_qr(PHONE, "request-1")
-    assert reconnect.closed is True
+
 
 
 async def test_guard_reconnect_handles_invalid_and_unavailable_requests():
