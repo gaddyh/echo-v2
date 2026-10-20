@@ -75,7 +75,10 @@ async def test_unknown_connection_and_lease_owner_are_safe(session_factory, clea
         await session.commit()
 
     repository = BaileysEventRepository(session_factory)
-    claimed = (await repository.claim_batch("owner", batch_size=10, lease_seconds=60))[0]
+    claimed = next(
+        item for item in await repository.claim_batch("owner", batch_size=1000, lease_seconds=60)
+        if item.event.event_id == event_id
+    )
     assert await repository.process_claimed_event(
         replace(claimed, worker_id="other"), notification_message="reauth"
     ) is False

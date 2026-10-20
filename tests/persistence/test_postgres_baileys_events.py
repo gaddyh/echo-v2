@@ -276,9 +276,9 @@ async def test_wrong_account_keeps_reconnect_episode_until_verified_recovery(
         await session.execute(
             text("""INSERT INTO whatsapp_connections(
                 id, user_id, provider, provider_connection_id, credentials,
-                webhook_token_hash, connection_status
+                webhook_token_hash, connection_status, last_authenticated_at
             ) VALUES (:id, :user_id, 'baileys', :provider_id, :credentials,
-                      :webhook_hash, 'connected')"""),
+                      :webhook_hash, 'connected', now())"""),
             {"id": connection_id, "user_id": child_id, "provider_id": connector_id,
              "credentials": b"", "webhook_hash": b""},
         )
@@ -290,8 +290,8 @@ async def test_wrong_account_keeps_reconnect_episode_until_verified_recovery(
 
     repository = BaileysEventRepository(session_factory)
 
-    async def apply_state(version: int, status: str, raw: str) -> bool:
-        event_id = f"state:{connector_id}:{version}"
+    async def apply_state(version: int | None, status: str, raw: str) -> bool:
+        event_id = f"state:{connector_id}:{version if version is not None else 'legacy'}"
         payload = {
             "schema_version": 1, "event_type": "connection_state", "event_id": event_id,
             "provider": "baileys", "connection_id": connector_id, "status": status,
@@ -328,12 +328,23 @@ async def test_wrong_account_keeps_reconnect_episode_until_verified_recovery(
             )).scalar_one()
             return episode, open_requests, actions
 
-    assert await apply_state(1, "pairing_required", "logged_out:401") is True
+    assert await apply_state(10, "degraded", "disconnect:500") is False
+    assert await episode_state() == (None, 0, 0)
+    assert await apply_state(11, "pairing_required", "logged_out:401") is True
     episode, open_count, action_count = await episode_state()
     assert episode is not None and (open_count, action_count) == (2, 1)
     links = PostgresGuardianChildLinkRepository(session_factory)
     assert await links.get_active_for_child(child_id) is None
-    assert await apply_state(2, "connected", "open") is False
+    assert await apply_state(9, "connected", "open") is False
+    assert await apply_state(None, "connected", "open") is False
+    async with session_factory() as session:
+        status, version = (await session.execute(
+            text("SELECT connection_status, baileys_state_version FROM whatsapp_connections WHERE id=:id"),
+            {"id": connection_id},
+        )).one()
+    assert (status, version) == ("pairing_required", 11)
+    assert await episode_state() == (episode, 2, 1)
+    assert await apply_state(12, "connected", "open") is False
     assert await links.get_active_for_child(child_id) is None
 
     bot, provisioner = AsyncMock(), AsyncMock()
@@ -359,10 +370,10 @@ async def test_wrong_account_keeps_reconnect_episode_until_verified_recovery(
     assert "לא תואם" in bot.send_text.call_args.args[1]
     assert await episode_state() == (episode, 2, 1)
     assert await links.get_active_for_child(child_id) is None
-    assert await apply_state(3, "pairing_required", "logged_out:401") is False
+    assert await apply_state(13, "pairing_required", "logged_out:401") is False
     assert await episode_state() == (episode, 2, 1)
 
-    assert await apply_state(4, "connected", "open") is False
+    assert await apply_state(14, "connected", "open") is False
     async with session_factory() as session:
         await session.execute(
             text("UPDATE guardian_child_links SET status='revoked' WHERE guardian_user_id=:guardian"),
@@ -377,10 +388,18 @@ async def test_wrong_account_keeps_reconnect_episode_until_verified_recovery(
     assert await links.get_active_for_child(child_id) is not None
     assert bot.send_text.call_count == 3
     assert bot.send_text.call_args.args[0] == guardian2_phone
-    assert await apply_state(5, "pairing_required", "logged_out:401") is True
+    assert await apply_state(15, "pairing_required", "logged_out:401") is True
     new_episode, open_count, action_count = await episode_state()
     assert new_episode is not None and new_episode != episode
     assert (open_count, action_count) == (1, 1)
+    assert await apply_state(8, "connected", "open") is False
+    assert await episode_state() == (new_episode, 1, 1)
+    async with session_factory() as session:
+        status, version = (await session.execute(
+            text("SELECT connection_status, baileys_state_version FROM whatsapp_connections WHERE id=:id"),
+            {"id": connection_id},
+        )).one()
+    assert (status, version) == ("pairing_required", 15)
 
 
 async def test_initial_verified_child_pairing_records_authenticated_boundary(

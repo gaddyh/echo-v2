@@ -25,6 +25,7 @@ from typing import Any
 
 from sqlalchemy import (
     ARRAY,
+    BigInteger,
     Boolean,
     CheckConstraint,
     ForeignKey,
@@ -155,6 +156,7 @@ class WhatsAppConnectionRow(Base):
     provider_raw_status: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_authenticated_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
     auth_loss_episode_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    baileys_state_version: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True),
         nullable=False,

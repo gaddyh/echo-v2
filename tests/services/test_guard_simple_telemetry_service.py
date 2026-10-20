@@ -229,7 +229,10 @@ async def test_activity_chat_name_filter_spans_analyzers_and_paginates() -> None
     await exposure.save(replace(matching, id="other-exposure", chat_id="other@g.us", chat_name="Other group"))
     service._exposure_assessments = exposure
 
-    first = await service.list_activity(session_id=session_id, chat_name="  cLaSs  ", limit=2)
+    first = await service.list_activity(
+        session_id=session_id, chat_name="  cLaSs  ", limit=2,
+        date_from=NOW - timedelta(hours=4), date_to=NOW + timedelta(minutes=4),
+    )
     assert first is not None
     assert len(first.analyses) == 2
     assert first.summary["analyzed"] == 4
@@ -237,7 +240,8 @@ async def test_activity_chat_name_filter_spans_analyzers_and_paginates() -> None
     assert [row["chat_name"] for row in first.analyses] == ["Class group", "Class group"]
 
     second = await service.list_activity(
-        session_id=session_id, chat_name="class", limit=2, cursor=first.next_cursor
+        session_id=session_id, chat_name="class", limit=2, cursor=first.next_cursor,
+        date_from=NOW - timedelta(hours=4), date_to=NOW + timedelta(minutes=4),
     )
     assert second is not None
     assert len(second.analyses) == 2

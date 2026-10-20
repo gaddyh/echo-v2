@@ -236,6 +236,7 @@ class BaileysEventRepository:
                             """
                             SELECT c.id, c.user_id, c.connection_status,
                                    c.last_authenticated_at, c.auth_loss_episode_key,
+                                   c.baileys_state_version,
                                    u.onboarding_status, u.phone_number, u.first_name
                               FROM whatsapp_connections c
                               JOIN users u ON u.id = c.user_id
@@ -249,6 +250,25 @@ class BaileysEventRepository:
                 ).mappings().one_or_none()
                 if connection is None:
                     await self._fail(session, event.event_id, "unknown Echo Baileys connection")
+                    return False
+
+                last_version = connection["baileys_state_version"]
+                if last_version is not None and (
+                    event.state_version is None or event.state_version <= last_version
+                ):
+                    await session.execute(
+                        text(
+                            """
+                            UPDATE baileys_connector_event_processing
+                               SET status = 'processed', processed_at = :processed_at,
+                                   notification_state = 'none', updated_at = :processed_at
+                             WHERE event_id = :event_id
+                               AND claimed_by = :worker_id AND status = 'claimed'
+                            """
+                        ),
+                        {"processed_at": now, "event_id": event.event_id,
+                         "worker_id": claimed.worker_id},
+                    )
                     return False
 
                 auth_loss = (
@@ -270,6 +290,7 @@ class BaileysEventRepository:
                         UPDATE whatsapp_connections
                            SET connection_status = :status,
                                provider_raw_status = :raw_status,
+                               baileys_state_version = COALESCE(:state_version, baileys_state_version),
                                updated_at = :updated_at
                          WHERE id = :id
                         """
@@ -277,6 +298,7 @@ class BaileysEventRepository:
                     {
                         "status": event.status.value,
                         "raw_status": event.provider_raw_status,
+                        "state_version": event.state_version,
                         "updated_at": now,
                         "id": connection["id"],
                     },
