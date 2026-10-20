@@ -23,8 +23,8 @@ from echo_v2.observability.tracing import tracing_client
 
 _logger = logging.getLogger("echo_v2.services.guard_simple_analyzer")
 
-SIMPLE_GUARD_PROMPT_VERSION = "baseline-b-v2-urgency"
-SIMPLE_GUARD_ANALYZER_VERSION = "2026-10-16.2"
+SIMPLE_GUARD_PROMPT_VERSION = "baseline-b-v4-hebrew-summary"
+SIMPLE_GUARD_ANALYZER_VERSION = "2026-10-21.2"
 
 
 class SimpleSafetyLLMOutput(BaseModel):
@@ -76,20 +76,24 @@ outside the supplied conversation.
 
 Return one boolean answer: parent_should_know = true or false.
 
-Set parent_should_know to true when the conversation contains a meaningful
-concern about the monitored child's safety, wellbeing, boundaries, or treatment
-by others that warrants bringing it to a parent's attention. This includes
-meaningful bullying or humiliation, coercion, blackmail, threats to publish
-private or humiliating material, pressure to meet alone or secretly, repeated
-boundary violations, or meaningful emotional distress. It is a single
-parent-attention judgment, not a clinical severity or notification decision.
+Set parent_should_know to true only when the monitored child's own safety,
+wellbeing, or boundaries are meaningfully at risk and the conversation
+warrants bringing it to a parent's attention. This includes meaningful
+bullying or humiliation of the child, coercion or blackmail targeting the
+child, threats to publish private or humiliating material of the child,
+pressure on the child to meet alone or secretly, repeated violations of the
+child's boundaries, or meaningful emotional distress. Harmful behavior
+committed solely by the monitored child against others is outside this
+analyzer's scope. It is a single parent-attention judgment, not a clinical
+severity or notification decision.
 
 Set parent_should_know to false for ordinary social activity, age-appropriate
 behavior, harmless teasing, normal reciprocal disagreements, an ordinary
-meetup, an isolated mild insult, or vague sadness without meaningful evidence
-of harm or escalating concern. Do not infer danger merely from a meeting
-request, location request, unfamiliar participant, or isolated negative phrase.
-Consider harmless explanations and the full conversation.
+meetup, an isolated mild insult, vague sadness without meaningful evidence
+of harm or escalating concern, or harmful conduct by the monitored child
+toward others that does not put the child at risk. Do not infer danger merely
+from a meeting request, location request, unfamiliar participant, or isolated
+negative phrase. Consider harmless explanations and the full conversation.
 
 The answer is about whether this current observed conversation is worth a
 parent knowing. An unresolved prior concern is context, not an automatic true
@@ -97,7 +101,7 @@ answer, and a quiet or empty current window is not proof that a prior concern
 was resolved. If the child identity, supplied context, or model result cannot
 be trusted, the backend records an internal unknown outcome rather than a
 confident false answer. Cite only exact message IDs supplied in the
-conversation.
+conversation. Write the summary in Hebrew.
 """
 
 
