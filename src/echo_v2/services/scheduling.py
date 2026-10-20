@@ -400,12 +400,17 @@ class SchedulingService:
         if bot is None:
             return "bot_sent"
         if inp.template is not None:
+            template_kwargs: dict[str, Any] = {}
+            if inp.template.get("url_suffix") is not None:
+                template_kwargs["url_suffix"] = inp.template["url_suffix"]
+            if inp.template.get("quick_reply_payload") is not None:
+                template_kwargs["quick_reply_payload"] = inp.template["quick_reply_payload"]
             msg_id = await bot.send_template(
                 inp.chat_id,
                 inp.template["name"],
                 inp.template["language"],
                 inp.template["body_params"],
-                url_suffix=inp.template.get("url_suffix"),
+                **template_kwargs,
             )
             return msg_id or "bot_sent"
         if inp.buttons:

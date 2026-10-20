@@ -2159,7 +2159,7 @@ async def test_guard_reconnect_callback_and_qr_preparing_without_onboarding():
     ))
     request = {
         "id": "request-1", "child_user_id": child, "guardian_user_id": guardian,
-        "episode_key": "episode-1", "connection_id": "connection-row",
+        "episode_key": "episode-1", "connection_id": None,
         "status": "open", "connection_status": ConnectionStatus.PAIRING_REQUIRED.value,
         "first_name": "אוריה",
     }

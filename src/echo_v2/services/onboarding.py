@@ -890,7 +890,27 @@ class OnboardingService:
             await self._bot.send_text(phone, "החיבור כבר חודש או שהבקשה אינה זמינה.")
             return
         child_name = str(request.get("first_name") or "הילד/ה")
-        if request.get("status") != "open" or request.get("connection_status") == ConnectionStatus.CONNECTED.value:
+        child_id = str(request["child_user_id"])
+        link = (
+            await self._guardian_child_links.get_active_for_pair(
+                guardian_user_id=ctx.user_id, child_user_id=child_id
+            )
+            if self._guardian_child_links is not None
+            else None
+        )
+        conn = await self._connection_repo.get_by_user(child_id)
+        if (
+            link is None
+            or conn is None
+            or (
+                conn.id is not None
+                and request.get("connection_id") is not None
+                and str(conn.id) != str(request.get("connection_id"))
+            )
+        ):
+            await self._bot.send_text(phone, "הבקשה אינה זמינה.")
+            return
+        if request.get("status") != "open" or conn.status is ConnectionStatus.CONNECTED:
             await self._bot.send_text(phone, _RECONNECT_ALREADY_ACTIVE.format(name=child_name))
             return
         reconnect_id = str(request["id"])
@@ -910,8 +930,22 @@ class OnboardingService:
             return
         child_id = str(request["child_user_id"])
         child_name = str(request.get("first_name") or "הילד/ה")
+        link = (
+            await self._guardian_child_links.get_active_for_pair(
+                guardian_user_id=ctx.user_id, child_user_id=child_id
+            )
+            if self._guardian_child_links is not None
+            else None
+        )
         conn = await self._connection_repo.get_by_user(child_id)
-        if request.get("status") != "open" or (conn is not None and conn.status is ConnectionStatus.CONNECTED):
+        if link is None or conn is None or (
+            conn.id is not None
+            and request.get("connection_id") is not None
+            and str(conn.id) != str(request.get("connection_id"))
+        ):
+            await self._bot.send_text(phone, "הבקשה אינה זמינה.")
+            return
+        if request.get("status") != "open" or conn.status is ConnectionStatus.CONNECTED:
             await self._bot.send_text(phone, _RECONNECT_ALREADY_ACTIVE.format(name=child_name))
             return
         if conn is None:
@@ -1407,15 +1441,19 @@ class OnboardingService:
                 child_user_id=child_user_id,
                 now=datetime.now(timezone.utc),
             )
-        guardian_phone = await self._lookup_phone(link.guardian_user_id)
-        if guardian_phone is not None:
-            child = await self._user_repo.get_by_phone(normalized_child_phone)
-            child_name = (
-                child[2] if child and child[2] else normalized_child_phone
-            )
-            await self._bot.send_text(
-                guardian_phone, _PARENT_SUCCESS.format(name=child_name)
-            )
+        child = await self._user_repo.get_by_phone(normalized_child_phone)
+        child_name = child[2] if child and child[2] else normalized_child_phone
+        guardian_ids = (
+            [str(request["guardian_user_id"]) for request in open_requests]
+            if open_requests
+            else [link.guardian_user_id]
+        )
+        for guardian_id in dict.fromkeys(guardian_ids):
+            guardian_phone = await self._lookup_phone(guardian_id)
+            if guardian_phone is not None:
+                await self._bot.send_text(
+                    guardian_phone, _PARENT_SUCCESS.format(name=child_name)
+                )
         return True
 
     async def handle_connection_established(

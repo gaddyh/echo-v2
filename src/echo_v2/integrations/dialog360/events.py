@@ -103,13 +103,16 @@ class Dialog360EventAdapter:
             # the application can match on the button text.
             button = message.get("button", {})
             text = button.get("text", "") if isinstance(button, dict) else ""
-            if not text:
+            button_payload = button.get("payload", "") if isinstance(button, dict) else ""
+            if not text and not button_payload:
                 return None
             return BotEvent(
                 event_id=msg_id,
                 user_phone=str(user_phone),
-                type=BotEventType.TEXT,
-                text=str(text),
+                type=BotEventType.BUTTON_REPLY if button_payload else BotEventType.TEXT,
+                text=str(text) if text else None,
+                button_id=str(button_payload) if button_payload else None,
+                button_payload=str(button_payload) if button_payload else None,
                 timestamp=timestamp,
             )
 

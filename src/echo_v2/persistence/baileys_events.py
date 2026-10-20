@@ -235,6 +235,7 @@ class BaileysEventRepository:
                         text(
                             """
                             SELECT c.id, c.user_id, c.connection_status,
+                                   c.last_authenticated_at, c.auth_loss_episode_key,
                                    u.onboarding_status, u.phone_number, u.first_name
                               FROM whatsapp_connections c
                               JOIN users u ON u.id = c.user_id
@@ -250,10 +251,18 @@ class BaileysEventRepository:
                     await self._fail(session, event.event_id, "unknown Echo Baileys connection")
                     return False
 
-                should_notify = (
+                auth_loss = (
                     event.status is ConnectionStatus.PAIRING_REQUIRED
-                    and connection["onboarding_status"] == "active"
                     and _is_real_auth_loss(event.provider_raw_status)
+                )
+                should_notify = (
+                    auth_loss
+                    and (
+                        connection["last_authenticated_at"] is not None
+                        or connection["connection_status"] == ConnectionStatus.CONNECTED.value
+                    )
+                    and connection["onboarding_status"] == "active"
+                    and connection["auth_loss_episode_key"] is None
                 )
                 await session.execute(
                     text(
@@ -261,7 +270,15 @@ class BaileysEventRepository:
                         UPDATE whatsapp_connections
                            SET connection_status = :status,
                                provider_raw_status = :raw_status,
-                               updated_at = :updated_at
+                               updated_at = :updated_at,
+                               last_authenticated_at = CASE
+                                   WHEN :status = 'connected' THEN :updated_at
+                                   ELSE last_authenticated_at
+                               END,
+                               auth_loss_episode_key = CASE
+                                   WHEN :status = 'connected' THEN NULL
+                                   ELSE auth_loss_episode_key
+                               END
                          WHERE id = :id
                         """
                     ),
@@ -291,6 +308,10 @@ class BaileysEventRepository:
                         )
                     ).scalar_one_or_none()
                     episode_key = str(episode or f"baileys-auth-loss:{event.connection_id}:{event.event_id}")
+                    await session.execute(
+                        text("UPDATE whatsapp_connections SET auth_loss_episode_key = :episode_key WHERE id = :id"),
+                        {"episode_key": episode_key, "id": connection["id"]},
+                    )
                     guardians = (
                         await session.execute(
                             text(
@@ -362,6 +383,7 @@ class BaileysEventRepository:
                                             "name": "guard_reconnect_v1",
                                             "language": "he",
                                             "body_params": [str(connection["first_name"] or "הילד/ה")],
+                                            "quick_reply_payload": f"guard:reconnect:{request}",
                                         },
                                         "idempotency_key": notification_key,
                                         "baileys_event_id": event.event_id,
@@ -485,12 +507,11 @@ class BaileysEventRepository:
                     """
                     UPDATE guardian_child_links
                        SET status = 'active', safety_enabled_at = now(), updated_at = now()
-                     WHERE guardian_user_id = :guardian_user_id
-                       AND child_user_id = :child_user_id
+                     WHERE child_user_id = :child_user_id
                        AND guardian_authorized_at IS NOT NULL
                     """
                 ),
-                {"guardian_user_id": guardian_user_id, "child_user_id": child_user_id},
+                {"child_user_id": child_user_id},
             )
             await session.execute(
                 text(
