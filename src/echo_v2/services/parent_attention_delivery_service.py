@@ -77,7 +77,9 @@ class ParentAttentionDeliveryService:
     async def evaluate_committed(
         self, *, assessment: SafetyAssessment, assessment_id: str
     ) -> str:
-        outcome = await self._ensure_outcome(assessment, assessment_id)
+        link = await self._links.get_active_for_child(assessment.child_user_id)
+        guardian_user_id = link.guardian_user_id if link is not None else ""
+        outcome = await self._ensure_outcome(assessment, assessment_id, guardian_user_id=guardian_user_id)
         if not self._enabled:
             await self._save_outcome(
                 outcome,
@@ -97,6 +99,7 @@ class ParentAttentionDeliveryService:
             await self._exposure_precedence.cancel_overlapping_security(assessment)
 
         current = await self._delivery.get(
+            guardian_user_id=guardian_user_id,
             child_user_id=assessment.child_user_id,
             chat_id=assessment.chat_id,
         )
@@ -110,7 +113,6 @@ class ParentAttentionDeliveryService:
             )
             return "duplicate_evidence"
 
-        link = await self._links.get_active_for_child(assessment.child_user_id)
         if link is None:
             await self._save_outcome(
                 outcome,
@@ -157,6 +159,7 @@ class ParentAttentionDeliveryService:
         )
         await self._delivery.save(
             ParentAttentionDeliveryState(
+                guardian_user_id=link.guardian_user_id,
                 child_user_id=assessment.child_user_id,
                 chat_id=assessment.chat_id,
                 last_delivered_assessment_id=assessment_id,
@@ -175,8 +178,10 @@ class ParentAttentionDeliveryService:
         )
         return "scheduled"
 
-    async def mark_evaluation_failed(self, *, assessment_id: str, error: str) -> None:
-        outcome = await self._outcomes.get(assessment_id)
+    async def mark_evaluation_failed(
+        self, *, assessment_id: str, error: str, guardian_user_id: str = ""
+    ) -> None:
+        outcome = await self._outcomes.get(assessment_id, guardian_user_id=guardian_user_id)
         if outcome is None:
             return
         await self._outcomes.save(
@@ -197,6 +202,7 @@ class ParentAttentionDeliveryService:
             if assessment is None:
                 await self.mark_evaluation_failed(
                     assessment_id=outcome.assessment_id,
+                    guardian_user_id=outcome.guardian_user_id,
                     error="assessment unavailable during delivery evaluation",
                 )
             else:
@@ -208,6 +214,7 @@ class ParentAttentionDeliveryService:
                 except Exception as exc:  # noqa: BLE001 - preserve pending telemetry on evaluation errors
                     await self.mark_evaluation_failed(
                         assessment_id=outcome.assessment_id,
+                        guardian_user_id=outcome.guardian_user_id,
                         error=str(exc),
                     )
             touched += 1
@@ -283,14 +290,15 @@ class ParentAttentionDeliveryService:
         ) is not None
 
     async def _ensure_outcome(
-        self, assessment: SafetyAssessment, assessment_id: str
+        self, assessment: SafetyAssessment, assessment_id: str, *, guardian_user_id: str
     ) -> ParentAttentionDeliveryOutcome:
-        current = await self._outcomes.get(assessment_id)
+        current = await self._outcomes.get(assessment_id, guardian_user_id=guardian_user_id)
         if current is not None:
             return current
         now = datetime.now(timezone.utc)
         outcome = ParentAttentionDeliveryOutcome(
             assessment_id=assessment_id,
+            guardian_user_id=guardian_user_id,
             child_user_id=assessment.child_user_id,
             chat_id=assessment.chat_id,
             status=ParentAttentionOutcomeStatus.NOT_SENT,

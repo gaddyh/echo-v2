@@ -127,7 +127,7 @@ async def test_exposure_yes_schedules_calmer_template_without_url() -> None:
         "language": "he",
         "body_params": ["הכיתה שלנו", "זוהתה השפלה חוזרת של אחד המשתתפים."],
     }
-    outcome = await delivery.get_outcome("exposure-1")
+    outcome = await delivery.get_outcome("exposure-1", guardian_user_id="guardian")
     assert outcome is not None and outcome.status is ParentAttentionOutcomeStatus.SCHEDULED
 
 
@@ -156,7 +156,7 @@ async def test_security_overlap_suppresses_exposure_and_cancels_pending_action()
     ) == "scheduled"
     assert await service.cancel_overlapping_security(security()) == 1
     action = await actions.get("action-1")
-    outcome = await delivery.get_outcome("exposure-1")
+    outcome = await delivery.get_outcome("exposure-1", guardian_user_id="guardian")
     assert action is not None and action.status is ScheduledActionStatus.CANCELLED
     assert outcome is not None and outcome.reason == "security_precedence"
 
@@ -166,7 +166,7 @@ async def test_sent_exposure_is_not_cancelled_and_different_evidence_is_allowed(
     assert await service.evaluate_committed(
         assessment=exposure(assessment_id="sent"), assessment_id="sent"
     ) == "scheduled"
-    sent = await delivery.get_outcome("sent")
+    sent = await delivery.get_outcome("sent", guardian_user_id="guardian")
     assert sent is not None
     await delivery.save_outcome(
         replace(sent, status=ParentAttentionOutcomeStatus.SENT, reason="provider_confirmed")
@@ -203,8 +203,8 @@ async def test_security_history_and_duplicate_delivery_paths() -> None:
         assessment_id="security-history",
     ) == "security_precedence"
     assert await actions.list_pending("guardian") == []
-    assert await service.validate_before_send({"exposure_assessment_id": "unknown"}) is False
-    assert await delivery.get_outcome("security-history") is not None
+    assert await service.validate_before_send({"exposure_assessment_id": "unknown", "guardian_user_id": "guardian"}) is False
+    assert await delivery.get_outcome("security-history", guardian_user_id="guardian") is not None
 
 
 async def test_missing_link_and_phone_are_not_scheduled() -> None:
@@ -243,7 +243,7 @@ async def test_cancellation_ignores_missing_actions_and_disabled_security() -> N
     orphan = exposure(assessment_id="orphan")
     await delivery.save_outcome(
         replace(
-            await service._ensure_outcome(orphan, "orphan", NOW),
+            await service._ensure_outcome(orphan, "orphan", NOW, guardian_user_id="guardian"),
             status=ParentAttentionOutcomeStatus.SCHEDULED,
             reason="scheduled",
             scheduled_action_id="missing-action",
@@ -256,25 +256,25 @@ async def test_cancellation_ignores_missing_actions_and_disabled_security() -> N
 async def test_validation_and_failed_evaluation_paths() -> None:
     service, delivery, _actions = await setup(enabled=False)
     assert not await service.validate_before_send({})
-    assert not await service.validate_before_send({"exposure_assessment_id": "missing"})
-    await service.mark_evaluation_failed(assessment_id="missing", error="ignored")
+    assert not await service.validate_before_send({"exposure_assessment_id": "missing", "guardian_user_id": "guardian"})
+    await service.mark_evaluation_failed(assessment_id="missing", error="ignored", guardian_user_id="guardian")
 
     service._enabled = True
     assert await service.evaluate_committed(
         assessment=exposure(assessment_id="failure"), assessment_id="failure"
     ) == "scheduled"
-    assert await service.validate_before_send({"exposure_assessment_id": "failure"})
-    await service.mark_evaluation_failed(assessment_id="failure", error="provider failed")
-    outcome = await delivery.get_outcome("failure")
+    assert await service.validate_before_send({"exposure_assessment_id": "failure", "guardian_user_id": "guardian"})
+    await service.mark_evaluation_failed(assessment_id="failure", error="provider failed", guardian_user_id="guardian")
+    outcome = await delivery.get_outcome("failure", guardian_user_id="guardian")
     assert outcome is not None and outcome.status is ParentAttentionOutcomeStatus.FAILED
-    assert not await service.validate_before_send({"exposure_assessment_id": "failure"})
+    assert not await service.validate_before_send({"exposure_assessment_id": "failure", "guardian_user_id": "guardian"})
 
 
 async def test_cancellation_handles_missing_claimed_and_non_pending_actions() -> None:
     service, delivery, actions = await setup()
     base = exposure(assessment_id="base")
     assert await service.evaluate_committed(assessment=base, assessment_id="base") == "scheduled"
-    outcome = await delivery.get_outcome("base")
+    outcome = await delivery.get_outcome("base", guardian_user_id="guardian")
     assert outcome is not None
 
     await delivery.save_outcome(replace(outcome, scheduled_action_id=None))
@@ -299,7 +299,7 @@ async def test_pending_cancellation_can_lose_the_race() -> None:
         assessment=exposure(assessment_id="race"), assessment_id="race"
     ) == "scheduled"
     assert await service.cancel_overlapping_security(security()) == 0
-    outcome = await delivery.get_outcome("race")
+    outcome = await delivery.get_outcome("race", guardian_user_id="guardian")
     assert outcome is not None and outcome.status is ParentAttentionOutcomeStatus.SCHEDULED
 
 
@@ -308,7 +308,7 @@ async def test_reconcile_handles_missing_and_pending_actions() -> None:
     missing = exposure(assessment_id="missing-action")
     await delivery.save_outcome(
         replace(
-            await service._ensure_outcome(missing, "missing-action", NOW),
+            await service._ensure_outcome(missing, "missing-action", NOW, guardian_user_id="guardian"),
             status=ParentAttentionOutcomeStatus.SCHEDULED,
             reason="scheduled",
         )
@@ -316,7 +316,7 @@ async def test_reconcile_handles_missing_and_pending_actions() -> None:
     pending = exposure(assessment_id="pending-action", evidence=("m9",))
     assert await service.evaluate_committed(assessment=pending, assessment_id="pending-action") == "scheduled"
     assert await service.reconcile_pending(limit=10) == 1
-    assert (await delivery.get_outcome("missing-action")).status is ParentAttentionOutcomeStatus.INDETERMINATE
+    assert (await delivery.get_outcome("missing-action", guardian_user_id="guardian")).status is ParentAttentionOutcomeStatus.INDETERMINATE
     assert await actions.list_pending("guardian")
 
 
@@ -334,7 +334,7 @@ async def test_reconcile_updates_all_terminal_action_outcomes() -> None:
         assessment_id = f"reconcile-{index}"
         item = exposure(assessment_id=assessment_id, evidence=(f"m{index}",))
         assert await service.evaluate_committed(assessment=item, assessment_id=assessment_id) == "scheduled"
-        outcome = await delivery.get_outcome(assessment_id)
+        outcome = await delivery.get_outcome(assessment_id, guardian_user_id="guardian")
         assert outcome is not None and outcome.scheduled_action_id is not None
         action = await actions.get(outcome.scheduled_action_id)
         assert action is not None
@@ -352,7 +352,7 @@ async def test_reconcile_updates_all_terminal_action_outcomes() -> None:
             )
         )
     assert await service.reconcile_pending(limit=10) == 4
-    assert (await delivery.get_outcome("reconcile-1")).status is ParentAttentionOutcomeStatus.SENT
-    assert (await delivery.get_outcome("reconcile-2")).status is ParentAttentionOutcomeStatus.NOT_SENT
-    assert (await delivery.get_outcome("reconcile-3")).status is ParentAttentionOutcomeStatus.FAILED
-    assert (await delivery.get_outcome("reconcile-4")).status is ParentAttentionOutcomeStatus.INDETERMINATE
+    assert (await delivery.get_outcome("reconcile-1", guardian_user_id="guardian")).status is ParentAttentionOutcomeStatus.SENT
+    assert (await delivery.get_outcome("reconcile-2", guardian_user_id="guardian")).status is ParentAttentionOutcomeStatus.NOT_SENT
+    assert (await delivery.get_outcome("reconcile-3", guardian_user_id="guardian")).status is ParentAttentionOutcomeStatus.FAILED
+    assert (await delivery.get_outcome("reconcile-4", guardian_user_id="guardian")).status is ParentAttentionOutcomeStatus.INDETERMINATE

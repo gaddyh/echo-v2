@@ -148,7 +148,9 @@ class GuardSimpleTelemetryService:
             self._child_names(linked_child_ids),
             self._user_names([link.guardian_user_id for link in links]),
         )
-        outcomes = {outcome.assessment_id: outcome for outcome in outcome_rows}
+        outcomes: dict[str, ParentAttentionDeliveryOutcome] = {}
+        for outcome in outcome_rows:
+            outcomes.setdefault(outcome.assessment_id, outcome)
         state_by_chat = {(state.child_user_id, state.chat_id): state for state in states}
         analyses = tuple(
             _activity_view(
@@ -236,7 +238,8 @@ class GuardSimpleTelemetryService:
             ),
             None,
         )
-        outcome = await self._outcomes.get(assessment_id)
+        outcome_rows = await self._outcomes.list_for_assessments([assessment_id])
+        outcome = outcome_rows[0] if outcome_rows else None
         action = await self._action_for(outcome)
         evidence = await self._messages.list_by_ids(
             user_id=assessment.child_user_id,

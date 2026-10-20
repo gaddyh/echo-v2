@@ -49,6 +49,7 @@ class GuardThresholdState:
 @dataclass(frozen=True)
 class GuardAlertEvaluation:
     analysis_result_id: str
+    guardian_user_id: str
     child_user_id: str
     chat_id: str
     target_version: int

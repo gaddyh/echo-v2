@@ -303,6 +303,7 @@ async def test_parent_attention_postgres_adapter_contract() -> None:
         [
             FakeResult(),
             FakeResult(row=SimpleNamespace(
+                guardian_user_id="guardian",
                 child_user_id="child", chat_id="chat@c.us",
                 last_delivered_assessment_id="assessment-id",
                 last_delivered_evidence_ids=["m1"], last_scheduled_at=NOW,
@@ -313,6 +314,7 @@ async def test_parent_attention_postgres_adapter_contract() -> None:
     )
     repository = PostgresParentAttentionDeliveryRepository(FakeSessionFactory(session))
     state = ParentAttentionDeliveryState(
+        guardian_user_id="guardian",
         child_user_id="child", chat_id="chat@c.us",
         last_delivered_assessment_id="assessment-id",
         last_delivered_evidence_ids=("m1",), last_scheduled_at=NOW,
@@ -320,8 +322,8 @@ async def test_parent_attention_postgres_adapter_contract() -> None:
     )
 
     await repository.save(state)
-    loaded = await repository.get(child_user_id="child", chat_id="chat@c.us")
-    await repository.resolve(child_user_id="child", chat_id="chat@c.us", resolved_at=NOW)
+    loaded = await repository.get(guardian_user_id="guardian", child_user_id="child", chat_id="chat@c.us")
+    await repository.resolve(guardian_user_id="guardian", child_user_id="child", chat_id="chat@c.us", resolved_at=NOW)
 
     assert loaded is not None
     assert loaded.last_delivered_evidence_ids == ("m1",)
@@ -331,6 +333,7 @@ async def test_parent_attention_postgres_adapter_contract() -> None:
 async def test_parent_attention_outcome_postgres_adapter_contract() -> None:
     row = SimpleNamespace(
         assessment_id="assessment-id",
+        guardian_user_id="guardian",
         child_user_id="child",
         chat_id="chat@c.us",
         status="sent",
@@ -349,6 +352,7 @@ async def test_parent_attention_outcome_postgres_adapter_contract() -> None:
         chat_id="chat@c.us",
         status=ParentAttentionOutcomeStatus.SENT,
         reason="provider_confirmed",
+        guardian_user_id="guardian",
         scheduled_action_id="action-id",
         provider_message_id="provider-id",
         created_at=NOW,
@@ -362,7 +366,7 @@ async def test_parent_attention_outcome_postgres_adapter_contract() -> None:
     await saved.save(outcome)
     loaded = await PostgresParentAttentionDeliveryOutcomeRepository(
         FakeSessionFactory(FakeSession([FakeResult(row=row)]))
-    ).get("assessment-id")
+    ).get("assessment-id", guardian_user_id="guardian")
     listed = await PostgresParentAttentionDeliveryOutcomeRepository(
         FakeSessionFactory(FakeSession([FakeResult(rows=[row])]))
     ).list_for_assessments(["assessment-id"])

@@ -69,7 +69,9 @@ class ExposureDeliveryService:
         security_assessment: SafetyAssessment | None = None,
     ) -> str:
         now = datetime.now(timezone.utc)
-        outcome = await self._ensure_outcome(assessment, assessment_id, now)
+        link = await self._links.get_active_for_child(assessment.child_user_id)
+        guardian_user_id = link.guardian_user_id if link is not None else ""
+        outcome = await self._ensure_outcome(assessment, assessment_id, now, guardian_user_id=guardian_user_id)
         if not self._enabled:
             await self._save(outcome, status=ParentAttentionOutcomeStatus.NOT_SENT, reason="disabled")
             return "disabled"
@@ -91,6 +93,7 @@ class ExposureDeliveryService:
             return "security_precedence"
 
         duplicates = await self._delivery.list_overlapping(
+            guardian_user_id=guardian_user_id,
             child_user_id=assessment.child_user_id,
             chat_id=assessment.chat_id,
             evidence_message_ids=assessment.evidence_message_ids,
@@ -102,7 +105,6 @@ class ExposureDeliveryService:
             await self._save(outcome, status=ParentAttentionOutcomeStatus.NOT_SENT, reason="already_notified")
             return "duplicate_evidence"
 
-        link = await self._links.get_active_for_child(assessment.child_user_id)
         if link is None:
             await self._save(outcome, status=ParentAttentionOutcomeStatus.NOT_SENT, reason="no_active_link")
             return "no_active_link"
@@ -115,6 +117,7 @@ class ExposureDeliveryService:
         action_id = str(uuid5(NAMESPACE_URL, f"echo:send:{link.guardian_user_id}:{request_id}"))
         reserved = await self._delivery.reserve_state(
             ExposureDeliveryState(
+                guardian_user_id=link.guardian_user_id,
                 child_user_id=assessment.child_user_id,
                 chat_id=assessment.chat_id,
                 last_scheduled_assessment_id=assessment_id,
@@ -165,51 +168,57 @@ class ExposureDeliveryService:
     async def cancel_overlapping_security(self, assessment: SafetyAssessment) -> int:
         if not self._enabled or assessment.parent_should_know is not True:
             return 0
-        pending = await self._delivery.list_overlapping(
-            child_user_id=assessment.child_user_id,
-            chat_id=assessment.chat_id,
-            evidence_message_ids=assessment.evidence_message_ids,
-            pending_only=True,
-        )
+        links = await self._links.list_active_for_child(assessment.child_user_id)
         cancelled = 0
-        for outcome in pending:
-            if outcome.scheduled_action_id is None:
-                continue
-            action = await self._actions.get(outcome.scheduled_action_id)
-            if action is None:
-                continue
-            if action.status is ScheduledActionStatus.IN_PROGRESS:
-                await self._save(
-                    outcome,
-                    status=ParentAttentionOutcomeStatus.NOT_SENT,
-                    reason="security_precedence",
-                    scheduled_action_id=outcome.scheduled_action_id,
-                )
-                cancelled += 1
-                continue
-            if action.status is not ScheduledActionStatus.PENDING:
-                continue
-            if await self._scheduling.cancel(action.id, action.user_id):
-                await self._save(
-                    outcome,
-                    status=ParentAttentionOutcomeStatus.NOT_SENT,
-                    reason="security_precedence",
-                    scheduled_action_id=outcome.scheduled_action_id,
-                )
-                cancelled += 1
+        for link in links:
+            pending = await self._delivery.list_overlapping(
+                guardian_user_id=link.guardian_user_id,
+                child_user_id=assessment.child_user_id,
+                chat_id=assessment.chat_id,
+                evidence_message_ids=assessment.evidence_message_ids,
+                pending_only=True,
+            )
+            for outcome in pending:
+                if outcome.scheduled_action_id is None:
+                    continue
+                action = await self._actions.get(outcome.scheduled_action_id)
+                if action is None:
+                    continue
+                if action.status is ScheduledActionStatus.IN_PROGRESS:
+                    await self._save(
+                        outcome,
+                        status=ParentAttentionOutcomeStatus.NOT_SENT,
+                        reason="security_precedence",
+                        scheduled_action_id=outcome.scheduled_action_id,
+                    )
+                    cancelled += 1
+                    continue
+                if action.status is not ScheduledActionStatus.PENDING:
+                    continue
+                if await self._scheduling.cancel(action.id, action.user_id):
+                    await self._save(
+                        outcome,
+                        status=ParentAttentionOutcomeStatus.NOT_SENT,
+                        reason="security_precedence",
+                        scheduled_action_id=outcome.scheduled_action_id,
+                    )
+                    cancelled += 1
         return cancelled
 
     async def validate_before_send(self, payload: dict[str, object]) -> bool:
         if not self._enabled:
             return False
         assessment_id = str(payload.get("exposure_assessment_id", ""))
-        if not assessment_id:
+        guardian_user_id = str(payload.get("guardian_user_id", ""))
+        if not assessment_id or not guardian_user_id:
             return False
-        outcome = await self._delivery.get_outcome(assessment_id)
+        outcome = await self._delivery.get_outcome(assessment_id, guardian_user_id=guardian_user_id)
         return outcome is not None and outcome.status is ParentAttentionOutcomeStatus.SCHEDULED
 
-    async def mark_evaluation_failed(self, *, assessment_id: str, error: str) -> None:
-        outcome = await self._delivery.get_outcome(assessment_id)
+    async def mark_evaluation_failed(
+        self, *, assessment_id: str, error: str, guardian_user_id: str = ""
+    ) -> None:
+        outcome = await self._delivery.get_outcome(assessment_id, guardian_user_id=guardian_user_id)
         if outcome is not None:
             await self._save(
                 outcome,
@@ -274,13 +283,14 @@ class ExposureDeliveryService:
         return touched
 
     async def _ensure_outcome(
-        self, assessment: ExposureAssessment, assessment_id: str, now: datetime
+        self, assessment: ExposureAssessment, assessment_id: str, now: datetime, *, guardian_user_id: str
     ) -> ExposureDeliveryOutcome:
-        current = await self._delivery.get_outcome(assessment_id)
+        current = await self._delivery.get_outcome(assessment_id, guardian_user_id=guardian_user_id)
         if current is not None:
             return current
         outcome = ExposureDeliveryOutcome(
             assessment_id=assessment_id,
+            guardian_user_id=guardian_user_id,
             child_user_id=assessment.child_user_id,
             chat_id=assessment.chat_id,
             evidence_message_ids=tuple(assessment.evidence_message_ids),

@@ -20,6 +20,7 @@ pytestmark = pytest.mark.asyncio
 async def test_exposure_state_reservation_is_atomic_for_overlapping_evidence() -> None:
     repository = InMemoryExposureDeliveryRepository()
     first = ExposureDeliveryState(
+        guardian_user_id="guardian",
         child_user_id="child",
         chat_id="group@g.us",
         last_scheduled_assessment_id="a1",
@@ -28,6 +29,7 @@ async def test_exposure_state_reservation_is_atomic_for_overlapping_evidence() -
         updated_at=NOW,
     )
     second = ExposureDeliveryState(
+        guardian_user_id="guardian",
         child_user_id="child",
         chat_id="group@g.us",
         last_scheduled_assessment_id="a2",
@@ -48,16 +50,18 @@ async def test_exposure_outcome_tracks_evidence_and_status() -> None:
         evidence_message_ids=("m1",),
         status=ParentAttentionOutcomeStatus.SCHEDULED,
         reason="scheduled",
+        guardian_user_id="guardian",
         scheduled_action_id="action-1",
         created_at=NOW,
         updated_at=NOW,
     )
     await repository.save_outcome(outcome)
     rows = await repository.list_overlapping(
+        guardian_user_id="guardian",
         child_user_id="child",
         chat_id="group@g.us",
         evidence_message_ids=("m1", "m3"),
         pending_only=True,
     )
     assert rows == [outcome]
-    assert await repository.get_outcome("a1") == outcome
+    assert await repository.get_outcome("a1", guardian_user_id="guardian") == outcome

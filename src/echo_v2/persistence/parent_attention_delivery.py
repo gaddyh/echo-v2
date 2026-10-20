@@ -13,15 +13,21 @@ from echo_v2.domain.parent_attention import (
 
 
 class ParentAttentionDeliveryRepository(Protocol):
-    async def get(self, *, child_user_id: str, chat_id: str) -> ParentAttentionDeliveryState | None: ...
+    async def get(
+        self, *, guardian_user_id: str, child_user_id: str, chat_id: str
+    ) -> ParentAttentionDeliveryState | None: ...
 
     async def save(self, state: ParentAttentionDeliveryState) -> None: ...
 
-    async def resolve(self, *, child_user_id: str, chat_id: str, resolved_at: datetime | None = None) -> None: ...
+    async def resolve(
+        self, *, guardian_user_id: str, child_user_id: str, chat_id: str, resolved_at: datetime | None = None
+    ) -> None: ...
 
 
 class ParentAttentionDeliveryOutcomeRepository(Protocol):
-    async def get(self, assessment_id: str) -> ParentAttentionDeliveryOutcome | None: ...
+    async def get(
+        self, assessment_id: str, *, guardian_user_id: str
+    ) -> ParentAttentionDeliveryOutcome | None: ...
 
     async def list_for_assessments(
         self, assessment_ids: list[str]
@@ -45,36 +51,44 @@ class ParentAttentionDeliveryOutcomeRepository(Protocol):
 
 class InMemoryParentAttentionDeliveryRepository:
     def __init__(self) -> None:
-        self.states: dict[tuple[str, str], ParentAttentionDeliveryState] = {}
+        self.states: dict[tuple[str, str, str], ParentAttentionDeliveryState] = {}
 
-    async def get(self, *, child_user_id: str, chat_id: str) -> ParentAttentionDeliveryState | None:
-        return self.states.get((child_user_id, chat_id))
+    async def get(
+        self, *, guardian_user_id: str, child_user_id: str, chat_id: str
+    ) -> ParentAttentionDeliveryState | None:
+        return self.states.get((guardian_user_id, child_user_id, chat_id))
 
     async def save(self, state: ParentAttentionDeliveryState) -> None:
-        self.states[(state.child_user_id, state.chat_id)] = state
+        self.states[(state.guardian_user_id, state.child_user_id, state.chat_id)] = state
 
-    async def resolve(self, *, child_user_id: str, chat_id: str, resolved_at: datetime | None = None) -> None:
-        current = await self.get(child_user_id=child_user_id, chat_id=chat_id)
+    async def resolve(
+        self, *, guardian_user_id: str, child_user_id: str, chat_id: str, resolved_at: datetime | None = None
+    ) -> None:
+        current = await self.get(
+            guardian_user_id=guardian_user_id, child_user_id=child_user_id, chat_id=chat_id
+        )
         if current is not None:
-            self.states[(child_user_id, chat_id)] = replace(
+            self.states[(guardian_user_id, child_user_id, chat_id)] = replace(
                 current, resolved_at=resolved_at or datetime.now(timezone.utc)
             )
 
 
 class InMemoryParentAttentionDeliveryOutcomeRepository:
     def __init__(self) -> None:
-        self.outcomes: dict[str, ParentAttentionDeliveryOutcome] = {}
+        self.outcomes: dict[tuple[str, str], ParentAttentionDeliveryOutcome] = {}
 
-    async def get(self, assessment_id: str) -> ParentAttentionDeliveryOutcome | None:
-        return self.outcomes.get(assessment_id)
+    async def get(
+        self, assessment_id: str, *, guardian_user_id: str
+    ) -> ParentAttentionDeliveryOutcome | None:
+        return self.outcomes.get((assessment_id, guardian_user_id))
 
     async def list_for_assessments(
         self, assessment_ids: list[str]
     ) -> list[ParentAttentionDeliveryOutcome]:
+        ids = set(assessment_ids)
         return [
-            self.outcomes[assessment_id]
-            for assessment_id in assessment_ids
-            if assessment_id in self.outcomes
+            outcome for outcome in self.outcomes.values()
+            if outcome.assessment_id in ids
         ]
 
     async def list_pending_evaluation(self, *, limit: int = 100) -> list[ParentAttentionDeliveryOutcome]:
@@ -116,7 +130,7 @@ class InMemoryParentAttentionDeliveryOutcomeRepository:
         )
 
     async def save(self, outcome: ParentAttentionDeliveryOutcome) -> None:
-        self.outcomes[outcome.assessment_id] = outcome
+        self.outcomes[(outcome.assessment_id, outcome.guardian_user_id)] = outcome
 
 
 __all__ = [

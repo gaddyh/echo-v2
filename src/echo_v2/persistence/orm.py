@@ -1011,6 +1011,9 @@ class GuardExposureDeliveryRow(Base):
 
     __tablename__ = "guard_exposure_delivery"
 
+    guardian_user_id: Mapped[str] = mapped_column(
+        Uuid, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
     child_user_id: Mapped[str] = mapped_column(
         Uuid, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
     )
@@ -1034,6 +1037,9 @@ class GuardExposureDeliveryOutcomeRow(Base):
 
     assessment_id: Mapped[str] = mapped_column(
         Uuid, ForeignKey("guard_exposure_assessments.id", ondelete="CASCADE"), primary_key=True
+    )
+    guardian_user_id: Mapped[str] = mapped_column(
+        Uuid, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
     )
     child_user_id: Mapped[str] = mapped_column(
         Uuid, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
@@ -1073,6 +1079,9 @@ class GuardParentAttentionDeliveryRow(Base):
 
     __tablename__ = "guard_parent_attention_delivery"
 
+    guardian_user_id: Mapped[str] = mapped_column(
+        Uuid, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
     child_user_id: Mapped[str] = mapped_column(
         Uuid, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
     )
@@ -1100,6 +1109,9 @@ class GuardParentAttentionDeliveryOutcomeRow(Base):
 
     assessment_id: Mapped[str] = mapped_column(
         Uuid, ForeignKey("guard_simple_assessments.id", ondelete="CASCADE"), primary_key=True
+    )
+    guardian_user_id: Mapped[str] = mapped_column(
+        Uuid, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
     )
     child_user_id: Mapped[str] = mapped_column(
         Uuid, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
@@ -1186,6 +1198,9 @@ class GuardAlertEvaluationRow(Base):
         Uuid,
         ForeignKey("guard_analysis_results.id", ondelete="CASCADE"),
         primary_key=True,
+    )
+    guardian_user_id: Mapped[str] = mapped_column(
+        Uuid, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
     )
     child_user_id: Mapped[str] = mapped_column(
         Uuid, ForeignKey("users.id", ondelete="CASCADE"), nullable=False

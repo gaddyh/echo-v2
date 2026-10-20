@@ -109,7 +109,7 @@ class GuardAlertService:
 
         async with self._uow_factory() as uow:
             alerts: GuardAlertRepository = uow.guard_alerts
-            if await alerts.get_evaluation(result_id) is not None:
+            if await alerts.get_evaluation(result_id, link.guardian_user_id) is not None:
                 return "already_evaluated"
 
             state_rows = await alerts.list_threshold_states(
@@ -205,6 +205,7 @@ class GuardAlertService:
                 await alerts.save_evaluation(
                     GuardAlertEvaluation(
                         analysis_result_id=result_id,
+                        guardian_user_id=link.guardian_user_id,
                         child_user_id=record.child_user_id,
                         chat_id=record.chat_id,
                         target_version=record.target_version,
@@ -224,6 +225,7 @@ class GuardAlertService:
             await alerts.save_evaluation(
                 GuardAlertEvaluation(
                     analysis_result_id=result_id,
+                    guardian_user_id=link.guardian_user_id,
                     child_user_id=record.child_user_id,
                     chat_id=record.chat_id,
                     target_version=record.target_version,
