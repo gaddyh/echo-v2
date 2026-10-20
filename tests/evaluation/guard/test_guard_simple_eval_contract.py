@@ -11,7 +11,7 @@ def test_baseline_b_gold_cases_are_valid() -> None:
 
 
 def test_gold_cases_cover_prefixes_and_expected_parent_attention() -> None:
-    assert len(CASES) == 6
+    assert len(CASES) == 13
     assert all(len(case.checkpoints) >= 2 for case in CASES)
     assert all(
         checkpoint.expected_parent_should_know
