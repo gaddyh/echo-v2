@@ -225,6 +225,10 @@ _GUARD_AUTH_BUTTON = {"id": "onboarding:authorize", "title": "אני מאשר/ת
 _CHILD_CONNECT_BODY = "האישור התקבל. לחץ/י על Connect כדי לחבר את WhatsApp של הילד/ה."
 _PARENT_SUCCESS = "החיבור הושלם בהצלחה. מספר WhatsApp של {name} אומת ו-Guard פעיל."
 _PHONE_MISMATCH = "מספר ה-WhatsApp שחובר לא תואם לאיש הקשר ששלחת. לא הפעלתי את Guard."
+_CHILD_STILL_PREPARING = (
+    "הוואטסאפ של {name} עדיין בהכנה. "
+    "אקשר אותך אוטומטית ברגע שהחיבור יושלם."
+)
 _RECONNECT_INSTRUCTIONS = (
     "כדי לחבר מחדש את WhatsApp של {name}:\n"
     "פתח/י WhatsApp בטלפון של הילד/ה → הגדרות → מכשירים מקושרים → קשר מכשיר."
@@ -544,7 +548,12 @@ class OnboardingService:
         )
 
     async def handle_onboarding_authorize(self, phone: str) -> None:
-        """Record guardian authorization and expose the QR action."""
+        """Record guardian authorization and expose the QR action.
+
+        If the child's WhatsApp is already connected (another guardian
+        completed pairing), skip the QR flow and activate this guardian's
+        link immediately.
+        """
         if self._guardian_child_links is None:
             return
         ctx = await self.resolve_context(phone)
@@ -560,6 +569,18 @@ class OnboardingService:
                 child_user_id=link.child_user_id,
                 now=datetime.now(timezone.utc),
             )
+        # Shortcut: if the child's WhatsApp is already connected, skip QR.
+        child_conn = await self._connection_repo.get_by_user(link.child_user_id)
+        if child_conn is not None and child_conn.status is ConnectionStatus.CONNECTED:
+            await self._activate_child_connection(link.child_user_id)
+            return
+        if child_conn is not None and child_conn.status is ConnectionStatus.PROVISIONING:
+            child_phone = await self._lookup_phone(link.child_user_id)
+            child_name = await self._child_name(child_phone, link.child_user_id)
+            await self._bot.send_text(
+                ctx.phone, _CHILD_STILL_PREPARING.format(name=child_name or "הילד/ה")
+            )
+            return
         await self._send_guard_scan_instructions(link, ctx.phone)
         await self._bot.send_buttons(
             ctx.phone,
@@ -2036,6 +2057,16 @@ class OnboardingService:
         """Look up a user's phone by user_id via the user repo."""
         if hasattr(self._user_repo, "get_phone_by_id"):
             return await self._user_repo.get_phone_by_id(user_id)
+        return None
+
+    async def _child_name(
+        self, child_phone: str | None, child_user_id: str
+    ) -> str | None:
+        """Resolve a child's display name from phone or user repo."""
+        if child_phone is not None:
+            child = await self._user_repo.get_by_phone(child_phone)
+            if child is not None and child[2]:
+                return child[2]
         return None
 
     @staticmethod
