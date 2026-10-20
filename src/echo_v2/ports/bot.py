@@ -79,6 +79,7 @@ class BotEvent:
     text: str | None = None
     contact: BotContact | None = None
     button_id: str | None = None
+    button_payload: str | None = None
     list_id: str | None = None
     timestamp: datetime | None = None
 
@@ -134,6 +135,7 @@ class BotChannel(Protocol):
         body_params: list[str],
         *,
         url_suffix: str | None = None,
+        quick_reply_payload: str | None = None,
     ) -> str:
         """Send a template message. Returns the provider message ID.
 

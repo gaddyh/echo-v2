@@ -64,6 +64,9 @@ class BaileysProvisioner:
         )
 
     async def get_pairing_qr(self, connection: ConnectionRef) -> PairingResult:
+        preparation = await self._client.prepare_pairing(connection.provider_connection_id)
+        if preparation.get("outcome") == "already_authorized":
+            return PairingResult(outcome=PairingOutcome.ALREADY_AUTHORIZED)
         data = await self._client.get_qr(connection.provider_connection_id)
         outcome = data.get("outcome")
         if outcome == "qr_ready":
@@ -79,6 +82,11 @@ class BaileysProvisioner:
             )
         if outcome == "already_authorized":
             return PairingResult(outcome=PairingOutcome.ALREADY_AUTHORIZED)
+        if outcome == "preparing":
+            return PairingResult(
+                outcome=PairingOutcome.PREPARING,
+                message=str(data.get("message") or "pairing QR is preparing"),
+            )
         return PairingResult(
             outcome=PairingOutcome.TIMEOUT,
             message=str(data.get("message") or "pairing QR unavailable"),

@@ -87,6 +87,7 @@ class Dialog360Client:
         body_params: list[str],
         *,
         url_suffix: str | None = None,
+        quick_reply_payload: str | None = None,
     ) -> str:
         """Send a template message from the bot to ``recipient``.
 
@@ -120,6 +121,15 @@ class Dialog360Client:
                     "sub_type": "url",
                     "index": 0,
                     "parameters": [{"type": "text", "text": url_suffix}],
+                }
+            )
+        if quick_reply_payload is not None:
+            components.append(
+                {
+                    "type": "button",
+                    "sub_type": "quick_reply",
+                    "index": 0,
+                    "parameters": [{"type": "payload", "payload": quick_reply_payload}],
                 }
             )
         payload: dict[str, Any] = {

@@ -203,6 +203,7 @@ class PairingOutcome(Enum):
     """
 
     QR_READY = "qr_ready"
+    PREPARING = "preparing"
     ALREADY_AUTHORIZED = "already_authorized"
     PASSKEY_REQUIRED = "passkey_required"
     TIMEOUT = "timeout"

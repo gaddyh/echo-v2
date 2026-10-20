@@ -6,7 +6,7 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, cast
-from uuid import NAMESPACE_URL, uuid5
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from sqlalchemy import CursorResult, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -205,12 +205,11 @@ class BaileysEventRepository:
         *,
         notification_message: str,
     ) -> bool:
-        """Apply a state event and enqueue an idempotent notification atomically."""
+        """Apply a state event and enqueue guardian reconnect actions atomically."""
+        del notification_message
         event = claimed.event
         if not isinstance(event, BaileysConnectionStateEvent):
             raise TypeError("connection-state processor received a message event")
-        action_id = reauth_action_id(event.event_id)
-        notification_key = reauth_notification_key(event.event_id)
         now = datetime.now(timezone.utc)
         async with self._session_factory() as session, session.begin():
                 ledger = (
@@ -236,7 +235,9 @@ class BaileysEventRepository:
                         text(
                             """
                             SELECT c.id, c.user_id, c.connection_status,
-                                   u.onboarding_status, u.phone_number
+                                   c.last_authenticated_at, c.auth_loss_episode_key,
+                                   c.baileys_state_version,
+                                   u.onboarding_status, u.phone_number, u.first_name
                               FROM whatsapp_connections c
                               JOIN users u ON u.id = c.user_id
                              WHERE c.provider = 'baileys'
@@ -251,12 +252,37 @@ class BaileysEventRepository:
                     await self._fail(session, event.event_id, "unknown Echo Baileys connection")
                     return False
 
-                previous = ConnectionStatus(str(connection["connection_status"]))
-                should_notify = (
-                    previous is ConnectionStatus.CONNECTED
-                    and event.status is ConnectionStatus.PAIRING_REQUIRED
-                    and connection["onboarding_status"] == "active"
+                last_version = connection["baileys_state_version"]
+                if last_version is not None and (
+                    event.state_version is None or event.state_version <= last_version
+                ):
+                    await session.execute(
+                        text(
+                            """
+                            UPDATE baileys_connector_event_processing
+                               SET status = 'processed', processed_at = :processed_at,
+                                   notification_state = 'none', updated_at = :processed_at
+                             WHERE event_id = :event_id
+                               AND claimed_by = :worker_id AND status = 'claimed'
+                            """
+                        ),
+                        {"processed_at": now, "event_id": event.event_id,
+                         "worker_id": claimed.worker_id},
+                    )
+                    return False
+
+                auth_loss = (
+                    event.status is ConnectionStatus.PAIRING_REQUIRED
                     and _is_real_auth_loss(event.provider_raw_status)
+                )
+                should_notify = (
+                    auth_loss
+                    and (
+                        connection["last_authenticated_at"] is not None
+                        or connection["connection_status"] == ConnectionStatus.CONNECTED.value
+                    )
+                    and connection["onboarding_status"] == "active"
+                    and connection["auth_loss_episode_key"] is None
                 )
                 await session.execute(
                     text(
@@ -264,6 +290,7 @@ class BaileysEventRepository:
                         UPDATE whatsapp_connections
                            SET connection_status = :status,
                                provider_raw_status = :raw_status,
+                               baileys_state_version = COALESCE(:state_version, baileys_state_version),
                                updated_at = :updated_at
                          WHERE id = :id
                         """
@@ -271,43 +298,119 @@ class BaileysEventRepository:
                     {
                         "status": event.status.value,
                         "raw_status": event.provider_raw_status,
+                        "state_version": event.state_version,
                         "updated_at": now,
                         "id": connection["id"],
                     },
                 )
+                created_actions = 0
                 if should_notify:
-                    await session.execute(
-                        text(
-                            """
-                            INSERT INTO scheduled_actions(
-                                id, user_id, type, execute_at_utc, timezone, status,
-                                payload, created_at, updated_at
-                            ) VALUES (
-                                :id, :user_id, 'send_bot_message', :execute_at,
-                                'UTC', 'pending', CAST(:payload AS jsonb),
-                                :created_at, :updated_at
-                            ) ON CONFLICT (id) DO NOTHING
-                            """
-                        ),
-                        {
-                            "id": action_id,
-                            "user_id": connection["user_id"],
-                            "execute_at": now,
-                            "payload": json.dumps(
-                                {
-                                    "chat_id": str(connection["phone_number"]),
-                                    "message": notification_message,
-                                    "idempotency_key": notification_key,
-                                    "baileys_event_id": event.event_id,
-                                }
+                    episode = (
+                        await session.execute(
+                            text(
+                                """
+                                SELECT episode_key
+                                  FROM guard_reconnect_requests
+                                 WHERE child_user_id = :child_user_id
+                                   AND status = 'open'
+                                 ORDER BY created_at DESC
+                                 LIMIT 1
+                                 FOR UPDATE
+                                """
                             ),
-                            "created_at": now,
-                            "updated_at": now,
-                        },
+                            {"child_user_id": connection["user_id"]},
+                        )
+                    ).scalar_one_or_none()
+                    episode_key = str(episode or f"baileys-auth-loss:{event.connection_id}:{event.event_id}")
+                    await session.execute(
+                        text("UPDATE whatsapp_connections SET auth_loss_episode_key = :episode_key WHERE id = :id"),
+                        {"episode_key": episode_key, "id": connection["id"]},
                     )
-                    notification_state = "pending"
-                else:
-                    notification_state = "none"
+                    guardians = (
+                        await session.execute(
+                            text(
+                                """
+                                SELECT l.guardian_user_id, u.phone_number
+                                  FROM guardian_child_links l
+                                  JOIN users u ON u.id = l.guardian_user_id
+                                 WHERE l.child_user_id = :child_user_id
+                                   AND l.status = 'active'
+                                   AND l.guardian_authorized_at IS NOT NULL
+                                   AND l.safety_enabled_at IS NOT NULL
+                                   AND u.onboarding_status = 'active'
+                                """
+                            ),
+                            {"child_user_id": connection["user_id"]},
+                        )
+                    ).mappings().all()
+                    for guardian in guardians:
+                        request_id = uuid4()
+                        request = (
+                            await session.execute(
+                                text(
+                                    """
+                                    INSERT INTO guard_reconnect_requests(
+                                        id, child_user_id, guardian_user_id, episode_key,
+                                        connection_id, status, created_at, updated_at
+                                    ) VALUES (
+                                        :id, :child_user_id, :guardian_user_id, :episode_key,
+                                        :connection_id, 'open', :now, :now
+                                    )
+                                    ON CONFLICT (guardian_user_id, child_user_id, episode_key)
+                                    DO UPDATE SET updated_at = EXCLUDED.updated_at
+                                    RETURNING id
+                                    """
+                                ),
+                                {
+                                    "id": request_id,
+                                    "child_user_id": connection["user_id"],
+                                    "guardian_user_id": guardian["guardian_user_id"],
+                                    "episode_key": episode_key,
+                                    "connection_id": connection["id"],
+                                    "now": now,
+                                },
+                            )
+                        ).scalar_one()
+                        action_id = reauth_action_id(str(request))
+                        notification_key = reauth_notification_key(str(request))
+                        action = cast(CursorResult[Any], await session.execute(
+                            text(
+                                """
+                                INSERT INTO scheduled_actions(
+                                    id, user_id, type, execute_at_utc, timezone, status,
+                                    payload, created_at, updated_at
+                                ) VALUES (
+                                    :id, :user_id, 'send_bot_message', :execute_at,
+                                    'UTC', 'pending', CAST(:payload AS jsonb),
+                                    :created_at, :updated_at
+                                ) ON CONFLICT (id) DO NOTHING
+                                """
+                            ),
+                            {
+                                "id": action_id,
+                                "user_id": guardian["guardian_user_id"],
+                                "execute_at": now,
+                                "payload": json.dumps(
+                                    {
+                                        "chat_id": str(guardian["phone_number"]),
+                                        "message": "",
+                                        "template": {
+                                            "name": "guard_reconnect_v1",
+                                            "language": "he",
+                                            "body_params": [str(connection["first_name"] or "הילד/ה")],
+                                            "quick_reply_payload": f"guard:reconnect:{request}",
+                                        },
+                                        "idempotency_key": notification_key,
+                                        "baileys_event_id": event.event_id,
+                                        "reconnect_request_id": str(request),
+                                    }
+                                ),
+                                "created_at": now,
+                                "updated_at": now,
+                            },
+                        ))
+                        created_actions += int(action.rowcount or 0)
+                notification_state = "pending" if created_actions else "none"
                 await session.execute(
                     text(
                         """
@@ -328,6 +431,125 @@ class BaileysEventRepository:
                     },
                 )
                 return should_notify
+
+    async def list_open_reconnect_requests(self, guardian_user_id: str) -> list[dict[str, Any]]:
+        async with self._session_factory() as session:
+            result = await session.execute(
+                text(
+                    """
+                    SELECT r.id, r.child_user_id, r.episode_key, r.connection_id,
+                           c.connection_status, child.first_name, r.status, r.guardian_user_id
+                      FROM guard_reconnect_requests r
+                      JOIN whatsapp_connections c ON c.id = r.connection_id
+                      JOIN users child ON child.id = r.child_user_id
+                     WHERE r.guardian_user_id = :guardian_user_id
+                       AND r.status = 'open'
+                     ORDER BY r.created_at DESC
+                    """
+                ),
+                {"guardian_user_id": guardian_user_id},
+            )
+            return [dict(row) for row in result.mappings().all()]
+
+    async def list_open_reconnect_requests_for_child(self, child_user_id: str) -> list[dict[str, Any]]:
+        async with self._session_factory() as session:
+            result = await session.execute(
+                text(
+                    """
+                    SELECT r.id, r.child_user_id, r.guardian_user_id, r.episode_key,
+                           r.connection_id, r.status, c.connection_status
+                      FROM guard_reconnect_requests r
+                      JOIN whatsapp_connections c ON c.id = r.connection_id
+                     WHERE r.child_user_id = :child_user_id AND r.status = 'open'
+                    """
+                ),
+                {"child_user_id": child_user_id},
+            )
+            return [dict(row) for row in result.mappings().all()]
+
+    async def get_reconnect_request(self, request_id: str) -> dict[str, Any] | None:
+        async with self._session_factory() as session:
+            result = await session.execute(
+                text(
+                    """
+                    SELECT r.id, r.child_user_id, r.guardian_user_id, r.episode_key,
+                           r.connection_id, r.status, c.connection_status, child.first_name
+                      FROM guard_reconnect_requests r
+                      JOIN whatsapp_connections c ON c.id = r.connection_id
+                      JOIN users child ON child.id = r.child_user_id
+                     WHERE r.id = :request_id
+                    """
+                ),
+                {"request_id": request_id},
+            )
+            row = result.mappings().one_or_none()
+            return dict(row) if row else None
+
+    async def close_reconnect_episode(self, child_user_id: str, episode_key: str) -> None:
+        async with self._session_factory() as session, session.begin():
+            await session.execute(
+                text(
+                    """
+                    UPDATE guard_reconnect_requests
+                       SET status = 'closed', closed_at = now(), updated_at = now()
+                     WHERE child_user_id = :child_user_id
+                       AND episode_key = :episode_key
+                       AND status = 'open'
+                    """
+                ),
+                {"child_user_id": child_user_id, "episode_key": episode_key},
+            )
+
+    async def close_open_reconnect_requests(self, child_user_id: str) -> None:
+        async with self._session_factory() as session, session.begin():
+            await session.execute(
+                text(
+                    """
+                    UPDATE guard_reconnect_requests
+                       SET status = 'closed', closed_at = now(), updated_at = now()
+                     WHERE child_user_id = :child_user_id AND status = 'open'
+                    """
+                ),
+                {"child_user_id": child_user_id},
+            )
+
+    async def mark_verified_child_connection(self, child_user_id: str) -> None:
+        async with self._session_factory() as session, session.begin():
+            await session.execute(
+                text(
+                    """
+                    UPDATE whatsapp_connections
+                       SET last_authenticated_at = now(), updated_at = now()
+                     WHERE user_id = :child_user_id AND provider = 'baileys'
+                    """
+                ),
+                {"child_user_id": child_user_id},
+            )
+
+    async def complete_verified_reconnect(self, child_user_id: str) -> None:
+        async with self._session_factory() as session, session.begin():
+            await session.execute(
+                text(
+                    """
+                    UPDATE whatsapp_connections
+                       SET auth_loss_episode_key = NULL, last_authenticated_at = now(),
+                           updated_at = now()
+                     WHERE user_id = :child_user_id AND provider = 'baileys'
+                       AND auth_loss_episode_key IS NOT NULL
+                    """
+                ),
+                {"child_user_id": child_user_id},
+            )
+            await session.execute(
+                text(
+                    """
+                    UPDATE guard_reconnect_requests
+                       SET status = 'closed', closed_at = now(), updated_at = now()
+                     WHERE child_user_id = :child_user_id AND status = 'open'
+                    """
+                ),
+                {"child_user_id": child_user_id},
+            )
 
     async def mark_notification_sent(self, event_id: str) -> None:
         async with self._session_factory() as session:

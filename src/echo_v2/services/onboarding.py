@@ -223,6 +223,17 @@ _GUARD_AUTH_BUTTON = {"id": "onboarding:authorize", "title": "אני מאשר/ת
 _CHILD_CONNECT_BODY = "האישור התקבל. לחץ/י על Connect כדי לחבר את WhatsApp של הילד/ה."
 _PARENT_SUCCESS = "החיבור הושלם בהצלחה. מספר WhatsApp של {name} אומת ו-Guard פעיל."
 _PHONE_MISMATCH = "מספר ה-WhatsApp שחובר לא תואם לאיש הקשר ששלחת. לא הפעלתי את Guard."
+_RECONNECT_INSTRUCTIONS = (
+    "כדי לחבר מחדש את WhatsApp של {name}:\n"
+    "פתח/י WhatsApp בטלפון של הילד/ה → הגדרות → מכשירים מקושרים → קשר מכשיר."
+)
+_RECONNECT_PREPARING = "אנחנו מכינים את קוד החיבור של {name}. נסו ללחוץ שוב על \"הצג QR\" בעוד כמה רגעים."
+_RECONNECT_ALREADY_ACTIVE = "החיבור של {name} כבר חודש ו-Echo Guard פעיל."
+_RECONNECT_UNVERIFIED = "נראה שחובר חשבון WhatsApp, אבל מספר הילד/ה עדיין לא אומת ו-Guard עדיין לא פעיל. אם חובר מספר שגוי, יש לנתק אותו ממכשירים מקושרים ולנסות שוב."
+_RECONNECT_BUTTON = {"id": "guard:reconnect", "title": "חיבור מחדש"}
+
+def _reconnect_qr_button(request_id: str) -> dict[str, str]:
+    return {"id": f"guard:reconnect_qr:{request_id}", "title": "הצג QR"}
 _PARENT_IDENTITY_RE = re.compile(
     r"^\s*אני\s+(?P<name>[\u0590-\u05FFA-Za-z][\u0590-\u05FFA-Za-z' -]{0,48}?)(?:\s+אמא\s+של|\s+אבא\s+של|\s+הורה\s+של)\s+.+$"
 )
@@ -289,6 +300,20 @@ class UserRepository(Protocol):
         ...
 
 
+class ReconnectRequestRepository(Protocol):
+    async def list_open_reconnect_requests(self, guardian_user_id: str) -> list[dict[str, object]]: ...
+
+    async def list_open_reconnect_requests_for_child(self, child_user_id: str) -> list[dict[str, object]]: ...
+
+    async def get_reconnect_request(self, request_id: str) -> dict[str, object] | None: ...
+
+    async def close_open_reconnect_requests(self, child_user_id: str) -> None: ...
+
+    async def complete_verified_reconnect(self, child_user_id: str) -> None: ...
+
+    async def mark_verified_child_connection(self, child_user_id: str) -> None: ...
+
+
 class OnboardingService:
     """Orchestrates the WhatsApp onboarding flow (QR-first, OTP fallback).
 
@@ -318,6 +343,7 @@ class OnboardingService:
         poll_max_attempts: int = 60,
         pool: GreenInstancePool | None = None,
         guardian_child_links: GuardianChildLinkRepository | None = None,
+        reconnect_requests: ReconnectRequestRepository | None = None,
     ) -> None:
         self._bot = bot
         self._user_repo = user_repo
@@ -329,6 +355,7 @@ class OnboardingService:
         self._poll_max_attempts = poll_max_attempts
         self._pool = pool
         self._guardian_child_links = guardian_child_links
+        self._reconnect_requests = reconnect_requests
         self._pending_contacts: dict[str, BotContact] = {}
         # Background instance-preparation tasks (pool miss path), keyed by
         # user_id. Prevents double-click from creating two instances.
@@ -943,6 +970,112 @@ class OnboardingService:
             return
         await self._send_qr_and_poll(user_id, phone, conn)
 
+    async def handle_guard_reconnect(
+        self, phone: str, request_id: str | None = None
+    ) -> None:
+        if self._reconnect_requests is None:
+            return
+        ctx = await self.resolve_context(phone)
+        if ctx is None:
+            return
+        request: dict[str, object] | None = None
+        if request_id is not None:
+            candidate = await self._reconnect_requests.get_reconnect_request(request_id)
+            if candidate is not None and candidate.get("guardian_user_id") == ctx.user_id:
+                request = candidate
+        else:
+            requests = await self._reconnect_requests.list_open_reconnect_requests(ctx.user_id)
+            if requests:
+                request = requests[0]
+        if request is None:
+            await self._bot.send_text(phone, "החיבור כבר חודש או שהבקשה אינה זמינה.")
+            return
+        child_name = str(request.get("first_name") or "הילד/ה")
+        child_id = str(request["child_user_id"])
+        link = (
+            await self._guardian_child_links.get_active_for_pair(
+                guardian_user_id=ctx.user_id, child_user_id=child_id
+            )
+            if self._guardian_child_links is not None
+            else None
+        )
+        conn = await self._connection_repo.get_by_user(child_id)
+        if (
+            link is None
+            or conn is None
+            or (
+                conn.id is not None
+                and request.get("connection_id") is not None
+                and str(conn.id) != str(request.get("connection_id"))
+            )
+        ):
+            await self._bot.send_text(phone, "הבקשה אינה זמינה.")
+            return
+        if request.get("status") != "open":
+            await self._bot.send_text(phone, _RECONNECT_ALREADY_ACTIVE.format(name=child_name))
+            return
+        if conn.status is ConnectionStatus.CONNECTED:
+            await self._bot.send_text(phone, _RECONNECT_UNVERIFIED)
+            return
+        reconnect_id = str(request["id"])
+        await self._bot.send_buttons(
+            phone,
+            body_text=_RECONNECT_INSTRUCTIONS.format(name=child_name),
+            buttons=[_reconnect_qr_button(reconnect_id)],
+        )
+
+    async def handle_guard_reconnect_qr(self, phone: str, request_id: str) -> None:
+        if self._reconnect_requests is None:
+            return
+        ctx = await self.resolve_context(phone)
+        request = await self._reconnect_requests.get_reconnect_request(request_id)
+        if ctx is None or request is None or request.get("guardian_user_id") != ctx.user_id:
+            await self._bot.send_text(phone, "הבקשה אינה זמינה.")
+            return
+        child_id = str(request["child_user_id"])
+        child_name = str(request.get("first_name") or "הילד/ה")
+        link = (
+            await self._guardian_child_links.get_active_for_pair(
+                guardian_user_id=ctx.user_id, child_user_id=child_id
+            )
+            if self._guardian_child_links is not None
+            else None
+        )
+        conn = await self._connection_repo.get_by_user(child_id)
+        if link is None or conn is None or (
+            conn.id is not None
+            and request.get("connection_id") is not None
+            and str(conn.id) != str(request.get("connection_id"))
+        ):
+            await self._bot.send_text(phone, "הבקשה אינה זמינה.")
+            return
+        if request.get("status") != "open":
+            await self._bot.send_text(phone, _RECONNECT_ALREADY_ACTIVE.format(name=child_name))
+            return
+        if conn.status is ConnectionStatus.CONNECTED:
+            await self._bot.send_text(phone, _RECONNECT_UNVERIFIED)
+            return
+        if conn is None:
+            await self._bot.send_text(phone, "החיבור אינו זמין כרגע. נסו שוב מאוחר יותר.")
+            return
+        result = await self._provisioner.get_pairing_qr(conn.ref)
+        if result.outcome is PairingOutcome.ALREADY_AUTHORIZED:
+            await self.handle_connection_established_by_id(child_id)
+            return
+        if result.outcome is PairingOutcome.PREPARING:
+            await self._bot.send_text(phone, _RECONNECT_PREPARING.format(name=child_name))
+            return
+        if result.outcome is not PairingOutcome.QR_READY or result.qr is None:
+            await self._bot.send_text(phone, "לא הצלחתי להכין את קוד החיבור. נסו שוב מאוחר יותר.")
+            return
+        await self._bot.send_image(
+            phone,
+            image_bytes=base64.b64decode(result.qr.image_base64),
+            mime_type="image/png",
+            caption=_QR_CAPTION,
+        )
+        self._ensure_provider_poll_task(child_id, phone, conn.ref)
+
     async def _claim_pool_and_send_qr(
         self,
         user_id: str,
@@ -1027,6 +1160,9 @@ class OnboardingService:
         result = await self._provisioner.get_pairing_qr(conn.ref)
         if result.outcome is PairingOutcome.ALREADY_AUTHORIZED:
             await self.handle_connection_established(user_id, phone)
+            return
+        if result.outcome is PairingOutcome.PREPARING:
+            await self._bot.send_text(phone, "אנחנו מכינים את קוד החיבור. נסה/י ללחוץ שוב על \"הצג QR\" בעוד כמה רגעים.")
             return
         if result.outcome is not PairingOutcome.QR_READY or result.qr is None:
             await self._user_repo.update_onboarding_status(user_id, "failed")
@@ -1327,6 +1463,17 @@ class OnboardingService:
         if self._guardian_child_links is None:
             return False
         link = await self._guardian_child_links.get_pending_for_child(child_user_id)
+        if link is None and self._reconnect_requests is not None:
+            open_requests = await self._reconnect_requests.list_open_reconnect_requests_for_child(
+                child_user_id
+            )
+            for request in open_requests:
+                link = await self._guardian_child_links.get_active_for_pair(
+                    guardian_user_id=str(request["guardian_user_id"]),
+                    child_user_id=child_user_id,
+                )
+                if link is not None:
+                    break
         if link is None or link.guardian_authorized_at is None:
             return False
         conn = await self._connection_repo.get_by_user(child_user_id)
@@ -1340,7 +1487,9 @@ class OnboardingService:
         if conn.ref.provider == "baileys":
             try:
                 snapshot = await self._provisioner.get_status(conn.ref)
-                account_phone = snapshot.phone_number
+                account_phone = (
+                    snapshot.phone_number if snapshot.status is ConnectionStatus.CONNECTED else None
+                )
             except Exception:
                 _logger.exception("onboarding: failed to verify connected child phone")
         else:
@@ -1387,20 +1536,38 @@ class OnboardingService:
             if guardian_phone is not None:
                 await self._bot.send_text(guardian_phone, _PHONE_MISMATCH)
             return True
-        await self._guardian_child_links.activate(
-            guardian_user_id=link.guardian_user_id,
-            child_user_id=child_user_id,
-            now=datetime.now(timezone.utc),
+        open_requests = (
+            await self._reconnect_requests.list_open_reconnect_requests_for_child(child_user_id)
+            if self._reconnect_requests is not None
+            else []
         )
-        guardian_phone = await self._lookup_phone(link.guardian_user_id)
-        if guardian_phone is not None:
-            child = await self._user_repo.get_by_phone(normalized_child_phone)
-            child_name = (
-                child[2] if child and child[2] else normalized_child_phone
+        if open_requests and self._reconnect_requests is not None:
+            await self._reconnect_requests.complete_verified_reconnect(child_user_id)
+        else:
+            await self._guardian_child_links.activate(
+                guardian_user_id=link.guardian_user_id,
+                child_user_id=child_user_id,
+                now=datetime.now(timezone.utc),
             )
-            await self._bot.send_text(
-                guardian_phone, _PARENT_SUCCESS.format(name=child_name)
-            )
+            if conn.ref.provider == "baileys" and self._reconnect_requests is not None:
+                await self._reconnect_requests.mark_verified_child_connection(child_user_id)
+        child = await self._user_repo.get_by_phone(normalized_child_phone)
+        child_name = child[2] if child and child[2] else normalized_child_phone
+        guardian_ids = (
+            [str(request["guardian_user_id"]) for request in open_requests]
+            if open_requests
+            else [link.guardian_user_id]
+        )
+        for guardian_id in dict.fromkeys(guardian_ids):
+            if open_requests and await self._guardian_child_links.get_active_for_pair(
+                guardian_user_id=guardian_id, child_user_id=child_user_id
+            ) is None:
+                continue
+            guardian_phone = await self._lookup_phone(guardian_id)
+            if guardian_phone is not None:
+                await self._bot.send_text(
+                    guardian_phone, _PARENT_SUCCESS.format(name=child_name)
+                )
         return True
 
     async def handle_connection_established(

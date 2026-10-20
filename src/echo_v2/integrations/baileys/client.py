@@ -66,6 +66,15 @@ class BaileysClient:
             "GET", f"/connections/{connection_id}/status", operation="get_status",
         )
 
+    async def prepare_pairing(self, connection_id: str) -> dict[str, Any]:
+        return await self._request_json(
+            "POST",
+            f"/connections/{connection_id}/prepare-pairing",
+            operation="prepare_pairing",
+            write=True,
+            allow_empty=True,
+        )
+
     async def get_qr(self, connection_id: str) -> dict[str, Any]:
         return await self._request_json(
             "GET", f"/connections/{connection_id}/qr", operation="get_qr",

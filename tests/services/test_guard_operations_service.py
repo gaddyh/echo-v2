@@ -156,6 +156,37 @@ async def test_dashboard_groups_decisions_and_uses_latest_analysis_for_policy() 
     assert chat["latest_policy"] is None
 
 
+async def test_decision_groups_merge_consecutive_evidence_without_duplicates() -> None:
+    first = {
+        "id": "analysis-1", "decision": "watch", "target_version": 1,
+        "created_at": NOW, "signals": ["pressure"], "categories": ["bullying"],
+        "reason": "First observation", "evidence_message_ids": ["message-1"],
+        "evidence_messages": [{"id": "message-1", "text": "first"}],
+    }
+    second = {
+        "id": "analysis-2", "decision": "watch", "target_version": 2,
+        "created_at": NOW + timedelta(minutes=1),
+        "signals": ["pressure", "isolation"], "categories": ["bullying", "distress"],
+        "reason": "New evidence", "evidence_message_ids": ["message-2"],
+        "evidence_messages": [
+            {"id": "message-1", "text": "first"},
+            {"id": "message-2", "text": "second"},
+        ],
+    }
+    groups = GuardOperationsService._decision_groups([first, second])
+    assert len(groups) == 1
+    group = groups[0]
+    assert group["analysis_ids"] == ["analysis-1", "analysis-2"]
+    assert group["analysis_count"] == group["evidence_analysis_count"] == 2
+    assert group["end_version"] == 2 and group["latest_reason"] == "New evidence"
+    assert [message["id"] for message in group["evidence_messages"]] == [
+        "message-1", "message-2"
+    ]
+    assert group["evidence_message_count"] == 2
+    assert group["signals"] == ["pressure", "isolation"]
+    assert group["categories"] == ["bullying", "distress"]
+
+
 async def test_dashboard_scopes_children_and_normalizes_not_actionable() -> None:
     service, session_id, _ = await setup()
     assert await service.list_dashboard(session_id="expired") is None

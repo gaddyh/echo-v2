@@ -174,6 +174,25 @@ async def test_send_template_with_url_suffix():
     await client.aclose()
 
 
+async def test_send_template_with_quick_reply_payload():
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json
+        captured["components"] = json.loads(request.content)["template"]["components"]
+        return httpx.Response(200, json={"messages": [{"id": "m2"}]})
+
+    client = _make_client(handler)
+    await client.send_template(
+        "972500000001", "guard_reconnect_v1", "he", ["אוריה"],
+        quick_reply_payload="guard:reconnect:request-1",
+    )
+    button = captured["components"][1]
+    assert button["sub_type"] == "quick_reply"
+    assert button["parameters"] == [{"type": "payload", "payload": "guard:reconnect:request-1"}]
+    await client.aclose()
+
+
 async def test_send_text_message_id_from_top_level():
     """send_text extracts message_id from top-level field."""
     def handler(request: httpx.Request) -> httpx.Response:
