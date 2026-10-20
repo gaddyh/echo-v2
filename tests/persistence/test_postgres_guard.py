@@ -6,6 +6,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from sqlalchemy import text
 
 from echo_v2.domain.chat import Message
 from echo_v2.domain.guard import GuardAnalysisRecord
@@ -78,6 +79,60 @@ async def test_guard_link_and_state_repositories(session_factory, clean_db) -> N
     assert current.activity_version == 2
     assert current.next_analysis_at == now + timedelta(seconds=120)
     assert (await states.list_for_children([child]))[0].chat_id == "group@g.us"
+
+
+async def test_active_pair_requires_guardian_authorization_and_safety(session_factory, clean_db) -> None:
+    guardian = await insert_user(session_factory, "+972546610656")
+    child = await insert_user(session_factory, "+972546610657")
+    links = PostgresGuardianChildLinkRepository(session_factory)
+    async with session_factory() as session:
+        await session.execute(
+            text("""INSERT INTO guardian_child_links(
+                guardian_user_id, child_user_id, status, safety_enabled_at
+            ) VALUES (:guardian, :child, 'active', now())"""),
+            {"guardian": guardian, "child": child},
+        )
+        await session.commit()
+    assert await links.get_active_for_pair(guardian_user_id=guardian, child_user_id=child) is None
+    async with session_factory() as session:
+        await session.execute(
+            text("""UPDATE guardian_child_links SET guardian_authorized_at = now(),
+                   safety_enabled_at = NULL WHERE guardian_user_id = :guardian"""),
+            {"guardian": guardian},
+        )
+        await session.commit()
+    assert await links.get_active_for_pair(guardian_user_id=guardian, child_user_id=child) is None
+    async with session_factory() as session:
+        await session.execute(
+            text("""UPDATE guardian_child_links SET safety_enabled_at = now()
+                   WHERE guardian_user_id = :guardian"""),
+            {"guardian": guardian},
+        )
+        await session.commit()
+    assert await links.get_active_for_pair(guardian_user_id=guardian, child_user_id=child) is not None
+
+
+async def test_unverified_reconnect_pauses_guard_without_revoking_parent(session_factory, clean_db) -> None:
+    guardian = await insert_user(session_factory, "+972546610658")
+    child = await insert_user(session_factory, "+972546610659")
+    links = PostgresGuardianChildLinkRepository(session_factory)
+    await links.upsert_active(guardian_user_id=guardian, child_user_id=child, now=datetime.now(timezone.utc))
+    connection_id = await _connection(session_factory, child)
+    async with session_factory() as session:
+        await session.execute(
+            text("UPDATE whatsapp_connections SET auth_loss_episode_key='episode-1' WHERE id=:id"),
+            {"id": connection_id},
+        )
+        await session.commit()
+    assert await links.get_active_for_child(child) is None
+    assert await links.get_active_for_pair(guardian_user_id=guardian, child_user_id=child) is not None
+    async with session_factory() as session:
+        await session.execute(
+            text("UPDATE whatsapp_connections SET auth_loss_episode_key=NULL WHERE id=:id"),
+            {"id": connection_id},
+        )
+        await session.commit()
+    assert await links.get_active_for_child(child) is not None
 
 
 async def test_guard_ingestion_and_version_fenced_commit(session_factory, clean_db) -> None:

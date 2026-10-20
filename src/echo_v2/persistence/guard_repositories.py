@@ -209,7 +209,10 @@ class InMemoryGuardianChildLinkRepository:
         self, *, guardian_user_id: str, child_user_id: str
     ) -> GuardianChildLink | None:
         link = self._links.get((guardian_user_id, child_user_id))
-        return link if link is not None and link.is_guard_enabled else None
+        return (
+            link if link is not None and link.is_guard_enabled
+            and link.guardian_authorized_at is not None else None
+        )
 
     async def list_active_for_guardian(self, guardian_user_id: str) -> list[GuardianChildLink]:
         return [

@@ -281,27 +281,6 @@ class BaileysEventRepository:
                         "id": connection["id"],
                     },
                 )
-                await session.execute(
-                    text(
-                        """
-                        UPDATE whatsapp_connections
-                           SET last_authenticated_at = CASE
-                                   WHEN :status = 'connected' THEN :updated_at
-                                   ELSE last_authenticated_at
-                               END,
-                               auth_loss_episode_key = CASE
-                                   WHEN :status = 'connected' THEN NULL
-                                   ELSE auth_loss_episode_key
-                               END
-                         WHERE id = :id
-                        """
-                    ),
-                    {
-                        "status": event.status.value,
-                        "updated_at": now,
-                        "id": connection["id"],
-                    },
-                )
                 created_actions = 0
                 if should_notify:
                     episode = (
@@ -334,6 +313,7 @@ class BaileysEventRepository:
                                   JOIN users u ON u.id = l.guardian_user_id
                                  WHERE l.child_user_id = :child_user_id
                                    AND l.status = 'active'
+                                   AND l.guardian_authorized_at IS NOT NULL
                                    AND l.safety_enabled_at IS NOT NULL
                                    AND u.onboarding_status = 'active'
                                 """
@@ -511,18 +491,29 @@ class BaileysEventRepository:
                 {"child_user_id": child_user_id},
             )
 
-    async def activate_and_close_reconnect(
-        self, *, guardian_user_id: str, child_user_id: str
-    ) -> None:
+    async def mark_verified_child_connection(self, child_user_id: str) -> None:
         async with self._session_factory() as session, session.begin():
             await session.execute(
                 text(
                     """
-                    UPDATE guardian_child_links
-                       SET status = 'active', safety_enabled_at = now(), updated_at = now()
-                     WHERE child_user_id = :child_user_id
-                       AND status = 'active'
-                       AND guardian_authorized_at IS NOT NULL
+                    UPDATE whatsapp_connections
+                       SET last_authenticated_at = now(), updated_at = now()
+                     WHERE user_id = :child_user_id AND provider = 'baileys'
+                    """
+                ),
+                {"child_user_id": child_user_id},
+            )
+
+    async def complete_verified_reconnect(self, child_user_id: str) -> None:
+        async with self._session_factory() as session, session.begin():
+            await session.execute(
+                text(
+                    """
+                    UPDATE whatsapp_connections
+                       SET auth_loss_episode_key = NULL, last_authenticated_at = now(),
+                           updated_at = now()
+                     WHERE user_id = :child_user_id AND provider = 'baileys'
+                       AND auth_loss_episode_key IS NOT NULL
                     """
                 ),
                 {"child_user_id": child_user_id},

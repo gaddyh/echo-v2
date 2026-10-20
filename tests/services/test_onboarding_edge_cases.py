@@ -291,7 +291,7 @@ class FakeReconnectRepository:
     async def close_open_reconnect_requests(self, child_user_id: str) -> None:
         self.closed = True
 
-    async def activate_and_close_reconnect(self, *, guardian_user_id: str, child_user_id: str) -> None:
+    async def complete_verified_reconnect(self, child_user_id: str) -> None:
         self.activated = True
         self.closed = True
 
@@ -2141,6 +2141,107 @@ async def test_provider_status_poll_times_out() -> None:
     service._provisioner = provisioner
     await service._poll_provider_status(user_id, PHONE, conn.ref)
     assert any("לא התחברת בזמן" in text for _phone, text in bot.sent)
+
+
+async def _reconnect_fixture():
+    from datetime import datetime, timezone
+
+    bot = FakeBot()
+    users = FakeUserRepo()
+    connections = InMemoryWhatsAppConnectionRepository()
+    links = InMemoryGuardianChildLinkRepository()
+    guardian = await users.create_user(PHONE, onboarding_status="active")
+    child = await users.create_user(
+        "+972546610654", first_name="אוריה", onboarding_status="active"
+    )
+    await links.upsert_active(
+        guardian_user_id=guardian, child_user_id=child, now=datetime.now(timezone.utc)
+    )
+    ref = ConnectionRef("baileys", "reconnect-connection")
+    await connections.save(StoredConnection(
+        user_id=child, ref=ref, credentials=ProviderCredentials(data=b""),
+        webhook_token_hash=b"", status=ConnectionStatus.PAIRING_REQUIRED,
+    ))
+    conn = await connections.get_by_user(child)
+    assert conn is not None
+    request = {
+        "id": "reconnect-request", "child_user_id": child,
+        "guardian_user_id": guardian, "connection_id": conn.id,
+        "status": "open", "first_name": "אוריה",
+    }
+    reconnect = FakeReconnectRepository(request)
+    provisioner = AsyncMock()
+    service = OnboardingService(
+        bot=bot, user_repo=users, connection_repo=connections,
+        provisioner=provisioner, webhook_base_url="https://echo.example.com",
+        guardian_child_links=links, reconnect_requests=reconnect,
+    )
+    return service, bot, users, connections, links, provisioner, reconnect, request, ref
+
+
+async def test_reconnect_connected_event_is_not_verified_success():
+    service, bot, _users, connections, _links, provisioner, reconnect, _request, ref = (
+        await _reconnect_fixture()
+    )
+    await connections.update_status(ref, ConnectionStatus.CONNECTED, "open")
+    await service.handle_guard_reconnect(PHONE, "reconnect-request")
+    await service.handle_guard_reconnect_qr(PHONE, "reconnect-request")
+    assert reconnect.closed is False
+    assert len(bot.sent) == 2
+    assert all("עדיין לא אומת" in text for _phone, text in bot.sent)
+    assert not bot.sent_buttons and not bot.sent_images
+    provisioner.get_pairing_qr.assert_not_called()
+
+
+async def test_reconnect_rechecks_authorization_and_connection_identity():
+    from dataclasses import replace
+
+    service, bot, _users, connections, links, provisioner, reconnect, request, _ref = (
+        await _reconnect_fixture()
+    )
+    link = links._links[(request["guardian_user_id"], request["child_user_id"])]
+    links._links[(request["guardian_user_id"], request["child_user_id"])] = replace(
+        link, guardian_authorized_at=None
+    )
+    await service.handle_guard_reconnect(PHONE, "reconnect-request")
+    await service.handle_guard_reconnect_qr(PHONE, "reconnect-request")
+    assert len(bot.sent) == 2 and not bot.sent_buttons
+    assert reconnect.closed is False
+    provisioner.get_pairing_qr.assert_not_called()
+
+    links._links[(request["guardian_user_id"], request["child_user_id"])] = link
+    conn = await connections.get_by_user(str(request["child_user_id"]))
+    assert conn is not None
+    await connections.save(replace(conn, id="replaced-connection"))
+    await service.handle_guard_reconnect(PHONE, "reconnect-request")
+    await service.handle_guard_reconnect_qr(PHONE, "reconnect-request")
+    assert len(bot.sent) == 4 and not bot.sent_buttons
+    provisioner.get_pairing_qr.assert_not_called()
+
+
+async def test_reconnect_qr_outcomes_keep_wrong_number_unresolved():
+    service, bot, users, _connections, _links, provisioner, reconnect, request, _ref = (
+        await _reconnect_fixture()
+    )
+    provisioner.get_pairing_qr.return_value = PairingResult(outcome=PairingOutcome.TIMEOUT)
+    await service.handle_guard_reconnect_qr(PHONE, "reconnect-request")
+    assert "לא הצלחתי" in bot.sent[-1][1]
+    assert (await users.get_by_phone("+972546610654"))[1] == "active"
+    assert reconnect.closed is False
+
+    provisioner.get_pairing_qr.return_value = PairingResult(outcome=PairingOutcome.ALREADY_AUTHORIZED)
+    provisioner.get_status.return_value = ConnectionStatusSnapshot(
+        status=ConnectionStatus.CONNECTED, phone_number="+972546610655"
+    )
+    await service.handle_guard_reconnect_qr(PHONE, "reconnect-request")
+    assert reconnect.closed is False
+    assert "לא תואם" in bot.sent[-1][1]
+    provisioner.get_status.return_value = ConnectionStatusSnapshot(
+        status=ConnectionStatus.CONNECTED, phone_number="+972546610654"
+    )
+    await service.handle_guard_reconnect_qr(PHONE, "reconnect-request")
+    assert reconnect.activated is True and reconnect.closed is True
+    assert request["status"] == "open"
 
 
 async def test_guard_reconnect_callback_and_qr_preparing_without_onboarding():

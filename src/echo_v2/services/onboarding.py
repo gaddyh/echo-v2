@@ -229,6 +229,7 @@ _RECONNECT_INSTRUCTIONS = (
 )
 _RECONNECT_PREPARING = "אנחנו מכינים את קוד החיבור של {name}. נסו ללחוץ שוב על \"הצג QR\" בעוד כמה רגעים."
 _RECONNECT_ALREADY_ACTIVE = "החיבור של {name} כבר חודש ו-Echo Guard פעיל."
+_RECONNECT_UNVERIFIED = "נראה שחובר חשבון WhatsApp, אבל מספר הילד/ה עדיין לא אומת ו-Guard עדיין לא פעיל. אם חובר מספר שגוי, יש לנתק אותו ממכשירים מקושרים ולנסות שוב."
 _RECONNECT_BUTTON = {"id": "guard:reconnect", "title": "חיבור מחדש"}
 
 def _reconnect_qr_button(request_id: str) -> dict[str, str]:
@@ -308,9 +309,9 @@ class ReconnectRequestRepository(Protocol):
 
     async def close_open_reconnect_requests(self, child_user_id: str) -> None: ...
 
-    async def activate_and_close_reconnect(
-        self, *, guardian_user_id: str, child_user_id: str
-    ) -> None: ...
+    async def complete_verified_reconnect(self, child_user_id: str) -> None: ...
+
+    async def mark_verified_child_connection(self, child_user_id: str) -> None: ...
 
 
 class OnboardingService:
@@ -1010,8 +1011,11 @@ class OnboardingService:
         ):
             await self._bot.send_text(phone, "הבקשה אינה זמינה.")
             return
-        if request.get("status") != "open" or conn.status is ConnectionStatus.CONNECTED:
+        if request.get("status") != "open":
             await self._bot.send_text(phone, _RECONNECT_ALREADY_ACTIVE.format(name=child_name))
+            return
+        if conn.status is ConnectionStatus.CONNECTED:
+            await self._bot.send_text(phone, _RECONNECT_UNVERIFIED)
             return
         reconnect_id = str(request["id"])
         await self._bot.send_buttons(
@@ -1045,8 +1049,11 @@ class OnboardingService:
         ):
             await self._bot.send_text(phone, "הבקשה אינה זמינה.")
             return
-        if request.get("status") != "open" or conn.status is ConnectionStatus.CONNECTED:
+        if request.get("status") != "open":
             await self._bot.send_text(phone, _RECONNECT_ALREADY_ACTIVE.format(name=child_name))
+            return
+        if conn.status is ConnectionStatus.CONNECTED:
+            await self._bot.send_text(phone, _RECONNECT_UNVERIFIED)
             return
         if conn is None:
             await self._bot.send_text(phone, "החיבור אינו זמין כרגע. נסו שוב מאוחר יותר.")
@@ -1460,11 +1467,13 @@ class OnboardingService:
             open_requests = await self._reconnect_requests.list_open_reconnect_requests_for_child(
                 child_user_id
             )
-            if open_requests:
+            for request in open_requests:
                 link = await self._guardian_child_links.get_active_for_pair(
-                    guardian_user_id=str(open_requests[0]["guardian_user_id"]),
+                    guardian_user_id=str(request["guardian_user_id"]),
                     child_user_id=child_user_id,
                 )
+                if link is not None:
+                    break
         if link is None or link.guardian_authorized_at is None:
             return False
         conn = await self._connection_repo.get_by_user(child_user_id)
@@ -1478,7 +1487,9 @@ class OnboardingService:
         if conn.ref.provider == "baileys":
             try:
                 snapshot = await self._provisioner.get_status(conn.ref)
-                account_phone = snapshot.phone_number
+                account_phone = (
+                    snapshot.phone_number if snapshot.status is ConnectionStatus.CONNECTED else None
+                )
             except Exception:
                 _logger.exception("onboarding: failed to verify connected child phone")
         else:
@@ -1531,16 +1542,15 @@ class OnboardingService:
             else []
         )
         if open_requests and self._reconnect_requests is not None:
-            await self._reconnect_requests.activate_and_close_reconnect(
-                guardian_user_id=link.guardian_user_id,
-                child_user_id=child_user_id,
-            )
+            await self._reconnect_requests.complete_verified_reconnect(child_user_id)
         else:
             await self._guardian_child_links.activate(
                 guardian_user_id=link.guardian_user_id,
                 child_user_id=child_user_id,
                 now=datetime.now(timezone.utc),
             )
+            if conn.ref.provider == "baileys" and self._reconnect_requests is not None:
+                await self._reconnect_requests.mark_verified_child_connection(child_user_id)
         child = await self._user_repo.get_by_phone(normalized_child_phone)
         child_name = child[2] if child and child[2] else normalized_child_phone
         guardian_ids = (
@@ -1549,6 +1559,10 @@ class OnboardingService:
             else [link.guardian_user_id]
         )
         for guardian_id in dict.fromkeys(guardian_ids):
+            if open_requests and await self._guardian_child_links.get_active_for_pair(
+                guardian_user_id=guardian_id, child_user_id=child_user_id
+            ) is None:
+                continue
             guardian_phone = await self._lookup_phone(guardian_id)
             if guardian_phone is not None:
                 await self._bot.send_text(

@@ -20,6 +20,7 @@ from echo_v2.persistence.orm import (
     GuardAnalysisResultRow,
     GuardChatStateRow,
     GuardianChildLinkRow,
+    WhatsAppConnectionRow,
 )
 from echo_v2.services.guard_taxonomy import GuardDecision
 
@@ -35,6 +36,14 @@ class PostgresGuardianChildLinkRepository:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
 
+    @staticmethod
+    def _guard_available() -> Any:
+        return ~select(WhatsAppConnectionRow.id).where(
+            WhatsAppConnectionRow.user_id == GuardianChildLinkRow.child_user_id,
+            WhatsAppConnectionRow.provider == "baileys",
+            WhatsAppConnectionRow.auth_loss_episode_key.is_not(None),
+        ).exists()
+
     async def get_active_for_child(self, child_user_id: str) -> GuardianChildLink | None:
         async with self._session_factory() as session:
             stmt = (
@@ -43,6 +52,7 @@ class PostgresGuardianChildLinkRepository:
                     GuardianChildLinkRow.child_user_id == child_user_id,
                     GuardianChildLinkRow.status == GuardianChildLinkStatus.ACTIVE.value,
                     GuardianChildLinkRow.safety_enabled_at.is_not(None),
+                    self._guard_available(),
                 )
                 .order_by(GuardianChildLinkRow.updated_at.desc())
                 .limit(1)
@@ -68,6 +78,7 @@ class PostgresGuardianChildLinkRepository:
                 GuardianChildLinkRow.guardian_user_id == guardian_user_id,
                 GuardianChildLinkRow.child_user_id == child_user_id,
                 GuardianChildLinkRow.status == GuardianChildLinkStatus.ACTIVE.value,
+                GuardianChildLinkRow.guardian_authorized_at.is_not(None),
                 GuardianChildLinkRow.safety_enabled_at.is_not(None),
             )
             row = (await session.execute(stmt)).scalar_one_or_none()

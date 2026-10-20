@@ -153,6 +153,8 @@ class WhatsAppConnectionRow(Base):
     webhook_token_hash: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     connection_status: Mapped[str] = mapped_column(Text, nullable=False)
     provider_raw_status: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_authenticated_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    auth_loss_episode_key: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True),
         nullable=False,

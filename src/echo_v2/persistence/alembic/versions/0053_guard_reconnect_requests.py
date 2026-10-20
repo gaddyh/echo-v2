@@ -1,7 +1,7 @@
 """Persist Guard reconnect requests per authentication-loss episode.
 
 Revision ID: 0053_guard_reconnect_requests
-Revises: 0052_waitlist_guard_children
+Revises: 0053_guardian_name_onboarding
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "0053_guard_reconnect_requests"
-down_revision = "0052_waitlist_guard_children"
+down_revision = "0053_guardian_name_onboarding"
 branch_labels = None
 depends_on = None
 
