@@ -9,6 +9,7 @@ from enum import Enum
 
 @dataclass(frozen=True)
 class ParentAttentionDeliveryState:
+    guardian_user_id: str
     child_user_id: str
     chat_id: str
     last_delivered_assessment_id: str | None = None
@@ -33,6 +34,7 @@ class ParentAttentionDeliveryOutcome:
     chat_id: str
     status: ParentAttentionOutcomeStatus
     reason: str
+    guardian_user_id: str = ""
     scheduled_action_id: str | None = None
     provider_message_id: str | None = None
     created_at: datetime | None = None

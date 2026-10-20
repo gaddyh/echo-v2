@@ -124,12 +124,15 @@ class PostgresGuardAlertRepository(GuardAlertRepository):
                 )
             )
 
-    async def get_evaluation(self, analysis_result_id: str) -> GuardAlertEvaluation | None:
+    async def get_evaluation(
+        self, analysis_result_id: str, guardian_user_id: str
+    ) -> GuardAlertEvaluation | None:
         async with self._session() as session:
             row = (
                 await session.execute(
                     select(GuardAlertEvaluationRow).where(
-                        GuardAlertEvaluationRow.analysis_result_id == analysis_result_id
+                        GuardAlertEvaluationRow.analysis_result_id == analysis_result_id,
+                        GuardAlertEvaluationRow.guardian_user_id == guardian_user_id,
                     )
                 )
             ).scalar_one_or_none()
@@ -141,6 +144,7 @@ class PostgresGuardAlertRepository(GuardAlertRepository):
                 pg_insert(GuardAlertEvaluationRow)
                 .values(
                     analysis_result_id=evaluation.analysis_result_id,
+                    guardian_user_id=evaluation.guardian_user_id,
                     child_user_id=evaluation.child_user_id,
                     chat_id=evaluation.chat_id,
                     target_version=evaluation.target_version,
@@ -149,7 +153,9 @@ class PostgresGuardAlertRepository(GuardAlertRepository):
                     evaluated_at=evaluation.evaluated_at,
                     alert_id=evaluation.alert_id,
                 )
-                .on_conflict_do_nothing(index_elements=["analysis_result_id"])
+                .on_conflict_do_nothing(
+                    index_elements=["analysis_result_id", "guardian_user_id"]
+                )
             )
             result = await session.execute(stmt)
             return bool(getattr(result, "rowcount", 0))
@@ -245,7 +251,7 @@ class PostgresGuardAlertRepository(GuardAlertRepository):
 class InMemoryGuardAlertRepository:
     def __init__(self) -> None:
         self.states: dict[tuple[str, str, str], GuardThresholdState] = {}
-        self.evaluations: dict[str, GuardAlertEvaluation] = {}
+        self.evaluations: dict[tuple[str, str], GuardAlertEvaluation] = {}
         self.alerts: dict[str, GuardAlert] = {}
 
     async def get_threshold_state(
@@ -273,13 +279,16 @@ class InMemoryGuardAlertRepository:
     async def save_threshold_state(self, state: GuardThresholdState) -> None:
         self.states[(state.child_user_id, state.chat_id, state.threshold_family)] = state
 
-    async def get_evaluation(self, analysis_result_id: str) -> GuardAlertEvaluation | None:
-        return self.evaluations.get(analysis_result_id)
+    async def get_evaluation(
+        self, analysis_result_id: str, guardian_user_id: str
+    ) -> GuardAlertEvaluation | None:
+        return self.evaluations.get((analysis_result_id, guardian_user_id))
 
     async def save_evaluation(self, evaluation: GuardAlertEvaluation) -> bool:
-        if evaluation.analysis_result_id in self.evaluations:
+        key = (evaluation.analysis_result_id, evaluation.guardian_user_id)
+        if key in self.evaluations:
             return False
-        self.evaluations[evaluation.analysis_result_id] = evaluation
+        self.evaluations[key] = evaluation
         return True
 
     async def get_by_event_key(self, logical_event_key: str) -> GuardAlert | None:
@@ -374,6 +383,7 @@ def _state(row: GuardThresholdStateRow) -> GuardThresholdState:
 def _evaluation(row: GuardAlertEvaluationRow) -> GuardAlertEvaluation:
     return GuardAlertEvaluation(
         analysis_result_id=str(row.analysis_result_id),
+        guardian_user_id=str(row.guardian_user_id),
         child_user_id=str(row.child_user_id),
         chat_id=row.chat_id,
         target_version=row.target_version,

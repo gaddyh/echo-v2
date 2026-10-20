@@ -11,6 +11,7 @@ from echo_v2.domain.parent_attention import ParentAttentionOutcomeStatus
 
 @dataclass(frozen=True)
 class ExposureDeliveryState:
+    guardian_user_id: str
     child_user_id: str
     chat_id: str
     last_scheduled_assessment_id: str | None = None
@@ -27,6 +28,7 @@ class ExposureDeliveryOutcome:
     evidence_message_ids: tuple[str, ...]
     status: ParentAttentionOutcomeStatus
     reason: str
+    guardian_user_id: str = ""
     scheduled_action_id: str | None = None
     provider_message_id: str | None = None
     created_at: datetime | None = None
@@ -37,19 +39,24 @@ class ExposureDeliveryOutcome:
 
 
 class ExposureDeliveryRepository(Protocol):
-    async def get_state(self, *, child_user_id: str, chat_id: str) -> ExposureDeliveryState | None: ...
+    async def get_state(
+        self, *, guardian_user_id: str, child_user_id: str, chat_id: str
+    ) -> ExposureDeliveryState | None: ...
 
     async def save_state(self, state: ExposureDeliveryState) -> None: ...
 
     async def reserve_state(self, state: ExposureDeliveryState) -> bool: ...
 
-    async def get_outcome(self, assessment_id: str) -> ExposureDeliveryOutcome | None: ...
+    async def get_outcome(
+        self, assessment_id: str, *, guardian_user_id: str
+    ) -> ExposureDeliveryOutcome | None: ...
 
     async def save_outcome(self, outcome: ExposureDeliveryOutcome) -> None: ...
 
     async def list_overlapping(
         self,
         *,
+        guardian_user_id: str,
         child_user_id: str,
         chat_id: str,
         evidence_message_ids: tuple[str, ...],
@@ -61,19 +68,22 @@ class ExposureDeliveryRepository(Protocol):
 
 class InMemoryExposureDeliveryRepository:
     def __init__(self) -> None:
-        self.states: dict[tuple[str, str], ExposureDeliveryState] = {}
-        self.outcomes: dict[str, ExposureDeliveryOutcome] = {}
+        self.states: dict[tuple[str, str, str], ExposureDeliveryState] = {}
+        self.outcomes: dict[tuple[str, str], ExposureDeliveryOutcome] = {}
 
-    async def get_state(self, *, child_user_id: str, chat_id: str) -> ExposureDeliveryState | None:
-        return self.states.get((child_user_id, chat_id))
+    async def get_state(
+        self, *, guardian_user_id: str, child_user_id: str, chat_id: str
+    ) -> ExposureDeliveryState | None:
+        return self.states.get((guardian_user_id, child_user_id, chat_id))
 
     async def save_state(self, state: ExposureDeliveryState) -> None:
-        self.states[(state.child_user_id, state.chat_id)] = replace(
+        self.states[(state.guardian_user_id, state.child_user_id, state.chat_id)] = replace(
             state, updated_at=state.updated_at or datetime.now(timezone.utc)
         )
 
     async def reserve_state(self, state: ExposureDeliveryState) -> bool:
-        current = self.states.get((state.child_user_id, state.chat_id))
+        key = (state.guardian_user_id, state.child_user_id, state.chat_id)
+        current = self.states.get(key)
         if current is not None and set(current.last_scheduled_evidence_ids).intersection(
             state.last_scheduled_evidence_ids
         ):
@@ -81,15 +91,18 @@ class InMemoryExposureDeliveryRepository:
         await self.save_state(state)
         return True
 
-    async def get_outcome(self, assessment_id: str) -> ExposureDeliveryOutcome | None:
-        return self.outcomes.get(assessment_id)
+    async def get_outcome(
+        self, assessment_id: str, *, guardian_user_id: str
+    ) -> ExposureDeliveryOutcome | None:
+        return self.outcomes.get((assessment_id, guardian_user_id))
 
     async def save_outcome(self, outcome: ExposureDeliveryOutcome) -> None:
-        self.outcomes[outcome.assessment_id] = outcome
+        self.outcomes[(outcome.assessment_id, outcome.guardian_user_id)] = outcome
 
     async def list_overlapping(
         self,
         *,
+        guardian_user_id: str,
         child_user_id: str,
         chat_id: str,
         evidence_message_ids: tuple[str, ...],
@@ -99,7 +112,8 @@ class InMemoryExposureDeliveryRepository:
         return [
             outcome
             for outcome in self.outcomes.values()
-            if outcome.child_user_id == child_user_id
+            if outcome.guardian_user_id == guardian_user_id
+            and outcome.child_user_id == child_user_id
             and outcome.chat_id == chat_id
             and evidence.intersection(outcome.evidence_message_ids)
             and (not pending_only or outcome.status is ParentAttentionOutcomeStatus.SCHEDULED)

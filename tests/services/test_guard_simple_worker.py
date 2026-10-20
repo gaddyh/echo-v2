@@ -123,7 +123,7 @@ async def test_worker_commits_current_version_and_delivers() -> None:
     assert len(assessments.assessments) == 1
     assert assessments.assessments[0].parent_should_know is True
     assert len(delivery.assessments) == 1
-    outcome = await outcomes.get("guard-simple-1")
+    outcome = await outcomes.get("guard-simple-1", guardian_user_id="")
     assert outcome is not None and outcome.reason == "pending_evaluation"
     state = await states.get("child", "chat@c.us")
     assert state is not None

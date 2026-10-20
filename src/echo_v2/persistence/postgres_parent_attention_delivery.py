@@ -25,11 +25,14 @@ class PostgresParentAttentionDeliveryRepository:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
 
-    async def get(self, *, child_user_id: str, chat_id: str) -> ParentAttentionDeliveryState | None:
+    async def get(
+        self, *, guardian_user_id: str, child_user_id: str, chat_id: str
+    ) -> ParentAttentionDeliveryState | None:
         async with self._session_factory() as session:
             row = (
                 await session.execute(
                     select(GuardParentAttentionDeliveryRow).where(
+                        GuardParentAttentionDeliveryRow.guardian_user_id == guardian_user_id,
                         GuardParentAttentionDeliveryRow.child_user_id == child_user_id,
                         GuardParentAttentionDeliveryRow.chat_id == chat_id,
                     )
@@ -39,6 +42,7 @@ class PostgresParentAttentionDeliveryRepository:
 
     async def save(self, state: ParentAttentionDeliveryState) -> None:
         values: dict[str, Any] = {
+            "guardian_user_id": state.guardian_user_id,
             "child_user_id": state.child_user_id,
             "chat_id": state.chat_id,
             "last_delivered_assessment_id": state.last_delivered_assessment_id,
@@ -53,19 +57,20 @@ class PostgresParentAttentionDeliveryRepository:
                 pg_insert(GuardParentAttentionDeliveryRow)
                 .values(values)
                 .on_conflict_do_update(
-                    index_elements=["child_user_id", "chat_id"],
+                    index_elements=["guardian_user_id", "child_user_id", "chat_id"],
                     set_=values,
                 )
             )
             await session.commit()
 
     async def resolve(
-        self, *, child_user_id: str, chat_id: str, resolved_at: datetime | None = None
+        self, *, guardian_user_id: str, child_user_id: str, chat_id: str, resolved_at: datetime | None = None
     ) -> None:
         async with self._session_factory() as session:
             await session.execute(
                 update(GuardParentAttentionDeliveryRow)
                 .where(
+                    GuardParentAttentionDeliveryRow.guardian_user_id == guardian_user_id,
                     GuardParentAttentionDeliveryRow.child_user_id == child_user_id,
                     GuardParentAttentionDeliveryRow.chat_id == chat_id,
                 )
@@ -81,12 +86,15 @@ class PostgresParentAttentionDeliveryOutcomeRepository:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
 
-    async def get(self, assessment_id: str) -> ParentAttentionDeliveryOutcome | None:
+    async def get(
+        self, assessment_id: str, *, guardian_user_id: str
+    ) -> ParentAttentionDeliveryOutcome | None:
         async with self._session_factory() as session:
             row = (
                 await session.execute(
                     select(GuardParentAttentionDeliveryOutcomeRow).where(
-                        GuardParentAttentionDeliveryOutcomeRow.assessment_id == assessment_id
+                        GuardParentAttentionDeliveryOutcomeRow.assessment_id == assessment_id,
+                        GuardParentAttentionDeliveryOutcomeRow.guardian_user_id == guardian_user_id,
                     )
                 )
             ).scalar_one_or_none()
@@ -179,6 +187,7 @@ class PostgresParentAttentionDeliveryOutcomeRepository:
         now = datetime.now(timezone.utc)
         values: dict[str, Any] = {
             "assessment_id": outcome.assessment_id,
+            "guardian_user_id": outcome.guardian_user_id,
             "child_user_id": outcome.child_user_id,
             "chat_id": outcome.chat_id,
             "status": outcome.status.value,
@@ -196,8 +205,8 @@ class PostgresParentAttentionDeliveryOutcomeRepository:
                 pg_insert(GuardParentAttentionDeliveryOutcomeRow)
                 .values(values)
                 .on_conflict_do_update(
-                    index_elements=["assessment_id"],
-                    set_={key: value for key, value in values.items() if key not in {"assessment_id", "created_at"}},
+                    index_elements=["assessment_id", "guardian_user_id"],
+                    set_={key: value for key, value in values.items() if key not in {"assessment_id", "guardian_user_id", "created_at"}},
                 )
             )
             await session.commit()
@@ -205,6 +214,7 @@ class PostgresParentAttentionDeliveryOutcomeRepository:
 
 def _to_domain(row: GuardParentAttentionDeliveryRow) -> ParentAttentionDeliveryState:
     return ParentAttentionDeliveryState(
+        guardian_user_id=str(row.guardian_user_id),
         child_user_id=str(row.child_user_id),
         chat_id=row.chat_id,
         last_delivered_assessment_id=(
@@ -222,6 +232,7 @@ def _to_domain(row: GuardParentAttentionDeliveryRow) -> ParentAttentionDeliveryS
 def _outcome_to_domain(row: GuardParentAttentionDeliveryOutcomeRow) -> ParentAttentionDeliveryOutcome:
     return ParentAttentionDeliveryOutcome(
         assessment_id=str(row.assessment_id),
+        guardian_user_id=str(row.guardian_user_id),
         child_user_id=str(row.child_user_id),
         chat_id=row.chat_id,
         status=ParentAttentionOutcomeStatus(row.status),

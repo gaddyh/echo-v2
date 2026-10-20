@@ -125,6 +125,7 @@ async def test_guard_alert_and_action_commit_atomically(session_factory, clean_d
         assert await uow.guard_alerts.save_evaluation(
             GuardAlertEvaluation(
                 analysis_result_id=result_id,
+                guardian_user_id=guardian,
                 child_user_id=child,
                 chat_id="chat@c.us",
                 target_version=1,

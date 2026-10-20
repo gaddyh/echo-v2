@@ -56,6 +56,10 @@ class GuardianChildLinkRepository(Protocol):
         self, child_user_id: str
     ) -> GuardianChildLink | None: ...
 
+    async def list_pending_for_child(
+        self, child_user_id: str
+    ) -> list[GuardianChildLink]: ...
+
     async def upsert_pending(
         self, *, guardian_user_id: str, child_user_id: str, now: datetime
     ) -> GuardianChildLink: ...
@@ -168,7 +172,9 @@ class GuardAlertRepository(Protocol):
 
     async def save_threshold_state(self, state: GuardThresholdState) -> None: ...
 
-    async def get_evaluation(self, analysis_result_id: str) -> GuardAlertEvaluation | None: ...
+    async def get_evaluation(
+        self, analysis_result_id: str, guardian_user_id: str
+    ) -> GuardAlertEvaluation | None: ...
 
     async def save_evaluation(self, evaluation: GuardAlertEvaluation) -> bool: ...
 
@@ -241,10 +247,16 @@ class InMemoryGuardianChildLinkRepository:
     async def get_pending_for_child(
         self, child_user_id: str
     ) -> GuardianChildLink | None:
-        for link in self._links.values():
-            if link.child_user_id == child_user_id and link.status is GuardianChildLinkStatus.PENDING:
-                return link
-        return None
+        links = await self.list_pending_for_child(child_user_id)
+        return links[0] if links else None
+
+    async def list_pending_for_child(
+        self, child_user_id: str
+    ) -> list[GuardianChildLink]:
+        return [
+            link for link in self._links.values()
+            if link.child_user_id == child_user_id and link.status is GuardianChildLinkStatus.PENDING
+        ]
 
     def _upsert(
         self,

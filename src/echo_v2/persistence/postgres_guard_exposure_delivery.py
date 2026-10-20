@@ -24,11 +24,14 @@ class PostgresExposureDeliveryRepository:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
 
-    async def get_state(self, *, child_user_id: str, chat_id: str) -> ExposureDeliveryState | None:
+    async def get_state(
+        self, *, guardian_user_id: str, child_user_id: str, chat_id: str
+    ) -> ExposureDeliveryState | None:
         async with self._session_factory() as session:
             row = (
                 await session.execute(
                     select(GuardExposureDeliveryRow).where(
+                        GuardExposureDeliveryRow.guardian_user_id == guardian_user_id,
                         GuardExposureDeliveryRow.child_user_id == child_user_id,
                         GuardExposureDeliveryRow.chat_id == chat_id,
                     )
@@ -38,6 +41,7 @@ class PostgresExposureDeliveryRepository:
 
     async def save_state(self, state: ExposureDeliveryState) -> None:
         values: dict[str, Any] = {
+            "guardian_user_id": state.guardian_user_id,
             "child_user_id": state.child_user_id,
             "chat_id": state.chat_id,
             "last_scheduled_assessment_id": state.last_scheduled_assessment_id,
@@ -50,14 +54,15 @@ class PostgresExposureDeliveryRepository:
                 pg_insert(GuardExposureDeliveryRow)
                 .values(values)
                 .on_conflict_do_update(
-                    index_elements=["child_user_id", "chat_id"],
-                    set_={key: value for key, value in values.items() if key not in {"child_user_id", "chat_id"}},
+                    index_elements=["guardian_user_id", "child_user_id", "chat_id"],
+                    set_={key: value for key, value in values.items() if key not in {"guardian_user_id", "child_user_id", "chat_id"}},
                 )
             )
             await session.commit()
 
     async def reserve_state(self, state: ExposureDeliveryState) -> bool:
         values: dict[str, Any] = {
+            "guardian_user_id": state.guardian_user_id,
             "child_user_id": state.child_user_id,
             "chat_id": state.chat_id,
             "last_scheduled_assessment_id": state.last_scheduled_assessment_id,
@@ -70,6 +75,7 @@ class PostgresExposureDeliveryRepository:
                 await session.execute(
                     select(GuardExposureDeliveryRow)
                     .where(
+                        GuardExposureDeliveryRow.guardian_user_id == state.guardian_user_id,
                         GuardExposureDeliveryRow.child_user_id == state.child_user_id,
                         GuardExposureDeliveryRow.chat_id == state.chat_id,
                     )
@@ -85,19 +91,22 @@ class PostgresExposureDeliveryRepository:
                 pg_insert(GuardExposureDeliveryRow)
                 .values(values)
                 .on_conflict_do_update(
-                    index_elements=["child_user_id", "chat_id"],
-                    set_={key: value for key, value in values.items() if key not in {"child_user_id", "chat_id"}},
+                    index_elements=["guardian_user_id", "child_user_id", "chat_id"],
+                    set_={key: value for key, value in values.items() if key not in {"guardian_user_id", "child_user_id", "chat_id"}},
                 )
             )
             await session.commit()
             return True
 
-    async def get_outcome(self, assessment_id: str) -> ExposureDeliveryOutcome | None:
+    async def get_outcome(
+        self, assessment_id: str, *, guardian_user_id: str
+    ) -> ExposureDeliveryOutcome | None:
         async with self._session_factory() as session:
             row = (
                 await session.execute(
                     select(GuardExposureDeliveryOutcomeRow).where(
-                        GuardExposureDeliveryOutcomeRow.assessment_id == assessment_id
+                        GuardExposureDeliveryOutcomeRow.assessment_id == assessment_id,
+                        GuardExposureDeliveryOutcomeRow.guardian_user_id == guardian_user_id,
                     )
                 )
             ).scalar_one_or_none()
@@ -107,6 +116,7 @@ class PostgresExposureDeliveryRepository:
         now = datetime.now(timezone.utc)
         values: dict[str, Any] = {
             "assessment_id": outcome.assessment_id,
+            "guardian_user_id": outcome.guardian_user_id,
             "child_user_id": outcome.child_user_id,
             "chat_id": outcome.chat_id,
             "evidence_message_ids": list(outcome.evidence_message_ids),
@@ -125,8 +135,8 @@ class PostgresExposureDeliveryRepository:
                 pg_insert(GuardExposureDeliveryOutcomeRow)
                 .values(values)
                 .on_conflict_do_update(
-                    index_elements=["assessment_id"],
-                    set_={key: value for key, value in values.items() if key not in {"assessment_id", "created_at"}},
+                    index_elements=["assessment_id", "guardian_user_id"],
+                    set_={key: value for key, value in values.items() if key not in {"assessment_id", "guardian_user_id", "created_at"}},
                 )
             )
             await session.commit()
@@ -134,6 +144,7 @@ class PostgresExposureDeliveryRepository:
     async def list_overlapping(
         self,
         *,
+        guardian_user_id: str,
         child_user_id: str,
         chat_id: str,
         evidence_message_ids: tuple[str, ...],
@@ -143,6 +154,7 @@ class PostgresExposureDeliveryRepository:
             return []
         async with self._session_factory() as session:
             filters: list[Any] = [
+                GuardExposureDeliveryOutcomeRow.guardian_user_id == guardian_user_id,
                 GuardExposureDeliveryOutcomeRow.child_user_id == child_user_id,
                 GuardExposureDeliveryOutcomeRow.chat_id == chat_id,
             ]
@@ -179,6 +191,7 @@ class PostgresExposureDeliveryRepository:
 
 def _state(row: GuardExposureDeliveryRow) -> ExposureDeliveryState:
     return ExposureDeliveryState(
+        guardian_user_id=str(row.guardian_user_id),
         child_user_id=str(row.child_user_id),
         chat_id=row.chat_id,
         last_scheduled_assessment_id=(
@@ -194,6 +207,7 @@ def _state(row: GuardExposureDeliveryRow) -> ExposureDeliveryState:
 def _outcome(row: GuardExposureDeliveryOutcomeRow) -> ExposureDeliveryOutcome:
     return ExposureDeliveryOutcome(
         assessment_id=str(row.assessment_id),
+        guardian_user_id=str(row.guardian_user_id),
         child_user_id=str(row.child_user_id),
         chat_id=row.chat_id,
         evidence_message_ids=tuple(row.evidence_message_ids),

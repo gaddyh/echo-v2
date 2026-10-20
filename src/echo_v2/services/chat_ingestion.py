@@ -130,8 +130,8 @@ class ChatIngestionService:
         guard_enabled = False
         previous_guard_state = None
         if (self._guard_shadow_enabled or self._guard_simple_enabled) and self._child_links is not None:
-            link = await self._child_links.get_active_for_child(user_id)
-            guard_enabled = link is not None
+            links = await self._child_links.list_active_for_child(user_id)
+            guard_enabled = bool(links)
             if guard_enabled and self._guard_state is not None:
                 previous_guard_state = await self._guard_state.get(user_id, event.chat_id)
 

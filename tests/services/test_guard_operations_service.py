@@ -96,7 +96,7 @@ async def setup() -> tuple[GuardOperationsService, str, InMemoryGuardAlertReposi
     group_record = record(1, "class@g.us", GuardDecision.CONCERNING)
     await analyses.save(group_record)
     alerts = InMemoryGuardAlertRepository()
-    await alerts.save_evaluation(GuardAlertEvaluation(analysis_result_id=group_record.id or "", child_user_id="child", chat_id="class@g.us", target_version=1, policy_version="policy-v1", outcome=GuardAlertEvaluationOutcome.NO_ACTION, evaluated_at=NOW + timedelta(minutes=1)))
+    await alerts.save_evaluation(GuardAlertEvaluation(analysis_result_id=group_record.id or "", guardian_user_id="guardian", child_user_id="child", chat_id="class@g.us", target_version=1, policy_version="policy-v1", outcome=GuardAlertEvaluationOutcome.NO_ACTION, evaluated_at=NOW + timedelta(minutes=1)))
     telemetry = InMemoryGuardAnalysisTelemetryRepository()
     actions = InMemoryScheduledActionRepository()
     messages = InMemoryMessageRepository()
@@ -203,7 +203,7 @@ async def test_dashboard_exposes_delivery_suppression() -> None:
     service, session_id, alerts = await setup()
     alert = GuardAlert(id="alert-1", analysis_result_id="result-class@g.us-1", guardian_user_id="guardian", child_user_id="child", chat_id="class@g.us", kind=GuardAlertKind.NOTIFY, categories=("bullying",), summary="summary", policy_reason="threshold", policy_version="policy-v1", status=GuardAlertStatus.EXPIRED, scheduled_action_id="action-1", logical_event_key="event-1", threshold_family="bullying_established", episode_start_version=1, detected_at=NOW, expires_at=NOW + timedelta(hours=1), created_at=NOW)
     await alerts.save_alert(alert)
-    alerts.evaluations["result-class@g.us-1"] = GuardAlertEvaluation(analysis_result_id="result-class@g.us-1", child_user_id="child", chat_id="class@g.us", target_version=1, policy_version="policy-v1", outcome=GuardAlertEvaluationOutcome.SCHEDULED, evaluated_at=NOW, alert_id="alert-1")
+    alerts.evaluations[("result-class@g.us-1", "guardian")] = GuardAlertEvaluation(analysis_result_id="result-class@g.us-1", guardian_user_id="guardian", child_user_id="child", chat_id="class@g.us", target_version=1, policy_version="policy-v1", outcome=GuardAlertEvaluationOutcome.SCHEDULED, evaluated_at=NOW, alert_id="alert-1")
     await service._actions.save(ScheduledAction(id="action-1", user_id="guardian", type=ScheduledActionType.SEND_BOT_MESSAGE, execute_at_utc=NOW, timezone="UTC", status=ScheduledActionStatus.CANCELLED, payload={"kind": "guard_alert"}))
     response = await service.list_dashboard(session_id=session_id)
     assert response is not None
@@ -213,7 +213,7 @@ async def test_dashboard_exposes_delivery_suppression() -> None:
 
 
 async def test_operations_view_helpers_cover_policy_delivery_and_attempt_states() -> None:
-    no_action = GuardAlertEvaluation(analysis_result_id="result", child_user_id="child", chat_id="chat", target_version=1, policy_version="p", outcome=GuardAlertEvaluationOutcome.NO_ACTION, evaluated_at=NOW)
+    no_action = GuardAlertEvaluation(analysis_result_id="result", guardian_user_id="guardian", child_user_id="child", chat_id="chat", target_version=1, policy_version="p", outcome=GuardAlertEvaluationOutcome.NO_ACTION, evaluated_at=NOW)
     suppressed = replace(no_action, analysis_result_id="result-2", target_version=2, outcome=GuardAlertEvaluationOutcome.SUPPRESSED)
     scheduled = replace(no_action, analysis_result_id="result-3", target_version=3, outcome=GuardAlertEvaluationOutcome.SCHEDULED, alert_id="alert")
     assert _policy_view(None, None) is None

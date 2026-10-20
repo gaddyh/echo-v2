@@ -106,12 +106,14 @@ async def test_exposure_repository_round_trip_and_queries(session_factory, clean
 
 async def test_exposure_delivery_repository_round_trip_and_overlap(session_factory, clean_db) -> None:
     child = await insert_user(session_factory, "+972546610692")
+    guardian = await insert_user(session_factory, "+972546610693")
     connection_id = await connection(session_factory, child)
     exposure_repo = PostgresGuardExposureAssessmentRepository(session_factory)
     assessment_id = await exposure_repo.save(assessment(child, connection_id, decision=True))
     repository = PostgresExposureDeliveryRepository(session_factory)
 
     state = ExposureDeliveryState(
+        guardian_user_id=guardian,
         child_user_id=child,
         chat_id="class@g.us",
         last_scheduled_assessment_id=assessment_id,
@@ -122,7 +124,7 @@ async def test_exposure_delivery_repository_round_trip_and_overlap(session_facto
     assert not await repository.reserve_state(
         replace(state, last_scheduled_evidence_ids=("m1", "m2"))
     )
-    loaded_state = await repository.get_state(child_user_id=child, chat_id="class@g.us")
+    loaded_state = await repository.get_state(guardian_user_id=guardian, child_user_id=child, chat_id="class@g.us")
     assert loaded_state is not None
     assert loaded_state.last_scheduled_evidence_ids == state.last_scheduled_evidence_ids
     assert loaded_state.last_scheduled_assessment_id == assessment_id
@@ -135,17 +137,19 @@ async def test_exposure_delivery_repository_round_trip_and_overlap(session_facto
         evidence_message_ids=("m1", "m2"),
         status=ParentAttentionOutcomeStatus.SCHEDULED,
         reason="scheduled",
+        guardian_user_id=guardian,
         created_at=NOW,
         updated_at=NOW,
     )
     await repository.save_outcome(outcome)
-    loaded_outcome = await repository.get_outcome(assessment_id)
+    loaded_outcome = await repository.get_outcome(assessment_id, guardian_user_id=guardian)
     assert loaded_outcome is not None
     assert loaded_outcome.evidence_message_ids == outcome.evidence_message_ids
     assert loaded_outcome.status is outcome.status
     assert loaded_outcome.reason == outcome.reason
     assert loaded_outcome.updated_at is not None
     overlapping = await repository.list_overlapping(
+        guardian_user_id=guardian,
         child_user_id=child,
         chat_id="class@g.us",
         evidence_message_ids=("m2",),

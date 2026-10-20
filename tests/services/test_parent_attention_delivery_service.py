@@ -115,7 +115,7 @@ async def test_active_child_without_link_is_not_scheduled() -> None:
     assert await delivery.evaluate_committed(
         assessment=assessment(evidence=("m1",), parent_should_know=True), assessment_id="a1"
     ) == "no_active_link"
-    outcome = await outcomes.get("a1")
+    outcome = await outcomes.get("a1", guardian_user_id="")
     assert outcome is not None
     assert outcome.status is ParentAttentionOutcomeStatus.NOT_SENT
     assert outcome.reason == "no_active_link"
@@ -127,7 +127,7 @@ async def test_delivery_disabled_does_not_schedule() -> None:
     assert await delivery.evaluate_committed(
         assessment=assessment(evidence=("m1",), parent_should_know=True), assessment_id="a1"
     ) == "disabled"
-    outcome = await outcomes.get("a1")
+    outcome = await outcomes.get("a1", guardian_user_id="")
     assert outcome is not None and outcome.reason == "disabled"
 
 
@@ -144,14 +144,14 @@ async def test_false_and_unknown_do_not_schedule() -> None:
         assessment=assessment(evidence=(), parent_should_know=None), assessment_id="a2"
     ) == "not_parent_attention"
     assert scheduling.actions == []
-    assert (await outcomes.get("a1")).reason == "not_parent_attention"
-    assert (await outcomes.get("a2")).reason == "not_parent_attention"
+    assert (await outcomes.get("a1", guardian_user_id="guardian")).reason == "not_parent_attention"
+    assert (await outcomes.get("a2", guardian_user_id="guardian")).reason == "not_parent_attention"
 
     no_link_delivery, no_link_outcomes, _ = service(links=links, users=NoPhoneUsers())
     assert await no_link_delivery.evaluate_committed(
         assessment=assessment(evidence=("m1",), parent_should_know=True), assessment_id="no-phone"
     ) == "no_guardian_phone"
-    assert (await no_link_outcomes.get("no-phone")).reason == "no_guardian_phone"
+    assert (await no_link_outcomes.get("no-phone", guardian_user_id="guardian")).reason == "no_guardian_phone"
 
 
 async def test_sends_once_then_only_on_new_evidence_without_url_suffix() -> None:
@@ -185,17 +185,17 @@ async def test_sends_once_then_only_on_new_evidence_without_url_suffix() -> None
     template = scheduling.actions[0].payload["template"]
     assert template["body_params"] == ["Shay", "Classmates repeatedly mock Shay."]
     assert "url_suffix" not in template
-    assert (await outcomes.get("a2")).reason == "already_notified"
+    assert (await outcomes.get("a2", guardian_user_id="guardian")).reason == "already_notified"
     assert await delivery.evaluate_committed(
         assessment=assessment(evidence=("m1",), parent_should_know=True), assessment_id="a1"
     ) == "duplicate_evidence"
-    await delivery.mark_evaluation_failed(assessment_id="a1", error="late failure")
-    assert (await outcomes.get("a1")).status is ParentAttentionOutcomeStatus.FAILED
-    await delivery.mark_evaluation_failed(assessment_id="missing", error="ignored")
+    await delivery.mark_evaluation_failed(assessment_id="a1", error="late failure", guardian_user_id="guardian")
+    assert (await outcomes.get("a1", guardian_user_id="guardian")).status is ParentAttentionOutcomeStatus.FAILED
+    await delivery.mark_evaluation_failed(assessment_id="missing", error="ignored", guardian_user_id="guardian")
     assert await delivery.validate_before_send({"guardian_user_id": "guardian", "child_user_id": "child"})
     assert not await delivery.validate_before_send({"guardian_user_id": "", "child_user_id": "child"})
-    await delivery_repo.resolve(child_user_id="child", chat_id="class@g.us")
-    resolved = await delivery_repo.get(child_user_id="child", chat_id="class@g.us")
+    await delivery_repo.resolve(child_user_id="child", chat_id="class@g.us", guardian_user_id="guardian")
+    resolved = await delivery_repo.get(child_user_id="child", chat_id="class@g.us", guardian_user_id="guardian")
     assert resolved is not None and resolved.resolved_at is not None
 
 
@@ -209,12 +209,12 @@ async def test_delivery_evaluation_failure_is_recorded() -> None:
             assessment=assessment(evidence=("m1",), parent_should_know=True),
             assessment_id="failed-evaluation",
         )
-    outcome = await outcomes.get("failed-evaluation")
+    outcome = await outcomes.get("failed-evaluation", guardian_user_id="guardian")
     assert outcome is not None and outcome.reason == "pending_evaluation"
     await delivery.mark_evaluation_failed(
-        assessment_id="failed-evaluation", error="delivery evaluation failed"
+        assessment_id="failed-evaluation", error="delivery evaluation failed", guardian_user_id="guardian"
     )
-    assert (await outcomes.get("failed-evaluation")).status is ParentAttentionOutcomeStatus.FAILED
+    assert (await outcomes.get("failed-evaluation", guardian_user_id="guardian")).status is ParentAttentionOutcomeStatus.FAILED
 
 
 async def test_reconcile_handles_pending_missing_and_suppressed_actions() -> None:
@@ -242,6 +242,7 @@ async def test_reconcile_handles_pending_missing_and_suppressed_actions() -> Non
                 chat_id="class@g.us",
                 status=ParentAttentionOutcomeStatus.SCHEDULED,
                 reason="scheduled",
+                guardian_user_id="guardian",
                 scheduled_action_id=action_id,
                 created_at=NOW,
                 updated_at=NOW,
@@ -265,6 +266,7 @@ async def test_reconcile_handles_pending_missing_and_suppressed_actions() -> Non
             chat_id="class@g.us",
             status=ParentAttentionOutcomeStatus.SCHEDULED,
             reason="scheduled",
+            guardian_user_id="guardian",
             scheduled_action_id="cancelled",
             created_at=NOW,
             updated_at=NOW,
@@ -277,6 +279,7 @@ async def test_reconcile_handles_pending_missing_and_suppressed_actions() -> Non
             chat_id="class@g.us",
             status=ParentAttentionOutcomeStatus.NOT_SENT,
             reason="pending_evaluation",
+            guardian_user_id="guardian",
             created_at=NOW,
             updated_at=NOW,
         )
@@ -288,16 +291,17 @@ async def test_reconcile_handles_pending_missing_and_suppressed_actions() -> Non
             chat_id="class@g.us",
             status=ParentAttentionOutcomeStatus.NOT_SENT,
             reason="pending_evaluation",
+            guardian_user_id="guardian",
             created_at=NOW,
             updated_at=NOW,
         )
     )
     result = await delivery.reconcile_pending(limit=20)
     assert result == 5
-    assert (await outcomes.get("no-action")).status is ParentAttentionOutcomeStatus.INDETERMINATE
-    assert (await outcomes.get("missing-action")).status is ParentAttentionOutcomeStatus.INDETERMINATE
-    assert (await outcomes.get("cancelled")).status is ParentAttentionOutcomeStatus.NOT_SENT
-    assert (await outcomes.get("missing-assessment")).status is ParentAttentionOutcomeStatus.FAILED
+    assert (await outcomes.get("no-action", guardian_user_id="guardian")).status is ParentAttentionOutcomeStatus.INDETERMINATE
+    assert (await outcomes.get("missing-action", guardian_user_id="guardian")).status is ParentAttentionOutcomeStatus.INDETERMINATE
+    assert (await outcomes.get("cancelled", guardian_user_id="guardian")).status is ParentAttentionOutcomeStatus.NOT_SENT
+    assert (await outcomes.get("missing-assessment", guardian_user_id="guardian")).status is ParentAttentionOutcomeStatus.FAILED
 
 
 async def test_reconcile_marks_evaluation_exception_failed() -> None:
@@ -321,12 +325,13 @@ async def test_reconcile_marks_evaluation_exception_failed() -> None:
             chat_id="class@g.us",
             status=ParentAttentionOutcomeStatus.NOT_SENT,
             reason="pending_evaluation",
+            guardian_user_id="guardian",
             created_at=NOW,
             updated_at=NOW,
         )
     )
     assert await delivery.reconcile_pending(limit=1) == 1
-    assert (await outcomes.get(saved_id)).status is ParentAttentionOutcomeStatus.FAILED
+    assert (await outcomes.get(saved_id, guardian_user_id="guardian")).status is ParentAttentionOutcomeStatus.FAILED
 
 
 async def test_reconcile_preserves_pending_and_unconfirmed_states() -> None:
@@ -364,6 +369,7 @@ async def test_reconcile_preserves_pending_and_unconfirmed_states() -> None:
                     else ParentAttentionOutcomeStatus.SCHEDULED
                 ),
                 reason="pending_evaluation" if assessment_id == "pending" else "scheduled",
+                guardian_user_id="guardian",
                 scheduled_action_id=action_id,
                 created_at=NOW,
                 updated_at=NOW,
@@ -383,10 +389,10 @@ async def test_reconcile_preserves_pending_and_unconfirmed_states() -> None:
             )
         )
     assert await delivery.reconcile_pending(limit=10) == 3
-    assert (await outcomes.get("pending")).status is ParentAttentionOutcomeStatus.FAILED
-    assert (await outcomes.get("waiting")).status is ParentAttentionOutcomeStatus.SCHEDULED
-    assert (await outcomes.get("no-provider")).status is ParentAttentionOutcomeStatus.INDETERMINATE
-    assert (await outcomes.get("unknown-no-error")).reason == "provider_outcome_indeterminate"
+    assert (await outcomes.get("pending", guardian_user_id="guardian")).status is ParentAttentionOutcomeStatus.FAILED
+    assert (await outcomes.get("waiting", guardian_user_id="guardian")).status is ParentAttentionOutcomeStatus.SCHEDULED
+    assert (await outcomes.get("no-provider", guardian_user_id="guardian")).status is ParentAttentionOutcomeStatus.INDETERMINATE
+    assert (await outcomes.get("unknown-no-error", guardian_user_id="guardian")).reason == "provider_outcome_indeterminate"
     await outcomes.save(
         ParentAttentionDeliveryOutcome(
             assessment_id="unexpected-status",
@@ -394,6 +400,7 @@ async def test_reconcile_preserves_pending_and_unconfirmed_states() -> None:
             chat_id="class@g.us",
             status=ParentAttentionOutcomeStatus.SCHEDULED,
             reason="scheduled",
+            guardian_user_id="guardian",
             scheduled_action_id="unexpected-action",
             created_at=NOW,
             updated_at=NOW,
@@ -452,6 +459,6 @@ async def test_reconcile_distinguishes_sent_failed_and_indeterminate() -> None:
         else:
             await actions.save(replace(item, status=status, error="provider error", executed_at=NOW))
     assert await delivery.reconcile_pending(limit=10) == 3
-    assert (await outcomes.get("sent")).status is ParentAttentionOutcomeStatus.SENT
-    assert (await outcomes.get("failed")).status is ParentAttentionOutcomeStatus.FAILED
-    assert (await outcomes.get("unknown")).status is ParentAttentionOutcomeStatus.INDETERMINATE
+    assert (await outcomes.get("sent", guardian_user_id="guardian")).status is ParentAttentionOutcomeStatus.SENT
+    assert (await outcomes.get("failed", guardian_user_id="guardian")).status is ParentAttentionOutcomeStatus.FAILED
+    assert (await outcomes.get("unknown", guardian_user_id="guardian")).status is ParentAttentionOutcomeStatus.INDETERMINATE
