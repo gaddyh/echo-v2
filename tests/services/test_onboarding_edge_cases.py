@@ -2658,7 +2658,7 @@ async def test_fetch_pairing_qr_until_ready_handles_transient_errors():
 async def test_reconnect_request_still_valid_child_mismatch():
     """_reconnect_request_still_valid returns False when the request's
     child_user_id no longer matches."""
-    service, _bot, _users, _connections, _links, _provisioner, reconnect, request, _ref = (
+    service, _bot, _users, _connections, _links, _provisioner, _reconnect, request, _ref = (
         await _reconnect_fixture()
     )
     conn = await service._connection_repo.get_by_user(str(request["child_user_id"]))
