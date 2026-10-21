@@ -57,6 +57,7 @@ _OG_IMAGE_PATH = Path(__file__).parent / "static" / "og.png"
 # versioned so future artwork can use og-guard-v3.png without cache ambiguity.
 _OG_GUARD_IMAGE_PATH = Path(__file__).parent / "static" / "og.guard.png"
 _OG_GUARD_V3_IMAGE_PATH = Path(__file__).parent / "static" / "og-guard-v3.png"
+_PRIVACY_PAGE_PATH = Path(__file__).parent / "static" / "privacy.html"
 
 
 class WaitlistRequest(BaseModel):
@@ -202,6 +203,12 @@ def build_landing_router(
             .replace("{{BASE_URL}}", base_url.rstrip("/"))
         )
         return HTMLResponse(content=html, headers=_security_headers())
+
+    @router.get("/guard/privacy")
+    async def guard_privacy() -> FileResponse:
+        if not _PRIVACY_PAGE_PATH.exists():
+            raise HTTPException(status_code=404, detail="not found")
+        return FileResponse(_PRIVACY_PAGE_PATH, headers=_security_headers())
 
     @router.get("/og.png")
     async def og_image() -> FileResponse:

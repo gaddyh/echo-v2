@@ -369,6 +369,7 @@ async def test_guardian_join_resumes_pending_authorization_and_authorized_qr(fak
 
     await service._start_guardian_onboarding(parent_phone)
     assert bot.sent_buttons[-1][2] == [{"id": "onboarding:authorize", "title": "אני מאשר/ת"}]
+    assert "https://echo.example.com/guard/privacy" in bot.sent_buttons[-1][1]
 
     await links.authorize_guardian(
         guardian_user_id=parent_id,
