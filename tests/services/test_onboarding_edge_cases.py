@@ -2302,17 +2302,24 @@ async def test_guard_reconnect_callback_and_qr_preparing_without_onboarding():
         provisioner=provisioner, green_client=None,
         webhook_base_url="https://echo.example.com",
         guardian_child_links=links, reconnect_requests=reconnect,
+        qr_retry_interval_seconds=0.01, qr_retry_max_attempts=20,
     )
     await service.handle_guard_reconnect(PHONE)
     assert bot.sent_buttons[0][2][0]["id"] == "guard:reconnect_qr:request-1"
+    # First click: PREPARING → sends "מכינים" and starts a background task
+    # that retries until the QR is ready, then delivers it automatically.
     await service.handle_guard_reconnect_qr(PHONE, "request-1")
     assert any("מכינים" in text for _phone, text in bot.sent)
+    assert len(bot.sent_images) == 0
+    # The provider becomes ready while the background task is retrying.
     provisioner.result = PairingResult(
         outcome=PairingOutcome.QR_READY,
         qr=PairingQr(image_base64=base64.b64encode(b"qr").decode()),
     )
+    # A second click while the background task is running is a no-op
+    # (duplicate-worker prevention); the background task delivers the QR.
     await service.handle_guard_reconnect_qr(PHONE, "request-1")
-    await asyncio.sleep(0.05)
+    await asyncio.sleep(0.3)
     assert len(bot.sent_images) == 1
     assert reconnect.closed is True
     assert reconnect.activated is True
@@ -2392,3 +2399,362 @@ async def test_guard_reconnect_rejects_closed_request():
     await service.handle_guard_reconnect(PHONE, "request-2")
     await service.handle_guard_reconnect_qr(PHONE, "request-2")
     assert len(bot.sent) == 2
+
+
+async def test_reconnect_qr_preparing_starts_background_delivery():
+    """PREPARING on first click starts a background task that retries and
+    delivers the QR automatically when ready — no second click required."""
+    service, bot, _users, _connections, _links, provisioner, _reconnect, _request, _ref = (
+        await _reconnect_fixture()
+    )
+    service._qr_retry_interval = 0.01
+    service._qr_retry_max_attempts = 20
+    provisioner.get_pairing_qr.return_value = PairingResult(outcome=PairingOutcome.PREPARING)
+    await service.handle_guard_reconnect_qr(PHONE, "reconnect-request")
+    # Parent is told the QR is being prepared.
+    assert any("מכינים" in text for _phone, text in bot.sent)
+    assert len(bot.sent_images) == 0
+    # Provider becomes ready while the background task is retrying.
+    provisioner.get_pairing_qr.return_value = PairingResult(
+        outcome=PairingOutcome.QR_READY,
+        qr=PairingQr(image_base64=base64.b64encode(b"qr").decode()),
+    )
+    await asyncio.sleep(0.3)
+    # QR was delivered automatically by the background task.
+    assert len(bot.sent_images) == 1
+
+
+async def test_reconnect_qr_preparing_timeout_sends_actionable_message():
+    """When the retry window expires, send a fresh actionable message
+    rather than silently stopping."""
+    service, bot, _users, _connections, _links, provisioner, _reconnect, _request, _ref = (
+        await _reconnect_fixture()
+    )
+    service._qr_retry_interval = 0.01
+    service._qr_retry_max_attempts = 2
+    provisioner.get_pairing_qr.return_value = PairingResult(outcome=PairingOutcome.PREPARING)
+    await service.handle_guard_reconnect_qr(PHONE, "reconnect-request")
+    assert any("מכינים" in text for _phone, text in bot.sent)
+    await asyncio.sleep(0.2)
+    # No QR was ever delivered.
+    assert len(bot.sent_images) == 0
+    # A timeout message with an actionable hint was sent.
+    assert any("לא הצלחתי להכין" in text for _phone, text in bot.sent)
+
+
+async def test_reconnect_qr_preparing_double_click_does_not_start_duplicate_workers():
+    """A second click while the background task is running is a no-op —
+    no duplicate workers and no duplicate QR deliveries."""
+    service, bot, _users, _connections, _links, provisioner, _reconnect, _request, _ref = (
+        await _reconnect_fixture()
+    )
+    service._qr_retry_interval = 0.05
+    service._qr_retry_max_attempts = 20
+    provisioner.get_pairing_qr.return_value = PairingResult(outcome=PairingOutcome.PREPARING)
+    await service.handle_guard_reconnect_qr(PHONE, "reconnect-request")
+    task = service._reconnect_qr_tasks.get("reconnect-request")
+    assert task is not None and not task.done()
+    # Second click while the first task is still running.
+    await service.handle_guard_reconnect_qr(PHONE, "reconnect-request")
+    assert service._reconnect_qr_tasks.get("reconnect-request") is task
+    # Provider becomes ready; only one QR should be delivered.
+    provisioner.get_pairing_qr.return_value = PairingResult(
+        outcome=PairingOutcome.QR_READY,
+        qr=PairingQr(image_base64=base64.b64encode(b"qr").decode()),
+    )
+    await asyncio.sleep(0.3)
+    assert len(bot.sent_images) == 1
+
+
+async def test_reconnect_qr_preparing_skips_stale_request():
+    """If the reconnect request is closed (e.g. reconnection succeeded)
+    while the background task is retrying, the QR is not delivered."""
+    service, bot, _users, _connections, _links, provisioner, reconnect, _request, _ref = (
+        await _reconnect_fixture()
+    )
+    service._qr_retry_interval = 0.05
+    service._qr_retry_max_attempts = 20
+    provisioner.get_pairing_qr.return_value = PairingResult(outcome=PairingOutcome.PREPARING)
+    await service.handle_guard_reconnect_qr(PHONE, "reconnect-request")
+    # The request is closed (e.g. reconnection succeeded elsewhere) while
+    # the background task is still retrying.
+    reconnect.closed = True
+    _request["status"] = "closed"
+    provisioner.get_pairing_qr.return_value = PairingResult(
+        outcome=PairingOutcome.QR_READY,
+        qr=PairingQr(image_base64=base64.b64encode(b"qr").decode()),
+    )
+    await asyncio.sleep(0.3)
+    # Stale QR was not delivered.
+    assert len(bot.sent_images) == 0
+
+
+async def test_reconnect_qr_preparing_already_authorized_completes():
+    """If the provider reports ALREADY_AUTHORIZED during the retry loop,
+    the background task completes the connection instead of sending a QR."""
+    service, bot, _users, _connections, _links, provisioner, reconnect, _request, _ref = (
+        await _reconnect_fixture()
+    )
+    service._qr_retry_interval = 0.01
+    service._qr_retry_max_attempts = 20
+    provisioner.get_pairing_qr.return_value = PairingResult(outcome=PairingOutcome.PREPARING)
+    await service.handle_guard_reconnect_qr(PHONE, "reconnect-request")
+    assert any("מכינים" in text for _phone, text in bot.sent)
+    provisioner.get_pairing_qr.return_value = PairingResult(
+        outcome=PairingOutcome.ALREADY_AUTHORIZED,
+    )
+    provisioner.get_status.return_value = ConnectionStatusSnapshot(
+        status=ConnectionStatus.CONNECTED, phone_number="+972546610654",
+    )
+    await asyncio.sleep(0.3)
+    # No QR was sent — the connection was completed directly.
+    assert len(bot.sent_images) == 0
+    assert reconnect.activated is True and reconnect.closed is True
+
+
+async def test_onboarding_qr_preparing_starts_background_delivery():
+    """The general onboarding path (_send_provider_qr_and_poll) also starts
+    a background task on PREPARING instead of asking the user to click again."""
+    service, bot, user_repo, conn_repo, _green_client = _make_service()
+    user_id = await user_repo.create_user(PHONE, first_name="Dana")
+    conn = StoredConnection(
+        user_id=user_id, ref=ConnectionRef("baileys", "child-connection"),
+        credentials=ProviderCredentials(data=b"token"), webhook_token_hash=b"hash",
+        status=ConnectionStatus.PAIRING_REQUIRED,
+    )
+    await conn_repo.save(conn)
+    provisioner = AsyncMock()
+    provisioner.get_pairing_qr.return_value = PairingResult(outcome=PairingOutcome.PREPARING)
+    provisioner.get_status.return_value = ConnectionStatusSnapshot(
+        status=ConnectionStatus.CONNECTED,
+    )
+    service._provisioner = provisioner
+    service._qr_retry_interval = 0.01
+    service._qr_retry_max_attempts = 20
+    await service._send_provider_qr_and_poll(user_id, PHONE, conn)
+    # User is told the QR is being prepared, not asked to click again.
+    assert any("מכינים" in text for _phone, text in bot.sent)
+    assert "ללחוץ שוב" not in bot.sent[-1][1]
+    assert len(bot.sent_images) == 0
+    # Provider becomes ready while the background task is retrying.
+    provisioner.get_pairing_qr.return_value = PairingResult(
+        outcome=PairingOutcome.QR_READY,
+        qr=PairingQr(image_base64=base64.b64encode(b"png").decode()),
+    )
+    await asyncio.sleep(0.3)
+    # QR was delivered automatically by the background task.
+    assert len(bot.sent_images) == 1
+
+
+async def test_onboarding_qr_preparing_timeout_sends_actionable_message():
+    """When the onboarding retry window expires, send a fresh actionable
+    message rather than silently stopping."""
+    service, bot, user_repo, conn_repo, _green_client = _make_service()
+    user_id = await user_repo.create_user(PHONE, first_name="Dana")
+    conn = StoredConnection(
+        user_id=user_id, ref=ConnectionRef("baileys", "child-connection"),
+        credentials=ProviderCredentials(data=b"token"), webhook_token_hash=b"hash",
+        status=ConnectionStatus.PAIRING_REQUIRED,
+    )
+    await conn_repo.save(conn)
+    provisioner = AsyncMock()
+    provisioner.get_pairing_qr.return_value = PairingResult(outcome=PairingOutcome.PREPARING)
+    service._provisioner = provisioner
+    service._qr_retry_interval = 0.01
+    service._qr_retry_max_attempts = 2
+    await service._send_provider_qr_and_poll(user_id, PHONE, conn)
+    assert any("מכינים" in text for _phone, text in bot.sent)
+    await asyncio.sleep(0.2)
+    assert len(bot.sent_images) == 0
+    # A timeout message with an actionable hint was sent.
+    assert any("qr" in text for _phone, text in bot.sent)
+
+
+async def test_onboarding_qr_preparing_double_click_does_not_start_duplicate_workers():
+    """A second call while the background task is running is a no-op."""
+    service, bot, user_repo, conn_repo, _green_client = _make_service()
+    user_id = await user_repo.create_user(PHONE, first_name="Dana")
+    conn = StoredConnection(
+        user_id=user_id, ref=ConnectionRef("baileys", "child-connection"),
+        credentials=ProviderCredentials(data=b"token"), webhook_token_hash=b"hash",
+        status=ConnectionStatus.PAIRING_REQUIRED,
+    )
+    await conn_repo.save(conn)
+    provisioner = AsyncMock()
+    provisioner.get_pairing_qr.return_value = PairingResult(outcome=PairingOutcome.PREPARING)
+    service._provisioner = provisioner
+    service._qr_retry_interval = 0.05
+    service._qr_retry_max_attempts = 20
+    await service._send_provider_qr_and_poll(user_id, PHONE, conn)
+    task = service._onboarding_qr_tasks.get(user_id)
+    assert task is not None and not task.done()
+    # Second call while the first task is still running.
+    await service._send_provider_qr_and_poll(user_id, PHONE, conn)
+    assert service._onboarding_qr_tasks.get(user_id) is task
+    provisioner.get_pairing_qr.return_value = PairingResult(
+        outcome=PairingOutcome.QR_READY,
+        qr=PairingQr(image_base64=base64.b64encode(b"png").decode()),
+    )
+    await asyncio.sleep(0.3)
+    assert len(bot.sent_images) == 1
+
+
+async def test_reconnect_qr_delivery_failure_records_event_and_reraises():
+    """A bot send_image failure during reconnect QR delivery records the
+    event and re-raises."""
+    service, bot, _users, _connections, _links, provisioner, _reconnect, _request, _ref = (
+        await _reconnect_fixture()
+    )
+    bot.send_image_should_fail = True
+    provisioner.get_pairing_qr.return_value = PairingResult(
+        outcome=PairingOutcome.QR_READY,
+        qr=PairingQr(image_base64=base64.b64encode(b"qr").decode()),
+    )
+    with pytest.raises(RuntimeError, match="image boom"):
+        await service.handle_guard_reconnect_qr(PHONE, "reconnect-request")
+    assert len(bot.sent_images) == 0
+
+
+async def test_reconnect_qr_preparing_unavailable_after_retry():
+    """When the retry loop returns a non-QR outcome (e.g. TIMEOUT), the
+    background task sends an unavailable message."""
+    service, bot, _users, _connections, _links, provisioner, _reconnect, _request, _ref = (
+        await _reconnect_fixture()
+    )
+    service._qr_retry_interval = 0.01
+    service._qr_retry_max_attempts = 5
+    provisioner.get_pairing_qr.return_value = PairingResult(outcome=PairingOutcome.PREPARING)
+    await service.handle_guard_reconnect_qr(PHONE, "reconnect-request")
+    # After retrying, the provider returns TIMEOUT (not QR_READY).
+    provisioner.get_pairing_qr.return_value = PairingResult(outcome=PairingOutcome.TIMEOUT)
+    await asyncio.sleep(0.2)
+    assert len(bot.sent_images) == 0
+    assert any("לא הצלחתי להכין" in text for _phone, text in bot.sent)
+
+
+async def test_fetch_pairing_qr_until_ready_handles_transient_errors():
+    """Transient errors during retry are logged and counted as a retry,
+    not a hard failure."""
+    service, _bot, _users, _connections, _links, provisioner, _reconnect, _request, _ref = (
+        await _reconnect_fixture()
+    )
+    service._qr_retry_interval = 0.01
+    service._qr_retry_max_attempts = 10
+    # First retry raises, second returns QR_READY.
+    provisioner.get_pairing_qr.side_effect = [
+        PairingResult(outcome=PairingOutcome.PREPARING),  # initial fetch
+        RuntimeError("transient"),  # first retry fails
+        PairingResult(
+            outcome=PairingOutcome.QR_READY,
+            qr=PairingQr(image_base64=base64.b64encode(b"qr").decode()),
+        ),
+    ]
+    await service.handle_guard_reconnect_qr(PHONE, "reconnect-request")
+    await asyncio.sleep(0.3)
+    # The transient error was retried past, and the QR was delivered.
+    assert len(_bot.sent_images) == 1
+
+
+async def test_reconnect_request_still_valid_child_mismatch():
+    """_reconnect_request_still_valid returns False when the request's
+    child_user_id no longer matches."""
+    service, _bot, _users, _connections, _links, _provisioner, _reconnect, request, _ref = (
+        await _reconnect_fixture()
+    )
+    conn = await service._connection_repo.get_by_user(str(request["child_user_id"]))
+    assert conn is not None
+    # Mutate the request to point at a different child.
+    original_child = request["child_user_id"]
+    request["child_user_id"] = "different-child"
+    valid = await service._reconnect_request_still_valid(
+        "reconnect-request", str(original_child), conn,
+    )
+    assert valid is False
+    request["child_user_id"] = original_child
+
+
+async def test_reconnect_request_still_valid_connection_deleted():
+    """_reconnect_request_still_valid returns False when the connection was
+    deleted (current_conn is None)."""
+    service, _bot, _users, connections, _links, _provisioner, _reconnect, request, _ref = (
+        await _reconnect_fixture()
+    )
+    child_id = str(request["child_user_id"])
+    conn = await connections.get_by_user(child_id)
+    assert conn is not None
+    # Remove the user→connection mapping so get_by_user returns None.
+    connections._by_user.pop(child_id, None)
+    valid = await service._reconnect_request_still_valid(
+        "reconnect-request", child_id, conn,
+    )
+    assert valid is False
+
+
+async def test_reconnect_request_still_valid_no_repo_returns_true():
+    """When _reconnect_requests is None, _reconnect_request_still_valid
+    returns True (no validation possible)."""
+    service, _bot, _users, _connections, _links, _provisioner, _reconnect, _request, _ref = (
+        await _reconnect_fixture()
+    )
+    service._reconnect_requests = None
+    conn = await service._connection_repo.get_by_user(str(_request["child_user_id"]))
+    assert conn is not None
+    valid = await service._reconnect_request_still_valid(
+        "reconnect-request", str(_request["child_user_id"]), conn,
+    )
+    assert valid is True
+
+
+async def test_onboarding_qr_preparing_already_authorized_completes():
+    """If the provider reports ALREADY_AUTHORIZED during the onboarding
+    retry loop, the background task completes the connection."""
+    service, bot, user_repo, conn_repo, _green_client = _make_service()
+    user_id = await user_repo.create_user(PHONE, first_name="Dana")
+    conn = StoredConnection(
+        user_id=user_id, ref=ConnectionRef("baileys", "child-connection"),
+        credentials=ProviderCredentials(data=b"token"), webhook_token_hash=b"hash",
+        status=ConnectionStatus.PAIRING_REQUIRED,
+    )
+    await conn_repo.save(conn)
+    provisioner = AsyncMock()
+    provisioner.get_pairing_qr.return_value = PairingResult(outcome=PairingOutcome.PREPARING)
+    provisioner.get_status.return_value = ConnectionStatusSnapshot(
+        status=ConnectionStatus.CONNECTED,
+    )
+    service._provisioner = provisioner
+    service._qr_retry_interval = 0.01
+    service._qr_retry_max_attempts = 20
+    await service._send_provider_qr_and_poll(user_id, PHONE, conn)
+    assert any("מכינים" in text for _phone, text in bot.sent)
+    provisioner.get_pairing_qr.return_value = PairingResult(
+        outcome=PairingOutcome.ALREADY_AUTHORIZED,
+    )
+    await asyncio.sleep(0.3)
+    assert len(bot.sent_images) == 0
+    assert (await user_repo.get_by_phone(PHONE))[1] == "active"
+
+
+async def test_onboarding_qr_preparing_unavailable_after_retry():
+    """When the onboarding retry loop returns a non-QR outcome, the user
+    is marked failed and told to try again later."""
+    service, bot, user_repo, conn_repo, _green_client = _make_service()
+    user_id = await user_repo.create_user(PHONE, first_name="Dana")
+    conn = StoredConnection(
+        user_id=user_id, ref=ConnectionRef("baileys", "child-connection"),
+        credentials=ProviderCredentials(data=b"token"), webhook_token_hash=b"hash",
+        status=ConnectionStatus.PAIRING_REQUIRED,
+    )
+    await conn_repo.save(conn)
+    provisioner = AsyncMock()
+    provisioner.get_pairing_qr.return_value = PairingResult(outcome=PairingOutcome.PREPARING)
+    service._provisioner = provisioner
+    service._qr_retry_interval = 0.01
+    service._qr_retry_max_attempts = 3
+    await service._send_provider_qr_and_poll(user_id, PHONE, conn)
+    assert any("מכינים" in text for _phone, text in bot.sent)
+    provisioner.get_pairing_qr.return_value = PairingResult(
+        outcome=PairingOutcome.PASSKEY_REQUIRED,
+    )
+    await asyncio.sleep(0.2)
+    assert len(bot.sent_images) == 0
+    assert (await user_repo.get_by_phone(PHONE))[1] == "failed"
