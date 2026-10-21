@@ -345,7 +345,17 @@ async def _verify_deletion(
             )
 
         for cid in connection_ids:
-            for table in _CONNECTOR_TABLES:
+            conn_count = await _scalar(
+                conn,
+                'SELECT count(*) FROM whatsapp_connector."connections" WHERE id = :id',
+                {"id": cid},
+            )
+            if conn_count:
+                failures.append(
+                    f"whatsapp_connector.connections id={cid}: "
+                    f"{conn_count} row(s) still exist"
+                )
+            for table in _CONNECTOR_TABLES[1:]:
                 count = await _scalar(
                     conn,
                     f'SELECT count(*) FROM whatsapp_connector."{table}" '
