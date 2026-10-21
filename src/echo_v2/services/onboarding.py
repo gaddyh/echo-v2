@@ -66,6 +66,7 @@ from echo_v2.ports.whatsapp import (
     ConnectionRef,
     ConnectionStatus,
     PairingOutcome,
+    PairingResult,
     ProviderCredentials,
     WhatsAppEventSubscription,
     WhatsAppProvisioner,
@@ -169,6 +170,13 @@ _ALREADY_ONBOARDING = (
 # Sent when the authorization poll times out (user didn't enter OTP).
 _OTP_TIMED_OUT = 'לא התחברת בזמן. שלח "קוד" כדי לקבל קוד חדש.'
 
+# Sent when the Baileys QR is still PREPARING on first fetch — a background
+# task retries and delivers the QR automatically when ready.
+_ONBOARDING_QR_PREPARING = "אנחנו מכינים את קוד החיבור. נשלח אותו לכאן בעוד רגע."
+_ONBOARDING_QR_TIMED_OUT = (
+    'לא הצלחתי להכין את קוד החיבור בזמן. שלח/י "qr" כדי לנסות שוב.'
+)
+
 _DISCONNECTED = (
     "החיבור של Echo ל־WhatsApp התנתק.\n"
     "שלח קוד כדי להתחבר מחדש."
@@ -240,7 +248,11 @@ _RECONNECT_INSTRUCTIONS = (
     "כדי לחבר מחדש את WhatsApp של {name}:\n"
     "פתח/י WhatsApp בטלפון של הילד/ה → הגדרות → מכשירים מקושרים → קשר מכשיר."
 )
-_RECONNECT_PREPARING = "אנחנו מכינים את קוד החיבור של {name}. נסו ללחוץ שוב על \"הצג QR\" בעוד כמה רגעים."
+_RECONNECT_PREPARING = "מכינים את קוד החיבור של {name}. נשלח אותו לכאן בעוד רגע."
+_RECONNECT_QR_TIMED_OUT = (
+    "לא הצלחתי להכין את קוד החיבור של {name} בזמן. "
+    "לחצו על \"חיבור מחדש\" כדי לנסות שוב."
+)
 _RECONNECT_ALREADY_ACTIVE = "החיבור של {name} כבר חודש ו-Echo Guard פעיל."
 _RECONNECT_UNVERIFIED = "נראה שחובר חשבון WhatsApp, אבל מספר הילד/ה עדיין לא אומת ו-Guard עדיין לא פעיל. אם חובר מספר שגוי, יש לנתק אותו ממכשירים מקושרים ולנסות שוב."
 _RECONNECT_BUTTON = {"id": "guard:reconnect", "title": "חיבור מחדש"}
@@ -358,6 +370,8 @@ class OnboardingService:
         guardian_child_links: GuardianChildLinkRepository | None = None,
         reconnect_requests: ReconnectRequestRepository | None = None,
         pipeline_events: PipelineEventRepository | None = None,
+        qr_retry_interval_seconds: float = 2.0,
+        qr_retry_max_attempts: int = 30,
     ) -> None:
         self._bot = bot
         self._user_repo = user_repo
@@ -371,6 +385,8 @@ class OnboardingService:
         self._guardian_child_links = guardian_child_links
         self._reconnect_requests = reconnect_requests
         self._pipeline_events = pipeline_events
+        self._qr_retry_interval = qr_retry_interval_seconds
+        self._qr_retry_max_attempts = qr_retry_max_attempts
         self._pending_contacts: dict[str, BotContact] = {}
         # Background instance-preparation tasks (pool miss path), keyed by
         # user_id. Prevents double-click from creating two instances.
@@ -378,6 +394,13 @@ class OnboardingService:
         # Authorization poll tasks, keyed by user_id. Ensures at most one poll
         # per user even on repeated "הצג QR" clicks.
         self._poll_tasks: dict[str, asyncio.Task[None]] = {}
+        # Background QR-delivery tasks for the PREPARING retry path, keyed by
+        # reconnect request_id. Ensures repeated "הצג QR" clicks don't start
+        # duplicate workers.
+        self._reconnect_qr_tasks: dict[str, asyncio.Task[None]] = {}
+        # Background QR-delivery tasks for the onboarding PREPARING retry
+        # path, keyed by user_id.
+        self._onboarding_qr_tasks: dict[str, asyncio.Task[None]] = {}
 
     def _require_green_client(self) -> GreenClient:
         if self._green_client is None:
@@ -1135,6 +1158,11 @@ class OnboardingService:
         if conn is None:
             await self._bot.send_text(phone, "החיבור אינו זמין כרגע. נסו שוב מאוחר יותר.")
             return
+        # Don't start a duplicate background QR-delivery worker if one is
+        # already running for this reconnect request (e.g. double-click).
+        existing = self._reconnect_qr_tasks.get(request_id)
+        if existing is not None and not existing.done():
+            return
         await self._record_reconnect_event(
             "reconnect.qr_requested", child_id=child_id, request_id=request_id,
         )
@@ -1157,6 +1185,12 @@ class OnboardingService:
                 "reconnect.qr_preparing", child_id=child_id, request_id=request_id,
             )
             await self._bot.send_text(phone, _RECONNECT_PREPARING.format(name=child_name))
+            self._reconnect_qr_tasks[request_id] = asyncio.create_task(
+                self._deliver_reconnect_qr_when_ready(
+                    phone=phone, request_id=request_id,
+                    child_id=child_id, child_name=child_name, conn=conn,
+                )
+            )
             return
         if result.outcome is not PairingOutcome.QR_READY or result.qr is None:
             await self._record_reconnect_event(
@@ -1164,6 +1198,21 @@ class OnboardingService:
             )
             await self._bot.send_text(phone, "לא הצלחתי להכין את קוד החיבור. נסו שוב מאוחר יותר.")
             return
+        await self._deliver_reconnect_qr(
+            phone=phone, request_id=request_id, child_id=child_id, conn=conn, result=result,
+        )
+
+    async def _deliver_reconnect_qr(
+        self,
+        *,
+        phone: str,
+        request_id: str,
+        child_id: str,
+        conn: StoredConnection,
+        result: PairingResult,
+    ) -> None:
+        """Send the QR image and start connection-status polling."""
+        assert result.qr is not None
         try:
             await self._bot.send_image(
                 phone,
@@ -1181,6 +1230,107 @@ class OnboardingService:
             "reconnect.qr_sent", child_id=child_id, request_id=request_id,
         )
         self._ensure_provider_poll_task(child_id, phone, conn.ref)
+
+    async def _reconnect_request_still_valid(
+        self,
+        request_id: str,
+        child_id: str,
+        conn: StoredConnection,
+    ) -> bool:
+        """Verify the reconnect request is still open and points to the same
+        child connection before delivering a (possibly delayed) QR.
+
+        Prevents stale QR delivery after account deletion, successful
+        reconnection, or a newer authentication episode.
+        """
+        if self._reconnect_requests is None:
+            return True
+        request = await self._reconnect_requests.get_reconnect_request(request_id)
+        if request is None or request.get("status") != "open":
+            return False
+        if str(request.get("child_user_id")) != child_id:
+            return False
+        current_conn = await self._connection_repo.get_by_user(child_id)
+        if current_conn is None:
+            return False
+        if (
+            current_conn.id is not None
+            and request.get("connection_id") is not None
+            and str(current_conn.id) != str(request.get("connection_id"))
+        ):
+            return False
+        return current_conn.status is not ConnectionStatus.CONNECTED
+
+    async def _deliver_reconnect_qr_when_ready(
+        self,
+        *,
+        phone: str,
+        request_id: str,
+        child_id: str,
+        child_name: str,
+        conn: StoredConnection,
+    ) -> None:
+        """Background task: retry ``get_pairing_qr`` while PREPARING, then
+        automatically deliver the QR image in the same WhatsApp conversation.
+
+        Bounded by ``_qr_retry_max_attempts * _qr_retry_interval`` (~60s by
+        default). On timeout, sends a fresh actionable message rather than
+        silently stopping. Before delivering, verifies the reconnect request
+        is still open and points to the same child connection.
+        """
+        result = await self._fetch_pairing_qr_until_ready(conn.ref)
+        if result is None:
+            await self._record_reconnect_event(
+                "reconnect.qr_preparing_timeout", child_id=child_id, request_id=request_id,
+            )
+            await self._bot.send_text(phone, _RECONNECT_QR_TIMED_OUT.format(name=child_name))
+            return
+        if result.outcome is PairingOutcome.ALREADY_AUTHORIZED:
+            await self._record_reconnect_event(
+                "reconnect.qr_already_authorized", child_id=child_id, request_id=request_id,
+            )
+            await self.handle_connection_established_by_id(child_id)
+            return
+        if result.outcome is not PairingOutcome.QR_READY or result.qr is None:
+            await self._record_reconnect_event(
+                "reconnect.qr_unavailable", child_id=child_id, request_id=request_id,
+            )
+            await self._bot.send_text(phone, "לא הצלחתי להכין את קוד החיבור. נסו שוב מאוחר יותר.")
+            return
+        if not await self._reconnect_request_still_valid(request_id, child_id, conn):
+            await self._record_reconnect_event(
+                "reconnect.qr_stale", child_id=child_id, request_id=request_id,
+            )
+            _logger.info(
+                "reconnect QR delivery skipped (request no longer valid) "
+                "request_id=%s child_hash=%s",
+                request_id, _safe_correlation_id(child_id),
+            )
+            return
+        await self._deliver_reconnect_qr(
+            phone=phone, request_id=request_id, child_id=child_id, conn=conn, result=result,
+        )
+
+    async def _fetch_pairing_qr_until_ready(
+        self,
+        connection: ConnectionRef,
+    ) -> PairingResult | None:
+        """Retry ``get_pairing_qr`` until a non-PREPARING outcome or timeout.
+
+        Returns the first non-PREPARING :class:`PairingResult`, or ``None`` if
+        ``_qr_retry_max_attempts`` retries all returned PREPARING (or failed
+        transiently). Transient errors are logged and counted as a retry.
+        """
+        for _ in range(self._qr_retry_max_attempts):
+            await asyncio.sleep(self._qr_retry_interval)
+            try:
+                result = await self._provisioner.get_pairing_qr(connection)
+            except Exception:
+                _logger.exception("pairing QR retry failed connection=%s", connection)
+                continue
+            if result.outcome is not PairingOutcome.PREPARING:
+                return result
+        return None
 
     async def _claim_pool_and_send_qr(
         self,
@@ -1256,19 +1406,33 @@ class OnboardingService:
         phone: str,
         conn: StoredConnection,
     ) -> None:
-        """Send a provider-neutral QR and poll provider-neutral status."""
+        """Send a provider-neutral QR and poll provider-neutral status.
+
+        When the provider reports PREPARING on the first fetch, a background
+        task retries until the QR is ready and delivers it automatically —
+        the user should not need to click again.
+        """
         _logger.info(
             "onboarding QR requested user_hash=%s provider=%s connection_hash=%s",
             _safe_correlation_id(user_id),
             conn.ref.provider,
             _safe_correlation_id(conn.ref.provider_connection_id),
         )
+        # Don't start a duplicate background QR-delivery worker.
+        existing = self._onboarding_qr_tasks.get(user_id)
+        if existing is not None and not existing.done():
+            return
         result = await self._provisioner.get_pairing_qr(conn.ref)
         if result.outcome is PairingOutcome.ALREADY_AUTHORIZED:
             await self.handle_connection_established(user_id, phone)
             return
         if result.outcome is PairingOutcome.PREPARING:
-            await self._bot.send_text(phone, "אנחנו מכינים את קוד החיבור. נסה/י ללחוץ שוב על \"הצג QR\" בעוד כמה רגעים.")
+            await self._bot.send_text(phone, _ONBOARDING_QR_PREPARING)
+            self._onboarding_qr_tasks[user_id] = asyncio.create_task(
+                self._deliver_onboarding_qr_when_ready(
+                    user_id=user_id, phone=phone, conn=conn,
+                )
+            )
             return
         if result.outcome is not PairingOutcome.QR_READY or result.qr is None:
             await self._user_repo.update_onboarding_status(user_id, "failed")
@@ -1277,6 +1441,17 @@ class OnboardingService:
                 "מצטער, לא הצלחתי לקבל קוד QR. נסה שוב מאוחר יותר.",
             )
             return
+        await self._deliver_onboarding_qr(user_id, phone, conn, result)
+
+    async def _deliver_onboarding_qr(
+        self,
+        user_id: str,
+        phone: str,
+        conn: StoredConnection,
+        result: PairingResult,
+    ) -> None:
+        """Send the Baileys QR image and start connection-status polling."""
+        assert result.qr is not None
         try:
             await self._bot.send_image(
                 phone,
@@ -1291,6 +1466,40 @@ class OnboardingService:
         self._trace_funnel_event("qr_shown", user_id)
         _logger.info("onboarding QR sent user_hash=%s", _safe_correlation_id(user_id))
         self._ensure_provider_poll_task(user_id, phone, conn.ref)
+
+    async def _deliver_onboarding_qr_when_ready(
+        self,
+        *,
+        user_id: str,
+        phone: str,
+        conn: StoredConnection,
+    ) -> None:
+        """Background task: retry ``get_pairing_qr`` while PREPARING, then
+        automatically deliver the QR image in the same WhatsApp conversation.
+
+        Bounded by ``_qr_retry_max_attempts * _qr_retry_interval`` (~60s by
+        default). On timeout, sends a fresh actionable message rather than
+        silently stopping.
+        """
+        result = await self._fetch_pairing_qr_until_ready(conn.ref)
+        if result is None:
+            _logger.warning(
+                "onboarding QR retry timed out user_hash=%s",
+                _safe_correlation_id(user_id),
+            )
+            await self._bot.send_text(phone, _ONBOARDING_QR_TIMED_OUT)
+            return
+        if result.outcome is PairingOutcome.ALREADY_AUTHORIZED:
+            await self.handle_connection_established(user_id, phone)
+            return
+        if result.outcome is not PairingOutcome.QR_READY or result.qr is None:
+            await self._user_repo.update_onboarding_status(user_id, "failed")
+            await self._bot.send_text(
+                phone,
+                "מצטער, לא הצלחתי לקבל קוד QR. נסה שוב מאוחר יותר.",
+            )
+            return
+        await self._deliver_onboarding_qr(user_id, phone, conn, result)
 
     def _ensure_provider_poll_task(
         self,
