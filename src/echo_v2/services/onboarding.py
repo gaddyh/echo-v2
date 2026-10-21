@@ -214,13 +214,20 @@ _GUARD_SCAN_INSTRUCTIONS = (
     "4. סרקו את קוד ה־QR שנציג לכם.\n"
     "את הקוד פותחים בטלפון של ההורה וסורקים באמצעות הטלפון של הילד."
 )
-_GUARD_AUTHORIZATION_BODY = (
-    "לפני החיבור, חשוב לאשר שאת/ה ההורה או האפוטרופוס של הילד/ה.\n\n"
-    "Guard מנתח את שיחות ה-WhatsApp של הילד/ה כדי לזהות סימני מצוקה, "
-    "בריונות, לחץ או פגיעה אפשרית. הוא שולח לך רק התראות כשנדרש לשים לב — "
-    "לא את כל השיחות.\n\n"
-    "האם לאשר אחריות הורית ולהפעיל את Guard?"
-)
+_GUARD_PRIVACY_PATH = "/guard/privacy"
+
+
+def _guard_authorization_body(base_url: str) -> str:
+    return (
+        "לפני החיבור, חשוב לאשר שאת/ה ההורה או האפוטרופוס של הילד/ה.\n\n"
+        "Guard מנתח את שיחות ה-WhatsApp של הילד/ה כדי לזהות סימני מצוקה, "
+        "בריונות, לחץ או פגיעה אפשרית. הוא שולח לך רק התראות כשנדרש לשים לב — "
+        "לא את כל השיחות.\n\n"
+        "מדיניות פרטיות ושקיפות מלאה כאן:\n"
+        f"{base_url}{_GUARD_PRIVACY_PATH}\n\n"
+        "האם לאשר אחריות הורית ולהפעיל את Guard?"
+    )
+
 _GUARD_AUTH_BUTTON = {"id": "onboarding:authorize", "title": "אני מאשר/ת"}
 _CHILD_CONNECT_BODY = "האישור התקבל. לחץ/י על Connect כדי לחבר את WhatsApp של הילד/ה."
 _PARENT_SUCCESS = "החיבור הושלם בהצלחה. מספר WhatsApp של {name} אומת ו-Guard פעיל."
@@ -455,7 +462,7 @@ class OnboardingService:
             elif link.guardian_authorized_at is None:
                 await self._bot.send_buttons(
                     normalized,
-                    body_text=_GUARD_AUTHORIZATION_BODY,
+                    body_text=_guard_authorization_body(self._webhook_base_url),
                     buttons=[_GUARD_AUTH_BUTTON],
                 )
             else:
@@ -520,7 +527,7 @@ class OnboardingService:
             return
         await self._bot.send_buttons(
             ctx.phone,
-            body_text=_GUARD_AUTHORIZATION_BODY,
+            body_text=_guard_authorization_body(self._webhook_base_url),
             buttons=[_GUARD_AUTH_BUTTON],
         )
 
@@ -1800,7 +1807,7 @@ class OnboardingService:
                 link = await self._pending_for_guardian(parent_ctx.user_id)
                 if link is not None:
                     if link.guardian_authorized_at is None:
-                        await self._bot.send_text(parent_ctx.phone, _GUARD_AUTHORIZATION_BODY)
+                        await self._bot.send_text(parent_ctx.phone, _guard_authorization_body(self._webhook_base_url))
                         return
                     await self._send_guard_scan_instructions(link, parent_ctx.phone)
                     await self._bot.send_buttons(

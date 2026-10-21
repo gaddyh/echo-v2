@@ -281,6 +281,7 @@ async def test_guard_landing_page_remains_available():
     assert 'class="signup-disclosure"' in resp.text
     assert "לא מציג להורה את כל השיחות" in resp.text
     assert 'class="section connection-section' in resp.text
+    assert 'href="/guard/privacy"' in resp.text
     assert "50 המקומות הראשונים בלבד" not in resp.text
     assert "preference: preference" in resp.text
 
@@ -312,6 +313,7 @@ async def test_guard_v2_landing_page_uses_security_and_exposure_copy():
     assert "signup-disclosure" in html
     assert "עדכנו אותי כשהפיילוט נפתח" in html
     assert 'src="/og-guard-v3.png"' in html
+    assert 'href="/guard/privacy"' in html
     assert "wl-preference" not in html
     assert "preference" not in html.split("<script>", 1)[1]
     assert html.index('class="hero-outcomes"') < html.index('class="hero-art"')
@@ -529,3 +531,18 @@ async def test_notifier_receives_echo_guard_children_fields():
     assert calls[0]["preference"] == "android"
     assert calls[0]["children_count"] == "3"
     assert calls[0]["children_ages"] == "8, 11, 14"
+
+
+# --- GET /guard/privacy ------------------------------------------------------
+
+
+async def test_guard_privacy_page_served():
+    app, _ = _make_app()
+    async with _client(app) as client:
+        resp = await client.get("/guard/privacy")
+    assert resp.status_code == 200
+    assert "text/html" in resp.headers.get("content-type", "")
+    assert "מדיניות פרטיות ושקיפות" in resp.text
+    assert "אירועים משמעותיים בסביבת קבוצות" in resp.text
+    assert resp.headers.get("x-content-type-options") == "nosniff"
+    assert "default-src 'self'" in resp.headers.get("content-security-policy", "")
