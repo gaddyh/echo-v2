@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol, cast
 
+from echo_v2.domain.alerted_incident import AlertedIncident
 from echo_v2.domain.chat import Message
 from echo_v2.domain.guard import GuardChatState
 from echo_v2.domain.guard_exposure import ExposureAssessment
@@ -19,6 +20,7 @@ from echo_v2.domain.parent_attention import (
     ParentAttentionOutcomeStatus,
 )
 from echo_v2.domain.scheduling import ScheduledAction
+from echo_v2.persistence.alerted_incident_repository import AlertedIncidentRepository
 from echo_v2.persistence.chat_repositories import MessageRepository
 from echo_v2.persistence.guard_exposure_repositories import (
     GuardExposureAssessmentRepository,
@@ -67,6 +69,7 @@ class GuardSimpleTelemetryService:
         actions: ScheduledActionRepository,
         messages: MessageRepository,
         exposure_assessments: GuardExposureAssessmentRepository | None = None,
+        incidents: AlertedIncidentRepository | None = None,
     ) -> None:
         self._tokens = token_service
         self._links = links
@@ -77,6 +80,7 @@ class GuardSimpleTelemetryService:
         self._outcomes = outcomes
         self._actions = actions
         self._messages = messages
+        self._incidents = incidents
 
     async def list_activity(
         self,
@@ -140,28 +144,41 @@ class GuardSimpleTelemetryService:
         has_more = len(all_rows) > page_size
         all_rows = all_rows[:page_size]
         rows = [item for item, _ in all_rows]
-        outcome_rows, states, child_names, parent_names = await asyncio.gather(
+        outcome_rows, states, child_names, parent_names, incident_rows = await asyncio.gather(
             self._outcomes.list_for_assessments(
                 [assessment.id for assessment in rows if assessment.id is not None]
             ),
             self._chat_states.list_for_children(child_ids),
             self._child_names(linked_child_ids),
             self._user_names([link.guardian_user_id for link in links]),
+            self._incidents.list_for_children(
+                child_user_ids=child_ids,
+                created_after=start,
+                created_before=end,
+                chat_id=chat_id,
+                limit=500,
+            ) if self._incidents is not None else _empty_incidents(),
         )
         outcomes: dict[str, list[ParentAttentionDeliveryOutcome]] = {}
         for outcome in outcome_rows:
             outcomes.setdefault(outcome.assessment_id, []).append(outcome)
         state_by_chat = {(state.child_user_id, state.chat_id): state for state in states}
+        incident_by_assessment: dict[str, AlertedIncident] = {}
+        for inc in incident_rows:
+            for aid in inc.assessment_ids:
+                incident_by_assessment[aid] = inc
         analyses = tuple(
             _activity_view(
                 cast(SafetyAssessment, assessment),
                 outcomes.get(assessment.id, []) if assessment.id is not None else [],
                 state_by_chat.get((assessment.child_user_id, assessment.chat_id)),
                 child_names.get(assessment.child_user_id),
+                incident_by_assessment.get(assessment.id) if assessment.id is not None else None,
             ) if kind == "child" else _exposure_activity_view(
                 cast(ExposureAssessment, assessment),
                 state_by_chat.get((assessment.child_user_id, assessment.chat_id)),
                 child_names.get(assessment.child_user_id),
+                incident_by_assessment.get(assessment.id) if assessment.id is not None else None,
             )
             for assessment, kind in all_rows
         )
@@ -393,10 +410,29 @@ async def _empty_counts() -> dict[str, int]:
     return {"analyzed": 0, "yes": 0, "no": 0, "unknown": 0}
 
 
+async def _empty_incidents() -> list[AlertedIncident]:
+    return []
+
+
+def _incident_view(incident: AlertedIncident | None) -> dict[str, Any] | None:
+    if incident is None:
+        return None
+    return {
+        "id": incident.id,
+        "alert_type": incident.alert_type,
+        "status": "active" if incident.closed_at is None else "closed",
+        "notification_version": incident.notification_version,
+        "severity_summary": incident.severity_summary,
+        "evidence_count": len(incident.evidence_message_ids),
+        "assessment_count": len(incident.assessment_ids),
+    }
+
+
 def _exposure_activity_view(
     assessment: ExposureAssessment,
     state: GuardChatState | None,
     child_name: str | None,
+    incident: AlertedIncident | None = None,
 ) -> dict[str, Any]:
     return {
         "id": assessment.id,
@@ -415,6 +451,7 @@ def _exposure_activity_view(
         "evidence_message_ids": list(assessment.evidence_message_ids),
         "delivery": {"status": "shadow", "label": "Shadow mode · No parent notification"},
         "context_available": False,
+        "incident": _incident_view(incident),
     }
 
 
@@ -452,6 +489,7 @@ def _activity_view(
     outcome_list: list[ParentAttentionDeliveryOutcome] | None,
     state: GuardChatState | None,
     child_name: str | None,
+    incident: AlertedIncident | None = None,
 ) -> dict[str, Any]:
     deliveries = [
         _delivery_view(outcome, None) for outcome in (outcome_list or [])
@@ -472,6 +510,7 @@ def _activity_view(
         "summary": assessment.summary,
         "delivery": _delivery_view(primary, None),
         "deliveries": deliveries,
+        "incident": _incident_view(incident),
     }
 
 
