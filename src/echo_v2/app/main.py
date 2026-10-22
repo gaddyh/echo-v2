@@ -605,7 +605,8 @@ def create_app() -> FastAPI:
             incidents=repos.alerted_incidents,
             links=repos.guardian_child_links,
             users=user_repo,
-            scheduling=scheduling_service,
+            scheduling=repos.scheduled_actions,
+            unit_of_work_factory=repos.unit_of_work,
             security_template_name=os.environ.get(
                 "GUARD_SECURITY_ALERT_TEMPLATE_NAME", "guard_security_alert_he"
             ),
