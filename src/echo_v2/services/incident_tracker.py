@@ -319,7 +319,7 @@ class IncidentTracker:
             )
 
         # Should not reach here
-        return "unknown"
+        return "unknown"  # pragma: no cover
 
     async def _handle_new(
         self,

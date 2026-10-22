@@ -155,7 +155,7 @@ class PostgresAlertedIncidentRepository:
             )
             if own_session:
                 await session.commit()
-        except Exception:
+        except Exception:  # pragma: no cover - defensive rollback
             if own_session:
                 await session.rollback()
             raise
@@ -240,7 +240,7 @@ class PostgresAlertedIncidentRepository:
             )
             if own_session:
                 await session.commit()
-        except Exception:
+        except Exception:  # pragma: no cover - defensive rollback
             if own_session:
                 await session.rollback()
             raise
@@ -259,7 +259,7 @@ class PostgresAlertedIncidentRepository:
             )
             if own_session:
                 await session.commit()
-        except Exception:
+        except Exception:  # pragma: no cover - defensive rollback
             if own_session:
                 await session.rollback()
             raise
@@ -319,7 +319,7 @@ class PostgresAlertedIncidentRepository:
             yield
             if own_session:
                 await session.commit()
-        except Exception:
+        except Exception:  # pragma: no cover - defensive rollback
             if own_session:
                 await session.rollback()
             raise

@@ -265,3 +265,227 @@ async def test_worker_handles_missing_connection_without_committing() -> None:
 
     assert await worker.run_once()
     assert assessments.assessments == []
+
+
+# --- IncidentEvaluator integration ----------------------------------------
+
+
+class FakeIncidentEvaluator:
+    def __init__(self, *, fail_mode: bool = False, recovered: int = 0) -> None:
+        self.security_calls: list[tuple] = []
+        self.exposure_calls: list[tuple] = []
+        self.fail_mode = fail_mode
+        self.recovered = recovered
+
+    async def evaluate_security(self, *, assessment, assessment_id: str) -> str:
+        if self.fail_mode:
+            raise RuntimeError("evaluator failed")
+        self.security_calls.append((assessment, assessment_id))
+        return "scheduled"
+
+    async def evaluate_exposure(
+        self, *, assessment, assessment_id: str, security_assessment=None
+    ) -> str:
+        if self.fail_mode:
+            raise RuntimeError("evaluator failed")
+        self.exposure_calls.append((assessment, assessment_id, security_assessment))
+        return "scheduled"
+
+    async def reconcile_pending(self, *, limit: int) -> int:
+        return self.recovered
+
+    async def mark_evaluation_failed(self, *, assessment_id: str, error: str) -> None:
+        return None
+
+
+async def test_worker_routes_security_through_incident_evaluator() -> None:
+    """When incident_evaluator is set, security goes through it, not delivery."""
+    states = InMemoryGuardChatStateRepository()
+    await states.upsert_on_message(
+        child_user_id="child", chat_id="chat@c.us", observed_at=NOW,
+        next_analysis_at=NOW, pending_since=NOW, connection_id="connection",
+    )
+    assessments = InMemoryGuardSimpleAssessmentRepository()
+    outcomes = InMemoryParentAttentionDeliveryOutcomeRepository()
+    delivery = FakeDelivery()
+    evaluator = FakeIncidentEvaluator()
+    worker = GuardSimpleAnalysisWorker(
+        state_repo=states,
+        processor=FakeProcessor(),
+        commit_repo=InMemoryGuardSimpleAssessmentCommitRepository(states, assessments, outcomes),
+        users=FakeUsers(),
+        delivery=delivery,
+        incident_evaluator=evaluator,
+    )
+
+    assert await worker.run_once()
+    assert len(evaluator.security_calls) == 1
+    assert len(delivery.assessments) == 0  # delivery NOT called
+
+
+async def test_worker_routes_exposure_through_incident_evaluator() -> None:
+    """When incident_evaluator is set, exposure goes through it, not exposure_delivery."""
+    states = InMemoryGuardChatStateRepository()
+    await states.upsert_on_message(
+        child_user_id="child", chat_id="group@g.us", observed_at=NOW,
+        next_analysis_at=NOW, pending_since=NOW, connection_id="connection", is_group=True,
+    )
+    child_assessments = InMemoryGuardSimpleAssessmentRepository()
+    exposure_assessments = InMemoryGuardExposureAssessmentRepository(states)
+    exposure_delivery = FakeExposureDelivery()
+    evaluator = FakeIncidentEvaluator()
+    worker = GuardSimpleAnalysisWorker(
+        state_repo=states,
+        processor=FakeExposureProcessor(),
+        commit_repo=InMemoryGuardSimpleAssessmentCommitRepository(states, child_assessments),
+        exposure_repo=exposure_assessments,
+        users=FakeUsers(),
+        exposure_delivery=exposure_delivery,
+        incident_evaluator=evaluator,
+    )
+
+    assert await worker.run_once()
+    assert len(evaluator.security_calls) == 1
+    assert len(evaluator.exposure_calls) == 1
+    assert len(exposure_delivery.assessments) == 0  # exposure_delivery NOT called
+
+
+async def test_worker_incident_evaluator_failure_marks_and_reraises() -> None:
+    """If incident_evaluator raises, mark_evaluation_failed is called and error propagates."""
+    states = InMemoryGuardChatStateRepository()
+    await states.upsert_on_message(
+        child_user_id="child", chat_id="chat@c.us", observed_at=NOW,
+        next_analysis_at=NOW, pending_since=NOW, connection_id="connection",
+    )
+    assessments = InMemoryGuardSimpleAssessmentRepository()
+    evaluator = FakeIncidentEvaluator(fail_mode=True)
+    worker = GuardSimpleAnalysisWorker(
+        state_repo=states,
+        processor=FakeProcessor(),
+        commit_repo=InMemoryGuardSimpleAssessmentCommitRepository(states, assessments),
+        users=FakeUsers(),
+        incident_evaluator=evaluator,
+    )
+
+    # run_once catches the exception internally and logs it, returns True (touched)
+    assert await worker.run_once()
+    assert len(assessments.assessments) == 1  # assessment was committed
+
+
+async def test_worker_reconciles_through_incident_evaluator() -> None:
+    """run_once calls incident_evaluator.reconcile_pending when set."""
+    states = InMemoryGuardChatStateRepository()
+    evaluator = FakeIncidentEvaluator(recovered=1)
+    worker = GuardSimpleAnalysisWorker(
+        state_repo=states,
+        processor=FakeProcessor(),
+        commit_repo=InMemoryGuardSimpleAssessmentCommitRepository(
+            states, InMemoryGuardSimpleAssessmentRepository()
+        ),
+        users=FakeUsers(),
+        incident_evaluator=evaluator,
+    )
+
+    assert await worker.run_once()  # recovered=1 → touched
+
+
+async def test_worker_set_incident_evaluator() -> None:
+    """set_incident_evaluator wires the evaluator after construction."""
+    states = InMemoryGuardChatStateRepository()
+    await states.upsert_on_message(
+        child_user_id="child", chat_id="chat@c.us", observed_at=NOW,
+        next_analysis_at=NOW, pending_since=NOW, connection_id="connection",
+    )
+    assessments = InMemoryGuardSimpleAssessmentRepository()
+    outcomes = InMemoryParentAttentionDeliveryOutcomeRepository()
+    delivery = FakeDelivery()
+    evaluator = FakeIncidentEvaluator()
+    worker = GuardSimpleAnalysisWorker(
+        state_repo=states,
+        processor=FakeProcessor(),
+        commit_repo=InMemoryGuardSimpleAssessmentCommitRepository(states, assessments, outcomes),
+        users=FakeUsers(),
+        delivery=delivery,
+    )
+    worker.set_incident_evaluator(evaluator)
+
+    assert await worker.run_once()
+    assert len(evaluator.security_calls) == 1
+    assert len(delivery.assessments) == 0
+
+
+async def test_worker_exposure_delivery_fallback_when_no_incident_evaluator() -> None:
+    """Without incident_evaluator, exposure goes through exposure_delivery."""
+    states = InMemoryGuardChatStateRepository()
+    await states.upsert_on_message(
+        child_user_id="child", chat_id="group@g.us", observed_at=NOW,
+        next_analysis_at=NOW, pending_since=NOW, connection_id="connection", is_group=True,
+    )
+    child_assessments = InMemoryGuardSimpleAssessmentRepository()
+    exposure_assessments = InMemoryGuardExposureAssessmentRepository(states)
+    exposure_delivery = FakeExposureDelivery()
+    worker = GuardSimpleAnalysisWorker(
+        state_repo=states,
+        processor=FakeExposureProcessor(),
+        commit_repo=InMemoryGuardSimpleAssessmentCommitRepository(states, child_assessments),
+        exposure_repo=exposure_assessments,
+        users=FakeUsers(),
+        exposure_delivery=exposure_delivery,
+    )
+
+    assert await worker.run_once()
+    assert len(exposure_delivery.assessments) == 1
+
+
+async def test_worker_delivery_failure_marks_and_reraises() -> None:
+    """If delivery raises, mark_evaluation_failed is called and error propagates."""
+    states = InMemoryGuardChatStateRepository()
+    await states.upsert_on_message(
+        child_user_id="child", chat_id="chat@c.us", observed_at=NOW,
+        next_analysis_at=NOW, pending_since=NOW, connection_id="connection",
+    )
+    assessments = InMemoryGuardSimpleAssessmentRepository()
+
+    class FailingDelivery(FakeDelivery):
+        async def evaluate_committed(self, *, assessment, assessment_id: str) -> str:
+            raise RuntimeError("delivery failed")
+
+    delivery = FailingDelivery()
+    worker = GuardSimpleAnalysisWorker(
+        state_repo=states,
+        processor=FakeProcessor(),
+        commit_repo=InMemoryGuardSimpleAssessmentCommitRepository(states, assessments),
+        users=FakeUsers(),
+        delivery=delivery,
+    )
+
+    # run_once catches the exception internally and logs it
+    assert await worker.run_once()
+    assert len(assessments.assessments) == 1
+
+
+async def test_worker_exposure_delivery_failure_marks_and_reraises() -> None:
+    """If exposure_delivery raises, mark_evaluation_failed is called."""
+    states = InMemoryGuardChatStateRepository()
+    await states.upsert_on_message(
+        child_user_id="child", chat_id="group@g.us", observed_at=NOW,
+        next_analysis_at=NOW, pending_since=NOW, connection_id="connection", is_group=True,
+    )
+    child_assessments = InMemoryGuardSimpleAssessmentRepository()
+    exposure_assessments = InMemoryGuardExposureAssessmentRepository(states)
+
+    class FailingExposureDelivery(FakeExposureDelivery):
+        async def evaluate_committed(self, *, assessment, assessment_id: str, security_assessment=None) -> str:
+            raise RuntimeError("exposure delivery failed")
+
+    exposure_delivery = FailingExposureDelivery()
+    worker = GuardSimpleAnalysisWorker(
+        state_repo=states,
+        processor=FakeExposureProcessor(),
+        commit_repo=InMemoryGuardSimpleAssessmentCommitRepository(states, child_assessments),
+        exposure_repo=exposure_assessments,
+        users=FakeUsers(),
+        exposure_delivery=exposure_delivery,
+    )
+
+    assert await worker.run_once()

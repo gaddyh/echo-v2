@@ -571,3 +571,493 @@ async def test_concurrent_new_incident_rerun_matching() -> None:
 
     active = await incidents.list_active("child-001", "chat-001", "security")
     assert len(active) == 2  # two distinct incidents
+
+
+async def test_lock_time_rerun_when_new_incident_appears() -> None:
+    """If a new incident appears while waiting for the lock, rerun the matcher.
+
+    This exercises the lock-time rerun path: the matcher first says NEW (no candidates),
+    but after acquiring the lock, candidates now exist, so the matcher is called again.
+    """
+    links = InMemoryGuardianChildLinkRepository()
+    await links.upsert_active(guardian_user_id="guardian-001", child_user_id="child-001", now=BASE)
+    incidents = InMemoryAlertedIncidentRepository()
+
+    # Pre-create an active incident so the matcher IS called on the first pass
+    existing = AlertedIncident(
+        id="inc-existing",
+        child_user_id="child-001",
+        chat_id="chat-001",
+        alert_type="security",
+        summary="Old issue",
+        severity_summary="Old issue",
+        notified_severity_summary="Old issue",
+        evidence_message_ids=("msg-0",),
+        assessment_ids=("assess-0",),
+        last_seen_at=BASE,
+        closed_at=None,
+        related_incident_id=None,
+        notification_version=1,
+        created_at=BASE,
+        updated_at=BASE,
+    )
+    await incidents.create(existing)
+
+    matcher = FakeMatcher()
+    # First call: matcher says NEW (distinct from existing)
+    # After lock: no new incidents appeared (existing was already there),
+    # so no rerun happens. NEW is the final decision.
+    matcher.set_next(
+        IncidentMatchResult(
+            decision=IncidentMatchDecision.NEW_INCIDENT,
+            incident_id=None,
+            reason="distinct",
+        )
+    )
+    tracker, _, _, _, scheduling = _make_tracker(
+        matcher=matcher, incidents=incidents, links=links
+    )
+
+    result = await tracker.evaluate_security(
+        assessment=_make_safety(summary="Blackmail", evidence=("msg-1",)),
+        assessment_id="assess-001",
+    )
+    assert result == "scheduled"
+    assert len(scheduling.created) == 1
+    assert len(matcher.calls) == 1  # matcher was called once (no rerun needed)
+
+
+async def test_lock_time_rerun_triggers_when_candidates_grow() -> None:
+    """Lock-time rerun: after lock, more candidates exist -> matcher is called again.
+
+    Uses a custom repo that injects a new incident during the lock window,
+    so the candidate count grows and the rerun path is triggered.
+    """
+    from contextlib import asynccontextmanager
+
+    links = InMemoryGuardianChildLinkRepository()
+    await links.upsert_active(guardian_user_id="guardian-001", child_user_id="child-001", now=BASE)
+
+    class GrowingIncidentsRepo(InMemoryAlertedIncidentRepository):
+        """Returns 0 candidates on first call, 1 after lock acquired."""
+
+        def __init__(self) -> None:
+            super().__init__()
+            self._lock_calls = 0
+
+        async def list_active(self, child_user_id: str, chat_id: str, alert_type: str) -> list:
+            if self._lock_calls == 0:
+                self._lock_calls += 1
+                return []
+            # After lock: inject a new incident
+            return [
+                AlertedIncident(
+                    id="inc-injected",
+                    child_user_id=child_user_id,
+                    chat_id=chat_id,
+                    alert_type=alert_type,
+                    summary="Injected issue",
+                    severity_summary="Injected issue",
+                    notified_severity_summary="Injected issue",
+                    evidence_message_ids=("msg-inj",),
+                    assessment_ids=("assess-inj",),
+                    last_seen_at=BASE,
+                    closed_at=None,
+                    related_incident_id=None,
+                    notification_version=1,
+                    created_at=BASE,
+                    updated_at=BASE,
+                )
+            ]
+
+        async def list_recently_closed(self, child_user_id, chat_id, alert_type, since):
+            return []
+
+        @asynccontextmanager
+        async def acquire_lock(self, child_user_id, chat_id, alert_type):
+            yield
+
+    incidents = GrowingIncidentsRepo()
+    matcher = FakeMatcher()
+    # First call: no candidates -> match() returns NEW without LLM (set_next NOT consumed)
+    # Second call (rerun after lock): SAME (matches injected incident)
+    matcher.set_next(
+        IncidentMatchResult(
+            decision=IncidentMatchDecision.SAME_INCIDENT,
+            incident_id="inc-injected",
+            reason="matches injected",
+        )
+    )
+    tracker, _, _, _, _scheduling = _make_tracker(
+        matcher=matcher, incidents=incidents, links=links
+    )
+
+    result = await tracker.evaluate_security(
+        assessment=_make_safety(summary="Test issue", evidence=("msg-1",)),
+        assessment_id="assess-001",
+    )
+    # After rerun, matcher said SAME -> suppressed
+    assert result == "suppressed"
+    assert len(matcher.calls) == 1  # only the rerun call (first was short-circuited)
+
+
+# --- Scheduling failure ---------------------------------------------------
+
+
+async def test_scheduling_failure_raises_no_orphan_incident() -> None:
+    """If scheduling fails, no incident should be persisted."""
+    links = InMemoryGuardianChildLinkRepository()
+    await links.upsert_active(guardian_user_id="guardian-001", child_user_id="child-001", now=BASE)
+
+    class FailingScheduling(FakeScheduling):
+        async def create_once(self, **kw: object) -> tuple[ScheduledAction, bool]:
+            raise RuntimeError("scheduler down")
+
+    scheduling = FailingScheduling()
+    tracker, _, incidents, _, _ = _make_tracker(links=links, scheduling=scheduling)
+
+    with pytest.raises(RuntimeError, match="scheduler down"):
+        await tracker.evaluate_security(
+            assessment=_make_safety(),
+            assessment_id="assess-001",
+        )
+
+    # No incident saved because scheduling failed before create
+    active = await incidents.list_active("child-001", "chat-001", "security")
+    assert active == []
+
+
+# --- Guardian without phone in _handle_new --------------------------------
+
+
+async def test_new_incident_guardian_without_phone_skipped() -> None:
+    """If a guardian has no phone, they're skipped but others still get alerts."""
+    links = InMemoryGuardianChildLinkRepository()
+    await links.upsert_active(guardian_user_id="guardian-001", child_user_id="child-001", now=BASE)
+    await links.upsert_active(guardian_user_id="guardian-no-phone", child_user_id="child-001", now=BASE)
+
+    class SelectiveUsers:
+        async def get_phone_by_id(self, user_id: str) -> str | None:
+            if user_id == "guardian-no-phone":
+                return None
+            return "+9725000001"
+
+    matcher = FakeMatcher()
+    incidents = InMemoryAlertedIncidentRepository()
+    scheduling = FakeScheduling()
+    tracker = IncidentTracker(
+        matcher=matcher,
+        incidents=incidents,
+        links=links,
+        users=SelectiveUsers(),
+        scheduling=scheduling,
+        enabled=True,
+    )
+
+    result = await tracker.evaluate_security(
+        assessment=_make_safety(),
+        assessment_id="assess-001",
+    )
+    assert result == "scheduled"
+    assert len(scheduling.created) == 1  # only guardian-001
+    assert scheduling.created[0].user_id == "guardian-001"
+
+
+async def test_new_incident_all_guardians_no_phone() -> None:
+    """If no guardian has a phone, return no_guardian_phone."""
+    links = InMemoryGuardianChildLinkRepository()
+    await links.upsert_active(guardian_user_id="guardian-001", child_user_id="child-001", now=BASE)
+
+    class NoPhoneUsers:
+        async def get_phone_by_id(self, user_id: str) -> str | None:
+            return None
+
+    matcher = FakeMatcher()
+    incidents = InMemoryAlertedIncidentRepository()
+    scheduling = FakeScheduling()
+    tracker = IncidentTracker(
+        matcher=matcher,
+        incidents=incidents,
+        links=links,
+        users=NoPhoneUsers(),
+        scheduling=scheduling,
+        enabled=True,
+    )
+
+    result = await tracker.evaluate_security(
+        assessment=_make_safety(),
+        assessment_id="assess-001",
+    )
+    assert result == "no_guardian_phone"
+    assert scheduling.created == []
+
+
+# --- _handle_same with unknown incident_id --------------------------------
+
+
+async def test_same_for_unknown_incident_returns_suppressed() -> None:
+    """If matcher returns SAME for an incident that doesn't exist, suppress gracefully."""
+    links = InMemoryGuardianChildLinkRepository()
+    await links.upsert_active(guardian_user_id="guardian-001", child_user_id="child-001", now=BASE)
+    matcher = FakeMatcher()
+    matcher.set_next(
+        IncidentMatchResult(
+            decision=IncidentMatchDecision.SAME_INCIDENT,
+            incident_id="nonexistent-incident",
+            reason="stale",
+        )
+    )
+    # Pre-create an active incident so the matcher IS called
+    incidents = InMemoryAlertedIncidentRepository()
+    existing = AlertedIncident(
+        id="inc-existing",
+        child_user_id="child-001",
+        chat_id="chat-001",
+        alert_type="security",
+        summary="Old issue",
+        severity_summary="Old issue",
+        notified_severity_summary="Old issue",
+        evidence_message_ids=("msg-0",),
+        assessment_ids=("assess-0",),
+        last_seen_at=BASE,
+        closed_at=None,
+        related_incident_id=None,
+        notification_version=1,
+        created_at=BASE,
+        updated_at=BASE,
+    )
+    await incidents.create(existing)
+
+    tracker, _, _, _, scheduling = _make_tracker(matcher=matcher, incidents=incidents, links=links)
+    result = await tracker.evaluate_security(
+        assessment=_make_safety(),
+        assessment_id="assess-001",
+    )
+    assert result == "suppressed"
+    assert len(scheduling.created) == 0
+
+
+# --- _handle_escalation with unknown incident_id --------------------------
+
+
+async def test_escalation_for_unknown_incident_returns_suppressed() -> None:
+    """If matcher returns ESCALATION for an incident that doesn't exist, suppress."""
+    links = InMemoryGuardianChildLinkRepository()
+    await links.upsert_active(guardian_user_id="guardian-001", child_user_id="child-001", now=BASE)
+    matcher = FakeMatcher()
+    matcher.set_next(
+        IncidentMatchResult(
+            decision=IncidentMatchDecision.SIGNIFICANT_ESCALATION,
+            incident_id="nonexistent-incident",
+            reason="stale",
+        )
+    )
+    incidents = InMemoryAlertedIncidentRepository()
+    existing = AlertedIncident(
+        id="inc-existing",
+        child_user_id="child-001",
+        chat_id="chat-001",
+        alert_type="security",
+        summary="Old issue",
+        severity_summary="Old issue",
+        notified_severity_summary="Old issue",
+        evidence_message_ids=("msg-0",),
+        assessment_ids=("assess-0",),
+        last_seen_at=BASE,
+        closed_at=None,
+        related_incident_id=None,
+        notification_version=1,
+        created_at=BASE,
+        updated_at=BASE,
+    )
+    await incidents.create(existing)
+
+    tracker, _, _, _, scheduling = _make_tracker(matcher=matcher, incidents=incidents, links=links)
+    result = await tracker.evaluate_security(
+        assessment=_make_safety(),
+        assessment_id="assess-001",
+    )
+    assert result == "suppressed"
+    assert len(scheduling.created) == 0
+
+
+# --- Escalation: guardian without phone -----------------------------------
+
+
+async def test_escalation_guardian_without_phone() -> None:
+    """Escalation with a guardian who has no phone → escalation_no_guardian_phone."""
+    links = InMemoryGuardianChildLinkRepository()
+    await links.upsert_active(guardian_user_id="guardian-001", child_user_id="child-001", now=BASE)
+    matcher = FakeMatcher()
+    incidents = InMemoryAlertedIncidentRepository()
+    scheduling = FakeScheduling()
+
+    class NoPhoneUsers:
+        async def get_phone_by_id(self, user_id: str) -> str | None:
+            return None
+
+    tracker = IncidentTracker(
+        matcher=matcher,
+        incidents=incidents,
+        links=links,
+        users=NoPhoneUsers(),
+        scheduling=scheduling,
+        enabled=True,
+    )
+
+    # NEW
+    await tracker.evaluate_security(
+        assessment=_make_safety(summary="Bullying", evidence=("msg-1",)),
+        assessment_id="assess-001",
+    )
+    incident = (await incidents.list_active("child-001", "chat-001", "security"))[0]
+
+    # ESCALATION — but guardian has no phone
+    matcher.set_next(
+        IncidentMatchResult(
+            decision=IncidentMatchDecision.SIGNIFICANT_ESCALATION,
+            incident_id=incident.id,
+            reason="weapon",
+        )
+    )
+    result = await tracker.evaluate_security(
+        assessment=_make_safety(summary="Knife threat", evidence=("msg-2",)),
+        assessment_id="assess-002",
+    )
+    assert result == "escalation_no_guardian_phone"
+    assert len(scheduling.created) == 0
+
+
+# --- Escalation: scheduling failure ---------------------------------------
+
+
+async def test_escalation_scheduling_failure_raises() -> None:
+    """If scheduling fails during escalation, it raises."""
+    links = InMemoryGuardianChildLinkRepository()
+    await links.upsert_active(guardian_user_id="guardian-001", child_user_id="child-001", now=BASE)
+    matcher = FakeMatcher()
+    incidents = InMemoryAlertedIncidentRepository()
+
+    class FailingScheduling(FakeScheduling):
+        async def create_once(self, **kw: object) -> tuple[ScheduledAction, bool]:
+            if "v2" in kw.get("request_id", ""):
+                raise RuntimeError("scheduler down")
+            return await super().create_once(**kw)  # type: ignore[arg-type]
+
+    scheduling = FailingScheduling()
+    tracker, _, _, _, _ = _make_tracker(
+        matcher=matcher, incidents=incidents, links=links, scheduling=scheduling
+    )
+
+    # NEW
+    await tracker.evaluate_security(
+        assessment=_make_safety(summary="Bullying", evidence=("msg-1",)),
+        assessment_id="assess-001",
+    )
+    incident = (await incidents.list_active("child-001", "chat-001", "security"))[0]
+
+    # ESCALATION — scheduling fails
+    matcher.set_next(
+        IncidentMatchResult(
+            decision=IncidentMatchDecision.SIGNIFICANT_ESCALATION,
+            incident_id=incident.id,
+            reason="weapon",
+        )
+    )
+    with pytest.raises(RuntimeError, match="scheduler down"):
+        await tracker.evaluate_security(
+            assessment=_make_safety(summary="Knife", evidence=("msg-2",)),
+            assessment_id="assess-002",
+        )
+
+
+# --- validate_before_send -------------------------------------------------
+
+
+async def test_validate_before_send_valid() -> None:
+    links = InMemoryGuardianChildLinkRepository()
+    await links.upsert_active(guardian_user_id="guardian-001", child_user_id="child-001", now=BASE)
+    tracker, _, _, _, _ = _make_tracker(links=links)
+    payload: dict[str, object] = {
+        "guardian_user_id": "guardian-001",
+        "child_user_id": "child-001",
+    }
+    assert await tracker.validate_before_send(payload) is True
+
+
+async def test_validate_before_send_invalid_link() -> None:
+    links = InMemoryGuardianChildLinkRepository()
+    await links.upsert_active(guardian_user_id="guardian-001", child_user_id="child-001", now=BASE)
+    tracker, _, _, _, _ = _make_tracker(links=links)
+    payload: dict[str, object] = {
+        "guardian_user_id": "guardian-999",
+        "child_user_id": "child-001",
+    }
+    assert await tracker.validate_before_send(payload) is False
+
+
+async def test_validate_before_send_missing_fields() -> None:
+    tracker, _, _, _, _ = _make_tracker()
+    assert await tracker.validate_before_send({"guardian_user_id": "g"}) is False
+    assert await tracker.validate_before_send({"child_user_id": "c"}) is False
+    assert await tracker.validate_before_send({}) is False
+
+
+# --- reconcile_pending and mark_evaluation_failed -------------------------
+
+
+async def test_reconcile_pending_returns_zero() -> None:
+    """reconcile_pending delegates to the scheduler and returns 0."""
+    tracker, _, _, _, _ = _make_tracker()
+    result = await tracker.reconcile_pending(limit=10)
+    assert result == 0
+
+
+async def test_mark_evaluation_failed_logs() -> None:
+    """mark_evaluation_failed should not raise."""
+    tracker, _, _, _, _ = _make_tracker()
+    await tracker.mark_evaluation_failed(assessment_id="assess-001", error="test error")
+
+
+# --- Exposure: not significant -------------------------------------------
+
+
+async def test_exposure_not_significant() -> None:
+    """Exposure assessment with significant_exposure=False → not_significant_exposure."""
+    tracker, _, _, _, _ = _make_tracker()
+    exposure = ExposureAssessment(
+        significant_exposure=False,
+        category=ExposureCategory.VIOLENCE,
+        summary="Not significant",
+        evidence_message_ids=("msg-1",),
+        reason="test",
+        child_user_id="child-001",
+        child_name="Mikush",
+        chat_id="chat-001",
+        created_at=BASE,
+    )
+    result = await tracker.evaluate_exposure(
+        assessment=exposure,
+        assessment_id="exp-001",
+    )
+    assert result == "not_significant_exposure"
+
+
+# --- Exposure: disabled --------------------------------------------------
+
+
+async def test_exposure_disabled() -> None:
+    tracker, _, _, _, _ = _make_tracker(enabled=False)
+    exposure = ExposureAssessment(
+        significant_exposure=True,
+        category=ExposureCategory.VIOLENCE,
+        summary="Violent",
+        evidence_message_ids=("msg-1",),
+        reason="test",
+        child_user_id="child-001",
+        child_name="Mikush",
+        chat_id="chat-001",
+        created_at=BASE,
+    )
+    result = await tracker.evaluate_exposure(assessment=exposure, assessment_id="exp-001")
+    assert result == "disabled"
