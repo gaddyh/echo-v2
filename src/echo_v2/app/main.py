@@ -584,7 +584,55 @@ def create_app() -> FastAPI:
     simple_worker.set_delivery(parent_attention_delivery)
     simple_worker.set_exposure_delivery(exposure_delivery)
 
+    # --- Incident Tracker (Layer 2/3) — semantic dedup for parent notifications
+    from echo_v2.services.incident_matcher import IncidentMatcher
+    from echo_v2.services.incident_tracker import IncidentTracker
+
+    incident_tracker_enabled = os.environ.get(
+        "GUARD_INCIDENT_TRACKER_ENABLED", "false"
+    ).lower() in ("1", "true", "yes")
+    incident_tracker: IncidentTracker | None = None
+    if incident_tracker_enabled:
+        incident_matcher = IncidentMatcher(
+            client=openai_client,
+            model=os.environ.get(
+                "INCIDENT_MATCHER_LLM_MODEL",
+                os.environ.get("GUARD_LLM_MODEL_NAME", "gpt-4.1"),
+            ),
+        )
+        incident_tracker = IncidentTracker(
+            matcher=incident_matcher,
+            incidents=repos.alerted_incidents,
+            links=repos.guardian_child_links,
+            users=user_repo,
+            scheduling=scheduling_service,
+            security_template_name=os.environ.get(
+                "GUARD_SECURITY_ALERT_TEMPLATE_NAME", "guard_security_alert_he"
+            ),
+            security_template_language=os.environ.get(
+                "GUARD_SECURITY_ALERT_TEMPLATE_LANGUAGE", "he"
+            ),
+            exposure_template_name=os.environ.get(
+                "GUARD_EXPOSURE_ALERT_TEMPLATE_NAME", "guard_exposure_alert_he"
+            ),
+            exposure_template_language=os.environ.get(
+                "GUARD_EXPOSURE_ALERT_TEMPLATE_LANGUAGE", "he"
+            ),
+            close_after_hours=int(os.environ.get("GUARD_INCIDENT_CLOSE_AFTER_HOURS", "24")),
+            recurrence_link_window_days=int(
+                os.environ.get("GUARD_INCIDENT_RECURRENCE_WINDOW_DAYS", "30")
+            ),
+            enabled=True,
+        )
+        simple_worker.set_incident_evaluator(incident_tracker)
+        _logger.info("Incident Tracker enabled (semantic dedup)")
+
     async def _guard_send_validator(payload: dict[str, object]) -> bool:
+        if incident_tracker is not None and (
+            payload.get("kind") == "guard_parent_attention"
+            or payload.get("kind") == "guard_exposure_alert"
+        ):
+            return await incident_tracker.validate_before_send(payload)
         if payload.get("kind") == "guard_exposure_alert":
             return await exposure_delivery.validate_before_send(payload)
         return await parent_attention_delivery.validate_before_send(payload)

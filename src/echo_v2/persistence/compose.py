@@ -15,6 +15,9 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from echo_v2.app.webhooks.inbox import PostgresWebhookInbox
+from echo_v2.persistence.alerted_incident_repository import (
+    PostgresAlertedIncidentRepository,
+)
 from echo_v2.persistence.baileys_events import BaileysEventRepository
 from echo_v2.persistence.credential_cipher import (
     CredentialCipher,
@@ -124,6 +127,7 @@ class PostgresRepos:
     guard_alerts: PostgresGuardAlertRepository
     guard_feedback: PostgresGuardFeedbackRepository
     guard_eval: PostgresGuardEvalRepository
+    alerted_incidents: PostgresAlertedIncidentRepository
     wfm_feedback: PostgresWaitingForMeFeedbackRepository
     wfm_actions: PostgresWaitingForMeActionRepository
     chat_mutes: PostgresChatMuteRepository
@@ -180,6 +184,7 @@ def build_postgres_repos(settings: DBSettings) -> PostgresRepos:
     guard_alerts = PostgresGuardAlertRepository(factory)
     guard_feedback = PostgresGuardFeedbackRepository(factory)
     guard_eval = PostgresGuardEvalRepository(factory)
+    alerted_incidents = PostgresAlertedIncidentRepository(factory)
     wfm_feedback = PostgresWaitingForMeFeedbackRepository(factory)
     wfm_actions = PostgresWaitingForMeActionRepository(factory)
     chat_mutes = PostgresChatMuteRepository(factory)
@@ -223,6 +228,7 @@ def build_postgres_repos(settings: DBSettings) -> PostgresRepos:
         guard_alerts=guard_alerts,
         guard_feedback=guard_feedback,
         guard_eval=guard_eval,
+        alerted_incidents=alerted_incidents,
         wfm_feedback=wfm_feedback,
         wfm_actions=wfm_actions,
         chat_mutes=chat_mutes,
