@@ -34,3 +34,19 @@
 - Name/phone resolution lives once in `ContactNameResolver` (`services/waiting_for_me_view.py`).
 - Mutation/session orchestration lives in `WaitingListActionService` (`services/waiting_list_action_service.py`).
 - `BotChannel.send_template` accepts an optional `url_suffix` keyword used by the digest worker to embed a waiting-list session token.
+
+## Incident Tracker (Guard)
+
+- `IncidentTracker` provides semantic deduplication for parent notifications using the `IncidentMatcher` (LLM) and the `alerted_incidents` table.
+- Feature flag: `GUARD_INCIDENT_TRACKER_ENABLED` (defaults `false`).
+- When enabled, the tracker uses the existing `PostgresUnitOfWork` to atomically persist the incident and its scheduled actions in a single transaction. A PostgreSQL advisory lock (`pg_advisory_xact_lock`) is acquired on the UoW session and held until commit, preventing concurrent workers from creating duplicate incidents.
+- When the tracker is active, legacy `reconcile_pending` in `ParentAttentionDeliveryService` and `ExposureDeliveryService` is skipped by the worker to avoid duplicate alerts from the old evidence-diff delivery path.
+
+### Cutover policy
+
+- Before enabling `GUARD_INCIDENT_TRACKER_ENABLED`, drain pending legacy delivery records (`parent_attention_outcomes`, exposure outcomes). The tracker does not process these; once enabled, only `IncidentTracker.reconcile_pending` runs (which is a no-op for the pilot).
+- Enable the tracker only after the Postgres integration tests pass (`tests/persistence/test_postgres_incident_tracker_concurrency.py`).
+
+### Pilot limitation
+
+- For the pilot, if scheduling fails, the UoW transaction rolls back (no incident, no schedule) and the error is logged. There is no reconciliation or retry queue — the alert may be missed if no new assessment arrives. This is an explicitly accepted limitation.

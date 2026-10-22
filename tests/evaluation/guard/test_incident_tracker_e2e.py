@@ -35,7 +35,6 @@ from echo_v2.domain.guard_simple import (
 from echo_v2.domain.scheduling import (
     ScheduledAction,
     ScheduledActionStatus,
-    ScheduledActionType,
 )
 from echo_v2.persistence.alerted_incident_repository import (
     InMemoryAlertedIncidentRepository,
@@ -48,6 +47,7 @@ from echo_v2.persistence.guard_simple_repositories import (
     InMemoryGuardSimpleAssessmentCommitRepository,
     InMemoryGuardSimpleAssessmentRepository,
 )
+from echo_v2.persistence.scheduled_actions import ScheduledActionRepository
 from echo_v2.services.guard_simple_analyzer import SimpleSafetyAnalyzer
 from echo_v2.services.incident_matcher import IncidentMatcher
 from echo_v2.services.incident_tracker import IncidentTracker
@@ -78,33 +78,29 @@ class FakeUsers:
         return self._phones.get(user_id)
 
 
-class CapturingScheduling:
+class CapturingScheduling(ScheduledActionRepository):
     """Captures scheduled actions without sending."""
 
     def __init__(self) -> None:
         self.created: list[ScheduledAction] = []
+        self._actions: dict[str, ScheduledAction] = {}
 
-    async def create_once(
-        self,
-        *,
-        request_id: str,
-        user_id: str,
-        type: ScheduledActionType,
-        execute_at_utc: datetime,
-        timezone_name: str,
-        payload: dict[str, object],
-    ) -> tuple[ScheduledAction, bool]:
-        action = ScheduledAction(
-            id=request_id,
-            user_id=user_id,
-            type=type,
-            execute_at_utc=execute_at_utc,
-            timezone=timezone_name,
-            status=ScheduledActionStatus.PENDING,
-            payload=payload,
-        )
+    async def create_once(self, action: ScheduledAction) -> tuple[ScheduledAction, bool]:
+        existing = self._actions.get(action.id)
+        if existing is not None:
+            return existing, False
+        self._actions[action.id] = action
         self.created.append(action)
         return action, True
+
+    async def get(self, action_id: str) -> ScheduledAction | None:
+        return self._actions.get(action_id)
+
+    async def list_pending(self, user_id: str) -> list[ScheduledAction]:
+        return [
+            a for a in self._actions.values()
+            if a.user_id == user_id and a.status is ScheduledActionStatus.PENDING
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -752,10 +748,9 @@ async def test_e2e_closed_incident_recurrence(
     print(f"Recurrence tracker result: {result}")
 
     # The matcher should recognize this as related to the closed incident.
-    # The tracker may create a new incident (recurrence) or suppress.
-    # Either way, it should not silently ignore it.
-    assert result in ("scheduled", "suppressed"), f"Unexpected result: {result}"
+    # The tracker creates a new linked incident (recurrence) and schedules an alert.
+    assert result in ("recurrence_scheduled", "scheduled", "suppressed"), f"Unexpected result: {result}"
 
     # If scheduled, we have a new alert
-    if result == "scheduled":
+    if result in ("recurrence_scheduled", "scheduled"):
         assert len(scheduling.created) == 1

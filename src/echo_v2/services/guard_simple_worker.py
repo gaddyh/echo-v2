@@ -123,15 +123,20 @@ class GuardSimpleAnalysisWorker:
                     chat.chat_id,
                 )
             touched = True
-        if self._delivery is not None:
-            recovered = await self._delivery.reconcile_pending(limit=limit)
-            touched = touched or recovered > 0
-        if self._exposure_delivery is not None:
-            recovered = await self._exposure_delivery.reconcile_pending(limit=limit)
-            touched = touched or recovered > 0
         if self._incident_evaluator is not None:
+            # Incident Tracker is active — skip legacy reconciliation to avoid
+            # duplicate alerts from the old evidence-diff delivery path.
+            # Operators must drain pending legacy delivery records before
+            # enabling the tracker (see AGENTS.md cutover policy).
             recovered = await self._incident_evaluator.reconcile_pending(limit=limit)
             touched = touched or recovered > 0
+        else:
+            if self._delivery is not None:
+                recovered = await self._delivery.reconcile_pending(limit=limit)
+                touched = touched or recovered > 0
+            if self._exposure_delivery is not None:
+                recovered = await self._exposure_delivery.reconcile_pending(limit=limit)
+                touched = touched or recovered > 0
         return touched
 
     async def run_loop(self) -> None:  # pragma: no cover - lifecycle loop
