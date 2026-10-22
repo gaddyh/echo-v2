@@ -48,6 +48,7 @@ from sqlalchemy.types import (
 )
 
 __all__ = [
+    "AlertedIncidentRow",
     "BaileysConnectorEventProcessingRow",
     "Base",
     "BotWebhookEventRow",
@@ -1270,6 +1271,45 @@ class GuardAlertRow(Base):
             name="guard_alerts_status_check",
         ),
         Index("ix_guard_alerts_child_chat_created", "child_user_id", "chat_id", "created_at"),
+    )
+
+
+class AlertedIncidentRow(Base):
+    """A previously-alerted incident used for semantic deduplication."""
+
+    __tablename__ = "alerted_incidents"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    child_user_id: Mapped[str] = mapped_column(Text, nullable=False)
+    chat_id: Mapped[str] = mapped_column(Text, nullable=False)
+    alert_type: Mapped[str] = mapped_column(Text, nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    severity_summary: Mapped[str] = mapped_column(Text, nullable=False)
+    notified_severity_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    evidence_message_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    assessment_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False)
+    closed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    related_incident_id: Mapped[str | None] = mapped_column(
+        Text, ForeignKey("alerted_incidents.id"), nullable=True
+    )
+    notification_version: Mapped[int] = mapped_column(nullable=False, server_default=text("1"))
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "alert_type IN ('security', 'exposure')",
+            name="alerted_incidents_alert_type_check",
+        ),
+        Index(
+            "idx_alerted_incidents_lookup",
+            "child_user_id", "chat_id", "alert_type", "closed_at",
+        ),
     )
 
 

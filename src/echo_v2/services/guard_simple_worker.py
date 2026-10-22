@@ -50,6 +50,24 @@ class ExposureDelivery(Protocol):
     async def mark_evaluation_failed(self, *, assessment_id: str, error: str) -> None: ...
 
 
+class IncidentEvaluator(Protocol):
+    async def evaluate_security(
+        self, *, assessment: SafetyAssessment, assessment_id: str
+    ) -> str: ...
+
+    async def evaluate_exposure(
+        self,
+        *,
+        assessment: ExposureAssessment,
+        assessment_id: str,
+        security_assessment: SafetyAssessment | None = None,
+    ) -> str: ...
+
+    async def reconcile_pending(self, *, limit: int) -> int: ...
+
+    async def mark_evaluation_failed(self, *, assessment_id: str, error: str) -> None: ...
+
+
 class GuardSimpleAnalysisWorker:
     def __init__(
         self,
@@ -61,6 +79,7 @@ class GuardSimpleAnalysisWorker:
         exposure_repo: GuardExposureAssessmentRepository | None = None,
         delivery: ParentAttentionDelivery | None = None,
         exposure_delivery: ExposureDelivery | None = None,
+        incident_evaluator: IncidentEvaluator | None = None,
         poll_interval_seconds: float = 10.0,
         excluded_chat_ids: frozenset[str] = frozenset(),
     ) -> None:
@@ -71,6 +90,7 @@ class GuardSimpleAnalysisWorker:
         self._users = users
         self._delivery = delivery
         self._exposure_delivery = exposure_delivery
+        self._incident_evaluator = incident_evaluator
         self._poll_interval = poll_interval_seconds
         self._excluded = excluded_chat_ids
 
@@ -79,6 +99,9 @@ class GuardSimpleAnalysisWorker:
 
     def set_exposure_delivery(self, delivery: ExposureDelivery) -> None:
         self._exposure_delivery = delivery
+
+    def set_incident_evaluator(self, evaluator: IncidentEvaluator) -> None:
+        self._incident_evaluator = evaluator
 
     async def run_once(self, *, limit: int = 20) -> bool:
         due = await self._state.list_due(datetime.now(timezone.utc), limit=limit)
@@ -105,6 +128,9 @@ class GuardSimpleAnalysisWorker:
             touched = touched or recovered > 0
         if self._exposure_delivery is not None:
             recovered = await self._exposure_delivery.reconcile_pending(limit=limit)
+            touched = touched or recovered > 0
+        if self._incident_evaluator is not None:
+            recovered = await self._incident_evaluator.reconcile_pending(limit=limit)
             touched = touched or recovered > 0
         return touched
 
@@ -174,7 +200,19 @@ class GuardSimpleAnalysisWorker:
                     chat.chat_id,
                     chat.activity_version,
                 )
-        if status in {"committed", "completed"} and assessment_id and self._delivery is not None:
+        if status in {"committed", "completed"} and assessment_id and self._incident_evaluator is not None:
+            try:
+                await self._incident_evaluator.evaluate_security(
+                    assessment=assessment,
+                    assessment_id=assessment_id,
+                )
+            except Exception as exc:
+                await self._incident_evaluator.mark_evaluation_failed(
+                    assessment_id=assessment_id,
+                    error=str(exc),
+                )
+                raise
+        elif status in {"committed", "completed"} and assessment_id and self._delivery is not None:
             try:
                 await self._delivery.evaluate_committed(
                     assessment=assessment,
@@ -186,19 +224,33 @@ class GuardSimpleAnalysisWorker:
                     error=str(exc),
                 )
                 raise
-        if exposure_id and exposure is not None and self._exposure_delivery is not None:
-            try:
-                await self._exposure_delivery.evaluate_committed(
-                    assessment=exposure,
-                    assessment_id=exposure_id,
-                    security_assessment=assessment,
-                )
-            except Exception as exc:
-                await self._exposure_delivery.mark_evaluation_failed(
-                    assessment_id=exposure_id,
-                    error=str(exc),
-                )
-                raise
+        if exposure_id and exposure is not None:
+            if self._incident_evaluator is not None:
+                try:
+                    await self._incident_evaluator.evaluate_exposure(
+                        assessment=exposure,
+                        assessment_id=exposure_id,
+                        security_assessment=assessment,
+                    )
+                except Exception as exc:
+                    await self._incident_evaluator.mark_evaluation_failed(
+                        assessment_id=exposure_id,
+                        error=str(exc),
+                    )
+                    raise
+            elif self._exposure_delivery is not None:
+                try:
+                    await self._exposure_delivery.evaluate_committed(
+                        assessment=exposure,
+                        assessment_id=exposure_id,
+                        security_assessment=assessment,
+                    )
+                except Exception as exc:
+                    await self._exposure_delivery.mark_evaluation_failed(
+                        assessment_id=exposure_id,
+                        error=str(exc),
+                    )
+                    raise
         _logger.info(
             "Baseline B analysis %s for %s/%s version=%d result=%s parent_should_know=%s",
             status,
@@ -214,5 +266,6 @@ class GuardSimpleAnalysisWorker:
 __all__ = [
     "ChildNameResolver",
     "GuardSimpleAnalysisWorker",
+    "IncidentEvaluator",
     "ParentAttentionDelivery",
 ]

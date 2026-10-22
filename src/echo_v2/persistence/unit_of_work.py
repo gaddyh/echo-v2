@@ -35,6 +35,9 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
 )
 
+from echo_v2.persistence.alerted_incident_repository import (
+    PostgresAlertedIncidentRepository,
+)
 from echo_v2.persistence.credential_cipher import (
     CredentialCipher,
     IdentityCredentialCipher,
@@ -86,6 +89,7 @@ class UnitOfWorkRepos:
     chat_not_interested_clicks: PostgresChatNotInterestedClickRepository
     scheduled_actions: PostgresScheduledActionRepository
     guard_alerts: PostgresGuardAlertRepository
+    alerted_incidents: PostgresAlertedIncidentRepository
 
 
 class PostgresUnitOfWork:
@@ -168,6 +172,10 @@ class PostgresUnitOfWork:
                 session=self._session,
             ),
             guard_alerts=PostgresGuardAlertRepository(
+                self._session_factory,
+                session=self._session,
+            ),
+            alerted_incidents=PostgresAlertedIncidentRepository(
                 self._session_factory,
                 session=self._session,
             ),
@@ -256,3 +264,8 @@ class PostgresUnitOfWork:
     def guard_alerts(self) -> PostgresGuardAlertRepository:
         assert self.repos is not None, "UnitOfWork not entered"
         return self.repos.guard_alerts
+
+    @property
+    def alerted_incidents(self) -> PostgresAlertedIncidentRepository:
+        assert self.repos is not None, "UnitOfWork not entered"
+        return self.repos.alerted_incidents

@@ -167,6 +167,7 @@ async def clean_db(engine) -> AsyncIterator[None]:
             "idempotency_operations, "
             "provider_webhook_events, "
             "bot_webhook_events, "
+            "alerted_incidents, "
             "contacts, "
             "whatsapp_connections, "
             "waiting_list_sessions, "
