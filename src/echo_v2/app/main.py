@@ -833,6 +833,7 @@ def create_app() -> FastAPI:
         outcomes=repos.parent_attention_delivery_outcomes,
         actions=repos.scheduled_actions,
         messages=repos.messages,
+        incidents=repos.alerted_incidents,
     )
     admin_user_ids = frozenset(
         user_id.strip()

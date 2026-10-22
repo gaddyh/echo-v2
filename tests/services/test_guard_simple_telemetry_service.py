@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from echo_v2.domain.alerted_incident import AlertedIncident
 from echo_v2.domain.chat import Message
 from echo_v2.domain.guard_exposure import ExposureAssessment, ExposureCategory
 from echo_v2.domain.guard_simple import ChildRole, SafetyAssessment
@@ -16,6 +17,9 @@ from echo_v2.domain.scheduling import (
     ScheduledAction,
     ScheduledActionStatus,
     ScheduledActionType,
+)
+from echo_v2.persistence.alerted_incident_repository import (
+    InMemoryAlertedIncidentRepository,
 )
 from echo_v2.persistence.chat_repositories import InMemoryMessageRepository
 from echo_v2.persistence.guard_exposure_repositories import (
@@ -384,3 +388,87 @@ async def test_delivery_labels_and_helper_projections() -> None:
     assert _decode_cursor(cursor) == (NOW, "a")
     assert _decode_cursor("bad") is None
     assert _decode_cursor("W10") is None
+
+
+async def test_activity_includes_incident_badge_for_alerted_assessments() -> None:
+    """When an incident repository is wired, activity views include incident info."""
+    service, session_id, _ = await setup()
+    incidents = InMemoryAlertedIncidentRepository()
+    await incidents.create(
+        AlertedIncident(
+            id="inc-1",
+            child_user_id="child",
+            chat_id="class@g.us",
+            alert_type="security",
+            summary="Bullying",
+            severity_summary="Bullying",
+            notified_severity_summary="Bullying",
+            evidence_message_ids=("m1",),
+            assessment_ids=("a1",),
+            last_seen_at=NOW,
+            closed_at=None,
+            related_incident_id=None,
+            notification_version=1,
+            created_at=NOW,
+            updated_at=NOW,
+        )
+    )
+    service._incidents = incidents
+
+    response = await service.list_activity(session_id=session_id)
+    assert response is not None
+    # a1 has an incident
+    a1 = next(r for r in response.analyses if r["id"] == "a1")
+    assert a1["incident"] is not None
+    assert a1["incident"]["id"] == "inc-1"
+    assert a1["incident"]["status"] == "active"
+    assert a1["incident"]["notification_version"] == 1
+    # a2 has no incident
+    a2 = next(r for r in response.analyses if r["id"] == "a2")
+    assert a2["incident"] is None
+
+
+async def test_activity_incident_null_when_no_incidents_repo() -> None:
+    """Without an incidents repo, activity views have incident=None."""
+    service, session_id, _ = await setup()
+    response = await service.list_activity(session_id=session_id)
+    assert response is not None
+    for row in response.analyses:
+        assert row["incident"] is None
+
+
+async def test_activity_incident_shows_closed_status() -> None:
+    """Closed incidents show status='closed' in the activity view."""
+    service, session_id, _ = await setup()
+    incidents = InMemoryAlertedIncidentRepository()
+    await incidents.create(
+        AlertedIncident(
+            id="inc-closed",
+            child_user_id="child",
+            chat_id="class@g.us",
+            alert_type="security",
+            summary="Resolved issue",
+            severity_summary="Resolved issue",
+            notified_severity_summary="Resolved issue",
+            evidence_message_ids=("m1",),
+            assessment_ids=("a1",),
+            last_seen_at=NOW - timedelta(hours=2),
+            closed_at=NOW - timedelta(hours=1),
+            related_incident_id=None,
+            notification_version=2,
+            created_at=NOW - timedelta(hours=3),
+            updated_at=NOW - timedelta(hours=1),
+        )
+    )
+    service._incidents = incidents
+
+    response = await service.list_activity(
+        session_id=session_id,
+        date_from=NOW - timedelta(hours=4),
+        date_to=NOW + timedelta(minutes=1),
+    )
+    assert response is not None
+    a1 = next(r for r in response.analyses if r["id"] == "a1")
+    assert a1["incident"] is not None
+    assert a1["incident"]["status"] == "closed"
+    assert a1["incident"]["notification_version"] == 2

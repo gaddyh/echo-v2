@@ -196,3 +196,55 @@ async def test_notification_version_preserved(
     fetched = await repo.get("inc-1")
     assert fetched is not None
     assert fetched.notification_version == 3
+
+
+async def test_list_for_children(repo: PostgresAlertedIncidentRepository) -> None:
+    """list_for_children returns incidents for the given children in the date range."""
+    await repo.create(
+        _make_incident(id="inc-1", child_user_id="child-A", summary="Issue A")
+    )
+    await repo.create(
+        _make_incident(id="inc-2", child_user_id="child-B", summary="Issue B")
+    )
+    await repo.create(
+        _make_incident(
+            id="inc-3",
+            child_user_id="child-A",
+            chat_id="chat-other",
+            summary="Issue C",
+        )
+    )
+
+    results = await repo.list_for_children(
+        child_user_ids=["child-A", "child-B"],
+        created_after=NOW - timedelta(hours=1),
+        created_before=NOW + timedelta(hours=1),
+    )
+    assert len(results) == 3
+
+    # Filter by chat_id
+    results = await repo.list_for_children(
+        child_user_ids=["child-A"],
+        created_after=NOW - timedelta(hours=1),
+        created_before=NOW + timedelta(hours=1),
+        chat_id="chat-001",
+    )
+    assert len(results) == 1
+    assert results[0].id == "inc-1"
+
+    # Filter by alert_type
+    results = await repo.list_for_children(
+        child_user_ids=["child-A", "child-B"],
+        created_after=NOW - timedelta(hours=1),
+        created_before=NOW + timedelta(hours=1),
+        alert_type="exposure",
+    )
+    assert len(results) == 0
+
+    # Date range excludes all
+    results = await repo.list_for_children(
+        child_user_ids=["child-A"],
+        created_after=NOW + timedelta(hours=1),
+        created_before=NOW + timedelta(hours=2),
+    )
+    assert len(results) == 0
