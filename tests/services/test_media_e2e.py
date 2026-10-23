@@ -596,7 +596,7 @@ async def test_e2e_video_through_gemini_and_guard_analyzers_clean():
 # A stable, public, benign YouTube video used for the integration test.
 # "Big Buck Bunny" (Blender open movie) — public, benign, well-known.
 # If this URL ever breaks, replace with another public benign video.
-_YOUTUBE_TEST_URL = "https://www.youtube.com/watch?v=YE7WW3R1I3o"
+_YOUTUBE_TEST_URL = "https://www.youtube.com/watch?v=9hE5-98ZeCg"
 
 
 @skip_no_gemini
