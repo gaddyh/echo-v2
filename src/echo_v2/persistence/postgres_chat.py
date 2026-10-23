@@ -129,6 +129,7 @@ class PostgresMessageRepository:
                     media_download_url=message.media_download_url,
                     media_mime_type=message.media_mime_type,
                     media_file_name=message.media_file_name,
+                    media_size=message.media_size,
                 )
                 .on_conflict_do_nothing(
                     index_elements=["connection_id", "provider_message_id"],
@@ -405,6 +406,7 @@ class PostgresMessageRepository:
             media_download_url=row.media_download_url,
             media_mime_type=row.media_mime_type,
             media_file_name=row.media_file_name,
+            media_size=row.media_size,
         )
 
 
@@ -748,6 +750,7 @@ class PostgresIngestionRepository:
                         media_download_url=message.media_download_url,
                         media_mime_type=message.media_mime_type,
                         media_file_name=message.media_file_name,
+                        media_size=message.media_size,
                     )
                     .on_conflict_do_nothing(
                         index_elements=["connection_id", "provider_message_id"],

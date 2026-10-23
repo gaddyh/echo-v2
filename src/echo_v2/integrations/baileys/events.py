@@ -137,6 +137,7 @@ class BaileysMessageEvent:
             media_download_url=_optional_string(payload, "media_download_url"),
             media_mime_type=_optional_string(payload, "media_mime_type"),
             media_file_name=_optional_string(payload, "media_file_name"),
+            media_size=_optional_int(payload, "media_size"),
         )
 
 
@@ -151,6 +152,15 @@ def _optional_string(payload: dict[str, Any], field: str) -> str | None:
     value = payload.get(field)
     if value is not None and not isinstance(value, str):
         raise ValueError(f"event has invalid {field}")
+    return value
+
+
+def _optional_int(payload: dict[str, Any], field: str) -> int | None:
+    value = payload.get(field)
+    if value is None:
+        return None
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise TypeError(f"event has invalid {field}")
     return value
 
 

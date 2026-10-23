@@ -285,6 +285,7 @@ class ProviderMessageEvent:
     media_download_url: str | None = None
     media_mime_type: str | None = None
     media_file_name: str | None = None
+    media_size: int | None = None
 
 
 @dataclass(frozen=True)
