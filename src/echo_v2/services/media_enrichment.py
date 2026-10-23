@@ -167,7 +167,7 @@ class MediaEnrichmentService:
                 message.id, claimed.attempts, claimed.lease_expires_at,
             )
             working = message
-            if working.media_reference and not working.media_download_url:
+            if working.media_reference and target is not EnrichmentKind.LINK_SUMMARY:
                 _logger.info("media enrichment resolving url message_id=%s", message.id)
                 if self._resolver is None:
                     raise RuntimeError("media URL resolver is not configured")
