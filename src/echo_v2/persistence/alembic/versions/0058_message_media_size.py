@@ -20,8 +20,8 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column("chatmessage", sa.Column("media_size", sa.Integer(), nullable=True))
+    op.add_column("messages", sa.Column("media_size", sa.Integer(), nullable=True))
 
 
 def downgrade() -> None:
-    op.drop_column("chatmessage", "media_size")
+    op.drop_column("messages", "media_size")
