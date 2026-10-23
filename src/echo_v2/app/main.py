@@ -354,6 +354,7 @@ def create_app() -> FastAPI:
         )
 
     # --- chat analysis worker (NOT started by default — CHAT_ANALYSIS_ENABLED)
+    from echo_v2.services.gemini_video_summarizer import GeminiVideoSummarizer
     from echo_v2.services.guard_analysis import GuardAnalysisProcessor
     from echo_v2.services.guard_analysis_worker import GuardAnalysisWorker
     from echo_v2.services.guard_analyzer import LLMGuardAnalyzer
@@ -373,7 +374,24 @@ def create_app() -> FastAPI:
         type(transcriber).__name__ if transcriber else "None",
     )
 
-    media_summarizer = OpenAIMediaSummarizer(client=openai_client)
+    gemini_video_enabled = os.environ.get("GEMINI_VIDEO_ENABLED", "false").lower() in (
+        "1", "true", "yes"
+    )
+    gemini_api_key = os.environ.get("GEMINI_API_KEY")
+    video_summarizer = None
+    if gemini_video_enabled and gemini_api_key:
+        video_summarizer = GeminiVideoSummarizer(
+            api_key=gemini_api_key,
+            model=os.environ.get("GEMINI_VIDEO_MODEL", "gemini-3.5-flash-lite"),
+            max_bytes=int(os.environ.get("GEMINI_VIDEO_MAX_BYTES", str(15 * 1024 * 1024))),
+        )
+        _logger.info("gemini video summarizer built: model=%s", video_summarizer._model)
+    elif gemini_video_enabled:
+        _logger.warning("GEMINI_VIDEO_ENABLED is set but GEMINI_API_KEY is missing — videos will use placeholder")
+
+    media_summarizer = OpenAIMediaSummarizer(
+        client=openai_client, video_summarizer=video_summarizer,
+    )
     _logger.info("media summarizer built: %s", type(media_summarizer).__name__)
     media_url_resolver = (
         BaileysMediaUrlResolver(baileys_client)
@@ -391,6 +409,10 @@ def create_app() -> FastAPI:
         max_attempts=int(os.environ.get("MEDIA_ENRICHMENT_MAX_ATTEMPTS", "3")),
         retry_base_seconds=int(os.environ.get("MEDIA_ENRICHMENT_RETRY_BASE_SECONDS", "60")),
         pipeline_events=repos.pipeline_events,
+        video_enrichment_version=(
+            os.environ.get("VIDEO_ENRICHMENT_VERSION", "2026-10-23.video.1")
+            if gemini_video_enabled else None
+        ),
     )
 
     ingestion_service.set_media_enrichment_service(media_enrichment)

@@ -414,7 +414,7 @@ async def test_e2e_video_summarization_real_gemini():
 
     summarizer = GeminiVideoSummarizer(
         api_key=os.environ["GEMINI_API_KEY"],
-        model=os.environ.get("GEMINI_VIDEO_MODEL", "gemini-3.8-flash"),
+        model=os.environ.get("GEMINI_VIDEO_MODEL", "gemini-3.5-flash-lite"),
     )
     try:
         with patch(
@@ -453,7 +453,7 @@ async def test_e2e_video_summarization_with_caption_real_gemini():
 
     summarizer = GeminiVideoSummarizer(
         api_key=os.environ["GEMINI_API_KEY"],
-        model=os.environ.get("GEMINI_VIDEO_MODEL", "gemini-3.8-flash"),
+        model=os.environ.get("GEMINI_VIDEO_MODEL", "gemini-3.5-flash-lite"),
     )
     try:
         with patch(
@@ -475,3 +475,116 @@ async def test_e2e_video_summarization_with_caption_real_gemini():
     print(f"[video+caption] summary: {result.text}")
     assert result.text, "Expected non-empty video summary with caption"
     assert result.kind == "video"
+
+
+# --- Video → Gemini → Guard analyzers E2E -------------------------------------
+
+
+@skip_no_gemini
+@skip_no_video_file
+@skip_no_openai
+async def test_e2e_video_through_gemini_and_guard_analyzers_clean():
+    """End-to-end: real video → Gemini description → Guard analyzers.
+
+    Runs a benign video (e.g. animals.mp4 / bunny.mp4) through Gemini to
+    get a Hebrew factual description, then feeds that description as a
+    conversation message to both the SimpleSafetyAnalyzer and the
+    ExposureAnalyzer. Asserts both return clean results — no safety
+    concern and no significant exposure — confirming that a benign video
+    enrichment does not produce false alerts.
+    """
+    from datetime import datetime, timezone
+
+    from echo_v2.domain.guard_simple import (
+        SimpleConversation,
+        SimpleConversationMessage,
+    )
+    from echo_v2.services.gemini_video_summarizer import GeminiVideoSummarizer
+    from echo_v2.services.guard_exposure_analyzer import ExposureAnalyzer
+    from echo_v2.services.guard_simple_analyzer import SimpleSafetyAnalyzer
+
+    video_bytes = _VIDEO_FILE.read_bytes()  # type: ignore[union-attr]
+    print(f"\n[e2e-guard] file={_VIDEO_FILE.name} size={len(video_bytes)} bytes")  # type: ignore[union-attr]
+
+    # Step 1: Gemini video summarization
+    gemini = GeminiVideoSummarizer(
+        api_key=os.environ["GEMINI_API_KEY"],
+        model=os.environ.get("GEMINI_VIDEO_MODEL", "gemini-3.5-flash-lite"),
+    )
+    try:
+        with patch(
+            "echo_v2.services.gemini_video_summarizer.GeminiVideoSummarizer._download_bounded",
+            new_callable=AsyncMock,
+            return_value=video_bytes,
+        ):
+            summary = await gemini.summarize_media(
+                download_url="file://fixture/video.mp4",
+                mime_type="video/mp4",
+                file_name=_VIDEO_FILE.name,  # type: ignore[union-attr]
+                message_type="video",
+                caption=None,
+            )
+    finally:
+        await gemini.close()
+
+    print(f"[e2e-guard] gemini summary: {summary.text}")
+    assert summary.text, "Expected non-empty Gemini video summary"
+    assert summary.kind == "video"
+
+    # Step 2: Build a conversation with the video description as the only message
+    now = datetime.now(timezone.utc)
+    conversation = SimpleConversation(
+        child_user_id="child-1",
+        child_name="ילד",
+        chat_id="chat@c.us",
+        chat_type="group",
+        connection_id="conn-1",
+        timezone="Asia/Jerusalem",
+        window_start=now,
+        window_end=now,
+        monitored_child_role="child",
+        messages=(
+            SimpleConversationMessage(
+                id="msg-video-1",
+                sender="ילד",
+                text=summary.text,
+                timestamp=now,
+            ),
+        ),
+    )
+
+    # Step 3: Run the SimpleSafetyAnalyzer (security analyzer)
+    openai_client = _real_openai_client()
+    try:
+        safety_analyzer = SimpleSafetyAnalyzer(
+            client=openai_client,
+            model=os.environ.get("GUARD_LLM_MODEL_NAME", "gpt-4.1"),
+        )
+        safety = await safety_analyzer.analyze(conversation)
+    finally:
+        await openai_client.close()
+
+    print(f"[e2e-guard] safety: parent_should_know={safety.parent_should_know} "
+          f"child_role={safety.child_role.value} summary={safety.summary}")
+    # A benign video should not trigger a safety concern.
+    assert safety.parent_should_know is not True, (
+        f"Benign video should not trigger parent_should_know=True: {safety.summary}"
+    )
+
+    # Step 4: Run the ExposureAnalyzer
+    openai_client = _real_openai_client()
+    try:
+        exposure_analyzer = ExposureAnalyzer(
+            client=openai_client,
+            model=os.environ.get("GUARD_LLM_MODEL_NAME", "gpt-4.1"),
+        )
+        exposure = await exposure_analyzer.analyze(conversation)
+    finally:
+        await openai_client.close()
+
+    print(f"[e2e-guard] exposure: significant={exposure.significant_exposure} "
+          f"category={exposure.category} summary={exposure.summary}")
+    # A benign video should not trigger a significant exposure event.
+    assert exposure.significant_exposure is not True, (
+        f"Benign video should not trigger significant_exposure=True: {exposure.summary}"
+    )

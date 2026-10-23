@@ -80,7 +80,7 @@ async def test_happy_path_returns_summary() -> None:
         )
 
     assert result.kind == "video"
-    assert result.model == "gemini-3.8-flash"
+    assert result.model == "gemini-3.5-flash-lite"
     assert "ילד" in result.text
 
 

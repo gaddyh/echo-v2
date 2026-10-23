@@ -194,11 +194,13 @@ class OpenAIMediaSummarizer:
         vision_model: str = _VISION_MODEL,
         text_model: str = _TEXT_MODEL,
         http_client: httpx.AsyncClient | None = None,
+        video_summarizer: MediaSummarizer | None = None,
     ) -> None:
         self._client = client
         self._vision_model = vision_model
         self._text_model = text_model
         self._http_client = http_client
+        self._video_summarizer = video_summarizer
 
     async def summarize_media(
         self,
@@ -216,8 +218,15 @@ class OpenAIMediaSummarizer:
                 caption=caption,
             )
         if message_type == "video":
-            # Video summarization would require frame extraction; for the
-            # basic-scope version we fall back to the caption or a placeholder.
+            if self._video_summarizer is not None:
+                return await self._video_summarizer.summarize_media(
+                    download_url=download_url,
+                    mime_type=mime_type,
+                    file_name=file_name,
+                    message_type=message_type,
+                    caption=caption,
+                )
+            # No Gemini video summarizer configured — fall back to placeholder.
             return MediaSummary(
                 text=_video_placeholder(caption, file_name),
                 kind="video_placeholder",

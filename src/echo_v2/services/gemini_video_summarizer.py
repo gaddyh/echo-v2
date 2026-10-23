@@ -28,7 +28,7 @@ __all__ = [
 
 _logger = logging.getLogger("echo_v2.services.gemini_video_summarizer")
 
-DEFAULT_GEMINI_VIDEO_MODEL = "gemini-3.8-flash"
+DEFAULT_GEMINI_VIDEO_MODEL = "gemini-3.5-flash-lite"
 DEFAULT_GEMINI_VIDEO_MAX_BYTES = 15 * 1024 * 1024  # 15 MB conservative pilot cap.
 
 DEFAULT_GEMINI_VIDEO_PROMPT = (

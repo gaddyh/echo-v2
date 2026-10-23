@@ -19,6 +19,7 @@ from echo_v2.domain.pipeline_event import PipelineEvent
 from echo_v2.persistence.chat_repositories import MessageRepository
 from echo_v2.persistence.media_enrichment import MessageEnrichmentRepository
 from echo_v2.persistence.pipeline_events import PipelineEventRepository
+from echo_v2.services.gemini_video_summarizer import VideoTooLargeError
 from echo_v2.services.media_summarizer import (
     MediaSummarizer,
     extract_urls,
@@ -61,6 +62,7 @@ class MediaEnrichmentService:
         max_attempts: int = 3,
         retry_base_seconds: int = 60,
         pipeline_events: PipelineEventRepository | None = None,
+        video_enrichment_version: str | None = None,
     ) -> None:
         self._messages = message_repo
         self._enrichments = enrichment_repo
@@ -68,6 +70,7 @@ class MediaEnrichmentService:
         self._summarizer = media_summarizer
         self._resolver = media_url_resolver
         self._version = enrichment_version
+        self._video_version = video_enrichment_version
         self._lease_seconds = lease_seconds
         self._max_attempts = max_attempts
         self._retry_base = retry_base_seconds
@@ -80,6 +83,17 @@ class MediaEnrichmentService:
             await self._pipeline_events.record(event)
         except Exception:
             _logger.exception("pipeline event persistence failed event_name=%s", event.event_name)
+
+    def _version_for(self, message: Message) -> str:
+        """Return the enrichment version for this message.
+
+        Video messages use a separate ``video_enrichment_version`` (when
+        configured) so only videos are re-analyzed on a version bump,
+        leaving existing image/document/audio/link enrichments untouched.
+        """
+        if message.message_type == "video" and self._video_version is not None:
+            return self._video_version
+        return self._version
 
     async def enrich(self, messages: list[Message]) -> list[EnrichedMessage]:
         _logger.info(
@@ -99,6 +113,7 @@ class MediaEnrichmentService:
     async def _enrich_message(self, message: Message) -> EnrichedMessage:
         started = time.monotonic()
         target = self._target(message)
+        version = self._version_for(message)
         _logger.info(
             "media enrichment start message_id=%s type=%s target=%s has_text=%s has_url=%s has_reference=%s",
             message.id, message.message_type, target.value if target else "none",
@@ -109,7 +124,7 @@ class MediaEnrichmentService:
             return EnrichedMessage(message=message, effective_text=message.text or "")
 
         current = await self._enrichments.get(
-            message_id=message.id, enrichment_version=self._version
+            message_id=message.id, enrichment_version=version
         )
         if current is not None:
             _logger.info(
@@ -131,7 +146,7 @@ class MediaEnrichmentService:
         _logger.info("media enrichment claiming message_id=%s owner=%s", message.id, owner)
         claimed = await self._enrichments.claim(
             message_id=message.id,
-            enrichment_version=self._version,
+            enrichment_version=version,
             owner=owner,
             lease_seconds=self._lease_seconds,
             now=now,
@@ -142,7 +157,7 @@ class MediaEnrichmentService:
                 message.id, owner, claimed.lease_owner if claimed else None,
             )
             current = await self._enrichments.get(
-                message_id=message.id, enrichment_version=self._version
+                message_id=message.id, enrichment_version=version
             )
             return EnrichedMessage(message, current, message.text or "")
 
@@ -171,18 +186,18 @@ class MediaEnrichmentService:
             if not text.strip():
                 raise RuntimeError("enrichment provider returned empty text")
             completed = await self._enrichments.complete(
-                message_id=message.id, enrichment_version=self._version,
+                message_id=message.id, enrichment_version=version,
                 owner=owner, kind=kind, text=text, model=model, now=datetime.now(timezone.utc),
             )
             _logger.info("media enrichment persisted message_id=%s kind=%s", message.id, kind.value)
             if not completed:
                 _logger.warning("media enrichment completion lost message_id=%s", message.id)
                 current = await self._enrichments.get(
-                    message_id=message.id, enrichment_version=self._version
+                    message_id=message.id, enrichment_version=version
                 )
                 return EnrichedMessage(message, current, message.text or "")
             result = await self._enrichments.get(
-                message_id=message.id, enrichment_version=self._version
+                message_id=message.id, enrichment_version=version
             )
             duration_ms = (time.monotonic() - started) * 1000
             _logger.info(
@@ -197,12 +212,14 @@ class MediaEnrichmentService:
             return EnrichedMessage(message, result, text)
         except Exception as exc:  # noqa: BLE001 - one bad media item must not abort a window
             attempts = claimed.attempts
-            terminal = attempts >= self._max_attempts
+            # Deterministic size-limit failures are terminal immediately —
+            # retrying won't help and wastes attempts.
+            terminal = isinstance(exc, VideoTooLargeError) or attempts >= self._max_attempts
             retry_at = None if terminal else datetime.now(timezone.utc) + timedelta(
                 seconds=self._retry_base * (2 ** max(0, attempts - 1))
             )
             await self._enrichments.fail(
-                message_id=message.id, enrichment_version=self._version,
+                message_id=message.id, enrichment_version=version,
                 owner=owner, error=str(exc), next_retry_at=retry_at,
                 terminal=terminal, now=datetime.now(timezone.utc),
             )
@@ -216,7 +233,7 @@ class MediaEnrichmentService:
                 exc,
             )
             result = await self._enrichments.get(
-                message_id=message.id, enrichment_version=self._version
+                message_id=message.id, enrichment_version=version
             )
             await self._record_event(PipelineEvent(
                 event_name="media.enrichment.failed", pipeline="media_enrichment",
@@ -231,6 +248,8 @@ class MediaEnrichmentService:
     def _target(message: Message) -> EnrichmentKind | None:
         if message.message_type == "audio" and not message.text:
             return EnrichmentKind.TRANSCRIPTION
+        if message.message_type == "video":
+            return EnrichmentKind.MEDIA_SUMMARY
         if message.message_type in MEDIA_TYPES and not message.text:
             return EnrichmentKind.MEDIA_SUMMARY
         if message.message_type == "text" and is_link_message(message.text):
@@ -258,6 +277,10 @@ class MediaEnrichmentService:
                 message_type=message.message_type,
                 caption=message.text,
             )
+            # Preserve the original caption alongside the Gemini description
+            # for videos — never replace one with the other.
+            if message.message_type == "video" and message.text and summary.text:
+                return kind, f"{message.text} | {summary.text}", summary.model
             return kind, summary.text, summary.model
         urls = extract_urls(message.text or "")
         if not urls:
