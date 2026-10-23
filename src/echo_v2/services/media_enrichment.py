@@ -8,6 +8,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from echo_v2.domain.chat import Message
 from echo_v2.domain.media_enrichment import (
@@ -22,8 +23,10 @@ from echo_v2.persistence.pipeline_events import PipelineEventRepository
 from echo_v2.services.gemini_video_summarizer import VideoTooLargeError
 from echo_v2.services.media_summarizer import (
     MediaSummarizer,
+    classify_video_url,
     extract_urls,
     is_link_message,
+    is_video_link_message,
 )
 from echo_v2.services.transcription import Transcriber, handle_direct_audio_download_url
 
@@ -63,6 +66,8 @@ class MediaEnrichmentService:
         retry_base_seconds: int = 60,
         pipeline_events: PipelineEventRepository | None = None,
         video_enrichment_version: str | None = None,
+        video_link_enabled: bool = False,
+        video_link_enrichment_version: str | None = None,
     ) -> None:
         self._messages = message_repo
         self._enrichments = enrichment_repo
@@ -71,6 +76,8 @@ class MediaEnrichmentService:
         self._resolver = media_url_resolver
         self._version = enrichment_version
         self._video_version = video_enrichment_version
+        self._video_link_version = video_link_enrichment_version
+        self._video_link_enabled = video_link_enabled
         self._lease_seconds = lease_seconds
         self._max_attempts = max_attempts
         self._retry_base = retry_base_seconds
@@ -84,13 +91,20 @@ class MediaEnrichmentService:
         except Exception:
             _logger.exception("pipeline event persistence failed event_name=%s", event.event_name)
 
-    def _version_for(self, message: Message) -> str:
+    def _version_for(self, message: Message, target: EnrichmentKind | None = None) -> str:
         """Return the enrichment version for this message.
 
         Video messages use a separate ``video_enrichment_version`` (when
         configured) so only videos are re-analyzed on a version bump,
         leaving existing image/document/audio/link enrichments untouched.
+
+        Video-link messages (text messages with a video URL) use a
+        separate ``video_link_enrichment_version`` so previously
+        ``LINK_SUMMARY`` enrichments are not consulted when the feature
+        is enabled — the URL is reanalyzed as ``VIDEO_LINK_SUMMARY``.
         """
+        if target is EnrichmentKind.VIDEO_LINK_SUMMARY and self._video_link_version is not None:
+            return self._video_link_version
         if message.message_type == "video" and self._video_version is not None:
             return self._video_version
         return self._version
@@ -113,7 +127,18 @@ class MediaEnrichmentService:
     async def _enrich_message(self, message: Message) -> EnrichedMessage:
         started = time.monotonic()
         target = self._target(message)
-        version = self._version_for(message)
+        version = self._version_for(message, target)
+        # Classify the URL upfront so url_kind is available on both
+        # success and failure pipeline events (the failure path raises
+        # before _produce returns, so it cannot obtain metadata from
+        # the return value).
+        link_meta: dict[str, Any] = {}
+        if target is EnrichmentKind.VIDEO_LINK_SUMMARY:
+            urls = extract_urls(message.text or "")
+            if urls:
+                url_kind = classify_video_url(urls[0])
+                if url_kind is not None:
+                    link_meta = {"url_kind": url_kind}
         _logger.info(
             "media enrichment start message_id=%s type=%s target=%s has_text=%s has_url=%s has_reference=%s",
             message.id, message.message_type, target.value if target else "none",
@@ -167,7 +192,7 @@ class MediaEnrichmentService:
                 message.id, claimed.attempts, claimed.lease_expires_at,
             )
             working = message
-            if working.media_reference and target is not EnrichmentKind.LINK_SUMMARY:
+            if working.media_reference and target not in (EnrichmentKind.LINK_SUMMARY, EnrichmentKind.VIDEO_LINK_SUMMARY):
                 _logger.info("media enrichment resolving url message_id=%s", message.id)
                 if self._resolver is None:
                     raise RuntimeError("media URL resolver is not configured")
@@ -175,7 +200,10 @@ class MediaEnrichmentService:
                 if url:
                     working = dataclasses.replace(working, media_download_url=url)
                     _logger.info("media enrichment url resolved message_id=%s", message.id)
-            if target is not EnrichmentKind.LINK_SUMMARY and not working.media_download_url:
+            if (
+                target not in (EnrichmentKind.LINK_SUMMARY, EnrichmentKind.VIDEO_LINK_SUMMARY)
+                and not working.media_download_url
+            ):
                 raise RuntimeError("media download URL is unavailable")
             _logger.info("media enrichment provider start message_id=%s kind=%s", message.id, target.value)
             kind, text, model = await self._produce(working, target)
@@ -207,7 +235,7 @@ class MediaEnrichmentService:
             await self._record_event(PipelineEvent(
                 event_name="media.enrichment.completed", pipeline="media_enrichment", status="completed",
                 message_id=message.id, attempt=claimed.attempts, duration_ms=duration_ms,
-                metadata={"kind": kind.value, "model": model},
+                metadata={"kind": kind.value, "model": model, **link_meta},
             ))
             return EnrichedMessage(message, result, text)
         except Exception as exc:  # noqa: BLE001 - one bad media item must not abort a window
@@ -240,18 +268,23 @@ class MediaEnrichmentService:
                 status="terminal" if terminal else "retryable", message_id=message.id,
                 attempt=attempts, duration_ms=(time.monotonic() - started) * 1000,
                 error_type=type(exc).__name__, error_message=str(exc),
-                metadata={"retry_at": retry_at.isoformat() if retry_at else None},
+                metadata={"retry_at": retry_at.isoformat() if retry_at else None, **link_meta},
             ))
             return EnrichedMessage(message, result, message.text or "")
 
-    @staticmethod
-    def _target(message: Message) -> EnrichmentKind | None:
+    def _target(self, message: Message) -> EnrichmentKind | None:
         if message.message_type == "audio" and not message.text:
             return EnrichmentKind.TRANSCRIPTION
         if message.message_type == "video":
             return EnrichmentKind.MEDIA_SUMMARY
         if message.message_type in MEDIA_TYPES and not message.text:
             return EnrichmentKind.MEDIA_SUMMARY
+        if (
+            self._video_link_enabled
+            and message.message_type == "text"
+            and is_video_link_message(message.text)
+        ):
+            return EnrichmentKind.VIDEO_LINK_SUMMARY
         if message.message_type == "text" and is_link_message(message.text):
             return EnrichmentKind.LINK_SUMMARY
         return None
@@ -269,6 +302,29 @@ class MediaEnrichmentService:
             return kind, text, getattr(self._transcriber, "model", None)
         if self._summarizer is None:
             raise RuntimeError("media summarizer is not configured")
+        if kind is EnrichmentKind.VIDEO_LINK_SUMMARY:
+            urls = extract_urls(message.text or "")
+            if not urls:
+                raise RuntimeError("video link message contains no URL")
+            url = urls[0]
+            url_kind = classify_video_url(url)
+            if url_kind == "direct_video":
+                # Reuse the existing video download + Gemini path. The
+                # SSRF guard inside _download_bounded protects against
+                # user-supplied internal URLs.
+                summary = await self._summarizer.summarize_media(
+                    download_url=url,
+                    mime_type=None,
+                    file_name=None,
+                    message_type="video",
+                    caption=None,
+                )
+            elif url_kind == "youtube":
+                summary = await self._summarizer.summarize_youtube(url)
+            else:
+                raise RuntimeError("not a video link")
+            text = f"{url} — {summary.text}" if summary.text else url
+            return kind, text, summary.model
         if kind is EnrichmentKind.MEDIA_SUMMARY:
             summary = await self._summarizer.summarize_media(
                 download_url=message.media_download_url or "",

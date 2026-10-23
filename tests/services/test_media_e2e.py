@@ -588,3 +588,47 @@ async def test_e2e_video_through_gemini_and_guard_analyzers_clean():
     assert exposure.significant_exposure is not True, (
         f"Benign video should not trigger significant_exposure=True: {exposure.summary}"
     )
+
+
+# --- YouTube URL → Gemini (real Gemini API) ---------------------------------
+
+
+# A stable, public, benign YouTube video used for the integration test.
+# "Big Buck Bunny" (Blender open movie) — public, benign, well-known.
+# If this URL ever breaks, replace with another public benign video.
+_YOUTUBE_TEST_URL = "https://www.youtube.com/watch?v=YE7WW3R1I3o"
+
+
+@skip_no_gemini
+async def test_e2e_youtube_summarization_real_gemini():
+    """Summarize a real public YouTube video via Gemini's YouTube URL preview.
+
+    Verifies the full path: build types.Content with file_data + video_metadata
+    → real Gemini API → non-empty summary text. This is the integration test
+    required before enabling VIDEO_LINK_ENRICHMENT_ENABLED in production.
+
+    Note: this test does NOT verify the 60-second processing cap is enforced
+    server-side (Gemini does not expose processing duration). It verifies the
+    request is accepted and returns a useful description. The cap is enforced
+    by passing video_metadata start_offset/end_offset; if Gemini ignored it,
+    the request would still succeed but process more of the video (higher
+    cost, not a test failure). The cap's correctness is therefore structural
+    (we send the right metadata) rather than observable via the response.
+    """
+    from echo_v2.services.gemini_video_summarizer import GeminiVideoSummarizer
+
+    summarizer = GeminiVideoSummarizer(
+        api_key=os.environ["GEMINI_API_KEY"],
+        model=os.environ.get("GEMINI_VIDEO_MODEL", "gemini-3.5-flash-lite"),
+        youtube_max_seconds=int(os.environ.get("GEMINI_VIDEO_YOUTUBE_MAX_SECONDS", "60")),
+    )
+    try:
+        result = await summarizer.summarize_youtube(_YOUTUBE_TEST_URL)
+    finally:
+        await summarizer.close()
+
+    print(f"[youtube] kind={result.kind} model={result.model}")
+    print(f"[youtube] summary: {result.text}")
+    assert result.text, "Expected non-empty YouTube video summary"
+    assert result.kind == "video"
+    assert len(result.text) > 10, "Summary too short — Gemini may have failed"

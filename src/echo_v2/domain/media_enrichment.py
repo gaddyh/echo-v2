@@ -19,6 +19,7 @@ class EnrichmentKind(str, Enum):
     TRANSCRIPTION = "transcription"
     MEDIA_SUMMARY = "media_summary"
     LINK_SUMMARY = "link_summary"
+    VIDEO_LINK_SUMMARY = "video_link_summary"
 
 
 @dataclass(frozen=True)

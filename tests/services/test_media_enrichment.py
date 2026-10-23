@@ -8,6 +8,7 @@ import pytest
 
 from echo_v2.domain.chat import Message
 from echo_v2.domain.media_enrichment import EnrichmentKind, EnrichmentStatus
+from echo_v2.domain.pipeline_event import PipelineEvent
 from echo_v2.persistence.chat_repositories import InMemoryMessageRepository
 from echo_v2.persistence.media_enrichment import InMemoryMessageEnrichmentRepository
 from echo_v2.ports.whatsapp import MessageDirection
@@ -387,3 +388,206 @@ async def test_resolver_always_called_when_media_reference_present() -> None:
     result = (await svc.enrich([image_with_stale_url("pre-set")]))[0]
     assert result.enrichment is not None and result.enrichment.status is EnrichmentStatus.COMPLETED
     assert len(resolver.calls) == 1
+
+
+# --- Video link enrichment tests --------------------------------------------
+
+
+class RecordingPipelineEventRepository:
+    """PipelineEventRepository that records all events in memory."""
+
+    def __init__(self) -> None:
+        self.events: list[PipelineEvent] = []
+
+    async def record(self, event: PipelineEvent) -> None:
+        self.events.append(event)
+
+
+class VideoLinkSummarizer:
+    """Summarizer that supports summarize_media (direct video) and summarize_youtube."""
+
+    def __init__(self, *, fail: bool = False) -> None:
+        self.fail = fail
+        self.media_calls = 0
+        self.youtube_calls = 0
+
+    async def summarize_media(self, **kwargs: object) -> MediaSummary:
+        self.media_calls += 1
+        if self.fail:
+            raise RuntimeError("provider unavailable")
+        return MediaSummary(text="ילד משחק בפארק", kind="video", model="gemini-3.5-flash-lite")
+
+    async def summarize_youtube(self, url: str) -> MediaSummary:
+        self.youtube_calls += 1
+        if self.fail:
+            raise RuntimeError("provider unavailable")
+        return MediaSummary(text="סרטון יוטיוב", kind="video", model="gemini-3.5-flash-lite")
+
+    async def summarize_link(self, url: str) -> MediaSummary:
+        return MediaSummary(text="a page", kind="link", model="test-model")
+
+    async def close(self) -> None:
+        pass
+
+
+def mp4_link(message_id: str = "mp4-1") -> Message:
+    return Message(
+        id=message_id, user_id="user", connection_id="connection", chat_id="chat@c.us",
+        provider_message_id=message_id, direction=MessageDirection.INBOUND, sender_id="sender",
+        timestamp=datetime.now(timezone.utc), message_type="text",
+        text="https://cdn.example.com/video.mp4",
+    )
+
+
+def youtube_link(message_id: str = "yt-1") -> Message:
+    return Message(
+        id=message_id, user_id="user", connection_id="connection", chat_id="chat@c.us",
+        provider_message_id=message_id, direction=MessageDirection.INBOUND, sender_id="sender",
+        timestamp=datetime.now(timezone.utc), message_type="text",
+        text="https://www.youtube.com/watch?v=abc123",
+    )
+
+
+def vlink_service(
+    repo: InMemoryMessageEnrichmentRepository,
+    summarizer: VideoLinkSummarizer,
+    *,
+    pipeline_events: RecordingPipelineEventRepository | None = None,
+    **kwargs: object,
+) -> MediaEnrichmentService:
+    return MediaEnrichmentService(
+        message_repo=InMemoryMessageRepository(), enrichment_repo=repo,
+        media_summarizer=summarizer, video_link_enabled=True,
+        pipeline_events=pipeline_events, retry_base_seconds=0, **kwargs,
+    )
+
+
+async def test_mp4_link_routes_to_video_link_summary() -> None:
+    repo = InMemoryMessageEnrichmentRepository()
+    summarizer = VideoLinkSummarizer()
+    result = (await vlink_service(repo, summarizer).enrich([mp4_link()]))[0]
+    assert result.enrichment is not None
+    assert result.enrichment.status is EnrichmentStatus.COMPLETED
+    assert result.enrichment.kind is EnrichmentKind.VIDEO_LINK_SUMMARY
+    assert summarizer.media_calls == 1
+    assert summarizer.youtube_calls == 0
+    assert "video.mp4" in result.effective_text
+    assert "ילד" in result.effective_text
+
+
+async def test_youtube_link_routes_to_video_link_summary() -> None:
+    repo = InMemoryMessageEnrichmentRepository()
+    summarizer = VideoLinkSummarizer()
+    result = (await vlink_service(repo, summarizer).enrich([youtube_link()]))[0]
+    assert result.enrichment is not None
+    assert result.enrichment.status is EnrichmentStatus.COMPLETED
+    assert result.enrichment.kind is EnrichmentKind.VIDEO_LINK_SUMMARY
+    assert summarizer.media_calls == 0
+    assert summarizer.youtube_calls == 1
+    assert "youtube.com" in result.effective_text
+    assert "יוטיוב" in result.effective_text
+
+
+async def test_video_link_disabled_falls_through_to_link_summary() -> None:
+    """When video_link_enabled=False, a video URL uses LINK_SUMMARY (existing behavior)."""
+    repo = InMemoryMessageEnrichmentRepository()
+    summarizer = VideoLinkSummarizer()
+    svc = MediaEnrichmentService(
+        message_repo=InMemoryMessageRepository(), enrichment_repo=repo,
+        media_summarizer=summarizer, video_link_enabled=False, retry_base_seconds=0,
+    )
+    result = (await svc.enrich([mp4_link()]))[0]
+    assert result.enrichment is not None
+    assert result.enrichment.kind is EnrichmentKind.LINK_SUMMARY
+    # summarize_link is called, not summarize_media
+    assert summarizer.media_calls == 0
+
+
+async def test_video_link_uses_separate_enrichment_version() -> None:
+    repo = InMemoryMessageEnrichmentRepository()
+    summarizer = VideoLinkSummarizer()
+    svc = MediaEnrichmentService(
+        message_repo=InMemoryMessageRepository(), enrichment_repo=repo,
+        media_summarizer=summarizer, video_link_enabled=True,
+        enrichment_version="2026-10-17.1",
+        video_link_enrichment_version="2026-10-24.video_link.1",
+        retry_base_seconds=0,
+    )
+    result = (await svc.enrich([youtube_link()]))[0]
+    assert result.enrichment is not None
+    assert result.enrichment.enrichment_version == "2026-10-24.video_link.1"
+
+
+async def test_video_link_success_event_has_url_kind() -> None:
+    repo = InMemoryMessageEnrichmentRepository()
+    summarizer = VideoLinkSummarizer()
+    events = RecordingPipelineEventRepository()
+    svc = vlink_service(repo, summarizer, pipeline_events=events)
+    await svc.enrich([youtube_link()])
+    completed = [e for e in events.events if e.event_name == "media.enrichment.completed"]
+    assert len(completed) == 1
+    assert completed[0].metadata.get("url_kind") == "youtube"
+
+
+async def test_video_link_failure_event_has_url_kind() -> None:
+    """url_kind is classified before _produce, so failure events carry it too."""
+    repo = InMemoryMessageEnrichmentRepository()
+    summarizer = VideoLinkSummarizer(fail=True)
+    events = RecordingPipelineEventRepository()
+    svc = vlink_service(repo, summarizer, pipeline_events=events, max_attempts=1)
+    await svc.enrich([youtube_link()])
+    failed = [e for e in events.events if e.event_name == "media.enrichment.failed"]
+    assert len(failed) == 1
+    assert failed[0].metadata.get("url_kind") == "youtube"
+
+
+async def test_video_link_mp4_failure_event_has_url_kind() -> None:
+    repo = InMemoryMessageEnrichmentRepository()
+    summarizer = VideoLinkSummarizer(fail=True)
+    events = RecordingPipelineEventRepository()
+    svc = vlink_service(repo, summarizer, pipeline_events=events, max_attempts=1)
+    await svc.enrich([mp4_link()])
+    failed = [e for e in events.events if e.event_name == "media.enrichment.failed"]
+    assert len(failed) == 1
+    assert failed[0].metadata.get("url_kind") == "direct_video"
+
+
+async def test_video_link_transient_failure_is_retryable() -> None:
+    repo = InMemoryMessageEnrichmentRepository()
+    summarizer = VideoLinkSummarizer(fail=True)
+    result = (
+        await vlink_service(repo, summarizer, max_attempts=3).enrich([youtube_link()])
+    )[0]
+    assert result.enrichment is not None
+    assert result.enrichment.status is EnrichmentStatus.FAILED
+    assert summarizer.youtube_calls == 1
+
+
+async def test_video_link_previously_link_summary_reanalyzed_under_new_version() -> None:
+    """A YouTube URL previously enriched as LINK_SUMMARY (shared version) is
+    reanalyzed as VIDEO_LINK_SUMMARY under the new version — the old row is
+    not consulted."""
+    repo = InMemoryMessageEnrichmentRepository()
+    # First, enrich as LINK_SUMMARY with video_link disabled (shared version).
+    summarizer = VideoLinkSummarizer()
+    svc_old = MediaEnrichmentService(
+        message_repo=InMemoryMessageRepository(), enrichment_repo=repo,
+        media_summarizer=summarizer, video_link_enabled=False,
+        enrichment_version="2026-10-17.1", retry_base_seconds=0,
+    )
+    result_old = (await svc_old.enrich([youtube_link("yt-existing")]))[0]
+    assert result_old.enrichment is not None
+    assert result_old.enrichment.kind is EnrichmentKind.LINK_SUMMARY
+    # Now enable video link with a distinct version — should reanalyze.
+    svc_new = MediaEnrichmentService(
+        message_repo=InMemoryMessageRepository(), enrichment_repo=repo,
+        media_summarizer=summarizer, video_link_enabled=True,
+        enrichment_version="2026-10-17.1",
+        video_link_enrichment_version="2026-10-24.video_link.1",
+        retry_base_seconds=0,
+    )
+    result_new = (await svc_new.enrich([youtube_link("yt-existing")]))[0]
+    assert result_new.enrichment is not None
+    assert result_new.enrichment.kind is EnrichmentKind.VIDEO_LINK_SUMMARY
+    assert result_new.enrichment.enrichment_version == "2026-10-24.video_link.1"
+    assert "יוטיוב" in result_new.effective_text

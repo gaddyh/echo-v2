@@ -11,9 +11,11 @@ from echo_v2.services.media_summarizer import (
     OpenAIMediaSummarizer,
     _is_text_document,
     _strip_html,
+    classify_video_url,
     download_media,
     extract_urls,
     is_link_message,
+    is_video_link_message,
     summarize_document_bytes,
     summarize_image_bytes,
     summarize_link,
@@ -71,6 +73,112 @@ def test_is_link_message_none_is_false():
 
 def test_is_link_message_empty_is_false():
     assert is_link_message("") is False
+
+
+# --- classify_video_url ----------------------------------------------------
+
+
+def test_classify_video_url_direct_mp4():
+    assert classify_video_url("https://cdn.example.com/video.mp4") == "direct_video"
+
+
+def test_classify_video_url_direct_mov():
+    assert classify_video_url("https://cdn.example.com/clip.mov") == "direct_video"
+
+
+def test_classify_video_url_direct_webm():
+    assert classify_video_url("https://cdn.example.com/clip.webm") == "direct_video"
+
+
+def test_classify_video_url_direct_mkv():
+    assert classify_video_url("https://cdn.example.com/clip.mkv") == "direct_video"
+
+
+def test_classify_video_url_direct_with_query():
+    assert classify_video_url("https://cdn.example.com/video.mp4?token=abc") == "direct_video"
+
+
+def test_classify_video_url_youtube_watch():
+    assert classify_video_url("https://www.youtube.com/watch?v=abc123") == "youtube"
+
+
+def test_classify_video_url_youtube_m_dot():
+    assert classify_video_url("https://m.youtube.com/watch?v=abc123") == "youtube"
+
+
+def test_classify_video_url_youtu_be():
+    assert classify_video_url("https://youtu.be/abc123") == "youtube"
+
+
+def test_classify_video_url_youtube_shorts():
+    assert classify_video_url("https://youtube.com/shorts/abc123") == "youtube"
+
+
+def test_classify_video_url_youtube_embed():
+    assert classify_video_url("https://www.youtube.com/embed/abc123") == "youtube"
+
+
+def test_classify_video_url_non_video_html_page():
+    assert classify_video_url("https://example.com/article") is None
+
+
+def test_classify_video_url_youtube_homepage_is_none():
+    assert classify_video_url("https://www.youtube.com") is None
+
+
+def test_classify_video_url_youtube_channel_is_none():
+    assert classify_video_url("https://youtube.com/@channel") is None
+
+
+def test_classify_video_url_tiktok_is_none():
+    assert classify_video_url("https://tiktok.com/@user/video/123") is None
+
+
+def test_classify_video_url_instagram_is_none():
+    assert classify_video_url("https://instagram.com/reel/abc") is None
+
+
+def test_classify_video_url_image_is_none():
+    assert classify_video_url("https://example.com/image.jpg") is None
+
+
+def test_classify_video_url_uppercase_ext():
+    assert classify_video_url("https://cdn.example.com/VIDEO.MP4") == "direct_video"
+
+
+# --- is_video_link_message -------------------------------------------------
+
+
+def test_is_video_link_message_pure_mp4_url():
+    assert is_video_link_message("https://cdn.example.com/video.mp4") is True
+
+
+def test_is_video_link_message_pure_youtube_url():
+    assert is_video_link_message("https://www.youtube.com/watch?v=abc123") is True
+
+
+def test_is_video_link_message_short_prefix_with_url():
+    assert is_video_link_message("check this: https://cdn.example.com/video.mp4") is True
+
+
+def test_is_video_link_message_long_text_with_url_is_false():
+    long_text = (
+        "hey i was thinking about the project and whether we should "
+        "look at https://cdn.example.com/video.mp4 for reference but let me know"
+    )
+    assert is_video_link_message(long_text) is False
+
+
+def test_is_video_link_message_non_video_url_is_false():
+    assert is_video_link_message("https://example.com/article") is False
+
+
+def test_is_video_link_message_none_is_false():
+    assert is_video_link_message(None) is False
+
+
+def test_is_video_link_message_empty_is_false():
+    assert is_video_link_message("") is False
 
 
 # --- _is_text_document ------------------------------------------------------

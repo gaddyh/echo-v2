@@ -378,12 +378,16 @@ def create_app() -> FastAPI:
         "1", "true", "yes"
     )
     gemini_api_key = os.environ.get("GEMINI_API_KEY")
+    video_link_enabled = os.environ.get("VIDEO_LINK_ENRICHMENT_ENABLED", "false").lower() in (
+        "1", "true", "yes"
+    )
     video_summarizer = None
     if gemini_video_enabled and gemini_api_key:
         video_summarizer = GeminiVideoSummarizer(
             api_key=gemini_api_key,
             model=os.environ.get("GEMINI_VIDEO_MODEL", "gemini-3.5-flash-lite"),
             max_bytes=int(os.environ.get("GEMINI_VIDEO_MAX_BYTES", str(15 * 1024 * 1024))),
+            youtube_max_seconds=int(os.environ.get("GEMINI_VIDEO_YOUTUBE_MAX_SECONDS", "60")),
         )
         _logger.info("gemini video summarizer built: model=%s", video_summarizer._model)
     elif gemini_video_enabled:
@@ -412,6 +416,11 @@ def create_app() -> FastAPI:
         video_enrichment_version=(
             os.environ.get("VIDEO_ENRICHMENT_VERSION", "2026-10-23.video.1")
             if gemini_video_enabled else None
+        ),
+        video_link_enabled=video_link_enabled,
+        video_link_enrichment_version=(
+            os.environ.get("VIDEO_LINK_ENRICHMENT_VERSION", "2026-10-24.video_link.1")
+            if video_link_enabled else None
         ),
     )
 
