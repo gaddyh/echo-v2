@@ -206,6 +206,7 @@ class ChatIngestionService:
             media_download_url=event.media_download_url,
             media_mime_type=event.media_mime_type,
             media_file_name=event.media_file_name,
+            media_size=event.media_size,
         )
 
         _logger.info(

@@ -30,6 +30,7 @@ from sqlalchemy import (
     CheckConstraint,
     ForeignKey,
     Index,
+    Integer,
     Text,
     UniqueConstraint,
     func,
@@ -513,6 +514,7 @@ class MessageRow(Base):
     media_download_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     media_mime_type: Mapped[str | None] = mapped_column(Text, nullable=True)
     media_file_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    media_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True),
         nullable=False,
