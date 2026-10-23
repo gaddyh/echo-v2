@@ -324,3 +324,66 @@ async def test_image_uses_shared_version_when_video_version_set() -> None:
     result = (await svc.enrich([image("img-versioned")]))[0]
     assert result.enrichment is not None
     assert result.enrichment.enrichment_version == "2026-10-17.1"
+
+
+# --- Signed URL refresh tests -----------------------------------------------
+
+
+class CountingResolver:
+    """Resolver that records every call and returns a fresh URL each time."""
+
+    def __init__(self) -> None:
+        self.calls: list[Message] = []
+
+    async def resolve(self, message: Message) -> str:
+        self.calls.append(message)
+        return f"https://media.test/fresh/{len(self.calls)}"
+
+
+def image_with_stale_url(message_id: str = "stale-1") -> Message:
+    """An image message that already has a (potentially expired) download URL."""
+    return Message(
+        id=message_id, user_id="user", connection_id="connection", chat_id="chat@c.us",
+        provider_message_id=message_id, direction=MessageDirection.INBOUND, sender_id="sender",
+        timestamp=datetime.now(timezone.utc), message_type="image",
+        media_reference="baileys:c1:image-1", media_mime_type="image/jpeg",
+        media_file_name="image.jpg", media_download_url="https://media.test/expired",
+    )
+
+
+async def test_expired_media_url_is_refreshed_on_retry() -> None:
+    """Even when a message has a pre-existing (expired) download URL, the
+    resolver is called on every enrichment attempt so a fresh signed URL is
+    used — expired URLs no longer prematurely exhaust enrichment retries."""
+    repo = InMemoryMessageEnrichmentRepository()
+    summarizer = Summarizer(fail=True)
+    resolver = CountingResolver()
+    svc = MediaEnrichmentService(
+        message_repo=InMemoryMessageRepository(), enrichment_repo=repo,
+        media_summarizer=summarizer, media_url_resolver=resolver,
+        max_attempts=3, retry_base_seconds=0,
+    )
+    first = (await svc.enrich([image_with_stale_url("stale-1")]))[0]
+    assert first.enrichment is not None and first.enrichment.status is EnrichmentStatus.FAILED
+    assert len(resolver.calls) == 1
+
+    # Second attempt should also call the resolver (not reuse the stale URL).
+    summarizer.fail = False
+    second = (await svc.enrich([image_with_stale_url("stale-1")]))[0]
+    assert second.effective_text == "a threatening image"
+    assert len(resolver.calls) == 2
+
+
+async def test_resolver_always_called_when_media_reference_present() -> None:
+    """Regression guard: even when media_download_url is pre-set, the resolver
+    is invoked — the guard was changed from 'no url' to 'media_reference present'."""
+    repo = InMemoryMessageEnrichmentRepository()
+    summarizer = Summarizer()
+    resolver = CountingResolver()
+    svc = MediaEnrichmentService(
+        message_repo=InMemoryMessageRepository(), enrichment_repo=repo,
+        media_summarizer=summarizer, media_url_resolver=resolver, retry_base_seconds=0,
+    )
+    result = (await svc.enrich([image_with_stale_url("pre-set")]))[0]
+    assert result.enrichment is not None and result.enrichment.status is EnrichmentStatus.COMPLETED
+    assert len(resolver.calls) == 1
