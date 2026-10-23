@@ -50,3 +50,23 @@
 ### Pilot limitation
 
 - For the pilot, if scheduling fails, the UoW transaction rolls back (no incident, no schedule) and the error is logged. There is no reconciliation or retry queue — the alert may be missed if no new assessment arrives. This is an explicitly accepted limitation.
+
+## Gemini Video Enrichment
+
+- `GeminiVideoSummarizer` (`services/gemini_video_summarizer.py`) provides semantic understanding of WhatsApp videos using Gemini's native video+audio input.
+- Feature flag: `GEMINI_VIDEO_ENABLED` (defaults `false`). When disabled, videos fall back to the existing `_video_placeholder` path.
+- Default model: `gemini-3.5-flash-lite` (configurable via `GEMINI_VIDEO_MODEL`). Measured ~15s per 16MB video vs ~244s with `gemini-3.8-flash`.
+- The whole video file is sent inline (no ffmpeg trimming). A bounded streaming download aborts on overflow with `VideoTooLargeError` (default cap `GEMINI_VIDEO_MAX_BYTES=15MB`), which is marked terminal immediately (no retry).
+- Gemini describes; the existing Guard analyzers decide. No risk classification or notification policy is added.
+- Videos are always enriched (`_target` returns `MEDIA_SUMMARY` for all videos, including captioned ones). Caption is preserved alongside the Gemini description (`caption | description`).
+- Per-kind versioning: `VIDEO_ENRICHMENT_VERSION` (default `2026-10-23.video.1`) is used only for video messages, so existing image/document/audio/link enrichments are not reprocessed on a version bump.
+
+### Environment variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `GEMINI_VIDEO_ENABLED` | `false` | Enable Gemini video enrichment |
+| `GEMINI_API_KEY` | — | Gemini API key (required when enabled) |
+| `GEMINI_VIDEO_MODEL` | `gemini-3.5-flash-lite` | Gemini model for video analysis |
+| `GEMINI_VIDEO_MAX_BYTES` | `15728640` (15MB) | Max accepted video size; oversized → terminal |
+| `VIDEO_ENRICHMENT_VERSION` | `2026-10-23.video.1` | Per-kind enrichment version for videos |

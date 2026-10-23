@@ -197,3 +197,130 @@ async def test_producer_validation() -> None:
     worker = service(InMemoryMessageEnrichmentRepository(), Summarizer())
     with pytest.raises(RuntimeError, match="no URL"):
         await worker._produce(image(), EnrichmentKind.LINK_SUMMARY)
+
+
+# --- Video enrichment tests --------------------------------------------------
+
+
+def video(message_id: str = "video-1", caption: str | None = None) -> Message:
+    msg = Message(
+        id=message_id, user_id="user", connection_id="connection", chat_id="chat@c.us",
+        provider_message_id=message_id, direction=MessageDirection.INBOUND, sender_id="sender",
+        timestamp=datetime.now(timezone.utc), message_type="video",
+        media_reference="baileys:c1:video-1", media_mime_type="video/mp4",
+        media_file_name="video.mp4",
+    )
+    if caption is not None:
+        msg = Message(**{**msg.__dict__, "text": caption})
+    return msg
+
+
+class VideoSummarizer:
+    """Summarizer that returns a video description, optionally with caption."""
+
+    def __init__(self, *, fail_with: type[Exception] | None = None) -> None:
+        self.fail_with = fail_with
+        self.calls = 0
+
+    async def summarize_media(self, **kwargs: object) -> MediaSummary:
+        self.calls += 1
+        if self.fail_with is not None:
+            raise self.fail_with("video too large")
+        caption = kwargs.get("caption")
+        text = "ילד משחק בפארק עם כלב"
+        if caption:
+            text = f"{caption} | {text}"
+        return MediaSummary(text=text, kind="video", model="gemini-3.5-flash-lite")
+
+    async def summarize_link(self, url: str) -> MediaSummary:
+        self.calls += 1
+        return MediaSummary(text="a page", kind="link", model="test-model")
+
+    async def close(self) -> None:
+        pass
+
+
+async def test_video_without_caption_is_enriched() -> None:
+    repo = InMemoryMessageEnrichmentRepository()
+    summarizer = VideoSummarizer()
+    result = (await service(repo, summarizer).enrich([video()]))[0]
+    assert result.enrichment is not None
+    assert result.enrichment.status is EnrichmentStatus.COMPLETED
+    assert result.enrichment.kind is EnrichmentKind.MEDIA_SUMMARY
+    assert "ילד" in result.effective_text
+
+
+async def test_video_with_caption_is_enriched() -> None:
+    repo = InMemoryMessageEnrichmentRepository()
+    summarizer = VideoSummarizer()
+    result = (await service(repo, summarizer).enrich([video("vid-cap", caption="תראה")]))[0]
+    assert result.enrichment is not None
+    assert result.enrichment.status is EnrichmentStatus.COMPLETED
+    # Caption should be preserved alongside the Gemini description.
+    assert "תראה" in result.effective_text
+    assert "ילד" in result.effective_text
+    assert "|" in result.effective_text
+
+
+async def test_video_too_large_is_terminal_immediately() -> None:
+    from echo_v2.services.gemini_video_summarizer import VideoTooLargeError
+
+    repo = InMemoryMessageEnrichmentRepository()
+    summarizer = VideoSummarizer(fail_with=VideoTooLargeError)
+    # max_attempts=3, but VideoTooLargeError should be terminal on the first attempt.
+    result = (
+        await service(
+            repo, summarizer, max_attempts=3, retry_base_seconds=0,
+        ).enrich([video("too-large")])
+    )[0]
+    assert result.enrichment is not None
+    assert result.enrichment.status is EnrichmentStatus.TERMINAL
+    assert "too large" in (result.enrichment.error or "")
+    assert summarizer.calls == 1
+
+
+async def test_video_transient_error_is_retryable() -> None:
+    repo = InMemoryMessageEnrichmentRepository()
+    summarizer = VideoSummarizer(fail_with=RuntimeError)
+    result = (
+        await service(
+            repo, summarizer, max_attempts=3, retry_base_seconds=0,
+        ).enrich([video("transient")])
+    )[0]
+    assert result.enrichment is not None
+    assert result.enrichment.status is EnrichmentStatus.FAILED
+    assert summarizer.calls == 1
+
+
+async def test_video_uses_separate_enrichment_version() -> None:
+    repo = InMemoryMessageEnrichmentRepository()
+    summarizer = VideoSummarizer()
+    svc = MediaEnrichmentService(
+        message_repo=InMemoryMessageRepository(),
+        enrichment_repo=repo,
+        media_summarizer=summarizer,
+        media_url_resolver=Resolver(),
+        enrichment_version="2026-10-17.1",
+        video_enrichment_version="2026-10-23.video.1",
+        retry_base_seconds=0,
+    )
+    result = (await svc.enrich([video("versioned")]))[0]
+    assert result.enrichment is not None
+    assert result.enrichment.enrichment_version == "2026-10-23.video.1"
+
+
+async def test_image_uses_shared_version_when_video_version_set() -> None:
+    repo = InMemoryMessageEnrichmentRepository()
+    summarizer = Summarizer()
+    svc = MediaEnrichmentService(
+        message_repo=InMemoryMessageRepository(),
+        enrichment_repo=repo,
+        media_summarizer=summarizer,
+        media_url_resolver=Resolver(),
+        enrichment_version="2026-10-17.1",
+        video_enrichment_version="2026-10-23.video.1",
+        retry_base_seconds=0,
+    )
+    result = (await svc.enrich([image("img-versioned")]))[0]
+    assert result.enrichment is not None
+    assert result.enrichment.enrichment_version == "2026-10-17.1"
