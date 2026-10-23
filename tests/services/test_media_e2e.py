@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -374,3 +375,103 @@ async def test_e2e_link_summarization_real_http():
     print(f"[link] summary: {result.text}")
     assert result.text, "Expected non-empty link summary"
     assert result.kind == "link"
+
+
+# --- Video summarization (real Gemini) ---------------------------------------
+
+
+# Drop a real WhatsApp video file in tests/fixtures/ (any *.mp4 / *.3gp / *.mov).
+# The tests/fixtures/ directory is gitignored so real media is never committed.
+_VIDEO_FILES = sorted(
+    list(FIXTURES_DIR.glob("*.mp4"))
+    + list(FIXTURES_DIR.glob("*.3gp"))
+    + list(FIXTURES_DIR.glob("*.mov"))
+)
+_VIDEO_FILE = _VIDEO_FILES[0] if _VIDEO_FILES else None
+
+HAS_GEMINI = bool(os.getenv("GEMINI_API_KEY"))
+
+skip_no_gemini = pytest.mark.skipif(
+    not HAS_GEMINI, reason="GEMINI_API_KEY not set — skipping real Gemini E2E tests"
+)
+skip_no_video_file = pytest.mark.skipif(
+    not _VIDEO_FILE, reason="No video fixture (*.mp4/*.3gp/*.mov) in tests/fixtures/"
+)
+
+
+@skip_no_gemini
+@skip_no_video_file
+async def test_e2e_video_summarization_real_gemini():
+    """Summarize a real video using Gemini's native video understanding.
+
+    Verifies the full path: file read → inline bytes → Gemini API
+    → non-empty Hebrew summary text.
+    """
+    from echo_v2.services.gemini_video_summarizer import GeminiVideoSummarizer
+
+    video_bytes = _VIDEO_FILE.read_bytes()  # type: ignore[union-attr]
+    print(f"\n[video] file={_VIDEO_FILE.name} size={len(video_bytes)} bytes")  # type: ignore[union-attr]
+
+    summarizer = GeminiVideoSummarizer(
+        api_key=os.environ["GEMINI_API_KEY"],
+        model=os.environ.get("GEMINI_VIDEO_MODEL", "gemini-3.8-flash"),
+    )
+    try:
+        with patch(
+            "echo_v2.services.gemini_video_summarizer.GeminiVideoSummarizer._download_bounded",
+            new_callable=AsyncMock,
+            return_value=video_bytes,
+        ):
+            result = await summarizer.summarize_media(
+                download_url="file://fixture/video.mp4",
+                mime_type="video/mp4",
+                file_name=_VIDEO_FILE.name,  # type: ignore[union-attr]
+                message_type="video",
+                caption=None,
+            )
+    finally:
+        await summarizer.close()
+
+    print(f"[video] kind={result.kind} model={result.model}")
+    print(f"[video] summary: {result.text}")
+    assert result.text, "Expected non-empty video summary"
+    assert result.kind == "video"
+    assert len(result.text) > 10, "Summary too short — Gemini may have failed"
+
+
+@skip_no_gemini
+@skip_no_video_file
+async def test_e2e_video_summarization_with_caption_real_gemini():
+    """Summarize a real video with a caption using Gemini.
+
+    Verifies the caption is included as context and the summary is non-empty.
+    """
+    from echo_v2.services.gemini_video_summarizer import GeminiVideoSummarizer
+
+    video_bytes = _VIDEO_FILE.read_bytes()  # type: ignore[union-attr]
+    print(f"\n[video+caption] file={_VIDEO_FILE.name} size={len(video_bytes)} bytes")  # type: ignore[union-attr]
+
+    summarizer = GeminiVideoSummarizer(
+        api_key=os.environ["GEMINI_API_KEY"],
+        model=os.environ.get("GEMINI_VIDEO_MODEL", "gemini-3.8-flash"),
+    )
+    try:
+        with patch(
+            "echo_v2.services.gemini_video_summarizer.GeminiVideoSummarizer._download_bounded",
+            new_callable=AsyncMock,
+            return_value=video_bytes,
+        ):
+            result = await summarizer.summarize_media(
+                download_url="file://fixture/video.mp4",
+                mime_type="video/mp4",
+                file_name=_VIDEO_FILE.name,  # type: ignore[union-attr]
+                message_type="video",
+                caption="תראה מה קרה היום",
+            )
+    finally:
+        await summarizer.close()
+
+    print(f"[video+caption] kind={result.kind} model={result.model}")
+    print(f"[video+caption] summary: {result.text}")
+    assert result.text, "Expected non-empty video summary with caption"
+    assert result.kind == "video"

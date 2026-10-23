@@ -37,6 +37,7 @@ prod = [
     "phonenumbers>=8.13.55",
     "openai>=1.50",
     "langsmith==0.13.0",
+    "google-genai>=1.0.0",
 ]
 dev = [
     "pytest>=7.0",
@@ -57,8 +58,8 @@ dev = [
     "testcontainers[postgres]>=4.10.0",
     "openai>=1.50",
     "langsmith==0.13.0",
+    "google-genai>=1.0.0",
 ]
-
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 markers = [
@@ -112,5 +113,6 @@ module = [
     "alembic.*",
     "phonenumbers.*",
     "websockets.*",
+    "google.genai.*",
 ]
 ignore_missing_imports = true
