@@ -43,9 +43,11 @@ __all__ = [
     "MediaSummary",
     "MediaSummaryError",
     "OpenAIMediaSummarizer",
+    "classify_video_url",
     "download_media",
     "extract_urls",
     "is_link_message",
+    "is_video_link_message",
     "summarize_document_bytes",
     "summarize_image_bytes",
     "summarize_link",
@@ -124,6 +126,58 @@ def is_link_message(text: str | None) -> bool:
     return len(non_url_text) <= 60 and len(urls) == 1
 
 
+# Video file extensions recognized in direct video URLs.
+_VIDEO_FILE_EXTS = {".mp4", ".mov", ".webm", ".mkv"}
+
+# YouTube hosts (lowercase, without scheme).
+_YOUTUBE_HOSTS = {"youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"}
+
+
+def classify_video_url(url: str) -> str | None:
+    """Classify a URL as a direct video file or a YouTube watch URL.
+
+    Returns ``"direct_video"`` if the URL path ends with a recognized
+    video extension (``.mp4``/``.mov``/``.webm``/``.mkv``), ``"youtube"``
+    if the URL points at a recognized YouTube watch/shorts/embed path, or
+    ``None`` if it is neither.
+    """
+    try:
+        parsed = urlparse(url)
+    except (ValueError, TypeError):
+        return None
+    host = (parsed.netloc or "").lower().removeprefix("www.")
+    path = parsed.path.lower()
+    # Direct video file: path ends with a recognized extension.
+    ext = Path(path).suffix
+    if ext in _VIDEO_FILE_EXTS:
+        return "direct_video"
+    # YouTube watch / shorts / embed / youtu.be short link.
+    if host in _YOUTUBE_HOSTS:
+        if host == "youtu.be":
+            # youtu.be/<id> — non-empty path beyond the leading slash.
+            if len(path.strip("/")) > 0:
+                return "youtube"
+            return None
+        if path == "/watch" or path.startswith(("/shorts/", "/embed/")):
+            return "youtube"
+    return None
+
+
+def is_video_link_message(text: str | None) -> bool:
+    """Heuristic: is this text message "mostly a video link"?
+
+    Combines :func:`is_link_message` (the "mostly a link" gate) with
+    :func:`classify_video_url` so casual YouTube/video mentions buried in
+    long conversational text are not analyzed.
+    """
+    if not is_link_message(text):
+        return False
+    urls = extract_urls(text or "")
+    if not urls:
+        return False
+    return classify_video_url(urls[0]) is not None
+
+
 @dataclass(frozen=True)
 class MediaSummary:
     """Result of summarizing a media item.
@@ -165,6 +219,8 @@ class MediaSummarizer(Protocol):
     ) -> MediaSummary: ...
 
     async def summarize_link(self, url: str) -> MediaSummary: ...
+
+    async def summarize_youtube(self, url: str) -> MediaSummary: ...
 
     async def close(self) -> None: ...
 
@@ -254,6 +310,11 @@ class OpenAIMediaSummarizer:
         except Exception as exc:  # noqa: BLE001 - best-effort link summary
             _logger.warning("link summarization failed for %s: %s", url, exc)
             return MediaSummary(text=f"[link: {url}]", kind="link_error")
+
+    async def summarize_youtube(self, url: str) -> MediaSummary:
+        if self._video_summarizer is None:
+            raise RuntimeError("video summarizer is not configured")
+        return await self._video_summarizer.summarize_youtube(url)
 
     async def close(self) -> None:
         if self._http_client is not None:

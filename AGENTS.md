@@ -70,3 +70,24 @@
 | `GEMINI_VIDEO_MODEL` | `gemini-3.5-flash-lite` | Gemini model for video analysis |
 | `GEMINI_VIDEO_MAX_BYTES` | `15728640` (15MB) | Max accepted video size; oversized → terminal |
 | `VIDEO_ENRICHMENT_VERSION` | `2026-10-23.video.1` | Per-kind enrichment version for videos |
+
+## Video Link Enrichment
+
+- Detects direct video file URLs (`.mp4`/`.mov`/`.webm`/`.mkv`) and YouTube URLs (`/watch`, `youtu.be/`, `/shorts/`, `/embed/`) in text messages and routes them through the existing `GeminiVideoSummarizer` instead of the webpage summarizer.
+- Feature flag: `VIDEO_LINK_ENRICHMENT_ENABLED` (defaults `false`). When disabled, video links fall through to the existing `LINK_SUMMARY` webpage path (no behavior change).
+- Direct video URLs reuse the existing `summarize_media` path (download → Gemini), including the 15 MB cap, caching, and retries. YouTube URLs use a separate `summarize_youtube` method that passes the URL directly to Gemini via the Interactions API (no local download).
+- SSRF guard: the existing `_download_bounded` validates every destination **before** connecting — HTTPS-only, rejects private/loopback/link-local/reserved/cloud-metadata IPs, disables auto-redirects and re-validates each redirect hop. The request to an unsafe destination never happens.
+- YouTube cost cap: `GEMINI_VIDEO_YOUTUBE_MAX_SECONDS` (default 60) clips analysis to the first N seconds via Gemini's `video_metadata` (`start_offset`/`end_offset`). Static processing (1 FPS frame extraction) is Gemini's default; clipping is only supported in static mode. If the installed `google-genai` SDK rejects `video_metadata`, the YouTube path raises `MediaSummaryError` (terminal) rather than silently processing the whole video. **Validate with a real YouTube URL before enabling.**
+- Fallback: transient Gemini failures use the existing enrichment retry mechanism; permanent failures terminate. No webpage-summarizer fallback is added (the existing `LINK_SUMMARY` path still handles non-video links).
+- Cache separation: the enrichment cache is keyed by `(message_id, enrichment_version)`, not `kind`. A distinct `VIDEO_LINK_ENRICHMENT_VERSION` ensures previously-summarized YouTube URLs (under the shared `LINK_SUMMARY` version) are reanalyzed as `VIDEO_LINK_SUMMARY` when the feature is enabled. The old rows remain but are no longer consulted.
+- Metrics: `url_kind` (`direct_video` / `youtube`) is classified in `_enrich_message` **before** `_produce` is called, so it is available on both success and failure `media.enrichment.completed/failed` pipeline events. `outcome` is derived from `event_name` in pilot SQL.
+- Privacy: `pipeline_events` carries only `url_kind`, not the URL itself. The enrichment text includes the URL for the analyzer's context (same as today's `LINK_SUMMARY`).
+- Pilot limitation: YouTube support is preview-only and works for public videos. Private/unlisted videos will fail and terminate (no fallback).
+
+### Environment variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `VIDEO_LINK_ENRICHMENT_ENABLED` | `false` | Enable video link enrichment |
+| `VIDEO_LINK_ENRICHMENT_VERSION` | `2026-10-24.video_link.1` | Per-kind enrichment version for video links |
+| `GEMINI_VIDEO_YOUTUBE_MAX_SECONDS` | `60` | Cap YouTube analysis to first N seconds |
