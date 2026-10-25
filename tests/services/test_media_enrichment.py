@@ -293,6 +293,33 @@ async def test_video_transient_error_is_retryable() -> None:
     assert summarizer.calls == 1
 
 
+async def test_video_without_media_reference_or_url_is_terminal_immediately() -> None:
+    """A video with no media_reference and no media_download_url is fundamentally
+    unavailable — the connector did not provide a mediaKey. It should be marked
+    terminal on the first attempt instead of burning 3 retries in ~75ms."""
+    repo = InMemoryMessageEnrichmentRepository()
+    summarizer = VideoSummarizer()
+    # Video with no media_reference and no media_download_url, but with a caption.
+    msg = Message(
+        id="no-ref", user_id="user", connection_id="connection", chat_id="chat@c.us",
+        provider_message_id="no-ref", direction=MessageDirection.INBOUND, sender_id="sender",
+        timestamp=datetime.now(timezone.utc), message_type="video",
+        text="a caption", media_mime_type="video/mp4",
+    )
+    result = (
+        await service(
+            repo, summarizer, max_attempts=3, retry_base_seconds=0,
+        ).enrich([msg])
+    )[0]
+    assert result.enrichment is not None
+    assert result.enrichment.status is EnrichmentStatus.TERMINAL
+    assert "unavailable" in (result.enrichment.error or "")
+    # The summarizer should never be called — we fail before reaching _produce.
+    assert summarizer.calls == 0
+    # The caption text should still be available as effective_text.
+    assert result.effective_text == "a caption"
+
+
 async def test_video_uses_separate_enrichment_version() -> None:
     repo = InMemoryMessageEnrichmentRepository()
     summarizer = VideoSummarizer()

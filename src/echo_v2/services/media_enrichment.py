@@ -148,6 +148,23 @@ class MediaEnrichmentService:
             _logger.info("media enrichment skip message_id=%s reason=not_required", message.id)
             return EnrichedMessage(message=message, effective_text=message.text or "")
 
+        # Media-kind targets (transcription, media_summary) require a
+        # download URL. If neither media_reference (for lazy resolution) nor
+        # media_download_url (already resolved) is present, the media is
+        # fundamentally unavailable — the connector did not provide a
+        # mediaKey or download URL. Mark terminal immediately instead of
+        # burning 3 retry attempts in ~75ms.
+        media_unavailable = (
+            target not in (EnrichmentKind.LINK_SUMMARY, EnrichmentKind.VIDEO_LINK_SUMMARY)
+            and not message.media_reference
+            and not message.media_download_url
+        )
+        if media_unavailable:
+            _logger.warning(
+                "media enrichment terminal message_id=%s reason=no_media_reference_or_url type=%s target=%s",
+                message.id, message.message_type, target.value,
+            )
+
         current = await self._enrichments.get(
             message_id=message.id, enrichment_version=version
         )
@@ -240,9 +257,14 @@ class MediaEnrichmentService:
             return EnrichedMessage(message, result, text)
         except Exception as exc:  # noqa: BLE001 - one bad media item must not abort a window
             attempts = claimed.attempts
-            # Deterministic size-limit failures are terminal immediately —
-            # retrying won't help and wastes attempts.
-            terminal = isinstance(exc, VideoTooLargeError) or attempts >= self._max_attempts
+            # Deterministic size-limit failures and fundamentally unavailable
+            # media are terminal immediately — retrying won't help and
+            # wastes attempts.
+            terminal = (
+                isinstance(exc, VideoTooLargeError)
+                or media_unavailable
+                or attempts >= self._max_attempts
+            )
             retry_at = None if terminal else datetime.now(timezone.utc) + timedelta(
                 seconds=self._retry_base * (2 ** max(0, attempts - 1))
             )
