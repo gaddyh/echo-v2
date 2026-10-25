@@ -17,14 +17,19 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
+from uuid import uuid4
 
 from langsmith import traceable
 from pydantic import BaseModel, ConfigDict, StrictStr, ValidationError
 
+from echo_v2.domain.ai_usage_event import AiUsageStatus, AiUsageType
 from echo_v2.domain.guard_exposure import ExposureAssessment
 from echo_v2.domain.guard_simple import SafetyAssessment
 from echo_v2.observability.tracing import tracing_client
+
+if TYPE_CHECKING:
+    from echo_v2.services.reporting.ai_usage_recorder import AiUsageRecorder
 
 _logger = logging.getLogger("echo_v2.services.incident_matcher")
 
@@ -168,6 +173,7 @@ class IncidentMatcher:
         prompt_version: str = INCIDENT_MATCHER_PROMPT_VERSION,
         matcher_version: str = INCIDENT_MATCHER_VERSION,
         max_retries: int = 1,
+        recorder: AiUsageRecorder | None = None,
     ) -> None:
         if max_retries < 0:
             raise ValueError("max_retries must be non-negative")
@@ -177,6 +183,7 @@ class IncidentMatcher:
         self._matcher_version = matcher_version
         self._max_retries = max_retries
         self._is_reasoning_model = model.startswith(("gpt-5", "gpt-6", "o"))
+        self._recorder = recorder
 
     async def match(
         self,
@@ -219,19 +226,48 @@ class IncidentMatcher:
 
         last_error: IncidentMatchError | None = None
         for attempt in range(self._max_retries + 1):
+            invocation_id = uuid4()
             try:
                 response = await self._client.chat.completions.parse(**request_kwargs)
                 message = response.choices[0].message
                 parsed = message.parsed
                 if not isinstance(parsed, IncidentMatcherLLMOutput):
                     raise IncidentMatchError("Incident matcher LLM returned no parsed output")
+                usage = getattr(response, "usage", None)
+                await self._record_usage(
+                    assessment=assessment,
+                    usage=usage,
+                    status=AiUsageStatus.SUCCESS,
+                    invocation_id=invocation_id,
+                )
                 return _result_from_output(parsed)
             except IncidentMatchError as exc:
                 last_error = exc
+                await self._record_usage(
+                    assessment=assessment,
+                    usage=None,
+                    status=AiUsageStatus.ERROR,
+                    invocation_id=invocation_id,
+                    error_type=type(exc).__name__,
+                )
             except (ValidationError, ValueError) as exc:
                 last_error = IncidentMatchError(f"Invalid incident matcher output: {exc}")
+                await self._record_usage(
+                    assessment=assessment,
+                    usage=None,
+                    status=AiUsageStatus.ERROR,
+                    invocation_id=invocation_id,
+                    error_type=type(exc).__name__,
+                )
             except Exception as exc:  # noqa: BLE001 - provider failures are retried
                 last_error = IncidentMatchError(f"Incident matcher LLM request failed: {exc}")
+                await self._record_usage(
+                    assessment=assessment,
+                    usage=None,
+                    status=AiUsageStatus.ERROR,
+                    invocation_id=invocation_id,
+                    error_type=type(exc).__name__,
+                )
             if attempt < self._max_retries:
                 _logger.warning(
                     "Incident matcher retrying (%d/%d): %s",
@@ -241,6 +277,44 @@ class IncidentMatcher:
                 )
         assert last_error is not None
         raise last_error
+
+    async def _record_usage(
+        self,
+        *,
+        assessment: MatcherAssessment,
+        usage: Any,
+        status: str,
+        invocation_id: Any,
+        error_type: str | None = None,
+    ) -> None:
+        """Record one billable provider attempt. Best-effort, never breaks analysis."""
+        if self._recorder is None:
+            return
+        from echo_v2.services.reporting.ai_usage_recorder import (
+            UsageContext,
+            UsagePayload,
+        )
+
+        def _uv(field: str) -> int | None:
+            value = getattr(usage, field, None) if usage is not None else None
+            return value if isinstance(value, int) else None
+
+        context = UsageContext(
+            operation="guard_incident_match",
+            provider="openai",
+            model=self._model,
+            child_user_id=assessment.child_user_id or None,
+        )
+        payload = UsagePayload(
+            usage_type=AiUsageType.TOKENS,
+            status=status,
+            prompt_tokens=_uv("prompt_tokens"),
+            completion_tokens=_uv("completion_tokens"),
+            total_tokens=_uv("total_tokens"),
+            invocation_id=invocation_id,
+            error_type=error_type if status == AiUsageStatus.ERROR else None,
+        )
+        await self._recorder.record(context, payload)
 
 
 def _build_user_message(

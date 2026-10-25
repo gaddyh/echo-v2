@@ -298,6 +298,7 @@ class MediaEnrichmentService:
                 download_url=message.media_download_url or "",
                 file_name=message.media_file_name or "voice-message",
                 mime_type=message.media_mime_type or "",
+                child_user_id=message.user_id,
             )
             return kind, text, getattr(self._transcriber, "model", None)
         if self._summarizer is None:
@@ -318,6 +319,7 @@ class MediaEnrichmentService:
                     file_name=None,
                     message_type="video",
                     caption=None,
+                    child_user_id=message.user_id,
                 )
             elif url_kind == "youtube":
                 summary = await self._summarizer.summarize_youtube(url)
@@ -332,6 +334,7 @@ class MediaEnrichmentService:
                 file_name=message.media_file_name,
                 message_type=message.message_type,
                 caption=message.text,
+                child_user_id=message.user_id,
             )
             # Preserve the original caption alongside the Gemini description
             # for videos — never replace one with the other.
@@ -341,7 +344,7 @@ class MediaEnrichmentService:
         urls = extract_urls(message.text or "")
         if not urls:
             raise RuntimeError("link message contains no URL")
-        summary = await self._summarizer.summarize_link(urls[0])
+        summary = await self._summarizer.summarize_link(urls[0], child_user_id=message.user_id)
         text = f"{urls[0]} — {summary.text}" if summary.text else urls[0]
         return kind, text, summary.model
 

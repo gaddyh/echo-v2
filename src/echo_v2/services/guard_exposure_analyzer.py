@@ -5,11 +5,13 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
+from uuid import uuid4
 
 from langsmith import traceable
 from pydantic import BaseModel, ConfigDict, StrictBool, StrictStr, ValidationError
 
+from echo_v2.domain.ai_usage_event import AiUsageStatus, AiUsageType
 from echo_v2.domain.guard_exposure import ExposureAssessment, ExposureCategory
 from echo_v2.domain.guard_simple import SimpleConversation
 from echo_v2.observability.sanitizers import (
@@ -17,6 +19,9 @@ from echo_v2.observability.sanitizers import (
     safe_guard_analysis_output,
 )
 from echo_v2.observability.tracing import tracing_client
+
+if TYPE_CHECKING:
+    from echo_v2.services.reporting.ai_usage_recorder import AiUsageRecorder
 
 _logger = logging.getLogger("echo_v2.services.guard_exposure_analyzer")
 
@@ -91,6 +96,7 @@ class ExposureAnalyzer:
         prompt_version: str = EXPOSURE_GUARD_PROMPT_VERSION,
         analyzer_version: str = EXPOSURE_GUARD_ANALYZER_VERSION,
         max_retries: int = 1,
+        recorder: AiUsageRecorder | None = None,
     ) -> None:
         if max_retries < 0:
             raise ValueError("max_retries must be non-negative")
@@ -100,6 +106,7 @@ class ExposureAnalyzer:
         self._analyzer_version = analyzer_version
         self._max_retries = max_retries
         self._is_reasoning_model = model.startswith(("gpt-5", "gpt-6", "o"))
+        self._recorder = recorder
 
     async def analyze(self, conversation: SimpleConversation) -> ExposureAssessment:
         return (await self.analyze_with_raw(conversation)).assessment
@@ -130,6 +137,7 @@ class ExposureAnalyzer:
 
         last_error: ExposureAnalysisError | None = None
         for attempt in range(self._max_retries + 1):
+            invocation_id = uuid4()
             try:
                 response = await self._client.chat.completions.parse(**request_kwargs)
                 message = response.choices[0].message
@@ -144,6 +152,12 @@ class ExposureAnalyzer:
                     analyzer_version=self._analyzer_version,
                 )
                 usage = getattr(response, "usage", None)
+                await self._record_usage(
+                    conversation=conversation,
+                    usage=usage,
+                    status=AiUsageStatus.SUCCESS,
+                    invocation_id=invocation_id,
+                )
                 return ExposureAnalysisRun(
                     assessment=assessment,
                     raw_response=message.content or "",
@@ -153,10 +167,31 @@ class ExposureAnalyzer:
                 )
             except ExposureAnalysisError as exc:
                 last_error = exc
+                await self._record_usage(
+                    conversation=conversation,
+                    usage=None,
+                    status=AiUsageStatus.ERROR,
+                    invocation_id=invocation_id,
+                    error_type=type(exc).__name__,
+                )
             except (ValidationError, ValueError) as exc:
                 last_error = ExposureAnalysisError(f"Invalid Exposure output: {exc}")
+                await self._record_usage(
+                    conversation=conversation,
+                    usage=None,
+                    status=AiUsageStatus.ERROR,
+                    invocation_id=invocation_id,
+                    error_type=type(exc).__name__,
+                )
             except Exception as exc:  # noqa: BLE001 - provider failures are retried
                 last_error = ExposureAnalysisError(f"Exposure LLM request failed: {exc}")
+                await self._record_usage(
+                    conversation=conversation,
+                    usage=None,
+                    status=AiUsageStatus.ERROR,
+                    invocation_id=invocation_id,
+                    error_type=type(exc).__name__,
+                )
             if attempt < self._max_retries:
                 _logger.warning(
                     "Exposure analyzer retrying (%d/%d): %s",
@@ -179,6 +214,41 @@ class ExposureAnalyzer:
             analyzer_version=self._analyzer_version,
             diagnostics={"empty_context": True},
         )
+
+    async def _record_usage(
+        self,
+        *,
+        conversation: SimpleConversation,
+        usage: Any,
+        status: str,
+        invocation_id: Any,
+        error_type: str | None = None,
+    ) -> None:
+        """Record one billable provider attempt. Best-effort, never breaks analysis."""
+        if self._recorder is None:
+            return
+        from echo_v2.services.reporting.ai_usage_recorder import (
+            UsageContext,
+            UsagePayload,
+        )
+
+        context = UsageContext(
+            operation="guard_exposure",
+            provider="openai",
+            model=self._model,
+            child_user_id=conversation.child_user_id or None,
+            logical_ref=f"guard_exposure:{conversation.child_user_id}:{conversation.chat_id}",
+        )
+        payload = UsagePayload(
+            usage_type=AiUsageType.TOKENS,
+            status=status,
+            prompt_tokens=_usage_value(usage, "prompt_tokens"),
+            completion_tokens=_usage_value(usage, "completion_tokens"),
+            total_tokens=_usage_value(usage, "total_tokens"),
+            invocation_id=invocation_id,
+            error_type=error_type if status == AiUsageStatus.ERROR else None,
+        )
+        await self._recorder.record(context, payload)
 
 
 def _build_user_message(conversation: SimpleConversation) -> str:

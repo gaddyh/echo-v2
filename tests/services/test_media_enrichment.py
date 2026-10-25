@@ -30,7 +30,7 @@ class Summarizer:
         if self.fail:
             raise RuntimeError("provider unavailable")
         return MediaSummary(text="a threatening image", kind="image", model="test-model")
-    async def summarize_link(self, url: str) -> MediaSummary:
+    async def summarize_link(self, url: str, **kwargs: object) -> MediaSummary:
         self.calls += 1
         return MediaSummary(text="a useful page", kind="link", model="test-model")
     async def close(self) -> None:
@@ -233,7 +233,7 @@ class VideoSummarizer:
             text = f"{caption} | {text}"
         return MediaSummary(text=text, kind="video", model="gemini-3.5-flash-lite")
 
-    async def summarize_link(self, url: str) -> MediaSummary:
+    async def summarize_link(self, url: str, **kwargs: object) -> MediaSummary:
         self.calls += 1
         return MediaSummary(text="a page", kind="link", model="test-model")
 
@@ -423,7 +423,7 @@ class VideoLinkSummarizer:
             raise RuntimeError("provider unavailable")
         return MediaSummary(text="סרטון יוטיוב", kind="video", model="gemini-3.5-flash-lite")
 
-    async def summarize_link(self, url: str) -> MediaSummary:
+    async def summarize_link(self, url: str, **kwargs: object) -> MediaSummary:
         return MediaSummary(text="a page", kind="link", model="test-model")
 
     async def close(self) -> None:

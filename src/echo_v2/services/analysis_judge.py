@@ -21,14 +21,17 @@ import json
 import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol
+from uuid import uuid4
 
 from langsmith import traceable
 
+from echo_v2.domain.ai_usage_event import AiUsageStatus, AiUsageType
 from echo_v2.domain.waiting_for_me import WaitingForMeResult
 from echo_v2.observability.tracing import tracing_client
 
 if TYPE_CHECKING:
     from echo_v2.services.chat_analysis_worker import ConversationInput
+    from echo_v2.services.reporting.ai_usage_recorder import AiUsageRecorder
 
 __all__ = ["AnalysisJudge", "ChatCompletionClient", "JudgeResult"]
 
@@ -148,9 +151,11 @@ class AnalysisJudge:
         self,
         client: ChatCompletionClient,
         model: str = "gpt-5.4",
+        recorder: AiUsageRecorder | None = None,
     ) -> None:
         self._client = client
         self._model = model
+        self._recorder = recorder
 
     @traceable(
         name="wfm.judge",
@@ -180,6 +185,7 @@ class AnalysisJudge:
             f"Was this decision correct? Return JSON only."
         )
 
+        invocation_id = uuid4()
         try:
             response = await self._client.chat.completions.create(
                 model=self._model,
@@ -192,16 +198,64 @@ class AnalysisJudge:
             )
         except Exception as exc:  # noqa: BLE001 - judge errors must not crash the worker
             _logger.warning("judge LLM call failed: %s", exc)
+            await self._record_usage(
+                status=AiUsageStatus.ERROR,
+                invocation_id=invocation_id,
+                error_type=type(exc).__name__,
+            )
             return JudgeResult(
                 score=0.5, explanation=f"judge error: {exc}",
                 run_id=run_id, run_start_time=run_start_time,
             )
+
+        usage = getattr(response, "usage", None)
+        await self._record_usage(
+            status=AiUsageStatus.SUCCESS,
+            invocation_id=invocation_id,
+            usage=usage,
+        )
 
         raw = response.choices[0].message.content or ""
         parsed = _parse_judge_output(raw)
         parsed.run_id = run_id
         parsed.run_start_time = run_start_time
         return parsed
+
+    async def _record_usage(
+        self,
+        *,
+        status: str,
+        invocation_id: Any,
+        usage: Any = None,
+        error_type: str | None = None,
+    ) -> None:
+        """Record one billable provider attempt. Best-effort."""
+        if self._recorder is None:
+            return
+        from echo_v2.services.reporting.ai_usage_recorder import (
+            UsageContext,
+            UsagePayload,
+        )
+
+        def _uv(field: str) -> int | None:
+            value = getattr(usage, field, None) if usage is not None else None
+            return value if isinstance(value, int) else None
+
+        context = UsageContext(
+            operation="analysis_judge",
+            provider="openai",
+            model=self._model,
+        )
+        payload = UsagePayload(
+            usage_type=AiUsageType.TOKENS,
+            status=status,
+            prompt_tokens=_uv("prompt_tokens"),
+            completion_tokens=_uv("completion_tokens"),
+            total_tokens=_uv("total_tokens"),
+            invocation_id=invocation_id,
+            error_type=error_type if status == AiUsageStatus.ERROR else None,
+        )
+        await self._recorder.record(context, payload)
 
 
 def _build_transcript(conversation: ConversationInput) -> str:

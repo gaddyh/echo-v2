@@ -176,8 +176,9 @@ async def test_no_active_link_saves_incident_without_notification() -> None:
 
     assert result == "no_active_link"
     assert scheduling.created == []
+    # Incident IS saved for future deduplication even without a guardian.
     active = await incidents.list_active("child-001", "chat-001", "security")
-    assert len(active) == 0  # incident NOT saved — no eligible guardian
+    assert len(active) == 1
 
 
 # --- SAME incident --------------------------------------------------------
@@ -804,6 +805,9 @@ async def test_new_incident_all_guardians_no_phone() -> None:
     )
     assert result == "no_guardian_phone"
     assert scheduling.created == []
+    # Incident IS saved for future deduplication even without a phone.
+    active = await incidents.list_active("child-001", "chat-001", "security")
+    assert len(active) == 1
 
 
 # --- _handle_same with unknown incident_id --------------------------------

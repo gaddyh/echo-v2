@@ -33,10 +33,16 @@ import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from urllib.parse import urlparse
+from uuid import uuid4
 
 import httpx
+
+from echo_v2.domain.ai_usage_event import AiUsageStatus, AiUsageType
+
+if TYPE_CHECKING:
+    from echo_v2.services.reporting.ai_usage_recorder import AiUsageRecorder
 
 __all__ = [
     "MediaSummarizer",
@@ -216,9 +222,12 @@ class MediaSummarizer(Protocol):
         file_name: str | None,
         message_type: str,
         caption: str | None = None,
+        child_user_id: str | None = None,
     ) -> MediaSummary: ...
 
-    async def summarize_link(self, url: str) -> MediaSummary: ...
+    async def summarize_link(
+        self, url: str, *, child_user_id: str | None = None
+    ) -> MediaSummary: ...
 
     async def summarize_youtube(self, url: str) -> MediaSummary: ...
 
@@ -251,12 +260,14 @@ class OpenAIMediaSummarizer:
         text_model: str = _TEXT_MODEL,
         http_client: httpx.AsyncClient | None = None,
         video_summarizer: MediaSummarizer | None = None,
+        recorder: AiUsageRecorder | None = None,
     ) -> None:
         self._client = client
         self._vision_model = vision_model
         self._text_model = text_model
         self._http_client = http_client
         self._video_summarizer = video_summarizer
+        self._recorder = recorder
 
     async def summarize_media(
         self,
@@ -266,12 +277,14 @@ class OpenAIMediaSummarizer:
         file_name: str | None,
         message_type: str,
         caption: str | None = None,
+        child_user_id: str | None = None,
     ) -> MediaSummary:
         if message_type == "image":
             return await self._summarize_image(
                 download_url=download_url,
                 mime_type=mime_type or "image/jpeg",
                 caption=caption,
+                child_user_id=child_user_id,
             )
         if message_type == "video":
             if self._video_summarizer is not None:
@@ -293,19 +306,24 @@ class OpenAIMediaSummarizer:
                 mime_type=mime_type,
                 file_name=file_name,
                 caption=caption,
+                child_user_id=child_user_id,
             )
         return MediaSummary(
             text=f"[unsupported media: {message_type}]",
             kind="unsupported",
         )
 
-    async def summarize_link(self, url: str) -> MediaSummary:
+    async def summarize_link(
+        self, url: str, *, child_user_id: str | None = None
+    ) -> MediaSummary:
         try:
             return await summarize_link(
                 client=self._client,
                 model=self._text_model,
                 url=url,
                 http_client=self._http_client,
+                recorder=self._recorder,
+                child_user_id=child_user_id,
             )
         except Exception as exc:  # noqa: BLE001 - best-effort link summary
             _logger.warning("link summarization failed for %s: %s", url, exc)
@@ -326,6 +344,7 @@ class OpenAIMediaSummarizer:
         download_url: str,
         mime_type: str,
         caption: str | None,
+        child_user_id: str | None = None,
     ) -> MediaSummary:
         try:
             media_bytes = await download_media(download_url, self._http_client)
@@ -338,6 +357,8 @@ class OpenAIMediaSummarizer:
             image_bytes=media_bytes,
             mime_type=mime_type,
             caption=caption,
+            recorder=self._recorder,
+            child_user_id=child_user_id,
         )
 
     async def _summarize_document(
@@ -347,6 +368,7 @@ class OpenAIMediaSummarizer:
         mime_type: str | None,
         file_name: str | None,
         caption: str | None,
+        child_user_id: str | None = None,
     ) -> MediaSummary:
         try:
             media_bytes = await download_media(download_url, self._http_client)
@@ -364,6 +386,8 @@ class OpenAIMediaSummarizer:
             mime_type=mime_type,
             file_name=file_name,
             caption=caption,
+            recorder=self._recorder,
+            child_user_id=child_user_id,
         )
 
 
@@ -404,6 +428,8 @@ async def summarize_image_bytes(
     image_bytes: bytes,
     mime_type: str,
     caption: str | None = None,
+    recorder: AiUsageRecorder | None = None,
+    child_user_id: str | None = None,
 ) -> MediaSummary:
     """Summarize an image via a vision-capable model.
 
@@ -430,6 +456,7 @@ async def summarize_image_bytes(
             {"type": "text", "text": f"Caption from sender: {caption}"},
         )
 
+    invocation_id = uuid4()
     try:
         response = await client.chat.completions.create(
             model=model,
@@ -439,8 +466,27 @@ async def summarize_image_bytes(
         )
     except Exception as exc:  # noqa: BLE001 - best-effort
         _logger.warning("image vision summary failed: %s", exc)
+        await _record_media_usage(
+            recorder,
+            operation="media_image",
+            model=model,
+            child_user_id=child_user_id,
+            status=AiUsageStatus.ERROR,
+            invocation_id=invocation_id,
+            error_type=type(exc).__name__,
+        )
         return MediaSummary(text=_image_placeholder(caption), kind="image_vision_error")
 
+    usage = getattr(response, "usage", None)
+    await _record_media_usage(
+        recorder,
+        operation="media_image",
+        model=model,
+        child_user_id=child_user_id,
+        status=AiUsageStatus.SUCCESS,
+        invocation_id=invocation_id,
+        usage=usage,
+    )
     text = (response.choices[0].message.content or "").strip()
     if not text:
         return MediaSummary(text=_image_placeholder(caption), kind="image_empty")
@@ -459,6 +505,8 @@ async def summarize_document_bytes(
     mime_type: str | None,
     file_name: str | None,
     caption: str | None = None,
+    recorder: AiUsageRecorder | None = None,
+    child_user_id: str | None = None,
 ) -> MediaSummary:
     """Summarize a document.
 
@@ -483,6 +531,9 @@ async def summarize_document_bytes(
             label="document",
             caption=caption,
             file_name=file_name,
+            recorder=recorder,
+            child_user_id=child_user_id,
+            operation="media_document",
         )
 
     if normalized_mime == "application/pdf":
@@ -492,6 +543,8 @@ async def summarize_document_bytes(
             pdf_bytes=document_bytes,
             caption=caption,
             file_name=file_name,
+            recorder=recorder,
+            child_user_id=child_user_id,
         )
 
     return MediaSummary(
@@ -515,6 +568,9 @@ async def _summarize_text(
     label: str,
     caption: str | None,
     file_name: str | None,
+    recorder: AiUsageRecorder | None = None,
+    child_user_id: str | None = None,
+    operation: str = "media_document",
 ) -> MediaSummary:
     name_hint = f" (file: {file_name})" if file_name else ""
     cap_hint = f" Sender caption: {caption}" if caption else ""
@@ -523,6 +579,7 @@ async def _summarize_text(
         f"Reply in the language of the content.{name_hint}{cap_hint}\n\n"
         f"{text}"
     )
+    invocation_id = uuid4()
     try:
         response = await client.chat.completions.create(
             model=model,
@@ -532,10 +589,29 @@ async def _summarize_text(
         )
     except Exception as exc:  # noqa: BLE001 - best-effort
         _logger.warning("%s text summary failed: %s", label, exc)
+        await _record_media_usage(
+            recorder,
+            operation=operation,
+            model=model,
+            child_user_id=child_user_id,
+            status=AiUsageStatus.ERROR,
+            invocation_id=invocation_id,
+            error_type=type(exc).__name__,
+        )
         return MediaSummary(
             text=_document_placeholder(caption, file_name),
             kind=f"{label}_summary_error",
         )
+    usage = getattr(response, "usage", None)
+    await _record_media_usage(
+        recorder,
+        operation=operation,
+        model=model,
+        child_user_id=child_user_id,
+        status=AiUsageStatus.SUCCESS,
+        invocation_id=invocation_id,
+        usage=usage,
+    )
     summary = (response.choices[0].message.content or "").strip()
     if not summary:
         return MediaSummary(text=_document_placeholder(caption, file_name), kind=f"{label}_empty")
@@ -549,6 +625,8 @@ async def _summarize_pdf(
     pdf_bytes: bytes,
     caption: str | None,
     file_name: str | None,
+    recorder: AiUsageRecorder | None = None,
+    child_user_id: str | None = None,
 ) -> MediaSummary:
     b64 = base64.b64encode(pdf_bytes).decode("ascii")
     prompt = (
@@ -570,6 +648,7 @@ async def _summarize_pdf(
             0,
             {"type": "text", "text": f"Sender caption: {caption}"},
         )
+    invocation_id = uuid4()
     try:
         response = await client.chat.completions.create(
             model=model,
@@ -579,7 +658,26 @@ async def _summarize_pdf(
         )
     except Exception as exc:  # noqa: BLE001 - best-effort
         _logger.warning("pdf vision summary failed: %s", exc)
+        await _record_media_usage(
+            recorder,
+            operation="media_document",
+            model=model,
+            child_user_id=child_user_id,
+            status=AiUsageStatus.ERROR,
+            invocation_id=invocation_id,
+            error_type=type(exc).__name__,
+        )
         return MediaSummary(text=_document_placeholder(caption, file_name), kind="pdf_error")
+    usage = getattr(response, "usage", None)
+    await _record_media_usage(
+        recorder,
+        operation="media_document",
+        model=model,
+        child_user_id=child_user_id,
+        status=AiUsageStatus.SUCCESS,
+        invocation_id=invocation_id,
+        usage=usage,
+    )
     text = (response.choices[0].message.content or "").strip()
     if not text:
         return MediaSummary(text=_document_placeholder(caption, file_name), kind="pdf_empty")
@@ -595,6 +693,8 @@ async def summarize_link(
     model: str,
     url: str,
     http_client: httpx.AsyncClient | None = None,
+    recorder: AiUsageRecorder | None = None,
+    child_user_id: str | None = None,
 ) -> MediaSummary:
     """Fetch a URL and summarize its text content.
 
@@ -638,7 +738,48 @@ async def summarize_link(
         label="link",
         caption=None,
         file_name=url,
+        recorder=recorder,
+        child_user_id=child_user_id,
+        operation="media_link",
     )
+
+
+async def _record_media_usage(
+    recorder: AiUsageRecorder | None,
+    *,
+    operation: str,
+    model: str,
+    child_user_id: str | None,
+    status: str,
+    invocation_id: Any,
+    usage: Any = None,
+    error_type: str | None = None,
+) -> None:
+    """Record one billable OpenAI media provider attempt. Best-effort."""
+    if recorder is None:
+        return
+    from echo_v2.services.reporting.ai_usage_recorder import UsageContext, UsagePayload
+
+    def _uv(field: str) -> int | None:
+        value = getattr(usage, field, None) if usage is not None else None
+        return value if isinstance(value, int) else None
+
+    context = UsageContext(
+        operation=operation,
+        provider="openai",
+        model=model,
+        child_user_id=child_user_id,
+    )
+    payload = UsagePayload(
+        usage_type=AiUsageType.TOKENS,
+        status=status,
+        prompt_tokens=_uv("prompt_tokens"),
+        completion_tokens=_uv("completion_tokens"),
+        total_tokens=_uv("total_tokens"),
+        invocation_id=invocation_id,
+        error_type=error_type if status == AiUsageStatus.ERROR else None,
+    )
+    await recorder.record(context, payload)
 
 
 def _extract_url_fallback(final_url: str | object) -> str | None:

@@ -93,6 +93,7 @@ class Transcriber(Protocol):
         audio_bytes: bytes,
         filename: str,
         content_type: str,
+        child_user_id: str | None = None,
     ) -> TranscriptionResult: ...
 
     async def close(self) -> None: ...
@@ -104,6 +105,7 @@ async def handle_direct_audio_download_url(
     download_url: str,
     file_name: str = "voice-message",
     mime_type: str = "",
+    child_user_id: str | None = None,
 ) -> str:
     """Download audio from a direct URL, convert if needed, and transcribe.
 
@@ -125,6 +127,7 @@ async def handle_direct_audio_download_url(
             audio_bytes=audio_bytes,
             filename=transcribable_path.name,
             content_type=mime_type,
+            child_user_id=child_user_id,
         )
         _logger.info(
             "transcription complete: provider=%s model=%s language=%s "

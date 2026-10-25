@@ -22,9 +22,11 @@ import json
 import logging
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Protocol
+from uuid import uuid4
 
 from langsmith import traceable
 
+from echo_v2.domain.ai_usage_event import AiUsageStatus, AiUsageType
 from echo_v2.domain.waiting_for_me import (
     NextOwner,
     WaitingForMeDecision,
@@ -38,6 +40,7 @@ from echo_v2.services.waiting_for_me_prompts import (
 
 if TYPE_CHECKING:
     from echo_v2.services.chat_analysis_worker import ConversationInput
+    from echo_v2.services.reporting.ai_usage_recorder import AiUsageRecorder
     from echo_v2.services.summary_rewriter import SummaryRewriterProtocol
 
 __all__ = [
@@ -203,6 +206,7 @@ class LLMWaitingForMeAnalyzer:
         model: str = "gpt-4.1",
         prompt_version: str = DEFAULT_PROMPT_VERSION,
         summary_rewriter: SummaryRewriterProtocol | None = None,
+        recorder: AiUsageRecorder | None = None,
     ) -> None:
         self._client = client
         self._model = model
@@ -213,6 +217,7 @@ class LLMWaitingForMeAnalyzer:
         # and consume completion tokens for reasoning, so they need a larger
         # budget than the 200 tokens that suffice for gpt-4.x.
         self._is_reasoning_model = model.startswith(("gpt-5", "gpt-6", "o"))
+        self._recorder = recorder
 
     @traceable(
         name="wfm.llm_analyze",
@@ -267,11 +272,26 @@ class LLMWaitingForMeAnalyzer:
             request_kwargs["temperature"] = 0
             request_kwargs["max_completion_tokens"] = 200
 
+        invocation_id = uuid4()
         try:
             response = await self._client.chat.completions.create(**request_kwargs)
         except Exception as exc:
             _logger.warning("WaitingForMe analyzer API error: %s", exc)
+            await self._record_usage(
+                conversation=conversation,
+                status=AiUsageStatus.ERROR,
+                invocation_id=invocation_id,
+                error_type=type(exc).__name__,
+            )
             raise AnalysisError(f"LLM request failed: {exc}") from exc
+
+        usage = getattr(response, "usage", None)
+        await self._record_usage(
+            conversation=conversation,
+            status=AiUsageStatus.SUCCESS,
+            invocation_id=invocation_id,
+            usage=usage,
+        )
 
         raw_output = response.choices[0].message.content or ""
         result = _parse_llm_output(raw_output, conversation.target_version)
@@ -295,6 +315,44 @@ class LLMWaitingForMeAnalyzer:
             warmed = await self._summary_rewriter.rewrite(result.summary)
             result = replace(result, summary=warmed)
         return result, raw_output
+
+    async def _record_usage(
+        self,
+        *,
+        conversation: ConversationInput,
+        status: str,
+        invocation_id: Any,
+        usage: Any = None,
+        error_type: str | None = None,
+    ) -> None:
+        """Record one billable provider attempt. Best-effort, never breaks analysis."""
+        if self._recorder is None:
+            return
+        from echo_v2.services.reporting.ai_usage_recorder import (
+            UsageContext,
+            UsagePayload,
+        )
+
+        def _uv(field: str) -> int | None:
+            value = getattr(usage, field, None) if usage is not None else None
+            return value if isinstance(value, int) else None
+
+        context = UsageContext(
+            operation="wfm_analyzer",
+            provider="openai",
+            model=self._model,
+            child_user_id=conversation.user_id or None,
+        )
+        payload = UsagePayload(
+            usage_type=AiUsageType.TOKENS,
+            status=status,
+            prompt_tokens=_uv("prompt_tokens"),
+            completion_tokens=_uv("completion_tokens"),
+            total_tokens=_uv("total_tokens"),
+            invocation_id=invocation_id,
+            error_type=error_type if status == AiUsageStatus.ERROR else None,
+        )
+        await self._recorder.record(context, payload)
 
 
 def _build_user_message(conversation: ConversationInput) -> str:

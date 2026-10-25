@@ -21,6 +21,7 @@ between domain dataclasses and these rows.
 from __future__ import annotations
 
 from datetime import date, datetime
+from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import (
@@ -31,6 +32,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    Numeric,
     Text,
     UniqueConstraint,
     func,
@@ -49,6 +51,7 @@ from sqlalchemy.types import (
 )
 
 __all__ = [
+    "AiUsageEventRow",
     "AlertedIncidentRow",
     "BaileysConnectorEventProcessingRow",
     "Base",
@@ -2025,4 +2028,83 @@ class GreenInstancePoolRow(Base):
             "OR (claimed_by_user_id IS NOT NULL AND claimed_at IS NOT NULL)",
             name="green_pool_claimed_ownership_check",
         ),
+    )
+
+
+# --- ai_usage_events -------------------------------------------------------
+
+
+class AiUsageEventRow(Base):
+    """One billable AI provider call (OpenAI / Gemini / Modal).
+
+    ``invocation_id`` is the idempotency key: a recorder persistence retry
+    upserts on conflict, while a genuinely separate billable attempt
+    (provider retry, reanalysis, duplicate analysis) gets a fresh
+    ``invocation_id`` and its own row. ``logical_ref`` groups related
+    attempts for debugging but is not unique.
+
+    See ``echo_v2.domain.ai_usage_event`` for the ``cost_source`` semantics.
+    """
+
+    __tablename__ = "ai_usage_events"
+
+    id: Mapped[str] = mapped_column(
+        Uuid, primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    invocation_id: Mapped[str] = mapped_column(Uuid, nullable=False, unique=True)
+    logical_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
+    child_user_id: Mapped[str | None] = mapped_column(
+        Uuid, ForeignKey("users.id", ondelete="CASCADE"), nullable=True
+    )
+    provider: Mapped[str] = mapped_column(Text, nullable=False)
+    operation: Mapped[str] = mapped_column(Text, nullable=False)
+    model: Mapped[str] = mapped_column(Text, nullable=False)
+    usage_type: Mapped[str] = mapped_column(Text, nullable=False)
+    prompt_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    completion_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cached_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    usage_details: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
+    estimated_cost_usd: Mapped[Decimal | None] = mapped_column(
+        Numeric(12, 6), nullable=True
+    )
+    cost_source: Mapped[str] = mapped_column(Text, nullable=False)
+    price_version: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    provider_request_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    pipeline_event_id: Mapped[str | None] = mapped_column(Uuid, nullable=True)
+    error_type: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "provider IN ('openai', 'google', 'modal')",
+            name="ai_usage_events_provider_check",
+        ),
+        CheckConstraint(
+            "usage_type IN ('tokens', 'gpu_seconds', 'audio_seconds', 'image_units')",
+            name="ai_usage_events_usage_type_check",
+        ),
+        CheckConstraint(
+            "cost_source IN ('provider_reported', 'measured_usage_priced', "
+            "'fallback_estimate', 'unknown')",
+            name="ai_usage_events_cost_source_check",
+        ),
+        CheckConstraint(
+            "status IN ('success', 'error')",
+            name="ai_usage_events_status_check",
+        ),
+        Index("ix_ai_usage_events_child_created", "child_user_id", "created_at"),
+        Index(
+            "ix_ai_usage_events_provider_operation_created",
+            "provider",
+            "operation",
+            "created_at",
+        ),
+        Index("ix_ai_usage_events_model_created", "model", "created_at"),
+        Index("ix_ai_usage_events_created_at", "created_at"),
     )
