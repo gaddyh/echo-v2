@@ -19,7 +19,8 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
+from uuid import uuid4
 
 from pydantic import (
     BaseModel,
@@ -29,6 +30,7 @@ from pydantic import (
     ValidationError,
 )
 
+from echo_v2.domain.ai_usage_event import AiUsageStatus, AiUsageType
 from echo_v2.services.guard_taxonomy import (
     GUARD_TAXONOMY_VERSION,
     GuardCategory,
@@ -36,6 +38,9 @@ from echo_v2.services.guard_taxonomy import (
     GuardSignal,
     validate_category_signal_relationships,
 )
+
+if TYPE_CHECKING:
+    from echo_v2.services.reporting.ai_usage_recorder import AiUsageRecorder
 
 __all__ = [
     "AnalysisError",
@@ -232,6 +237,7 @@ class LLMGuardAnalyzer:
         model: str = "gpt-4.1",
         prompt_version: str = GUARD_PROMPT_VERSION,
         max_retries: int = 1,
+        recorder: AiUsageRecorder | None = None,
     ) -> None:
         if max_retries < 0:
             raise ValueError("max_retries must be non-negative")
@@ -241,6 +247,7 @@ class LLMGuardAnalyzer:
         self._max_retries = max_retries
         # GPT-5+ reasoning models only support the default temperature.
         self._is_reasoning_model = model.startswith(("gpt-5", "gpt-6", "o"))
+        self._recorder = recorder
 
     async def analyze(self, conversation: GuardAnalysisInput) -> GuardAnalysis:
         """Run analysis and return a :class:`GuardAnalysis`."""
@@ -289,6 +296,7 @@ class LLMGuardAnalyzer:
 
         last_error: AnalysisError | None = None
         for attempt in range(self._max_retries + 1):
+            invocation_id = uuid4()
             try:
                 response = await self._client.chat.completions.parse(**request_kwargs)
                 message = response.choices[0].message
@@ -306,9 +314,23 @@ class LLMGuardAnalyzer:
                     self._prompt_version,
                     tuple(message.id for message in conversation.messages),
                 )
+                usage = getattr(response, "usage", None)
+                await self._record_usage(
+                    conversation=conversation,
+                    usage=usage,
+                    status=AiUsageStatus.SUCCESS,
+                    invocation_id=invocation_id,
+                )
                 return result, raw_output
             except AnalysisError as exc:
                 last_error = exc
+                await self._record_usage(
+                    conversation=conversation,
+                    usage=None,
+                    status=AiUsageStatus.ERROR,
+                    invocation_id=invocation_id,
+                    error_type=type(exc).__name__,
+                )
                 if attempt < self._max_retries:
                     _logger.warning(
                         "Guard analyzer invalid output; retrying (%d/%d): %s",
@@ -318,6 +340,13 @@ class LLMGuardAnalyzer:
                     )
             except Exception as exc:  # noqa: BLE001 - retry API/provider failures
                 last_error = AnalysisError(f"LLM request failed: {exc}")
+                await self._record_usage(
+                    conversation=conversation,
+                    usage=None,
+                    status=AiUsageStatus.ERROR,
+                    invocation_id=invocation_id,
+                    error_type=type(exc).__name__,
+                )
                 if attempt < self._max_retries:
                     _logger.warning(
                         "Guard analyzer API error; retrying (%d/%d): %s",
@@ -327,6 +356,45 @@ class LLMGuardAnalyzer:
                     )
         assert last_error is not None
         raise last_error
+
+    async def _record_usage(
+        self,
+        *,
+        conversation: GuardAnalysisInput,
+        usage: Any,
+        status: str,
+        invocation_id: Any,
+        error_type: str | None = None,
+    ) -> None:
+        """Record one billable provider attempt. Best-effort, never breaks analysis."""
+        if self._recorder is None:
+            return
+        from echo_v2.services.reporting.ai_usage_recorder import (
+            UsageContext,
+            UsagePayload,
+        )
+
+        def _uv(field: str) -> int | None:
+            value = getattr(usage, field, None) if usage is not None else None
+            return value if isinstance(value, int) else None
+
+        context = UsageContext(
+            operation="guard_security",
+            provider="openai",
+            model=self._model,
+            child_user_id=conversation.child_id or None,
+            logical_ref=f"guard_security:{conversation.child_id}:{conversation.chat_id}",
+        )
+        payload = UsagePayload(
+            usage_type=AiUsageType.TOKENS,
+            status=status,
+            prompt_tokens=_uv("prompt_tokens"),
+            completion_tokens=_uv("completion_tokens"),
+            total_tokens=_uv("total_tokens"),
+            invocation_id=invocation_id,
+            error_type=error_type if status == AiUsageStatus.ERROR else None,
+        )
+        await self._recorder.record(context, payload)
 
 
 def _build_user_message(conversation: GuardAnalysisInput) -> str:

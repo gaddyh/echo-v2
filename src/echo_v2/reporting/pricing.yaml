@@ -1,0 +1,106 @@
+# Echo Guard — AI pricing assumptions.
+#
+# All values are configurable assumptions, NOT provider quotes. They are
+# used to estimate cost from measured usage (tokens, audio minutes, etc.).
+# Each ai_usage_event stores the `version` active at event time, so
+# historical reports don't change when these rates are updated.
+#
+# Cost source semantics (see domain/ai_usage_event.py):
+#   provider_reported      — provider-supplied dollars (invoice line). Not
+#                            used here; reserved for future reconciliation.
+#   measured_usage_priced  — provider-reported units (tokens) × these rates.
+#                            The normal case for OpenAI/Gemini token calls.
+#   fallback_estimate     — derived from a fallback assumption below
+#                            (e.g. Modal usd_per_audio_minute × audio duration).
+#   unknown               — no trustworthy usage; cost is null.
+#
+# Pricing model: input/cached_input/output are per 1,000,000 tokens.
+# Cached input is billed at a discount by OpenAI and Gemini; the
+# cached_input_per_million rate is applied to cached_tokens.
+#
+# Modal note: Modal bills per second of compute resources (GPU, CPU, memory),
+# NOT per minute of audio. Container startup and warm-idle overhead can
+# dominate a low-volume pilot. The audio_cost.estimated_usd_per_minute is a
+# configurable effective rate calibrated from actual Modal billing reports,
+# NOT a published Modal rate. It should be recalibrated after each billing
+# period by dividing total Modal cost by total audio minutes transcribed.
+# See AGENTS.md for the reconciliation procedure.
+
+version: "2026-10-26.1"
+
+openai:
+  # GPT-5.4 Mini — illustrative list price.
+  gpt-5.4-mini:
+    input_per_million: 0.75
+    cached_input_per_million: 0.075
+    output_per_million: 4.50
+  # GPT-6 Luna — illustrative list price.
+  gpt-6-luna:
+    input_per_million: 0.10
+    cached_input_per_million: 0.01
+    output_per_million: 0.50
+  # Legacy / fallback defaults for any OpenAI model not listed above.
+  default:
+    input_per_million: 0.75
+    cached_input_per_million: 0.075
+    output_per_million: 4.50
+
+google:
+  # Gemini 2.5 Flash — illustrative list price.
+  gemini-2.5-flash:
+    input_per_million: 0.30
+    cached_input_per_million: 0.03
+    output_per_million: 2.50
+  # Gemini 2.5 Flash-Lite — illustrative list price.
+  gemini-2.5-flash-lite:
+    input_per_million: 0.10
+    cached_input_per_million: 0.01
+    output_per_million: 0.40
+  # Gemini 3.5 Flash-Lite — used by GeminiVideoSummarizer default.
+  gemini-3.5-flash-lite:
+    input_per_million: 0.10
+    cached_input_per_million: 0.01
+    output_per_million: 0.40
+  default:
+    input_per_million: 0.30
+    cached_input_per_million: 0.03
+    output_per_million: 2.50
+
+modal:
+  # Modal is resource-based, not token-based. These published rates are per
+  # second of compute. They are retained for reference and future GPU-second
+  # metering, but voice transcription cost is currently estimated via the
+  # audio_cost effective rate below.
+  gpu_type: T4
+  gpu_second_usd:
+    T4: 0.000164
+    L4: 0.000222
+    A10: 0.000306
+  cpu_core_second: 0.0000131
+  memory_gib_second: 0.00000222
+  # Effective per-audio-minute cost, calibrated from actual Modal billing.
+  # This absorbs container startup, warm-idle overhead, and GPU/CPU/memory
+  # into a single configurable rate. Recalibrate after each billing period:
+  #   estimated_usd_per_minute = total_modal_cost / total_audio_minutes
+  # The $0.006 provisional value is derived from a pilot observation of
+  # ~$6.20 Modal usage; it MUST be replaced once audio-minutes are known.
+  audio_cost:
+    method: per_audio_minute
+    estimated_usd_per_minute: 0.006
+    basis: configurable_fallback
+    include_container_overhead: true
+
+estimation_fallbacks:
+  image:
+    # Used when an image call has no token usage (e.g. provider error
+    # before billing). Cost = usd_per_image × image_count.
+    usd_per_image: 0.002
+  analyzer:
+    # Used when a Guard analyzer call has no token usage. Cost is derived
+    # from these assumed per-call token counts × the model's rates.
+    input_tokens_per_call: 4000
+    output_tokens_per_call: 150
+  gemini:
+    # Used when a Gemini call has no token usage.
+    input_tokens_per_call: 2000
+    output_tokens_per_call: 150

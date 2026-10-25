@@ -22,11 +22,16 @@ with ``langsmith.wrappers.wrap_openai`` for automatic LLM tracing.
 from __future__ import annotations
 
 import logging
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
+from uuid import uuid4
 
 from langsmith import traceable
 
+from echo_v2.domain.ai_usage_event import AiUsageStatus, AiUsageType
 from echo_v2.observability.tracing import tracing_client
+
+if TYPE_CHECKING:
+    from echo_v2.services.reporting.ai_usage_recorder import AiUsageRecorder
 
 __all__ = [
     "SummaryRewriter",
@@ -91,6 +96,7 @@ class SummaryRewriter:
         self,
         client: Any,
         model: str = "gpt-4.1",
+        recorder: AiUsageRecorder | None = None,
     ) -> None:
         self._client = client
         self._model = model
@@ -98,6 +104,7 @@ class SummaryRewriter:
         # and consume completion tokens for reasoning, so they need a
         # larger budget than the 100 tokens that suffice for gpt-4.x.
         self._is_reasoning_model = model.startswith(("gpt-5", "gpt-6", "o"))
+        self._recorder = recorder
 
     @traceable(
         name="wfm.summary_rewrite",
@@ -133,13 +140,26 @@ class SummaryRewriter:
             request_kwargs["temperature"] = 0
             request_kwargs["max_completion_tokens"] = 100
 
+        invocation_id = uuid4()
         try:
             response = await self._client.chat.completions.create(
                 **request_kwargs
             )
         except Exception as exc:  # noqa: BLE001 - best-effort, fall back to original
             _logger.warning("Summary rewrite API error, using original: %s", exc)
+            await self._record_usage(
+                status=AiUsageStatus.ERROR,
+                invocation_id=invocation_id,
+                error_type=type(exc).__name__,
+            )
             return summary
+
+        usage = getattr(response, "usage", None)
+        await self._record_usage(
+            status=AiUsageStatus.SUCCESS,
+            invocation_id=invocation_id,
+            usage=usage,
+        )
 
         rewritten = (response.choices[0].message.content or "").strip()
         if not rewritten:
@@ -151,3 +171,39 @@ class SummaryRewriter:
             rewritten = rewritten[:157] + "…"
 
         return rewritten
+
+    async def _record_usage(
+        self,
+        *,
+        status: str,
+        invocation_id: Any,
+        usage: Any = None,
+        error_type: str | None = None,
+    ) -> None:
+        """Record one billable provider attempt. Best-effort."""
+        if self._recorder is None:
+            return
+        from echo_v2.services.reporting.ai_usage_recorder import (
+            UsageContext,
+            UsagePayload,
+        )
+
+        def _uv(field: str) -> int | None:
+            value = getattr(usage, field, None) if usage is not None else None
+            return value if isinstance(value, int) else None
+
+        context = UsageContext(
+            operation="summary_rewriter",
+            provider="openai",
+            model=self._model,
+        )
+        payload = UsagePayload(
+            usage_type=AiUsageType.TOKENS,
+            status=status,
+            prompt_tokens=_uv("prompt_tokens"),
+            completion_tokens=_uv("completion_tokens"),
+            total_tokens=_uv("total_tokens"),
+            invocation_id=invocation_id,
+            error_type=error_type if status == AiUsageStatus.ERROR else None,
+        )
+        await self._recorder.record(context, payload)

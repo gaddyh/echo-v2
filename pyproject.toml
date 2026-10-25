@@ -38,6 +38,7 @@ prod = [
     "openai>=1.50",
     "langsmith==0.13.0",
     "google-genai>=1.0.0",
+    "pyyaml>=6.0",
 ]
 dev = [
     "pytest>=7.0",
@@ -59,6 +60,7 @@ dev = [
     "openai>=1.50",
     "langsmith==0.13.0",
     "google-genai>=1.0.0",
+    "pyyaml>=6.0",
 ]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -86,7 +88,7 @@ show_missing = true
 where = ["src"]
 
 [tool.setuptools.package-data]
-echo_v2 = ["py.typed", "app/*.html", "app/static/*.json"]
+echo_v2 = ["py.typed", "app/*.html", "app/static/*.json", "reporting/*.yaml"]
 
 [tool.mypy]
 python_version = "3.13"
@@ -114,5 +116,6 @@ module = [
     "phonenumbers.*",
     "websockets.*",
     "google.genai.*",
+    "yaml.*",
 ]
 ignore_missing_imports = true

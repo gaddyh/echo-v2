@@ -151,6 +151,16 @@ def create_app() -> FastAPI:
     ensure_hash_key_or_fail()
     openai_client, raw_openai_client = _build_openai_client()
 
+    # --- AI usage recorder (cost ledger) -----------------------------------
+    from echo_v2.services.reporting.ai_usage_recorder import AiUsageRecorder
+    from echo_v2.services.reporting.pricing_service import PricingService
+
+    ai_usage_recorder = AiUsageRecorder(
+        repo=repos.ai_usage_events,
+        pricing=PricingService(),
+    )
+    _logger.info("ai usage recorder built")
+
     # --- provider clients (user's WhatsApp — sends scheduled messages) -----
     from echo_v2.integrations.green.provisioner import GreenProvisioner
 
@@ -256,6 +266,7 @@ def create_app() -> FastAPI:
     llm_parser = LLMTimeParser(
         client=openai_client,
         model=os.environ.get("LLM_MODEL_NAME", "gpt-4.1"),
+        recorder=ai_usage_recorder,
     )
     time_parser = CombinedTimeParser(llm_parser=llm_parser)
 
@@ -368,7 +379,7 @@ def create_app() -> FastAPI:
     from echo_v2.services.transcription_factory import build_transcriber
     from echo_v2.services.waiting_for_me_analyzer import LLMWaitingForMeAnalyzer
 
-    transcriber = build_transcriber()
+    transcriber = build_transcriber(recorder=ai_usage_recorder)
     _logger.info(
         "transcriber built: %s",
         type(transcriber).__name__ if transcriber else "None",
@@ -388,6 +399,7 @@ def create_app() -> FastAPI:
             model=os.environ.get("GEMINI_VIDEO_MODEL", "gemini-3.5-flash-lite"),
             max_bytes=int(os.environ.get("GEMINI_VIDEO_MAX_BYTES", str(15 * 1024 * 1024))),
             youtube_max_seconds=int(os.environ.get("GEMINI_VIDEO_YOUTUBE_MAX_SECONDS", "60")),
+            recorder=ai_usage_recorder,
         )
         _logger.info("gemini video summarizer built: model=%s", video_summarizer._model)
     elif gemini_video_enabled:
@@ -395,6 +407,7 @@ def create_app() -> FastAPI:
 
     media_summarizer = OpenAIMediaSummarizer(
         client=openai_client, video_summarizer=video_summarizer,
+        recorder=ai_usage_recorder,
     )
     _logger.info("media summarizer built: %s", type(media_summarizer).__name__)
     media_url_resolver = (
@@ -432,6 +445,7 @@ def create_app() -> FastAPI:
             "SUMMARY_REWRITER_MODEL",
             os.environ.get("LLM_MODEL_NAME", "gpt-4.1"),
         ),
+        recorder=ai_usage_recorder,
     )
     _logger.info("summary rewriter built: %s", type(summary_rewriter).__name__)
 
@@ -439,6 +453,7 @@ def create_app() -> FastAPI:
         client=openai_client,
         model=os.environ.get("LLM_MODEL_NAME", "gpt-4.1"),
         summary_rewriter=summary_rewriter,
+        recorder=ai_usage_recorder,
     )
     analysis_processor = ChatAnalysisProcessor(
         message_repo=repos.messages,
@@ -455,6 +470,7 @@ def create_app() -> FastAPI:
     judge = AnalysisJudge(
         client=openai_client,
         model=os.environ.get("JUDGE_MODEL_NAME", "gpt-5.4"),
+        recorder=ai_usage_recorder,
     )
     analysis_worker = ChatAnalysisWorker(
         chat_state_repo=repos.chat_state,
@@ -467,7 +483,9 @@ def create_app() -> FastAPI:
     guard_model = os.environ.get(
         "GUARD_LLM_MODEL_NAME", os.environ.get("LLM_MODEL_NAME", "gpt-4.1")
     )
-    guard_analyzer = LLMGuardAnalyzer(client=openai_client, model=guard_model)
+    guard_analyzer = LLMGuardAnalyzer(
+        client=openai_client, model=guard_model, recorder=ai_usage_recorder
+    )
     guard_processor = GuardAnalysisProcessor(
         message_repo=repos.messages,
         analyzer=guard_analyzer,
@@ -492,10 +510,12 @@ def create_app() -> FastAPI:
         analyzer=SimpleSafetyAnalyzer(
             client=openai_client,
             model=os.environ.get("GUARD_SIMPLE_LLM_MODEL", guard_model),
+            recorder=ai_usage_recorder,
         ),
         exposure_analyzer=ExposureAnalyzer(
             client=openai_client,
             model=os.environ.get("GUARD_EXPOSURE_LLM_MODEL", guard_model),
+            recorder=ai_usage_recorder,
         ),
         assessment_repo=repos.guard_simple_assessments,
         timezone_resolver=_ChildTimezoneResolver(),
@@ -630,6 +650,7 @@ def create_app() -> FastAPI:
                 "INCIDENT_MATCHER_LLM_MODEL",
                 os.environ.get("GUARD_LLM_MODEL_NAME", "gpt-4.1"),
             ),
+            recorder=ai_usage_recorder,
         )
         incident_tracker = IncidentTracker(
             matcher=incident_matcher,

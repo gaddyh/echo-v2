@@ -198,6 +198,7 @@ class FakeTranscriber:
         audio_bytes: bytes,
         filename: str,
         content_type: str,
+        child_user_id: str | None = None,
     ) -> TranscriptionResult:
         return TranscriptionResult(text=self._text, language="en", model="fake")
 

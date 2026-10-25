@@ -8,6 +8,7 @@ implementation they got (or whether transcription is enabled at all).
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 from echo_v2.integrations.modal.settings import (
     is_configured,
@@ -15,12 +16,17 @@ from echo_v2.integrations.modal.settings import (
 )
 from echo_v2.services.transcription import Transcriber
 
+if TYPE_CHECKING:
+    from echo_v2.services.reporting.ai_usage_recorder import AiUsageRecorder
+
 __all__ = ["build_transcriber"]
 
 _logger = logging.getLogger("echo_v2.services.transcription_factory")
 
 
-def build_transcriber() -> Transcriber | None:
+def build_transcriber(
+    *, recorder: AiUsageRecorder | None = None
+) -> Transcriber | None:
     """Build a Transcriber from environment settings.
 
     Currently supports only the Modal Hebrew Whisper endpoint. If Modal is
@@ -42,4 +48,4 @@ def build_transcriber() -> Transcriber | None:
     from echo_v2.integrations.modal.transcriber import ModalWhisperTranscriber
 
     _logger.info("Modal transcription enabled: endpoint=%s", settings.endpoint_url)
-    return ModalWhisperTranscriber(settings)
+    return ModalWhisperTranscriber(settings, recorder=recorder)

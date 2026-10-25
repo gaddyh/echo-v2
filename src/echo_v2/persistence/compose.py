@@ -36,6 +36,9 @@ from echo_v2.persistence.guard_operations import (
     PostgresGuardAnalysisTelemetryRepository,
 )
 from echo_v2.persistence.media_enrichment import PostgresMessageEnrichmentRepository
+from echo_v2.persistence.postgres_ai_usage_events import (
+    PostgresAiUsageEventRepository,
+)
 from echo_v2.persistence.postgres_chat import (
     PostgresAnalysisCommitRepository,
     PostgresChatStateRepository,
@@ -135,6 +138,7 @@ class PostgresRepos:
     daily_digests: PostgresDailyDigestRepository
     waiting_list_sessions: PostgresWaitingListSessionRepository
     waitlist: PostgresWaitlistRepository
+    ai_usage_events: PostgresAiUsageEventRepository
     session_factory: async_sessionmaker[AsyncSession]
     unit_of_work: Callable[[], PostgresUnitOfWork]
 
@@ -192,6 +196,7 @@ def build_postgres_repos(settings: DBSettings) -> PostgresRepos:
     daily_digests = PostgresDailyDigestRepository(factory)
     waiting_list_sessions = PostgresWaitingListSessionRepository(factory)
     waitlist = PostgresWaitlistRepository(factory)
+    ai_usage_events = PostgresAiUsageEventRepository(factory)
 
     # A UoW factory bound to the same session_factory + cipher.
     class _BoundUoW(PostgresUnitOfWork):
@@ -236,6 +241,7 @@ def build_postgres_repos(settings: DBSettings) -> PostgresRepos:
         daily_digests=daily_digests,
         waiting_list_sessions=waiting_list_sessions,
         waitlist=waitlist,
+        ai_usage_events=ai_usage_events,
         session_factory=factory,
         unit_of_work=_BoundUoW,
     )

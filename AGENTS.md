@@ -91,3 +91,44 @@
 | `VIDEO_LINK_ENRICHMENT_ENABLED` | `false` | Enable video link enrichment |
 | `VIDEO_LINK_ENRICHMENT_VERSION` | `2026-10-24.video_link.1` | Per-kind enrichment version for video links |
 | `GEMINI_VIDEO_YOUTUBE_MAX_SECONDS` | `60` | Cap YouTube analysis to first N seconds |
+
+## AI Usage & Cost Tracking (PR 1)
+
+- `AiUsageRecorder` (`services/reporting/ai_usage_recorder.py`) captures one
+  row per billable AI provider attempt in the `ai_usage_events` table.
+- `PricingService` (`services/reporting/pricing_service.py`) estimates USD
+  cost from measured usage using versioned YAML rates
+  (`src/echo_v2/reporting/pricing.yaml`). Each event stores the active
+  `price_version` so historical reports don't change when rates are updated.
+- Migration: `0059_ai_usage_events`.
+- Cost source semantics: `measured_usage_priced` (provider tokens × YAML
+  rates), `fallback_estimate` (assumption-based, e.g. Modal audio minutes),
+  `provider_reported` (reserved for invoice reconciliation), `unknown`.
+- Every actual provider attempt gets a fresh `invocation_id`. Persistence
+  retries reuse the same invocation ID (idempotent upsert). Provider retries
+  and manual reanalysis get new invocation IDs (separate rows).
+- Usage persistence failure does NOT fail the AI analysis; it is logged and
+  surfaced via the recorder's error path.
+
+### Modal cost model
+
+Modal bills per second of compute resources (GPU, CPU, memory), NOT per
+minute of audio. Container startup and warm-idle overhead can dominate a
+low-volume pilot. The `modal.audio_cost.estimated_usd_per_minute` in
+`pricing.yaml` is a configurable effective rate calibrated from actual
+Modal billing reports, NOT a published Modal rate.
+
+Recalibration procedure (after each billing period):
+1. Export the Modal billing report:
+   `modal billing report --start YYYY-MM-01 --end YYYY-MM-01 --show-resources --csv`
+2. Sum total Modal cost for the period.
+3. Query `ai_usage_events` for total `audio_duration_seconds` where
+   `provider='modal'` in the same period.
+4. New rate = total_cost / (total_audio_seconds / 60).
+5. Update `modal.audio_cost.estimated_usd_per_minute` and bump `version`.
+
+The published GPU-second rates (`modal.gpu_second_usd`) are retained for
+reference and future GPU-second metering, but are NOT used for current cost
+estimation. `processing_seconds` is stored on each event but is NOT priced
+separately — that would double-count overhead already baked into the
+per-minute rate.

@@ -14,12 +14,17 @@ from __future__ import annotations
 import ipaddress
 import logging
 import socket
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urljoin, urlparse
+from uuid import uuid4
 
 import httpx
 
+from echo_v2.domain.ai_usage_event import AiUsageStatus, AiUsageType
 from echo_v2.services.media_summarizer import MediaSummary, MediaSummaryError
+
+if TYPE_CHECKING:
+    from echo_v2.services.reporting.ai_usage_recorder import AiUsageRecorder
 
 __all__ = [
     "DEFAULT_GEMINI_VIDEO_MAX_BYTES",
@@ -96,6 +101,7 @@ class GeminiVideoSummarizer:
         http_client: httpx.AsyncClient | None = None,
         prompt: str | None = None,
         youtube_max_seconds: int = DEFAULT_GEMINI_VIDEO_MAX_SECONDS,
+        recorder: AiUsageRecorder | None = None,
     ) -> None:
         self._api_key = api_key
         self._model = model
@@ -103,6 +109,7 @@ class GeminiVideoSummarizer:
         self._http_client = http_client
         self._prompt = prompt or DEFAULT_GEMINI_VIDEO_PROMPT
         self._youtube_max_seconds = youtube_max_seconds
+        self._recorder = recorder
 
     async def summarize_media(
         self,
@@ -112,6 +119,7 @@ class GeminiVideoSummarizer:
         file_name: str | None,
         message_type: str,
         caption: str | None = None,
+        child_user_id: str | None = None,
     ) -> MediaSummary:
         if message_type != "video":
             return MediaSummary(
@@ -127,7 +135,9 @@ class GeminiVideoSummarizer:
             "gemini video summarizer downloaded bytes=%d (cap=%d)",
             len(video_bytes), self._max_bytes,
         )
-        text = await self._analyze(video_bytes, mime_type or "video/mp4", caption)
+        text = await self._analyze(
+            video_bytes, mime_type or "video/mp4", caption, child_user_id=child_user_id
+        )
         if not text or not text.strip():
             raise MediaSummaryError("gemini returned empty video summary")
         _logger.info(
@@ -136,7 +146,9 @@ class GeminiVideoSummarizer:
         )
         return MediaSummary(text=text, kind="video", model=self._model)
 
-    async def summarize_youtube(self, url: str) -> MediaSummary:
+    async def summarize_youtube(
+        self, url: str, *, child_user_id: str | None = None
+    ) -> MediaSummary:
         """Summarize a YouTube video by passing its URL directly to Gemini.
 
         Uses Gemini's Interactions API with a ``video`` uri and the
@@ -149,13 +161,15 @@ class GeminiVideoSummarizer:
         than silently processing the entire video.
         """
         _logger.info("gemini youtube summarizer start url=%s max_seconds=%d", url, self._youtube_max_seconds)
-        text = await self._analyze_youtube(url)
+        text = await self._analyze_youtube(url, child_user_id=child_user_id)
         if not text or not text.strip():
             raise MediaSummaryError("gemini returned empty youtube summary")
         _logger.info("gemini youtube summarizer complete chars=%d model=%s", len(text), self._model)
         return MediaSummary(text=text, kind="video", model=self._model)
 
-    async def summarize_link(self, url: str) -> MediaSummary:
+    async def summarize_link(
+        self, url: str, *, child_user_id: str | None = None
+    ) -> MediaSummary:
         raise NotImplementedError("GeminiVideoSummarizer does not support link summarization")
 
     async def close(self) -> None:
@@ -249,6 +263,8 @@ class GeminiVideoSummarizer:
         video_bytes: bytes,
         mime_type: str,
         caption: str | None,
+        *,
+        child_user_id: str | None = None,
     ) -> str:
         from google import genai
         from google.genai import types
@@ -260,13 +276,31 @@ class GeminiVideoSummarizer:
         ]
         if caption:
             parts.append(f"\n\nCaption context (user-supplied): {caption}")
-        response = await client.aio.models.generate_content(
-            model=self._model,
-            contents=parts,
+        invocation_id = uuid4()
+        try:
+            response = await client.aio.models.generate_content(
+                model=self._model,
+                contents=parts,
+            )
+        except Exception as exc:
+            await self._record_usage(
+                child_user_id=child_user_id,
+                status=AiUsageStatus.ERROR,
+                invocation_id=invocation_id,
+                error_type=type(exc).__name__,
+            )
+            raise
+        await self._record_usage(
+            child_user_id=child_user_id,
+            status=AiUsageStatus.SUCCESS,
+            invocation_id=invocation_id,
+            usage=getattr(response, "usage_metadata", None),
         )
         return response.text or ""
 
-    async def _analyze_youtube(self, url: str) -> str:
+    async def _analyze_youtube(
+        self, url: str, *, child_user_id: str | None = None
+    ) -> str:
         """Analyze a YouTube video URL via Gemini's YouTube URL preview.
 
         Passes the URL directly to Gemini using ``types.Part`` with
@@ -283,6 +317,7 @@ class GeminiVideoSummarizer:
         from google.genai import types
 
         client = genai.Client(api_key=self._api_key)
+        invocation_id = uuid4()
         try:
             response = await client.aio.models.generate_content(
                 model=self._model,
@@ -299,7 +334,66 @@ class GeminiVideoSummarizer:
             )
         except TypeError as exc:
             # SDK rejects video_metadata — fail rather than retry without the cap.
+            await self._record_usage(
+                child_user_id=child_user_id,
+                status=AiUsageStatus.ERROR,
+                invocation_id=invocation_id,
+                error_type=type(exc).__name__,
+            )
             raise MediaSummaryError(
                 f"youtube video_metadata unavailable: {exc}"
             ) from exc
+        except Exception as exc:
+            await self._record_usage(
+                child_user_id=child_user_id,
+                status=AiUsageStatus.ERROR,
+                invocation_id=invocation_id,
+                error_type=type(exc).__name__,
+            )
+            raise
+        await self._record_usage(
+            child_user_id=child_user_id,
+            status=AiUsageStatus.SUCCESS,
+            invocation_id=invocation_id,
+            usage=getattr(response, "usage_metadata", None),
+        )
         return response.text or ""
+
+    async def _record_usage(
+        self,
+        *,
+        child_user_id: str | None,
+        status: str,
+        invocation_id: Any,
+        usage: Any = None,
+        error_type: str | None = None,
+    ) -> None:
+        """Record one billable Gemini provider attempt. Best-effort."""
+        if self._recorder is None:
+            return
+        from echo_v2.services.reporting.ai_usage_recorder import (
+            UsageContext,
+            UsagePayload,
+        )
+
+        def _uv(field: str) -> int | None:
+            value = getattr(usage, field, None) if usage is not None else None
+            return value if isinstance(value, int) else None
+
+        context = UsageContext(
+            operation="media_video",
+            provider="google",
+            model=self._model,
+            child_user_id=child_user_id,
+        )
+        payload = UsagePayload(
+            usage_type=AiUsageType.TOKENS,
+            status=status,
+            prompt_tokens=_uv("prompt_token_count"),
+            completion_tokens=_uv("candidates_token_count"),
+            cached_tokens=_uv("cached_content_token_count"),
+            total_tokens=_uv("total_token_count"),
+            invocation_id=invocation_id,
+            error_type=error_type if status == AiUsageStatus.ERROR else None,
+        )
+        await self._recorder.record(context, payload)

@@ -189,6 +189,7 @@ async def test_concurrent_new_produces_one_incident_one_schedule(tracker_deps: d
         users=StubUsers(),
         scheduling=tracker_deps["scheduling_repo"],
         unit_of_work_factory=tracker_deps["uow_factory"],
+        close_after_hours=24 * 365,  # disable auto-close for time-independent tests
         enabled=True,
     )
 
@@ -230,6 +231,7 @@ async def test_repeated_same_suppresses(tracker_deps: dict[str, Any]) -> None:
         users=StubUsers(),
         scheduling=tracker_deps["scheduling_repo"],
         unit_of_work_factory=tracker_deps["uow_factory"],
+        close_after_hours=24 * 365,  # disable auto-close for time-independent tests
         enabled=True,
     )
 
@@ -274,6 +276,7 @@ async def test_escalation_schedules_new_version(tracker_deps: dict[str, Any]) ->
         users=StubUsers(),
         scheduling=tracker_deps["scheduling_repo"],
         unit_of_work_factory=tracker_deps["uow_factory"],
+        close_after_hours=24 * 365,  # disable auto-close for time-independent tests
         enabled=True,
     )
 
@@ -342,6 +345,7 @@ async def test_closed_recurrence_creates_linked_incident(tracker_deps: dict[str,
         users=StubUsers(),
         scheduling=tracker_deps["scheduling_repo"],
         unit_of_work_factory=tracker_deps["uow_factory"],
+        close_after_hours=24 * 365,  # disable auto-close for time-independent tests
         enabled=True,
     )
 

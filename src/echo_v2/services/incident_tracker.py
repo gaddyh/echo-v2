@@ -532,12 +532,6 @@ class IncidentTracker:
         # Resolve guardians + phones BEFORE creating the incident.
         links = await self._links.list_active_for_child(child_user_id)
         eligible = await self._resolve_eligible_guardians(links)
-        if not eligible:
-            _logger.info(
-                "No eligible guardian for child %s — incident not saved",
-                child_user_id,
-            )
-            return "no_active_link" if not links else "no_guardian_phone"
 
         incident_id = str(uuid.uuid4())
         incident = AlertedIncident(
@@ -557,6 +551,16 @@ class IncidentTracker:
             created_at=last_seen,
             updated_at=last_seen,
         )
+
+        if not eligible:
+            # No eligible guardian — still save the incident for future
+            # deduplication, but skip scheduled alert delivery.
+            _logger.info(
+                "No eligible guardian for child %s — incident saved without alert",
+                child_user_id,
+            )
+            await incidents_repo.create(incident)
+            return "no_active_link" if not links else "no_guardian_phone"
 
         # Build scheduled actions for each eligible guardian.
         actions = [
