@@ -235,7 +235,7 @@ async def test_analytics_page_serves_html() -> None:
     reporting = FakeReportingService()
     cost = CostAnalyticsService(usage_repo=FakeUsageRepo())
     async with _client(reporting, cost, tokens, set()) as client:
-        r = await client.get("/admin/guard/analytics")
+        r = await client.get("/api/admin/guard/analytics")
         assert r.status_code == 200
         assert "Guard Analytics" in r.text
 
@@ -246,7 +246,7 @@ async def test_overview_requires_admin_cookie() -> None:
     reporting = FakeReportingService()
     cost = CostAnalyticsService(usage_repo=FakeUsageRepo())
     async with _client(reporting, cost, tokens, {"admin"}) as client:
-        r = await client.get("/admin/api/guard/analytics/overview?period=7d")
+        r = await client.get("/api/admin/guard/analytics/overview?period=7d")
         assert r.status_code == 401
 
 
@@ -261,7 +261,7 @@ async def test_overview_returns_aggregated_data() -> None:
     cost = CostAnalyticsService(usage_repo=FakeUsageRepo())
     async with _client(reporting, cost, tokens, {"admin"}) as client:
         r = await client.get(
-            "/admin/api/guard/analytics/overview?period=7d",
+            "/api/admin/guard/analytics/overview?period=7d",
             cookies={"wls": session_id},
         )
         assert r.status_code == 200
@@ -282,7 +282,7 @@ async def test_children_table_returns_rows() -> None:
     cost = CostAnalyticsService(usage_repo=FakeUsageRepo())
     async with _client(reporting, cost, tokens, {"admin"}) as client:
         r = await client.get(
-            "/admin/api/guard/analytics/children?period=7d",
+            "/api/admin/guard/analytics/children?period=7d",
             cookies={"wls": session_id},
         )
         assert r.status_code == 200
@@ -304,7 +304,7 @@ async def test_daily_series_aggregates_by_date() -> None:
     cost = CostAnalyticsService(usage_repo=FakeUsageRepo())
     async with _client(reporting, cost, tokens, {"admin"}) as client:
         r = await client.get(
-            "/admin/api/guard/analytics/daily?period=7d",
+            "/api/admin/guard/analytics/daily?period=7d",
             cookies={"wls": session_id},
         )
         assert r.status_code == 200
@@ -327,7 +327,7 @@ async def test_costs_breakdown_by_model() -> None:
     reporting = FakeReportingService()
     async with _client(reporting, cost, tokens, {"admin"}) as client:
         r = await client.get(
-            "/admin/api/guard/analytics/costs?period=7d&group_by=model",
+            "/api/admin/guard/analytics/costs?period=7d&group_by=model",
             cookies={"wls": session_id},
         )
         assert r.status_code == 200
@@ -352,7 +352,7 @@ async def test_costs_breakdown_by_operation() -> None:
     reporting = FakeReportingService()
     async with _client(reporting, cost, tokens, {"admin"}) as client:
         r = await client.get(
-            "/admin/api/guard/analytics/costs?period=7d&group_by=operation",
+            "/api/admin/guard/analytics/costs?period=7d&group_by=operation",
             cookies={"wls": session_id},
         )
         assert r.status_code == 200
@@ -369,7 +369,7 @@ async def test_rebuild_requires_dates_and_child() -> None:
     cost = CostAnalyticsService(usage_repo=FakeUsageRepo())
     async with _client(reporting, cost, tokens, {"admin"}) as client:
         r = await client.post(
-            "/admin/api/guard/analytics/rebuild",
+            "/api/admin/guard/analytics/rebuild",
             cookies={"wls": session_id},
         )
         assert r.status_code == 400
@@ -383,7 +383,7 @@ async def test_non_admin_user_rejected() -> None:
     cost = CostAnalyticsService(usage_repo=FakeUsageRepo())
     async with _client(reporting, cost, tokens, {"admin"}) as client:
         r = await client.get(
-            "/admin/api/guard/analytics/overview?period=7d",
+            "/api/admin/guard/analytics/overview?period=7d",
             cookies={"wls": session_id},
         )
         assert r.status_code == 401
