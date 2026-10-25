@@ -21,7 +21,7 @@ from tests.persistence.conftest import insert_user
 
 pytestmark = pytest.mark.asyncio
 
-BASE_TIME = datetime(2026, 10, 25, 10, 0, 0, tzinfo=timezone.utc)
+BASE_TIME = datetime(2026, 10, 15, 10, 0, 0, tzinfo=timezone.utc)
 
 
 async def _insert_connection(
@@ -141,10 +141,11 @@ async def _insert_security_assessment(
                 "(child_user_id, connection_id, chat_id, chat_type, chat_name, "
                 "timezone, window_start, window_end, parent_should_know, "
                 "child_role, summary, reason, evidence_message_ids, "
-                "input_message_ids, model, prompt_version, analyzer_version) "
+                "input_message_ids, model, prompt_version, analyzer_version, "
+                "created_at) "
                 "VALUES (:cid, :conn, :chat, 'private', 'Test', 'Asia/Jerusalem', "
                 ":ws, :we, :psk, 'target', 'summary', 'reason', '[]', '[]', "
-                "'gpt-4.1', 'v1', 'v1') RETURNING id"
+                "'gpt-4.1', 'v1', 'v1', :created_at) RETURNING id"
             ),
             {
                 "cid": child_user_id,
@@ -153,6 +154,7 @@ async def _insert_security_assessment(
                 "ws": created_at - timedelta(hours=1),
                 "we": created_at,
                 "psk": parent_should_know,
+                "created_at": created_at,
             },
         )
         assessment_id = str(result.scalar_one())
@@ -175,14 +177,15 @@ async def _insert_security_outcome(
             text(
                 "INSERT INTO guard_parent_attention_delivery_outcomes "
                 "(assessment_id, guardian_user_id, child_user_id, chat_id, "
-                "status, reason) "
-                "VALUES (:aid, :gid, :cid, 'chat-1@c.us', :status, 'reason')"
+                "status, reason, created_at) "
+                "VALUES (:aid, :gid, :cid, 'chat-1@c.us', :status, 'reason', :created_at)"
             ),
             {
                 "aid": assessment_id,
                 "gid": guardian_user_id,
                 "cid": child_user_id,
                 "status": status,
+                "created_at": created_at,
             },
         )
         await session.commit()
@@ -223,7 +226,7 @@ async def test_rebuild_day_with_messages(session_factory, clean_db) -> None:
     # Insert messages in the day (2026-10-25 in Asia/Jerusalem = 2026-10-24 21:00 UTC to 2026-10-25 21:00 UTC)
     # Use UTC times that fall within the local day
     tz = ZoneInfo("Asia/Jerusalem")
-    local_day = date(2026, 10, 25)
+    local_day = date(2026, 10, 15)
     day_start_utc = datetime.combine(local_day, datetime.min.time(), tz)
 
     await _insert_message(
@@ -272,7 +275,7 @@ async def test_rebuild_day_idempotent(session_factory, clean_db) -> None:
     conn_id = await _insert_connection(session_factory, child_id, "connected")
 
     tz = ZoneInfo("Asia/Jerusalem")
-    local_day = date(2026, 10, 25)
+    local_day = date(2026, 10, 15)
     day_start_utc = datetime.combine(local_day, datetime.min.time(), tz)
 
     await _insert_message(
@@ -313,7 +316,7 @@ async def test_rebuild_day_with_security_detection_and_alert(
     conn_id = await _insert_connection(session_factory, child_id, "connected")
 
     tz = ZoneInfo("Asia/Jerusalem")
-    local_day = date(2026, 10, 25)
+    local_day = date(2026, 10, 15)
     day_start_utc = datetime.combine(local_day, datetime.min.time(), tz)
 
     # Insert a security assessment with parent_should_know=True
@@ -357,7 +360,7 @@ async def test_rebuild_day_disconnected_child_is_incomplete(
     conn_id = await _insert_connection(session_factory, child_id, "blocked")
 
     tz = ZoneInfo("Asia/Jerusalem")
-    local_day = date(2026, 10, 25)
+    local_day = date(2026, 10, 15)
     day_start_utc = datetime.combine(local_day, datetime.min.time(), tz)
 
     await _insert_message(
@@ -390,7 +393,7 @@ async def test_rebuild_day_no_connection_is_incomplete(
     )
 
     stats = await service.rebuild_day(
-        child_user_id=child_id, local_date=date(2026, 10, 25)
+        child_user_id=child_id, local_date=date(2026, 10, 15)
     )
 
     assert stats.coverage_health is False
@@ -410,7 +413,7 @@ async def test_rebuild_day_quiet_day_is_protected(session_factory, clean_db) -> 
     )
 
     stats = await service.rebuild_day(
-        child_user_id=child_id, local_date=date(2026, 10, 25)
+        child_user_id=child_id, local_date=date(2026, 10, 15)
     )
 
     assert stats.messages_received == 0
@@ -431,13 +434,13 @@ async def test_rebuild_range(session_factory, clean_db) -> None:
 
     results = await service.rebuild_range(
         child_user_id=child_id,
-        date_from=date(2026, 10, 23),
-        date_to=date(2026, 10, 25),
+        date_from=date(2026, 10, 13),
+        date_to=date(2026, 10, 15),
     )
 
     assert len(results) == 3
-    assert results[0].local_date == date(2026, 10, 23)
-    assert results[2].local_date == date(2026, 10, 25)
+    assert results[0].local_date == date(2026, 10, 13)
+    assert results[2].local_date == date(2026, 10, 15)
     for r in results:
         assert r.coverage_status == CoverageStatus.PROTECTED
 
@@ -448,7 +451,7 @@ async def test_rebuild_day_with_enrichments(session_factory, clean_db) -> None:
     conn_id = await _insert_connection(session_factory, child_id, "connected")
 
     tz = ZoneInfo("Asia/Jerusalem")
-    local_day = date(2026, 10, 25)
+    local_day = date(2026, 10, 15)
     day_start_utc = datetime.combine(local_day, datetime.min.time(), tz)
 
     # Insert an image message + completed enrichment
@@ -485,7 +488,7 @@ async def test_rebuild_day_detection_without_alert(
     conn_id = await _insert_connection(session_factory, child_id, "connected")
 
     tz = ZoneInfo("Asia/Jerusalem")
-    local_day = date(2026, 10, 25)
+    local_day = date(2026, 10, 15)
     day_start_utc = datetime.combine(local_day, datetime.min.time(), tz)
 
     assessment_id = await _insert_security_assessment(
@@ -527,7 +530,7 @@ async def test_rebuild_day_with_video_link_document_enrichments(
     conn_id = await _insert_connection(session_factory, child_id, "connected")
 
     tz = ZoneInfo("Asia/Jerusalem")
-    local_day = date(2026, 10, 25)
+    local_day = date(2026, 10, 15)
     day_start_utc = datetime.combine(local_day, datetime.min.time(), tz)
 
     # Insert a video message + video enrichment
@@ -581,7 +584,7 @@ async def test_rebuild_day_with_exposure_detection(session_factory, clean_db) ->
     conn_id = await _insert_connection(session_factory, child_id, "connected")
 
     tz = ZoneInfo("Asia/Jerusalem")
-    local_day = date(2026, 10, 25)
+    local_day = date(2026, 10, 15)
     day_start_utc = datetime.combine(local_day, datetime.min.time(), tz)
 
     async with session_factory() as session:
@@ -592,16 +595,18 @@ async def test_rebuild_day_with_exposure_detection(session_factory, clean_db) ->
                 "timezone, window_start, window_end, target_version, "
                 "significant_exposure, category, summary, reason, "
                 "evidence_message_ids, input_message_ids, model, "
-                "prompt_version, analyzer_version) "
+                "prompt_version, analyzer_version, created_at) "
                 "VALUES (:cid, :conn, 'group-1@g.us', 'group', 'Test', "
                 "'Asia/Jerusalem', :ws, :we, 1, true, 'bullying', "
-                "'summary', 'reason', '[]', '[]', 'gemini-2.0-flash', 'v1', 'v1')"
+                "'summary', 'reason', '[]', '[]', 'gemini-2.0-flash', 'v1', 'v1', "
+                ":created_at)"
             ),
             {
                 "cid": child_id,
                 "conn": conn_id,
                 "ws": day_start_utc,
                 "we": day_start_utc + timedelta(hours=1),
+                "created_at": day_start_utc + timedelta(hours=2),
             },
         )
         await session.commit()
@@ -628,7 +633,7 @@ async def test_rebuild_day_with_alert_failure(session_factory, clean_db) -> None
     conn_id = await _insert_connection(session_factory, child_id, "connected")
 
     tz = ZoneInfo("Asia/Jerusalem")
-    local_day = date(2026, 10, 25)
+    local_day = date(2026, 10, 15)
     day_start_utc = datetime.combine(local_day, datetime.min.time(), tz)
 
     assessment_id = await _insert_security_assessment(
@@ -676,7 +681,7 @@ async def test_rebuild_day_degraded_connection_is_protected(
     )
 
     stats = await service.rebuild_day(
-        child_user_id=child_id, local_date=date(2026, 10, 25)
+        child_user_id=child_id, local_date=date(2026, 10, 15)
     )
 
     assert stats.coverage_health is True
