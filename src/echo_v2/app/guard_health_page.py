@@ -23,14 +23,14 @@ th{text-align:left;color:#7d8590;font-weight:600;padding:6px 8px;border-bottom:1
 td{padding:6px 8px;border-bottom:1px solid#21262d}
 .tag{display:inline-block;padding:2px 8px;border-radius:12px;font-size:0.75rem;font-weight:600}
 .tag.protected{background:#1a3a2e;color:#3fb950}
-.tag.attention{background#3a2a1a;color:#d29922}
+.tag.attention{background:#3a2a1a;color:#d29922}
 .tag.incomplete{background:#3a1a1a;color:#f85149}
 .tag.connected{background:#1a3a2e;color:#3fb950}
 .tag.provisioning{background:#3a2a1a;color:#d29922}
-.bar{height:6px;border-radius:3px;background#21262d;margin-top:4px;overflow:hidden}
+.bar{height:6px;border-radius:3px;background:#21262d;margin-top:4px;overflow:hidden}
 .bar>div{height:100%;border-radius:3px}
 .btn{background:#21262d;border:1px solid#30363d;color:#e6edf3;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:0.85rem}
-.btn:hover{background#30363d}
+.btn:hover{background:#30363d}
 .error-text{color:#f85149;font-size:0.8rem;word-break:break-all}
 </style></head><body><main class="wrap">
 <h1>Guard Health</h1>
@@ -48,7 +48,7 @@ td{padding:6px 8px;border-bottom:1px solid#21262d}
 <div class="section"><h2>Connector Events (24h)</h2><div id="connector"></div></div>
 
 </main><script>
-function esc(s){if(s==null)return'';return String(s).replace(/[&<>'\"]/g,c=>{'&':'&','<':'<','>':'>','"':'"',"'":'&#39;'}[c])}
+function esc(s){if(s==null)return'';return String(s).replace(/[&<>'\"]/g,c=>({'&':'&','<':'<','>':'>','"':'"',"'":'&#39;'}[c]))}
 function fmt(dt){if(!dt)return'—';return new Date(dt).toLocaleString()}
 function ago(dt){if(!dt)return'—';const s=(Date.now()-new Date(dt).getTime())/1000;if(s<60)return Math.round(s)+'s ago';if(s<3600)return Math.round(s/60)+'m ago';return Math.round(s/3600)+'h ago'}
 
