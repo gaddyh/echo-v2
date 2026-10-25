@@ -741,6 +741,34 @@ def create_app() -> FastAPI:
         "yes",
     )
 
+    # --- daily stats worker (Guard reporting) -------------------------------
+    from echo_v2.services.reporting.daily_stats_worker import DailyStatsWorker
+    from echo_v2.services.reporting.guard_reporting_service import (
+        GuardReportingService,
+        ReportingConfig,
+    )
+
+    reporting_config = ReportingConfig(
+        default_timezone=os.environ.get("GUARD_REPORTING_TIMEZONE", "Asia/Jerusalem"),
+    )
+    guard_reporting_service = GuardReportingService(
+        session_factory=repos.session_factory,
+        daily_stats_repo=repos.guard_daily_stats,
+        config=reporting_config,
+    )
+    daily_stats_worker = DailyStatsWorker(
+        session_factory=repos.session_factory,
+        reporting_service=guard_reporting_service,
+        daily_stats_repo=repos.guard_daily_stats,
+        poll_interval_seconds=float(
+            os.environ.get("GUARD_REPORTING_POLL_INTERVAL", "300")
+        ),
+        default_timezone=os.environ.get("GUARD_REPORTING_TIMEZONE", "Asia/Jerusalem"),
+    )
+    daily_stats_enabled = os.environ.get(
+        "GUARD_REPORTING_ENABLED", "false"
+    ).lower() in ("1", "true", "yes")
+
     # --- alert checker (DB error monitoring → WhatsApp) ---------------------
     from echo_v2.observability.alert_checker import AlertChecker
 
@@ -915,6 +943,7 @@ def create_app() -> FastAPI:
     guard_worker_task: asyncio.Task[None] | None = None
     guard_simple_worker_task: asyncio.Task[None] | None = None
     digest_worker_task: asyncio.Task[None] | None = None
+    daily_stats_worker_task: asyncio.Task[None] | None = None
     snooze_worker_task: asyncio.Task[None] | None = None
     alert_checker_task: asyncio.Task[None] | None = None
     pool_warmup_task: asyncio.Task[None] | None = None
@@ -924,6 +953,7 @@ def create_app() -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         nonlocal scheduler_task, analysis_worker_task, guard_worker_task, guard_simple_worker_task, digest_worker_task
+        nonlocal daily_stats_worker_task
         nonlocal snooze_worker_task, alert_checker_task
         nonlocal pool_warmup_task, baileys_event_consumer_task
         nonlocal baileys_message_consumer_task
@@ -975,6 +1005,13 @@ def create_app() -> FastAPI:
             digest_worker_task = asyncio.create_task(digest_worker.run_loop())
             _logger.info("digest worker loop started")
 
+        # Start daily stats worker only if explicitly enabled.
+        if daily_stats_enabled:
+            daily_stats_worker_task = asyncio.create_task(
+                daily_stats_worker.run_loop()
+            )
+            _logger.info("daily stats worker loop started")
+
         # Start alert checker if enabled.
         if alert_checker is not None:
             alert_checker_task = asyncio.create_task(alert_checker.run_loop())
@@ -1011,6 +1048,13 @@ def create_app() -> FastAPI:
             except asyncio.CancelledError:
                 pass
             _logger.info("digest worker loop stopped")
+        if daily_stats_worker_task is not None:
+            daily_stats_worker_task.cancel()
+            try:
+                await daily_stats_worker_task
+            except asyncio.CancelledError:
+                pass
+            _logger.info("daily stats worker loop stopped")
         if guard_simple_worker_task is not None:
             guard_simple_worker_task.cancel()
             try:

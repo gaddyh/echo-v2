@@ -29,6 +29,7 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     CheckConstraint,
+    Date,
     ForeignKey,
     Index,
     Integer,
@@ -2107,4 +2108,83 @@ class AiUsageEventRow(Base):
         ),
         Index("ix_ai_usage_events_model_created", "model", "created_at"),
         Index("ix_ai_usage_events_created_at", "created_at"),
+    )
+
+
+# --- guard_daily_stats -----------------------------------------------------
+
+
+class GuardDailyStatsRow(Base):
+    """Aggregated daily statistics for one child on one local date."""
+
+    __tablename__ = "guard_daily_stats"
+
+    id: Mapped[str] = mapped_column(
+        Uuid, primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    child_user_id: Mapped[str] = mapped_column(
+        Uuid,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    local_date: Mapped[date] = mapped_column(Date, nullable=False)
+    timezone: Mapped[str] = mapped_column(Text, nullable=False)
+    # Message counts
+    messages_received: Mapped[int] = mapped_column(nullable=False, server_default="0")
+    private_messages: Mapped[int] = mapped_column(nullable=False, server_default="0")
+    group_messages: Mapped[int] = mapped_column(nullable=False, server_default="0")
+    active_private_chats: Mapped[int] = mapped_column(nullable=False, server_default="0")
+    active_group_chats: Mapped[int] = mapped_column(nullable=False, server_default="0")
+    # Media received
+    images_received: Mapped[int] = mapped_column(nullable=False, server_default="0")
+    videos_received: Mapped[int] = mapped_column(nullable=False, server_default="0")
+    audio_received: Mapped[int] = mapped_column(nullable=False, server_default="0")
+    links_received: Mapped[int] = mapped_column(nullable=False, server_default="0")
+    documents_received: Mapped[int] = mapped_column(nullable=False, server_default="0")
+    # Media enriched
+    images_enriched: Mapped[int] = mapped_column(nullable=False, server_default="0")
+    videos_enriched: Mapped[int] = mapped_column(nullable=False, server_default="0")
+    audio_enriched: Mapped[int] = mapped_column(nullable=False, server_default="0")
+    links_enriched: Mapped[int] = mapped_column(nullable=False, server_default="0")
+    documents_enriched: Mapped[int] = mapped_column(nullable=False, server_default="0")
+    # Assessments + detections
+    guard_assessments: Mapped[int] = mapped_column(nullable=False, server_default="0")
+    security_detections: Mapped[int] = mapped_column(nullable=False, server_default="0")
+    exposure_detections: Mapped[int] = mapped_column(nullable=False, server_default="0")
+    # Alert delivery
+    security_alerts_sent: Mapped[int] = mapped_column(nullable=False, server_default="0")
+    exposure_alerts_sent: Mapped[int] = mapped_column(nullable=False, server_default="0")
+    alerts_failed: Mapped[int] = mapped_column(nullable=False, server_default="0")
+    # Failures
+    analysis_failures: Mapped[int] = mapped_column(nullable=False, server_default="0")
+    media_enrichment_failures: Mapped[int] = mapped_column(
+        nullable=False, server_default="0"
+    )
+    # Coverage
+    coverage_health: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("true")
+    )
+    security_attention: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+    coverage_status: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default="protected"
+    )
+    connection_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "child_user_id",
+            "local_date",
+            name="guard_daily_stats_child_date_key",
+        ),
+        CheckConstraint(
+            "coverage_status IN ('protected', 'attention', 'incomplete')",
+            name="guard_daily_stats_coverage_status_check",
+        ),
+        Index("ix_guard_daily_stats_local_date", "local_date"),
+        Index("ix_guard_daily_stats_coverage_status", "coverage_status"),
     )
