@@ -63,11 +63,11 @@ def build_guard_analytics_router(
             raise HTTPException(status_code=401, detail="admin access required")
         return resolved.user_id
 
-    @router.get("/admin/guard/analytics", response_class=HTMLResponse)
+    @router.get("/api/admin/guard/analytics", response_class=HTMLResponse)
     async def analytics_page() -> HTMLResponse:
         return HTMLResponse(content=ANALYTICS_PAGE, headers=_headers())
 
-    @router.get("/admin/api/guard/analytics/overview")
+    @router.get("/api/admin/guard/analytics/overview")
     async def overview(
         wls: str | None = Cookie(default=None, alias=_SESSION_COOKIE),
         period: str = "7d",
@@ -84,7 +84,7 @@ def build_guard_analytics_router(
             content=jsonable_encoder(result), headers=_headers()
         )
 
-    @router.get("/admin/api/guard/analytics/children")
+    @router.get("/api/admin/guard/analytics/children")
     async def children(
         wls: str | None = Cookie(default=None, alias=_SESSION_COOKIE),
         period: str = "7d",
@@ -122,7 +122,7 @@ def build_guard_analytics_router(
         ]
         return JSONResponse(content=payload, headers=_headers())
 
-    @router.get("/admin/api/guard/analytics/costs")
+    @router.get("/api/admin/guard/analytics/costs")
     async def costs(
         wls: str | None = Cookie(default=None, alias=_SESSION_COOKIE),
         period: str = "7d",
@@ -155,7 +155,7 @@ def build_guard_analytics_router(
             headers=_headers(),
         )
 
-    @router.get("/admin/api/guard/analytics/daily")
+    @router.get("/api/admin/guard/analytics/daily")
     async def daily(
         wls: str | None = Cookie(default=None, alias=_SESSION_COOKIE),
         period: str = "7d",
@@ -172,7 +172,7 @@ def build_guard_analytics_router(
             content=jsonable_encoder(series), headers=_headers()
         )
 
-    @router.post("/admin/api/guard/analytics/rebuild")
+    @router.post("/api/admin/guard/analytics/rebuild")
     async def rebuild(
         wls: str | None = Cookie(default=None, alias=_SESSION_COOKIE),
         date_from: date | None = None,
