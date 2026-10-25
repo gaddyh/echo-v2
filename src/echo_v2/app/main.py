@@ -952,6 +952,17 @@ def create_app() -> FastAPI:
         admin_user_ids=admin_user_ids,
     )
 
+    # --- Guard admin health dashboard --------------------------------------
+    from echo_v2.app.guard_health_routes import build_guard_health_router
+    from echo_v2.services.guard_health_service import GuardHealthService
+
+    guard_health_service = GuardHealthService(session_factory=repos.session_factory)
+    guard_health_router = build_guard_health_router(
+        health_service=guard_health_service,
+        token_service=token_service,
+        admin_user_ids=admin_user_ids,
+    )
+
     # --- FastAPI app with lifespan (scheduler + worker start/stop with app) --
     scheduler_task: asyncio.Task[None] | None = None
     analysis_worker_task: asyncio.Task[None] | None = None
@@ -1180,6 +1191,7 @@ def create_app() -> FastAPI:
     app.include_router(guard_debug_router)
     app.include_router(guard_operations_router)
     app.include_router(guard_analytics_router)
+    app.include_router(guard_health_router)
     app.include_router(guard_demo_router)
 
     # Public landing page + waitlist signup.
