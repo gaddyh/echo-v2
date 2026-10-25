@@ -128,6 +128,37 @@ async def test_empty_context_is_uncertain_without_calling_llm() -> None:
     client.chat.completions.parse.assert_not_awaited()
 
 
+def test_incomplete_media_evidence_true_for_retryable_statuses() -> None:
+    """Pending/processing/failed enrichments are incomplete — media might still arrive."""
+    for status in ("pending", "processing", "failed"):
+        conv = conversation(messages=(
+            SimpleConversationMessage("m1", "other", "text", enrichment_status=status),
+        ))
+        assert conv.incomplete_media_evidence is True, f"status={status}"
+
+
+def test_incomplete_media_evidence_false_for_terminal() -> None:
+    """Terminal enrichment (media fundamentally unavailable) is not incomplete —
+    retrying won't help and the analyzer should proceed with available text."""
+    conv = conversation(messages=(
+        SimpleConversationMessage(
+            "m1", "other", "a video caption",
+            enrichment_status="terminal",
+            enrichment_error="media reference and download URL are unavailable",
+        ),
+    ))
+    assert conv.incomplete_media_evidence is False
+
+
+def test_incomplete_media_evidence_false_for_completed_and_none() -> None:
+    """Completed and no-enrichment messages are not incomplete."""
+    for status in (None, "completed"):
+        conv = conversation(messages=(
+            SimpleConversationMessage("m1", "other", "text", enrichment_status=status),
+        ))
+        assert conv.incomplete_media_evidence is False, f"status={status}"
+
+
 @pytest.mark.asyncio
 async def test_unknown_evidence_is_rejected() -> None:
     client = MagicMock()

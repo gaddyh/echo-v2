@@ -65,8 +65,13 @@ class SimpleConversation:
 
     @property
     def incomplete_media_evidence(self) -> bool:
+        # Terminal enrichments (media fundamentally unavailable — no mediaKey,
+        # too large, etc.) are not "incomplete": retrying won't help and the
+        # analyzer should proceed with whatever text evidence is available
+        # (captions, other messages). Only pending/processing/failed enrichments
+        # are incomplete — the media might still arrive.
         return any(
-            message.enrichment_status not in (None, "completed")
+            message.enrichment_status in ("pending", "processing", "failed")
             for message in self.messages
             if message.enrichment_status is not None
         )

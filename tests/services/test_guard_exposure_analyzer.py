@@ -123,6 +123,29 @@ async def test_no_result_can_be_confident_when_media_is_complete() -> None:
 
 
 @pytest.mark.asyncio
+async def test_terminal_media_is_not_incomplete() -> None:
+    """Terminal enrichment (media fundamentally unavailable) should not block
+    a confident negative exposure assessment — the analyzer should proceed
+    with whatever text evidence is available."""
+    client = MagicMock()
+    client.chat.completions.parse = AsyncMock(return_value=response(output(
+        significant_exposure=False, category=None, evidence_message_ids=[],
+        summary="No significant event found.", reason="Normal conversation.",
+    )))
+    result = await ExposureAnalyzer(client, max_retries=0).analyze(
+        conversation(messages=(
+            SimpleConversationMessage(
+                "m1", "other", "A video was sent.",
+                enrichment_status="terminal",
+                enrichment_error="media reference and download URL are unavailable",
+            ),
+        ))
+    )
+    assert result.significant_exposure is False
+    assert result.reason == "Normal conversation."
+
+
+@pytest.mark.asyncio
 async def test_analyzer_retries_and_supports_reasoning_models() -> None:
     client = MagicMock()
     client.chat.completions.parse = AsyncMock(side_effect=[RuntimeError("temporary"), response(output())])
