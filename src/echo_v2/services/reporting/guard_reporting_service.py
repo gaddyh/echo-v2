@@ -28,6 +28,7 @@ Key design decisions (from the plan):
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -47,7 +48,13 @@ from echo_v2.persistence.orm import (
     WhatsAppConnectionRow,
 )
 
-__all__ = ["GuardReportingService", "ReportingConfig"]
+__all__ = [
+    "AnalyticsOverview",
+    "ChildSummary",
+    "DailySeriesPoint",
+    "GuardReportingService",
+    "ReportingConfig",
+]
 
 _logger = logging.getLogger(__name__)
 
@@ -58,6 +65,54 @@ _MEDIA_TYPES: dict[str, str] = {
     "audio": "audio",
     "document": "documents",
 }
+
+
+@dataclass(frozen=True)
+class ChildSummary:
+    """One row in the admin children table."""
+
+    child_user_id: str
+    child_name: str | None
+    local_date: date
+    coverage_status: str
+    coverage_health: bool
+    messages_received: int
+    guard_assessments: int
+    security_detections: int
+    exposure_detections: int
+    security_alerts_sent: int
+    exposure_alerts_sent: int
+    connection_seconds: int | None
+
+
+@dataclass(frozen=True)
+class DailySeriesPoint:
+    """One day in the daily volume series."""
+
+    local_date: date
+    messages_received: int
+    guard_assessments: int
+    security_detections: int
+    exposure_detections: int
+    security_alerts_sent: int
+    exposure_alerts_sent: int
+
+
+@dataclass(frozen=True)
+class AnalyticsOverview:
+    """Aggregated totals across the selected period."""
+
+    children_monitored: int
+    total_messages: int
+    total_assessments: int
+    total_security_detections: int
+    total_exposure_detections: int
+    total_security_alerts_sent: int
+    total_exposure_alerts_sent: int
+    protected_days: int
+    attention_days: int
+    incomplete_days: int
+    coverage_health_pct: float
 
 
 class ReportingConfig:
@@ -182,6 +237,109 @@ class GuardReportingService:
             results.append(stats)
             current += timedelta(days=1)
         return results
+
+    # --- Analytics query methods -------------------------------------------
+
+    async def overview(
+        self,
+        *,
+        date_from: date,
+        date_to: date,
+        child_user_id: str | None = None,
+    ) -> AnalyticsOverview:
+        """Aggregate overview across the period from persisted daily stats."""
+        rows = await self._daily_stats_repo.list_for_range(
+            child_user_id=child_user_id,
+            date_from=date_from,
+            date_to=date_to,
+        )
+        children = {row.child_user_id for row in rows}
+        total = len(rows)
+        healthy = sum(1 for row in rows if row.coverage_health)
+        return AnalyticsOverview(
+            children_monitored=len(children),
+            total_messages=sum(row.messages_received for row in rows),
+            total_assessments=sum(row.guard_assessments for row in rows),
+            total_security_detections=sum(row.security_detections for row in rows),
+            total_exposure_detections=sum(row.exposure_detections for row in rows),
+            total_security_alerts_sent=sum(row.security_alerts_sent for row in rows),
+            total_exposure_alerts_sent=sum(row.exposure_alerts_sent for row in rows),
+            protected_days=sum(1 for row in rows if row.coverage_status == CoverageStatus.PROTECTED),
+            attention_days=sum(1 for row in rows if row.coverage_status == CoverageStatus.ATTENTION),
+            incomplete_days=sum(1 for row in rows if row.coverage_status == CoverageStatus.INCOMPLETE),
+            coverage_health_pct=(healthy / total * 100.0) if total else 0.0,
+        )
+
+    async def children_table(
+        self,
+        *,
+        date_from: date,
+        date_to: date,
+        child_user_id: str | None = None,
+    ) -> list[ChildSummary]:
+        """One row per child-day, most recent first, from persisted daily stats."""
+        rows = await self._daily_stats_repo.list_for_range(
+            child_user_id=child_user_id,
+            date_from=date_from,
+            date_to=date_to,
+        )
+        # Sort by date desc, then child for stable ordering.
+        rows.sort(key=lambda r: (r.local_date, r.child_user_id), reverse=True)
+        return [
+            ChildSummary(
+                child_user_id=row.child_user_id,
+                child_name=None,  # Filled by route layer via user repo.
+                local_date=row.local_date,
+                coverage_status=row.coverage_status,
+                coverage_health=row.coverage_health,
+                messages_received=row.messages_received,
+                guard_assessments=row.guard_assessments,
+                security_detections=row.security_detections,
+                exposure_detections=row.exposure_detections,
+                security_alerts_sent=row.security_alerts_sent,
+                exposure_alerts_sent=row.exposure_alerts_sent,
+                connection_seconds=row.connection_seconds,
+            )
+            for row in rows
+        ]
+
+    async def daily_series(
+        self,
+        *,
+        date_from: date,
+        date_to: date,
+        child_user_id: str | None = None,
+    ) -> list[DailySeriesPoint]:
+        """Daily volume series aggregated across all children (or one child)."""
+        rows = await self._daily_stats_repo.list_for_range(
+            child_user_id=child_user_id,
+            date_from=date_from,
+            date_to=date_to,
+        )
+        by_date: dict[date, DailySeriesPoint] = {}
+        for row in rows:
+            d = row.local_date
+            if d not in by_date:
+                by_date[d] = DailySeriesPoint(
+                    local_date=d,
+                    messages_received=0,
+                    guard_assessments=0,
+                    security_detections=0,
+                    exposure_detections=0,
+                    security_alerts_sent=0,
+                    exposure_alerts_sent=0,
+                )
+            point = by_date[d]
+            by_date[d] = DailySeriesPoint(
+                local_date=d,
+                messages_received=point.messages_received + row.messages_received,
+                guard_assessments=point.guard_assessments + row.guard_assessments,
+                security_detections=point.security_detections + row.security_detections,
+                exposure_detections=point.exposure_detections + row.exposure_detections,
+                security_alerts_sent=point.security_alerts_sent + row.security_alerts_sent,
+                exposure_alerts_sent=point.exposure_alerts_sent + row.exposure_alerts_sent,
+            )
+        return [by_date[d] for d in sorted(by_date)]
 
     # --- Query methods -------------------------------------------------------
 

@@ -845,6 +845,7 @@ def create_app() -> FastAPI:
     )
 
     # --- waiting-list mini web app (service + router) -----------------------
+    from echo_v2.app.guard_analytics_routes import build_guard_analytics_router
     from echo_v2.app.guard_debug_routes import build_guard_debug_router
     from echo_v2.app.guard_demo_routes import build_guard_demo_router
     from echo_v2.app.guard_operations_routes import build_guard_operations_router
@@ -858,6 +859,9 @@ def create_app() -> FastAPI:
     from echo_v2.services.guard_review_service import GuardReviewService
     from echo_v2.services.guard_simple_telemetry_service import (
         GuardSimpleTelemetryService,
+    )
+    from echo_v2.services.reporting.cost_analytics_service import (
+        CostAnalyticsService,
     )
     from echo_v2.services.waiting_list_action_service import WaitingListActionService
 
@@ -936,6 +940,17 @@ def create_app() -> FastAPI:
         admin_dashboard_service=guard_admin_dashboard_service,
     )
     guard_demo_router = build_guard_demo_router(live_compare=guard_live_compare)
+
+    # --- Guard admin analytics (daily stats + AI costs) --------------------
+    cost_analytics_service = CostAnalyticsService(
+        usage_repo=repos.ai_usage_events,
+    )
+    guard_analytics_router = build_guard_analytics_router(
+        reporting_service=guard_reporting_service,
+        cost_service=cost_analytics_service,
+        token_service=token_service,
+        admin_user_ids=admin_user_ids,
+    )
 
     # --- FastAPI app with lifespan (scheduler + worker start/stop with app) --
     scheduler_task: asyncio.Task[None] | None = None
@@ -1164,6 +1179,7 @@ def create_app() -> FastAPI:
     app.include_router(guard_parent_alert_router)
     app.include_router(guard_debug_router)
     app.include_router(guard_operations_router)
+    app.include_router(guard_analytics_router)
     app.include_router(guard_demo_router)
 
     # Public landing page + waitlist signup.
