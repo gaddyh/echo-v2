@@ -35,6 +35,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from echo_v2.integrations.green.client import GreenClient
 from echo_v2.integrations.green.settings import load_settings as load_green_settings
+from echo_v2.persistence.settings import load_db_settings
 
 # Tables that cascade on user delete (for impact preview).
 CASCADE_TABLES = [
@@ -101,7 +102,7 @@ async def main() -> None:
     if do_delete:
         green_client = GreenClient(load_green_settings())
 
-    engine = create_async_engine(__import__("os").environ["DATABASE_URL"])
+    engine = create_async_engine(load_db_settings().database_url)
 
     async with engine.begin() as conn:
         result = await conn.execute(

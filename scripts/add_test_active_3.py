@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import os
 import secrets
 import sys
 import uuid
@@ -20,6 +19,8 @@ from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
+
+from echo_v2.persistence.settings import load_db_settings
 
 USER_ID = "bd1c584a-0d44-45c4-ac61-26e2b7415d5b"
 
@@ -49,8 +50,7 @@ CONTACTS = [
 async def main() -> None:
     load_dotenv()
     base_url = sys.argv[1] if len(sys.argv) > 1 else "http://localhost:8000"
-    db_url = os.environ["DATABASE_URL"]
-    engine = create_async_engine(db_url)
+    engine = create_async_engine(load_db_settings().database_url)
 
     now = datetime.now(timezone.utc)
 

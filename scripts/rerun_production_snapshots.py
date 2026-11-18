@@ -17,14 +17,17 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
+from dotenv import load_dotenv
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from echo_v2.persistence.settings import load_db_settings
 from echo_v2.services.waiting_for_me_prompts import DEFAULT_PROMPT_VERSION
 
 
 async def main() -> None:
-    engine = create_async_engine(os.environ["DATABASE_URL"])
+    load_dotenv()
+    engine = create_async_engine(load_db_settings().database_url)
 
     # 1. Capture current latest decisions + conversation snapshots for all chats
     async with engine.connect() as conn:

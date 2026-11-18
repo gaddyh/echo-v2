@@ -25,6 +25,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from echo_v2.persistence.identity import PhoneParseError, normalize_phone_e164
+from echo_v2.persistence.settings import load_db_settings
 
 BASE_URL = "https://i-me.onrender.com"
 LINK_TTL_HOURS = 48
@@ -38,9 +39,8 @@ async def main(raw_phone: str) -> None:
         sys.exit(2)
 
     load_dotenv()
-    import os
 
-    db_url = os.environ["DATABASE_URL"]
+    db_url = load_db_settings().database_url
     engine = create_async_engine(db_url)
 
     now = datetime.now(timezone.utc)

@@ -51,6 +51,25 @@
 
 - For the pilot, if scheduling fails, the UoW transaction rolls back (no incident, no schedule) and the error is logged. There is no reconciliation or retry queue — the alert may be missed if no new assessment arrives. This is an explicitly accepted limitation.
 
+### OpenAI incentivized tier (Nov 2026)
+
+- The production OpenAI account runs on the data-sharing incentives program
+  (`service_tier=incentivized-tier`): complimentary daily tokens in exchange
+  for sharing API traffic with OpenAI — ~10M tokens/day for the mini/Luna
+  family (gpt-5.6-luna, gpt-6-luna, Terra, `*-mini`/`*-nano`), ~1M tokens/day
+  for the large family (gpt-5.4, gpt-4.1, gpt-4o). The request that crosses
+  the daily quota is billed entirely at normal rates; usage beyond continues
+  at standard rates.
+- Pilot usage fits inside the quotas → invoices ≈ $0. `estimated_cost_usd`
+  per event is LIST-PRICE EXPOSURE, not the billed amount. At
+  thousands-of-users scale the quotas are irrelevant and list prices apply.
+- Prompt caching measured at ~92% for gpt-5.6-luna (stable analysis
+  prefixes). Keep prompt prefix order stable — reordering breaks the cache
+  and raises cost ~10x.
+- Product/compliance note: this tier shares API traffic with OpenAI. For a
+  minors' product this is a deliberate decision to revisit (OpenAI org
+  settings → data controls).
+
 ## Gemini Video Enrichment
 
 - `GeminiVideoSummarizer` (`services/gemini_video_summarizer.py`) provides semantic understanding of WhatsApp videos using Gemini's native video+audio input.
