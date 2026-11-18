@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from uuid import UUID
 
@@ -19,6 +19,10 @@ from echo_v2.services.reporting.guard_reporting_service import (
     GuardReportingService,
 )
 from echo_v2.services.waiting_list_token_service import WaitingListTokenService
+
+_TODAY = datetime.now(timezone.utc).date()
+_YESTERDAY = _TODAY - timedelta(days=1)
+_TWO_DAYS_AGO = _TODAY - timedelta(days=2)
 
 
 class FakeDailyStatsRepo:
@@ -173,7 +177,7 @@ class FakeReportingService:
 
 def _stats(
     child: str = "child-1",
-    d: date = date(2026, 10, 25),
+    d: date = _YESTERDAY,
     msgs: int = 10,
     status: str = "protected",
 ) -> GuardDailyStats:
@@ -207,7 +211,7 @@ def _usage_event(
         prompt_tokens=100,
         completion_tokens=20,
         estimated_cost_usd=Decimal(cost),
-        created_at=datetime(2026, 10, 25, 12, tzinfo=timezone.utc),
+        created_at=datetime.now(timezone.utc) - timedelta(days=1),
     )
 
 
@@ -255,8 +259,8 @@ async def test_overview_returns_aggregated_data() -> None:
     tokens = WaitingListTokenService(sessions)
     session_id, _ = await tokens.issue(user_id="admin")
     reporting = FakeReportingService(rows=[
-        _stats(child="child-1", d=date(2026, 10, 24), msgs=10),
-        _stats(child="child-1", d=date(2026, 10, 25), msgs=20, status="attention"),
+        _stats(child="child-1", d=_TWO_DAYS_AGO, msgs=10),
+        _stats(child="child-1", d=_YESTERDAY, msgs=20, status="attention"),
     ])
     cost = CostAnalyticsService(usage_repo=FakeUsageRepo())
     async with _client(reporting, cost, tokens, {"admin"}) as client:
@@ -277,7 +281,7 @@ async def test_children_table_returns_rows() -> None:
     tokens = WaitingListTokenService(sessions)
     session_id, _ = await tokens.issue(user_id="admin")
     reporting = FakeReportingService(rows=[
-        _stats(child="child-1", d=date(2026, 10, 25), msgs=15),
+        _stats(child="child-1", d=_YESTERDAY, msgs=15),
     ])
     cost = CostAnalyticsService(usage_repo=FakeUsageRepo())
     async with _client(reporting, cost, tokens, {"admin"}) as client:
@@ -297,9 +301,9 @@ async def test_daily_series_aggregates_by_date() -> None:
     tokens = WaitingListTokenService(sessions)
     session_id, _ = await tokens.issue(user_id="admin")
     reporting = FakeReportingService(rows=[
-        _stats(child="child-1", d=date(2026, 10, 24), msgs=10),
-        _stats(child="child-2", d=date(2026, 10, 24), msgs=5),
-        _stats(child="child-1", d=date(2026, 10, 25), msgs=20),
+        _stats(child="child-1", d=_TWO_DAYS_AGO, msgs=10),
+        _stats(child="child-2", d=_TWO_DAYS_AGO, msgs=5),
+        _stats(child="child-1", d=_YESTERDAY, msgs=20),
     ])
     cost = CostAnalyticsService(usage_repo=FakeUsageRepo())
     async with _client(reporting, cost, tokens, {"admin"}) as client:
@@ -361,6 +365,33 @@ async def test_costs_breakdown_by_operation() -> None:
         assert groups[0]["key"] == "guard_security"
 
 
+async def test_tier_usage_returns_pools() -> None:
+    sessions = InMemoryWaitingListSessionRepository()
+    tokens = WaitingListTokenService(sessions)
+    session_id, _ = await tokens.issue(user_id="admin")
+    events = [
+        _usage_event(operation="guard_security", model="gpt-5.6-luna", cost="0.02", idx=1),
+        _usage_event(operation="analysis_judge", model="gpt-5.4", cost="0.01", idx=2),
+    ]
+    cost = CostAnalyticsService(usage_repo=FakeUsageRepo(events=events))
+    reporting = FakeReportingService()
+    async with _client(reporting, cost, tokens, {"admin"}) as client:
+        r = await client.get(
+            "/api/admin/guard/analytics/tier-usage?period=7d",
+            cookies={"wls": session_id},
+        )
+        assert r.status_code == 200
+        data = r.json()
+        assert data["active_users"] == 1
+        pools = {p["pool"]: p for p in data["pools"]}
+        # Each event carries 100 prompt + 20 completion tokens.
+        assert pools["mini"]["days"][0]["tokens"] == 120
+        assert pools["large"]["days"][0]["tokens"] == 120
+        assert pools["mini"]["break_even_users"] == 10_000_000 // 120
+        assert pools["large"]["break_even_users"] == 1_000_000 // 120
+        assert data["unmapped_models"] == {}
+
+
 async def test_rebuild_requires_dates_and_child() -> None:
     sessions = InMemoryWaitingListSessionRepository()
     tokens = WaitingListTokenService(sessions)
@@ -397,8 +428,8 @@ async def test_cost_service_aggregates_events() -> None:
     ]
     service = CostAnalyticsService(usage_repo=FakeUsageRepo(events=events))
     result = await service.costs(
-        date_from=datetime(2026, 10, 1, tzinfo=timezone.utc),
-        date_to=datetime(2026, 10, 31, tzinfo=timezone.utc),
+        date_from=datetime.now(timezone.utc) - timedelta(days=7),
+        date_to=datetime.now(timezone.utc) + timedelta(days=1),
     )
     assert result.overview.total_events == 2
     assert result.overview.total_cost_usd == Decimal("0.03")
@@ -420,7 +451,7 @@ async def test_cost_service_handles_fallback_unknown_and_error_events() -> None:
             status="success",
             child_user_id="child-1",
             estimated_cost_usd=Decimal("0.005"),
-            created_at=datetime(2026, 10, 25, 12, tzinfo=timezone.utc),
+            created_at=datetime.now(timezone.utc) - timedelta(days=1),
         ),
         AiUsageEvent(
             invocation_id=UUID(int=2),
@@ -432,13 +463,13 @@ async def test_cost_service_handles_fallback_unknown_and_error_events() -> None:
             status="error",
             child_user_id="child-1",
             error_type="TimeoutError",
-            created_at=datetime(2026, 10, 25, 12, tzinfo=timezone.utc),
+            created_at=datetime.now(timezone.utc) - timedelta(days=1),
         ),
     ]
     service = CostAnalyticsService(usage_repo=FakeUsageRepo(events=events))
     result = await service.costs(
-        date_from=datetime(2026, 10, 1, tzinfo=timezone.utc),
-        date_to=datetime(2026, 10, 31, tzinfo=timezone.utc),
+        date_from=datetime.now(timezone.utc) - timedelta(days=7),
+        date_to=datetime.now(timezone.utc) + timedelta(days=1),
     )
     assert result.overview.total_events == 2
     assert result.overview.fallback_events == 1
@@ -453,8 +484,8 @@ async def test_cost_service_empty_events() -> None:
     """Empty events list should produce zero totals and 100% coverage."""
     service = CostAnalyticsService(usage_repo=FakeUsageRepo(events=[]))
     result = await service.costs(
-        date_from=datetime(2026, 10, 1, tzinfo=timezone.utc),
-        date_to=datetime(2026, 10, 31, tzinfo=timezone.utc),
+        date_from=datetime.now(timezone.utc) - timedelta(days=7),
+        date_to=datetime.now(timezone.utc) + timedelta(days=1),
     )
     assert result.overview.total_events == 0
     assert result.overview.total_cost_usd == Decimal(0)
@@ -465,8 +496,8 @@ async def test_cost_service_empty_events() -> None:
 async def test_reporting_service_children_table_from_repo() -> None:
     """Direct unit test for GuardReportingService.children_table."""
     repo = FakeDailyStatsRepo(rows=[
-        _stats(child="child-1", d=date(2026, 10, 24), msgs=10),
-        _stats(child="child-2", d=date(2026, 10, 25), msgs=20, status="attention"),
+        _stats(child="child-1", d=_TWO_DAYS_AGO, msgs=10),
+        _stats(child="child-2", d=_YESTERDAY, msgs=20, status="attention"),
     ])
 
     class NullSessionFactory:
@@ -479,8 +510,8 @@ async def test_reporting_service_children_table_from_repo() -> None:
         daily_stats_repo=repo,  # type: ignore[arg-type]
     )
     result = await service.children_table(
-        date_from=date(2026, 10, 24),
-        date_to=date(2026, 10, 25),
+        date_from=_TWO_DAYS_AGO,
+        date_to=_YESTERDAY,
     )
     assert len(result) == 2
     # Sorted by date desc — child-2 (Oct 25) first.
@@ -493,9 +524,9 @@ async def test_reporting_service_children_table_from_repo() -> None:
 async def test_reporting_service_daily_series_from_repo() -> None:
     """Direct unit test for GuardReportingService.daily_series."""
     repo = FakeDailyStatsRepo(rows=[
-        _stats(child="child-1", d=date(2026, 10, 24), msgs=10),
-        _stats(child="child-2", d=date(2026, 10, 24), msgs=5),
-        _stats(child="child-1", d=date(2026, 10, 25), msgs=20),
+        _stats(child="child-1", d=_TWO_DAYS_AGO, msgs=10),
+        _stats(child="child-2", d=_TWO_DAYS_AGO, msgs=5),
+        _stats(child="child-1", d=_YESTERDAY, msgs=20),
     ])
 
     class NullSessionFactory:
@@ -508,13 +539,13 @@ async def test_reporting_service_daily_series_from_repo() -> None:
         daily_stats_repo=repo,  # type: ignore[arg-type]
     )
     result = await service.daily_series(
-        date_from=date(2026, 10, 24),
-        date_to=date(2026, 10, 25),
+        date_from=_TWO_DAYS_AGO,
+        date_to=_YESTERDAY,
     )
     assert len(result) == 2
-    assert result[0].local_date == date(2026, 10, 24)
+    assert result[0].local_date == _TWO_DAYS_AGO
     assert result[0].messages_received == 15  # 10 + 5
-    assert result[1].local_date == date(2026, 10, 25)
+    assert result[1].local_date == _YESTERDAY
     assert result[1].messages_received == 20
 
 
@@ -532,8 +563,8 @@ async def test_reporting_service_overview_empty() -> None:
         daily_stats_repo=repo,  # type: ignore[arg-type]
     )
     result = await service.overview(
-        date_from=date(2026, 10, 24),
-        date_to=date(2026, 10, 25),
+        date_from=_TWO_DAYS_AGO,
+        date_to=_YESTERDAY,
     )
     assert result.children_monitored == 0
     assert result.total_messages == 0
@@ -543,8 +574,8 @@ async def test_reporting_service_overview_empty() -> None:
 async def test_reporting_service_overview_from_repo() -> None:
     """Direct unit test for GuardReportingService.overview using fake repo."""
     repo = FakeDailyStatsRepo(rows=[
-        _stats(child="child-1", d=date(2026, 10, 24), msgs=10),
-        _stats(child="child-1", d=date(2026, 10, 25), msgs=20, status="attention"),
+        _stats(child="child-1", d=_TWO_DAYS_AGO, msgs=10),
+        _stats(child="child-1", d=_YESTERDAY, msgs=20, status="attention"),
     ])
 
     class NullSessionFactory:
@@ -556,8 +587,8 @@ async def test_reporting_service_overview_from_repo() -> None:
         daily_stats_repo=repo,  # type: ignore[arg-type]
     )
     result = await service.overview(
-        date_from=date(2026, 10, 24),
-        date_to=date(2026, 10, 25),
+        date_from=_TWO_DAYS_AGO,
+        date_to=_YESTERDAY,
     )
     assert result.children_monitored == 1
     assert result.total_messages == 30
