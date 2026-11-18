@@ -37,7 +37,7 @@ from echo_v2.services.incident_matcher import (
 from echo_v2.services.incident_tracker import IncidentTracker
 
 pytestmark = pytest.mark.asyncio
-BASE = datetime(2026, 10, 23, 12, tzinfo=timezone.utc)
+BASE = datetime.now(timezone.utc)
 
 
 class StubMatcher(IncidentMatcher):

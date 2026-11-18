@@ -87,6 +87,56 @@ def test_token_cost_cached_input_discount() -> None:
     assert cost == expected
 
 
+def test_token_cost_cache_write_pricing() -> None:
+    """Cache-write tokens get their own rate and leave the uncached bucket."""
+    service = PricingService()
+    cost, source = service.estimate_token_cost(
+        provider="openai",
+        model="gpt-5.4-mini",
+        prompt_tokens=1000,
+        completion_tokens=0,
+        cached_tokens=300,
+        cache_write_tokens=500,
+    )
+    assert source == AiCostSource.MEASURED_USAGE_PRICED
+    # 200 * 0.75/1M (non-cached) + 300 * 0.075/1M (cached reads)
+    # + 500 * 0.9375/1M (cache writes)
+    expected = (
+        Decimal("0.00015") + Decimal("0.0000225") + Decimal("0.00046875")
+    )
+    assert cost == expected
+
+
+def test_gpt_56_luna_has_explicit_rates() -> None:
+    """The Guard default model no longer falls back to `default` rates."""
+    service = PricingService()
+    cost, source = service.estimate_token_cost(
+        provider="openai",
+        model="gpt-5.6-luna",
+        prompt_tokens=1_000_000,
+        completion_tokens=0,
+    )
+    assert source == AiCostSource.MEASURED_USAGE_PRICED
+    # Luna family rate: 1M * 0.10/1M — not the 0.75 `default`.
+    assert cost == Decimal("0.10")
+
+
+def test_google_rates_parse_without_cache_write_field() -> None:
+    """Entries without cache_write_per_million default it to the input rate."""
+    service = PricingService()
+    cost, source = service.estimate_token_cost(
+        provider="google",
+        model="gemini-3.5-flash-lite",
+        prompt_tokens=1000,
+        completion_tokens=0,
+        cached_tokens=0,
+        cache_write_tokens=1000,
+    )
+    assert source == AiCostSource.MEASURED_USAGE_PRICED
+    # 1000 cache writes at the default (input) rate 0.10/1M.
+    assert cost == Decimal("0.0001")
+
+
 def test_gemini_token_cost() -> None:
     """Gemini tokens are priced from the google section."""
     service = PricingService()
@@ -154,3 +204,16 @@ def test_modal_config_parsed_correctly() -> None:
     assert config.modal_audio_include_overhead is True
     assert "T4" in config.modal_gpu_second
     assert config.modal_gpu_second["T4"] == Decimal("0.000164")
+
+
+def test_incentivized_tier_pools_parsed() -> None:
+    """The openai_incentivized_tier section is parsed into pool configs."""
+    service = PricingService()
+    config = service._config
+    assert "mini" in config.tier_pools
+    assert "large" in config.tier_pools
+    mini = config.tier_pools["mini"]
+    assert mini.daily_quota_tokens == 10_000_000
+    assert "gpt-5.6-luna" in mini.models
+    assert config.tier_pools["large"].daily_quota_tokens == 1_000_000
+    assert "gpt-5.4" in config.tier_pools["large"].models

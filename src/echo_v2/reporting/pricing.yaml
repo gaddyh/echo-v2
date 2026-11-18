@@ -14,9 +14,32 @@
 #                            (e.g. Modal usd_per_audio_minute × audio duration).
 #   unknown               — no trustworthy usage; cost is null.
 #
-# Pricing model: input/cached_input/output are per 1,000,000 tokens.
-# Cached input is billed at a discount by OpenAI and Gemini; the
-# cached_input_per_million rate is applied to cached_tokens.
+# Pricing model: input/cached_input/cache_write/output are per 1,000,000
+# tokens. Cached input is billed at a discount by OpenAI and Gemini; the
+# cached_input_per_million rate is applied to cached_tokens. OpenAI bills
+# prompt-cache WRITES at a premium over plain input (historically 1.25x);
+# cache_write_per_million is applied to cache-write tokens, which are part
+# of the provider-reported prompt_tokens total. The field is optional in
+# YAML — a missing value defaults to input_per_million.
+#
+# OpenAI incentivized tier (November 2026 reconciliation, see AGENTS.md):
+#   The production account runs on OpenAI's data-sharing incentives program
+#   (service_tier=incentivized-tier): complimentary daily token quotas in
+#   exchange for sharing API traffic with OpenAI. Documented pools:
+#     - ~10M tokens/day across the mini family (incl. the Luna models,
+#       Terra, *-mini/*-nano models)
+#     - ~1M tokens/day across the large family (gpt-5.4, gpt-4.1, gpt-4o, ...)
+#   A request that would cross the daily quota is billed entirely at normal
+#   rates. Pilot usage (Nov 1-18 2026: ~1.7M/day on gpt-5.6-luna, ~0.5M/day
+#   on gpt-5.4) fits inside the quotas, so invoices are ~$0 — the
+#   estimated_cost_usd stored per event is LIST-PRICE EXPOSURE, not the
+#   billed amount. At thousands-of-users scale the quotas are irrelevant
+#   and list prices apply.
+#
+# Prompt caching (measured Nov 2026 from the OpenAI usage CSV): ~92% of
+# gpt-5.6-luna input tokens hit the prompt cache (stable guard-analysis
+# prefixes). Keep prompt prefix order stable — reordering breaks the cache
+# and raises cost ~10x.
 #
 # Modal note: Modal bills per second of compute resources (GPU, CPU, memory),
 # NOT per minute of audio. Container startup and warm-idle overhead can
@@ -26,23 +49,40 @@
 # period by dividing total Modal cost by total audio minutes transcribed.
 # See AGENTS.md for the reconciliation procedure.
 
-version: "2026-10-26.1"
+version: "2026-11-18.1"
 
 openai:
   # GPT-5.4 Mini — illustrative list price.
   gpt-5.4-mini:
     input_per_million: 0.75
     cached_input_per_million: 0.075
+    cache_write_per_million: 0.9375
     output_per_million: 4.50
-  # GPT-6 Luna — illustrative list price.
+  # GPT-6 Luna — illustrative list price (Luna/mini family).
   gpt-6-luna:
     input_per_million: 0.10
     cached_input_per_million: 0.01
+    cache_write_per_million: 0.125
     output_per_million: 0.50
+  # GPT-5.6 Luna — the Guard analyzer default (GUARD_LLM_MODEL_NAME).
+  # Same Luna/mini family as gpt-6-luna; illustrative until calibrated
+  # from a real invoice. Previously fell back to the `default` rates.
+  gpt-5.6-luna:
+    input_per_million: 0.10
+    cached_input_per_million: 0.01
+    cache_write_per_million: 0.125
+    output_per_million: 0.50
+  # GPT-5.4 — large-family placeholder, illustrative only.
+  gpt-5.4:
+    input_per_million: 1.25
+    cached_input_per_million: 0.125
+    cache_write_per_million: 1.5625
+    output_per_million: 10.00
   # Legacy / fallback defaults for any OpenAI model not listed above.
   default:
     input_per_million: 0.75
     cached_input_per_million: 0.075
+    cache_write_per_million: 0.9375
     output_per_million: 4.50
 
 google:
@@ -104,3 +144,16 @@ estimation_fallbacks:
     # Used when a Gemini call has no token usage.
     input_tokens_per_call: 2000
     output_tokens_per_call: 150
+
+# OpenAI incentivized tier — complimentary daily pools (see the header note).
+# Quotas are shared across the whole organization per day (prompt +
+# completion tokens combined), NOT per user. Used by the analytics tier
+# report to show how close usage is to the quota cliff.
+openai_incentivized_tier:
+  pools:
+    mini:
+      daily_quota_tokens: 10000000
+      models: [gpt-5.6-luna, gpt-6-luna]
+    large:
+      daily_quota_tokens: 1000000
+      models: [gpt-5.4, gpt-4.1, gpt-4o]

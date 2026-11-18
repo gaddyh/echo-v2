@@ -155,6 +155,20 @@ def build_guard_analytics_router(
             headers=_headers(),
         )
 
+    @router.get("/api/admin/guard/analytics/tier-usage")
+    async def tier_usage(
+        wls: str | None = Cookie(default=None, alias=_SESSION_COOKIE),
+        period: str = "7d",
+    ) -> JSONResponse:
+        await _require_admin_async(wls)
+        date_from, date_to = _parse_period(period)
+        start = datetime.combine(date_from, time.min, tzinfo=timezone.utc)
+        end = datetime.combine(date_to + timedelta(days=1), time.min, tzinfo=timezone.utc)
+        report = await cost_service.tier_usage(date_from=start, date_to=end)
+        return JSONResponse(
+            content=jsonable_encoder(report), headers=_headers()
+        )
+
     @router.get("/api/admin/guard/analytics/daily")
     async def daily(
         wls: str | None = Cookie(default=None, alias=_SESSION_COOKIE),

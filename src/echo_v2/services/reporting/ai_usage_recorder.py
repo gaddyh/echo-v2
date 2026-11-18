@@ -176,12 +176,16 @@ class AiUsageRecorder:
     ) -> tuple[Decimal | None, str]:
         """Calculate ``(cost, cost_source)`` for the payload."""
         if payload.usage_type == AiUsageType.TOKENS:
+            cache_write = payload.usage_details.get("cache_write_tokens")
             return self._pricing.estimate_token_cost(
                 provider=context.provider,
                 model=context.model,
                 prompt_tokens=payload.prompt_tokens,
                 completion_tokens=payload.completion_tokens,
                 cached_tokens=payload.cached_tokens,
+                cache_write_tokens=(
+                    int(cache_write) if cache_write is not None else None
+                ),
             )
         if payload.usage_type == AiUsageType.AUDIO_SECONDS:
             return self._pricing.estimate_audio_cost(

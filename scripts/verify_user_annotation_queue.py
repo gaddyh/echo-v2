@@ -42,6 +42,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from echo_v2.observability.tracing import tracing_client
+from echo_v2.persistence.settings import load_db_settings
 from echo_v2.services.feedback_service import WaitingForMeActionService
 
 
@@ -88,7 +89,7 @@ async def main() -> None:
         print("ERROR: USER_ANNOTATION_QUEUE_ID not set in .env")
         sys.exit(1)
 
-    db_url = os.environ["DATABASE_URL"]
+    db_url = load_db_settings().database_url
 
     # Pick a result_id to enqueue.
     if len(sys.argv) > 1:

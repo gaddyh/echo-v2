@@ -47,7 +47,22 @@ _DEFAULT_PRICING_PATH = (
 class _TokenRates:
     input_per_million: Decimal
     cached_input_per_million: Decimal
+    cache_write_per_million: Decimal
     output_per_million: Decimal
+
+
+@dataclass(frozen=True)
+class IncentivizedTierPool:
+    """One complimentary daily pool of the OpenAI incentivized tier.
+
+    The quota is shared across the whole organization per day (prompt +
+    completion combined), not per user. ``models`` lists the model ids
+    that draw from this pool; models not listed anywhere are reported as
+    unmapped by the analytics tier report.
+    """
+
+    daily_quota_tokens: int
+    models: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -68,6 +83,7 @@ class PricingConfig:
     fallback_analyzer_output_tokens_per_call: int
     fallback_gemini_input_tokens_per_call: int
     fallback_gemini_output_tokens_per_call: int
+    tier_pools: dict[str, IncentivizedTierPool]
 
 
 def _to_decimal(value: Any) -> Decimal:
@@ -80,6 +96,11 @@ def _parse_token_rates(section: dict[str, Any]) -> dict[str, _TokenRates]:
         parsed[model] = _TokenRates(
             input_per_million=_to_decimal(rates["input_per_million"]),
             cached_input_per_million=_to_decimal(rates["cached_input_per_million"]),
+            # Optional: OpenAI bills prompt-cache writes at a premium over
+            # plain input. A missing value defaults to the plain input rate.
+            cache_write_per_million=_to_decimal(
+                rates.get("cache_write_per_million", rates["input_per_million"])
+            ),
             output_per_million=_to_decimal(rates["output_per_million"]),
         )
     return parsed
@@ -105,6 +126,14 @@ def _parse_config(raw: dict[str, Any], *, source: str) -> PricingConfig:
         }
         audio_cost = modal["audio_cost"]
         fallbacks = raw["estimation_fallbacks"]
+        tier = raw.get("openai_incentivized_tier") or {}
+        tier_pools = {
+            name: IncentivizedTierPool(
+                daily_quota_tokens=int(pool["daily_quota_tokens"]),
+                models=tuple(pool.get("models") or ()),
+            )
+            for name, pool in (tier.get("pools") or {}).items()
+        }
         return PricingConfig(
             version=version,
             openai=openai,
@@ -134,6 +163,7 @@ def _parse_config(raw: dict[str, Any], *, source: str) -> PricingConfig:
             fallback_gemini_output_tokens_per_call=int(
                 fallbacks["gemini"]["output_tokens_per_call"]
             ),
+            tier_pools=tier_pools,
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise ValueError(f"invalid pricing configuration at {source}: {exc}") from exc
@@ -166,6 +196,7 @@ class PricingService:
         prompt_tokens: int | None,
         completion_tokens: int | None,
         cached_tokens: int | None = None,
+        cache_write_tokens: int | None = None,
     ) -> tuple[Decimal | None, str]:
         """Estimate cost for a token-based OpenAI/Gemini call.
 
@@ -176,6 +207,11 @@ class PricingService:
         ``measured_usage_priced``). When the model is unknown, the
         provider's ``default`` rates are used. When even the provider has
         no rates, returns ``(None, "unknown")``.
+
+        Input decomposition: providers report ``prompt_tokens`` as the sum
+        of uncached input, cached reads, and cache writes. Cached reads are
+        priced at ``cached_input_per_million``; cache writes at
+        ``cache_write_per_million``; the remainder at ``input_per_million``.
         """
         rates = self._token_rates(provider, model)
         if rates is None:
@@ -184,6 +220,7 @@ class PricingService:
         prompt = prompt_tokens or 0
         completion = completion_tokens or 0
         cached = cached_tokens or 0
+        cache_write = cache_write_tokens or 0
 
         if prompt == 0 and completion == 0 and cached == 0:
             # No usage reported — use fallback per-call assumptions.
@@ -193,15 +230,17 @@ class PricingService:
             prompt = fallback_in
             completion = fallback_out
             cached = 0
+            cache_write = 0
             cost_source = AiCostSource.FALLBACK_ESTIMATE
         else:
             cost_source = AiCostSource.MEASURED_USAGE_PRICED
 
-        # Non-cached input = prompt - cached (clamped at 0).
-        non_cached_input = max(0, prompt - cached)
+        # Non-cached input = prompt - cached reads - cache writes (>= 0).
+        non_cached_input = max(0, prompt - cached - cache_write)
         cost = (
             (Decimal(non_cached_input) * rates.input_per_million / Decimal(1_000_000))
             + (Decimal(cached) * rates.cached_input_per_million / Decimal(1_000_000))
+            + (Decimal(cache_write) * rates.cache_write_per_million / Decimal(1_000_000))
             + (Decimal(completion) * rates.output_per_million / Decimal(1_000_000))
         )
         return cost, cost_source
