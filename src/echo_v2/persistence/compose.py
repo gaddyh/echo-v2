@@ -75,6 +75,7 @@ from echo_v2.persistence.postgres_guard_simple import (
     PostgresGuardSimpleAssessmentRepository,
 )
 from echo_v2.persistence.postgres_idempotency import PostgresIdempotencyStore
+from echo_v2.persistence.postgres_ops_digests import PostgresOpsDigestRepository
 from echo_v2.persistence.postgres_parent_attention_delivery import (
     PostgresParentAttentionDeliveryOutcomeRepository,
     PostgresParentAttentionDeliveryRepository,
@@ -142,6 +143,7 @@ class PostgresRepos:
     waiting_list_sessions: PostgresWaitingListSessionRepository
     waitlist: PostgresWaitlistRepository
     ai_usage_events: PostgresAiUsageEventRepository
+    ops_digests: PostgresOpsDigestRepository
     guard_daily_stats: PostgresGuardDailyStatsRepository
     session_factory: async_sessionmaker[AsyncSession]
     unit_of_work: Callable[[], PostgresUnitOfWork]
@@ -201,6 +203,7 @@ def build_postgres_repos(settings: DBSettings) -> PostgresRepos:
     waiting_list_sessions = PostgresWaitingListSessionRepository(factory)
     waitlist = PostgresWaitlistRepository(factory)
     ai_usage_events = PostgresAiUsageEventRepository(factory)
+    ops_digests = PostgresOpsDigestRepository(factory)
     guard_daily_stats = PostgresGuardDailyStatsRepository(factory)
 
     # A UoW factory bound to the same session_factory + cipher.
@@ -247,6 +250,7 @@ def build_postgres_repos(settings: DBSettings) -> PostgresRepos:
         waiting_list_sessions=waiting_list_sessions,
         waitlist=waitlist,
         ai_usage_events=ai_usage_events,
+        ops_digests=ops_digests,
         guard_daily_stats=guard_daily_stats,
         session_factory=factory,
         unit_of_work=_BoundUoW,

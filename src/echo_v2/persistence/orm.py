@@ -2188,3 +2188,44 @@ class GuardDailyStatsRow(Base):
         Index("ix_guard_daily_stats_local_date", "local_date"),
         Index("ix_guard_daily_stats_coverage_status", "coverage_status"),
     )
+
+
+class OpsDigestRow(Base):
+    """One hourly connector ops digest, ingested via the internal endpoint.
+
+    ``digest_key`` (``worker_id:window_to``) is the idempotency key: the
+    connector retries delivery with the same key and must not duplicate.
+    ``digest`` holds the LLM output (happened / resolved / still_open);
+    ``metrics`` holds the redacted counters that fed it, when provided.
+    """
+
+    __tablename__ = "ops_digests"
+
+    id: Mapped[str] = mapped_column(
+        Uuid, primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    digest_key: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    worker_id: Mapped[str] = mapped_column(Text, nullable=False)
+    source: Mapped[str] = mapped_column(Text, nullable=False, default="connector")
+    severity: Mapped[str] = mapped_column(Text, nullable=False)
+    attention: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    one_liner: Mapped[str] = mapped_column(Text, nullable=False)
+    digest: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    metrics: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    window_from: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    window_to: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    received_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        Index("ix_ops_digests_received_at", "received_at"),
+        Index("ix_ops_digests_worker_id", "worker_id"),
+    )

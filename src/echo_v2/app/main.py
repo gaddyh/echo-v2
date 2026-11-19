@@ -963,6 +963,16 @@ def create_app() -> FastAPI:
         admin_user_ids=admin_user_ids,
     )
 
+    # --- Connector ops digests (ingestion + admin browsing) ----------------
+    from echo_v2.app.ops_alert_routes import build_ops_alert_router
+
+    ops_alert_router = build_ops_alert_router(
+        repository=repos.ops_digests,
+        token_service=token_service,
+        admin_user_ids=admin_user_ids,
+        alert_token=os.environ.get("OPS_ALERT_TOKEN", ""),
+    )
+
     # --- FastAPI app with lifespan (scheduler + worker start/stop with app) --
     scheduler_task: asyncio.Task[None] | None = None
     analysis_worker_task: asyncio.Task[None] | None = None
@@ -1192,6 +1202,7 @@ def create_app() -> FastAPI:
     app.include_router(guard_operations_router)
     app.include_router(guard_analytics_router)
     app.include_router(guard_health_router)
+    app.include_router(ops_alert_router)
     app.include_router(guard_demo_router)
 
     # Public landing page + waitlist signup.
