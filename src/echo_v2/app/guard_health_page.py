@@ -126,6 +126,8 @@ html+='</table>';
 document.getElementById('connector').innerHTML=html;
 }
 
+function toggleOps(i){const e=document.getElementById('opsd-'+i);if(e)e.style.display=e.style.display==='none'?'':'none'}
+
 async function loadOps(){
 try{
 const r=await fetch('/api/admin/guard/ops/digests?period=24h');
@@ -135,7 +137,7 @@ let html='<table><tr><th>Time</th><th></th><th>Summary</th><th>Open</th><th>Work
 if(d.digests.length===0){html+='<tr><td colspan=5 class=muted>No ops digests yet.</td></tr>'}
 d.digests.forEach((g,i)=>{
 const open=(g.still_open||[]).length;
-html+='<tr style="cursor:pointer" onclick="const e=document.getElementById(\'opsd-'+i+'\');if(e)e.style.display=e.style.display===\'none\'?\'\':\'none\'">'
+html+='<tr style="cursor:pointer" onclick="toggleOps('+i+')">'
 +'<td>'+ago(g.received_at)+'</td>'
 +'<td>'+(g.attention?'<span class="tag degraded">🔴</span>':'<span class="tag connected">🟢</span>')+'</td>'
 +'<td>'+esc(g.one_liner)+'</td>'
