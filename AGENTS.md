@@ -151,3 +151,15 @@ reference and future GPU-second metering, but are NOT used for current cost
 estimation. `processing_seconds` is stored on each event but is NOT priced
 separately — that would double-count overhead already baked into the
 per-minute rate.
+
+## Ops digests (connector log monitor)
+
+The echo-whatsapp-connector's hourly LLM log digest is POSTed to
+`POST /internal/ops-alerts` (bearer `OPS_ALERT_TOKEN`, constant-time compare)
+and persisted in `ops_digests` (idempotent on `worker_id:window_to`; migration
+`0061_ops_digests`). Browsed via `GET /api/admin/guard/ops/digests?period=24h|7d`
+(admin session cookie, same auth as the other admin routes) and rendered as the
+"Ops Digests (24h)" table in the Guard admin health dashboard
+(`/api/admin/guard/health`) — click a row for the full happened/resolved/
+still-open detail. No push notifications by design (Option B: table + history
+only). If `OPS_ALERT_TOKEN` is unset the ingest endpoint returns 503.

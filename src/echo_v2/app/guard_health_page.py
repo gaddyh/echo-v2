@@ -46,6 +46,7 @@ td{padding:6px 8px;border-bottom:1px solid#21262d}
 <div class="section"><h2>Pipeline Events (1h)</h2><div id="pipeline"></div></div>
 <div class="section"><h2>Delivery Outcomes (24h)</h2><div id="delivery"></div></div>
 <div class="section"><h2>Connector Events (24h)</h2><div id="connector"></div></div>
+<div class="section"><h2>Ops Digests (24h)</h2><div id="ops-digests"></div></div>
 
 </main><script>
 function esc(s){if(s==null)return'';return String(s).replace(/[&<>'\"]/g,c=>({'&':'&','<':'<','>':'>','"':'"',"'":'&#39;'}[c]))}
@@ -124,6 +125,35 @@ Object.entries(d.connector_events_24h).forEach(([k,v])=>{html+='<tr><td>'+esc(k)
 html+='</table>';
 document.getElementById('connector').innerHTML=html;
 }
+
+async function loadOps(){
+try{
+const r=await fetch('/api/admin/guard/ops/digests?period=24h');
+if(!r.ok)throw new Error('HTTP '+r.status);
+const d=await r.json();
+let html='<table><tr><th>Time</th><th></th><th>Summary</th><th>Open</th><th>Worker</th></tr>';
+if(d.digests.length===0){html+='<tr><td colspan=5 class=muted>No ops digests yet.</td></tr>'}
+d.digests.forEach((g,i)=>{
+const open=(g.still_open||[]).length;
+html+='<tr style="cursor:pointer" onclick="const e=document.getElementById(\'opsd-'+i+'\');if(e)e.style.display=e.style.display===\'none\'?\'\':\'none\'">'
++'<td>'+ago(g.received_at)+'</td>'
++'<td>'+(g.attention?'<span class="tag degraded">🔴</span>':'<span class="tag connected">🟢</span>')+'</td>'
++'<td>'+esc(g.one_liner)+'</td>'
++'<td>'+(open?('<b class=error-text>'+open+'</b>'):'0')+'</td>'
++'<td>'+esc(g.worker_id)+'</td></tr>';
+html+='<tr id="opsd-'+i+'" style="display:none"><td colspan=5>';
+(g.happened||[]).forEach(h=>{html+='<div>• <b>'+esc(h.title)+'</b> <span class=tag>'+esc(h.severity||'')+'</span> — '+esc(h.detail||'')+'</div>'});
+(g.resolved||[]).forEach(x=>{html+='<div class=muted>✓ '+esc(x.id)+' — '+esc(x.note||'')+'</div>'});
+(g.still_open||[]).forEach(s=>{html+='<div class=error-text>◉ '+esc(s.id)+' ('+esc(s.severity||'')+', since '+esc(s.since||'?')+') — '+esc(s.note||'')+'</div>'});
+if(!(g.happened||[]).length&&!(g.still_open||[]).length&&!(g.resolved||[]).length){html+='<div class=muted>— quiet hour —</div>'}
+html+='</td></tr>';
+});
+html+='</table>';
+document.getElementById('ops-digests').innerHTML=html;
+}catch(e){document.getElementById('ops-digests').innerHTML='<p class=muted>Ops digests unavailable: '+esc(e.message)+'</p>'}
+}
 load();
+loadOps();
 setInterval(load,30000);
+setInterval(loadOps,30000);
 </script></body></html>"""
