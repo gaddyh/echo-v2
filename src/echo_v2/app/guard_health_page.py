@@ -147,6 +147,8 @@ html+='<tr id="opsd-'+i+'" style="display:none"><td colspan=5>';
 (g.happened||[]).forEach(h=>{html+='<div>• <b>'+esc(h.title)+'</b> <span class=tag>'+esc(h.severity||'')+'</span> — '+esc(h.detail||'')+'</div>'});
 (g.resolved||[]).forEach(x=>{html+='<div class=muted>✓ '+esc(x.id)+' — '+esc(x.note||'')+'</div>'});
 (g.still_open||[]).forEach(s=>{html+='<div class=error-text>◉ '+esc(s.id)+' ('+esc(s.severity||'')+', since '+esc(s.since||'?')+') — '+esc(s.note||'')+'</div>'});
+const ob=((g.metrics||{}).counters)||{};
+html+='<div class=muted>Outbox: replayed '+(ob.outbox_replayed||0)+' · pending '+(ob.outbox_pending||0)+' · write failures '+(ob.outbox_write_failures||0)+'</div>';
 if(!(g.happened||[]).length&&!(g.still_open||[]).length&&!(g.resolved||[]).length){html+='<div class=muted>— quiet hour —</div>'}
 html+='</td></tr>';
 });
