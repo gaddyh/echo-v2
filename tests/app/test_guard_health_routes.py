@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 
 from fastapi import FastAPI
@@ -392,3 +393,24 @@ async def test_health_service_empty_snapshot() -> None:
     assert snap.daily_stats_rows == 0
     assert snap.daily_stats_last_updated is None
     assert snap.connector_events_24h == {}
+
+
+def test_health_page_inline_handlers_are_quote_free() -> None:
+    """Inline onclick handlers must not contain quotes.
+
+    A quote inside an onclick attribute that is itself embedded in a
+    single-quoted JS string literal terminates the string and breaks
+    the whole script block — the page then sits on "Loading…"
+    forever with no error surfaced. Keep inline handlers as bare
+    function calls; put logic in script-level helpers instead.
+    """
+    from echo_v2.app.guard_health_page import HEALTH_PAGE
+
+    handlers = re.findall(r'onclick="([^"]*)"', HEALTH_PAGE)
+    assert handlers, "expected at least one inline handler"
+    allowed = re.compile(r"^[a-zA-Z_$][\w$]*\((?:'\+i\+\')?\)$")
+    for handler in handlers:
+        assert allowed.match(handler), (
+            f"inline handler must be a bare function call (put logic in a "
+            f"script-level helper): {handler!r}"
+        )
