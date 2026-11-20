@@ -546,3 +546,15 @@ async def test_message_event_claim_and_connection_resolution(session_factory, cl
     event = BaileysMessageEvent.from_payload(envelope.payload)
     assert await repository.resolve_message_user(event) == (user_id, connection_id)
     assert await repository.complete_claimed_event(claimed[0]) is True
+    async with session_factory() as session:
+        marked = (
+            await session.execute(
+                text(
+                    "SELECT processed_at FROM whatsapp_connector.event_inbox WHERE event_id = :event_id"
+                ),
+                {"event_id": event_id},
+            )
+        ).scalar_one_or_none()
+    assert marked is not None
+    # A stale re-complete (claim already consumed) must not re-mark or lie.
+    assert await repository.complete_claimed_event(claimed[0]) is False
