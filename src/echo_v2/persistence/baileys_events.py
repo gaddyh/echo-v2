@@ -251,7 +251,25 @@ class BaileysEventRepository:
                     "worker_id": claimed.worker_id,
                 },
             ))
-            return result.rowcount == 1
+            if result.rowcount != 1:
+                return False
+            # Mark the transport row consumed so the connector's retention
+            # sweep can distinguish 7-day consumed events from the 30-day
+            # never-consumed safety valve; also keeps consumed rows out of
+            # future claim polls. Same transaction as the fenced ledger
+            # update: both marks or neither.
+            await session.execute(
+                text(
+                    """
+                    UPDATE whatsapp_connector.event_inbox
+                       SET processed_at = :processed_at
+                     WHERE event_id = :event_id
+                       AND processed_at IS NULL
+                    """
+                ),
+                {"processed_at": now, "event_id": claimed.event.event_id},
+            )
+            return True
 
     async def process_claimed_event(
         self,
