@@ -713,13 +713,20 @@ def create_app() -> FastAPI:
     )
 
     async def user_provider() -> list[tuple[str, str, str | None, str | None]]:
-        """Return all active users as (user_id, phone, timezone, first_name)."""
+        """Return fully onboarded active users as (user_id, phone, timezone, first_name)."""
         from sqlalchemy import select
 
         from echo_v2.persistence.orm import UserRow
 
         async with repos.session_factory() as session:
-            stmt = select(UserRow).where(UserRow.account_status == "active")
+            # account_status defaults to 'active' at INSERT and has no
+            # writer; onboarding_status='active' is the real usable-account
+            # signal. Without it, half-onboarded users (e.g. an abandoned
+            # provisioning attempt) are swept into the daily digest run.
+            stmt = select(UserRow).where(
+                UserRow.account_status == "active",
+                UserRow.onboarding_status == "active",
+            )
             rows = (await session.execute(stmt)).scalars().all()
             return [
                 (str(r.id), r.phone_number, r.timezone, r.first_name)

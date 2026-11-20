@@ -204,20 +204,24 @@ async def test_user_provider_returns_active_users(monkeypatch, postgres_url, cle
     db_settings = load_db_settings()
     repos = build_postgres_repos(db_settings)
 
-    # Insert an active user.
+    # Insert an active, fully onboarded user.
     async with repos.session_factory() as session:
         row = UserRow(
             phone_number=PHONE_E164,
             timezone="Asia/Jerusalem",
             first_name="גדי",
             account_status="active",
+            onboarding_status="active",
         )
         session.add(row)
         await session.commit()
 
     # Replicate what user_provider does.
     async with repos.session_factory() as session:
-        stmt = select(UserRow).where(UserRow.account_status == "active")
+        stmt = select(UserRow).where(
+            UserRow.account_status == "active",
+            UserRow.onboarding_status == "active",
+        )
         rows = (await session.execute(stmt)).scalars().all()
         users = [
             (str(r.id), r.phone_number, r.timezone, r.first_name)
@@ -248,17 +252,22 @@ async def test_user_provider_excludes_inactive_users(monkeypatch, postgres_url, 
             timezone="Asia/Jerusalem",
             first_name="Active",
             account_status="active",
+            onboarding_status="active",
         ))
         session.add(UserRow(
             phone_number="+972540000002",
             timezone="Asia/Jerusalem",
             first_name="Suspended",
             account_status="suspended",
+            onboarding_status="active",
         ))
         await session.commit()
 
     async with repos.session_factory() as session:
-        stmt = select(UserRow).where(UserRow.account_status == "active")
+        stmt = select(UserRow).where(
+            UserRow.account_status == "active",
+            UserRow.onboarding_status == "active",
+        )
         rows = (await session.execute(stmt)).scalars().all()
         users = [
             (str(r.id), r.phone_number, r.timezone, r.first_name)
@@ -267,6 +276,51 @@ async def test_user_provider_excludes_inactive_users(monkeypatch, postgres_url, 
 
     assert len(users) == 1
     assert users[0][3] == "Active"
+
+
+async def test_user_provider_excludes_pending_onboarding_users(monkeypatch, postgres_url, clean_db):
+    """user_provider only returns users with onboarding_status='active'."""
+    _set_required_env(monkeypatch, postgres_url)
+
+    from sqlalchemy import select
+
+    from echo_v2.persistence.compose import build_postgres_repos
+    from echo_v2.persistence.orm import UserRow
+    from echo_v2.persistence.settings import load_db_settings
+
+    db_settings = load_db_settings()
+    repos = build_postgres_repos(db_settings)
+
+    async with repos.session_factory() as session:
+        session.add(UserRow(
+            phone_number="+972540000003",
+            timezone="Asia/Jerusalem",
+            first_name="Onboarded",
+            account_status="active",
+            onboarding_status="active",
+        ))
+        session.add(UserRow(
+            phone_number="+972540000004",
+            timezone="Asia/Jerusalem",
+            first_name="Pending",
+            account_status="active",
+            onboarding_status="pending",
+        ))
+        await session.commit()
+
+    async with repos.session_factory() as session:
+        stmt = select(UserRow).where(
+            UserRow.account_status == "active",
+            UserRow.onboarding_status == "active",
+        )
+        rows = (await session.execute(stmt)).scalars().all()
+        users = [
+            (str(r.id), r.phone_number, r.timezone, r.first_name)
+            for r in rows
+        ]
+
+    assert len(users) == 1
+    assert users[0][3] == "Onboarded"
 
 
 async def test_lifespan_scheduler_recovery_with_stale_actions(
