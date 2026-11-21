@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock
+
 import httpx
 import pytest
 
@@ -430,4 +432,42 @@ async def test_send_image_upload_5xx_is_indeterminate():
             image_bytes=b"bytes",
             mime_type="image/png",
         )
+    await client.aclose()
+
+
+# --- Tracing (errors only) ---
+
+
+async def test_post_json_success_is_not_traced(monkeypatch):
+    """Routine successful requests must not create LangSmith runs."""
+    trace_failure = AsyncMock()
+    monkeypatch.setattr(
+        "echo_v2.integrations.dialog360.client._trace_http_failure", trace_failure
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"messages": [{"id": "m1"}]})
+
+    client = _make_client(handler)
+    await client.send_text("972500000001", "hello")
+    trace_failure.assert_not_called()
+    await client.aclose()
+
+
+async def test_post_json_failure_is_traced(monkeypatch):
+    """Failed requests are traced with the operation name and error."""
+    trace_failure = AsyncMock()
+    monkeypatch.setattr(
+        "echo_v2.integrations.dialog360.client._trace_http_failure", trace_failure
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, json={"error": "unavailable"})
+
+    client = _make_client(handler)
+    with pytest.raises(IndeterminateError):
+        await client.send_text("972500000001", "hello")
+    trace_failure.assert_called_once()
+    assert trace_failure.call_args.args[0] == "send_text"
+    assert isinstance(trace_failure.call_args.args[1], IndeterminateError)
     await client.aclose()

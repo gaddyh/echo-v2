@@ -88,7 +88,6 @@ class BaileysConnectionStateConsumer:
                     item,
                     notification_message=_DISCONNECTED_MESSAGE,
                 )
-                await _trace_connection_state(item.event, processed=True)
                 processed += 1
             except Exception as exc:
                 await _trace_connection_state(item.event, processed=False)
