@@ -171,3 +171,30 @@ async def test_run_loop_can_be_cancelled() -> None:
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
+
+
+async def test_run_once_does_not_trace_successful_events(monkeypatch) -> None:
+    trace = AsyncMock()
+    monkeypatch.setattr(
+        "echo_v2.services.baileys_connection_state_consumer._trace_connection_state",
+        trace,
+    )
+    repository = FakeEventRepository()
+    consumer = BaileysConnectionStateConsumer(repository, worker_id="worker-1")
+
+    assert await consumer.run_once() == 1
+    trace.assert_not_called()
+
+
+async def test_run_once_traces_processing_failures(monkeypatch) -> None:
+    trace = AsyncMock()
+    monkeypatch.setattr(
+        "echo_v2.services.baileys_connection_state_consumer._trace_connection_state",
+        trace,
+    )
+    repository = FakeEventRepository(fail=True)
+    consumer = BaileysConnectionStateConsumer(repository, worker_id="worker-1")
+
+    assert await consumer.run_once() == 0
+    trace.assert_called_once()
+    assert trace.call_args.kwargs == {"processed": False}

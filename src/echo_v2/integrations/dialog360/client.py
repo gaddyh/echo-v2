@@ -20,6 +20,8 @@ import httpx
 from langsmith import traceable
 
 from echo_v2.integrations.dialog360.settings import Dialog360Settings
+from echo_v2.observability.sanitizers import safe_dialog360_http_inputs
+from echo_v2.observability.tracing import tracing_client
 from echo_v2.runtime.errors import (
     IndeterminateError,
     PermanentError,
@@ -29,6 +31,31 @@ from echo_v2.runtime.errors import (
 __all__ = ["Dialog360Client"]
 
 _logger = logging.getLogger("echo_v2.dialog360.client")
+
+
+async def _trace_http_failure(operation: str, exc: BaseException) -> None:
+    """Record a failed 360dialog HTTP request as a LangSmith run.
+
+    Errors only: the bot channel issues one HTTP request per outbound
+    message, so a run per routine successful request would dominate trace
+    volume. Inputs are sanitized (no URL, payload, or API key); the error
+    message comes from our classified raises, which carry only the
+    operation name and HTTP status.
+    """
+
+    @traceable(
+        name="wfm.http.dialog360",
+        client=tracing_client,
+        process_inputs=safe_dialog360_http_inputs,
+    )
+    async def emit(*, operation: str, error_type: str, error: str) -> dict[str, Any]:
+        return {"status": "error", "error_type": error_type, "error": error}
+
+    await emit(
+        operation=operation,
+        error_type=type(exc).__name__,
+        error=str(exc),
+    )
 
 
 class Dialog360Client:
@@ -329,8 +356,20 @@ class Dialog360Client:
         return str(media_id)
 
 
-    @traceable(name="wfm.http.dialog360")
     async def _post_json(
+        self,
+        url: str,
+        payload: dict[str, Any],
+        *,
+        operation: str,
+    ) -> dict[str, Any]:
+        try:
+            return await self._post_json_request(url, payload, operation=operation)
+        except Exception as exc:
+            await _trace_http_failure(operation, exc)
+            raise
+
+    async def _post_json_request(
         self,
         url: str,
         payload: dict[str, Any],
