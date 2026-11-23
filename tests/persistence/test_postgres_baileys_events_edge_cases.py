@@ -103,3 +103,20 @@ async def test_unknown_connection_and_lease_owner_are_safe(session_factory, clea
                 {"event_id": event_id},
             )
         ).one() == ("failed", "unknown connection")
+        assert (
+            await session.execute(
+                text(
+                    "SELECT processed_at FROM whatsapp_connector.event_inbox WHERE event_id=:event_id"
+                ),
+                {"event_id": event_id},
+            )
+        ).scalar_one() is None
+
+    # Failed events stay retryable: the ledger re-offers them to the next claim
+    # while attempt_count is below the max.
+    reclaimed = [
+        item
+        for item in await repository.claim_batch("owner-2", batch_size=1000, lease_seconds=60)
+        if item.event.event_id == event_id
+    ]
+    assert len(reclaimed) == 1
