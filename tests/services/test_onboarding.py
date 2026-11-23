@@ -437,6 +437,13 @@ async def test_parent_contact_validation_and_existing_link_reuse(fakes):
         child_user_id=child_id,
         now=datetime.now(timezone.utc),
     )
+    await _connection_repo.save(StoredConnection(
+        user_id=child_id,
+        ref=ConnectionRef(provider="green", provider_connection_id="child-inst"),
+        credentials=ProviderCredentials(data=b"child-token"),
+        webhook_token_hash=b"hash",
+        status=ConnectionStatus.CONNECTED,
+    ))
     await service._create_child_from_contact(
         ctx, BotContact(phone=child_phone, name="אוריה")
     )
@@ -1828,7 +1835,7 @@ async def test_both_guardians_pending_activate_when_child_connects(fakes):
 
 async def test_second_guardian_sends_already_connected_child_contact(fakes):
     """Scenario: guardian-b sends contact of child they already have an active link for."""
-    service, bot, _user_repo, _connection_repo, _green_client, links, ids = await _setup_two_guardians(fakes)
+    service, bot, _user_repo, connection_repo, _green_client, links, ids = await _setup_two_guardians(fakes)
 
     # Guardian-b already has an active link to the child.
     await links.upsert_active(
@@ -1836,6 +1843,15 @@ async def test_second_guardian_sends_already_connected_child_contact(fakes):
         child_user_id=ids["child_id"],
         now=datetime.now(timezone.utc),
     )
+
+    # The child's WhatsApp is actually connected.
+    await connection_repo.save(StoredConnection(
+        user_id=ids["child_id"],
+        ref=ConnectionRef(provider="green", provider_connection_id="child-inst"),
+        credentials=ProviderCredentials(data=b"child-token"),
+        webhook_token_hash=b"hash",
+        status=ConnectionStatus.CONNECTED,
+    ))
 
     # Guardian-b sends the same child's contact again.
     await service.handle_parent_event(BotEvent(
