@@ -2326,6 +2326,139 @@ async def test_guard_reconnect_callback_and_qr_preparing_without_onboarding():
 
 
 
+async def _contact_reconnect_fixture(
+    *,
+    request_guardian: str | None = None,
+    save_connection: bool = True,
+    with_reconnect_repo: bool = True,
+):
+    """Guardian + onboarded child (active link) whose Baileys connection is
+    down — the contact-resent-after-auth-loss entry point."""
+    from datetime import datetime, timezone
+
+    from echo_v2.ports.bot import BotContact
+
+    bot = FakeBot()
+    users = FakeUserRepo()
+    connections = InMemoryWhatsAppConnectionRepository()
+    links = InMemoryGuardianChildLinkRepository()
+    guardian = await users.create_user(PHONE, first_name="Dana", onboarding_status="active")
+    child = await users.create_user(
+        "+972546610654", first_name="אוריה", onboarding_status="active"
+    )
+    await links.upsert_active(
+        guardian_user_id=guardian, child_user_id=child, now=datetime.now(timezone.utc)
+    )
+    ref = ConnectionRef("baileys", "contact-connection")
+    if save_connection:
+        await connections.save(StoredConnection(
+            user_id=child, ref=ref, credentials=ProviderCredentials(data=b""),
+            webhook_token_hash=b"", status=ConnectionStatus.PAIRING_REQUIRED,
+        ))
+    conn = await connections.get_by_user(child)
+    assert (conn is not None) == save_connection
+    request = {
+        "id": "contact-reconnect-request", "child_user_id": child,
+        "guardian_user_id": request_guardian or guardian,
+        "connection_id": conn.id if conn is not None else None,
+        "status": "open", "first_name": "אוריה",
+    }
+    reconnect = FakeReconnectRepository(request) if with_reconnect_repo else None
+    provisioner = AsyncMock()
+    service = OnboardingService(
+        bot=bot, user_repo=users, connection_repo=connections,
+        provisioner=provisioner, green_client=None,
+        webhook_base_url="https://echo.example.com",
+        guardian_child_links=links, reconnect_requests=reconnect,
+        poll_interval=0.01, poll_max_attempts=1,
+    )
+    return (
+        service, bot, users, connections, links, provisioner, reconnect,
+        request, ref, BotContact,
+    )
+
+
+def _child_contact_event(contact_cls) -> BotEvent:
+    return BotEvent(
+        event_id="contact-resent", user_phone=PHONE,
+        type=BotEventType.CONTACT,
+        contact=contact_cls(phone="+972546610654", name="אוריה"),
+    )
+
+
+async def test_contact_for_disconnected_child_routes_to_reconnect():
+    """Re-sending the contact of an onboarded-but-disconnected child offers
+    the reconnect flow instead of the "already connected" dead end."""
+    (
+        service, bot, _users, _connections, _links, provisioner, _reconnect,
+        request, _ref, contact_cls,
+    ) = await _contact_reconnect_fixture()
+    await service.handle_parent_event(_child_contact_event(contact_cls))
+    # Reconnect instructions + [הצג QR] button for the open request.
+    assert bot.sent_buttons
+    assert bot.sent_buttons[-1][2][0]["id"] == f"guard:reconnect_qr:{request['id']}"
+    assert "מכשירים מקושרים" in bot.sent_buttons[-1][1]
+    # No dead-end "already connected" claim, no QR fetched yet.
+    assert not any("כבר מחובר" in text for _phone, text in bot.sent)
+    provisioner.get_pairing_qr.assert_not_called()
+
+
+async def test_contact_for_disconnected_child_without_request_sends_qr():
+    """No open reconnect request for this guardian → fall back to the
+    pending-link guardian flow: scan instructions + direct QR delivery."""
+    (
+        service, bot, _users, _connections, _links, provisioner, _reconnect,
+        _request, _ref, contact_cls,
+    ) = await _contact_reconnect_fixture(request_guardian="other-guardian")
+    provisioner.get_pairing_qr.return_value = PairingResult(
+        outcome=PairingOutcome.QR_READY,
+        qr=PairingQr(image_base64=base64.b64encode(b"qr").decode()),
+    )
+    provisioner.get_status.return_value = ConnectionStatusSnapshot(
+        status=ConnectionStatus.PAIRING_REQUIRED,
+    )
+    await service.handle_parent_event(_child_contact_event(contact_cls))
+    # Scan instructions, then the QR image itself.
+    assert any("מכשירים מקושרים" in text for _phone, text in bot.sent)
+    assert len(bot.sent_images) == 1
+    assert not any("כבר מחובר" in text for _phone, text in bot.sent)
+    provisioner.get_pairing_qr.assert_called_once()
+    # Let the bounded background status poll finish before the loop closes.
+    await asyncio.sleep(0.05)
+
+
+async def test_contact_for_provisioning_child_says_still_preparing():
+    """Onboarded child whose connection is provisioning → "still preparing"."""
+    (
+        service, bot, _users, connections, _links, provisioner, _reconnect,
+        _request, ref, contact_cls,
+    ) = await _contact_reconnect_fixture()
+    await connections.update_status(ref, ConnectionStatus.PROVISIONING, None)
+    await service.handle_parent_event(_child_contact_event(contact_cls))
+    assert any("בהכנה" in text for _phone, text in bot.sent)
+    assert not any("כבר מחובר" in text for _phone, text in bot.sent)
+    provisioner.get_pairing_qr.assert_not_called()
+
+
+async def test_contact_for_child_without_connection_starts_pairing():
+    """Active link but no connection row and no reconnect tracking → start
+    a fresh pairing flow for the child (scan instructions + provisioning)."""
+    (
+        service, bot, _users, _connections, _links, provisioner, _reconnect,
+        _request, _ref, contact_cls,
+    ) = await _contact_reconnect_fixture(
+        save_connection=False, with_reconnect_repo=False
+    )
+    await service.handle_parent_event(_child_contact_event(contact_cls))
+    # Scan instructions, then provisioning starts for the child.
+    assert any("מכשירים מקושרים" in text for _phone, text in bot.sent)
+    assert any("מכין חיבור" in text for _phone, text in bot.sent)
+    assert not any("כבר מחובר" in text for _phone, text in bot.sent)
+    # Let the background _prepare_instance task fail gracefully on the mock.
+    await asyncio.sleep(0.05)
+
+
+
 async def test_guard_reconnect_handles_invalid_and_unavailable_requests():
     service, bot, _users, _connections, _green_client = _make_service()
     await service.handle_guard_reconnect(PHONE)

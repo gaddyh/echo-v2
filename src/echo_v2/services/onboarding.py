@@ -546,13 +546,66 @@ class OnboardingService:
         )
         self._pending_contacts.pop(ctx.user_id, None)
         if link.status.value == "active":
-            await self._bot.send_text(ctx.phone, f"{name} כבר מחובר/ת ל-Guard.")
+            # An active link means the child was onboarded at some point —
+            # not that their WhatsApp is currently connected. Check the
+            # actual connection before claiming "already connected"; a
+            # disconnected child (e.g. Baileys auth loss) needs the
+            # re-pairing flow, not a dead end.
+            child_conn = await self._connection_repo.get_by_user(link.child_user_id)
+            if child_conn is not None and child_conn.status is ConnectionStatus.CONNECTED:
+                await self._bot.send_text(ctx.phone, f"{name} כבר מחובר/ת ל-Guard.")
+                return
+            if child_conn is not None and child_conn.status is ConnectionStatus.PROVISIONING:
+                await self._bot.send_text(ctx.phone, _CHILD_STILL_PREPARING.format(name=name))
+                return
+            await self._offer_child_reconnect(ctx, link, child_conn)
             return
         await self._bot.send_buttons(
             ctx.phone,
             body_text=_guard_authorization_body(self._webhook_base_url),
             buttons=[_GUARD_AUTH_BUTTON],
         )
+
+    async def _offer_child_reconnect(
+        self,
+        ctx: OnboardingContext,
+        link: GuardianChildLink,
+        child_conn: StoredConnection | None,
+    ) -> None:
+        """Offer re-pairing for an onboarded child whose WhatsApp is down.
+
+        When an open reconnect request exists for this guardian and the
+        child's current connection (the Baileys auth-loss flow), route
+        through the standard reconnect flow (instructions + [הצג QR]
+        button). Otherwise fall back to the pending-link guardian flow:
+        send the linked-device scan instructions and deliver the pairing
+        QR directly.
+        """
+        if (
+            self._reconnect_requests is not None
+            and child_conn is not None
+            and child_conn.id is not None
+        ):
+            requests = await self._reconnect_requests.list_open_reconnect_requests(
+                ctx.user_id
+            )
+            request_id = next(
+                (
+                    str(request["id"])
+                    for request in requests
+                    if str(request["child_user_id"]) == link.child_user_id
+                    and (
+                        request.get("connection_id") is None
+                        or str(request.get("connection_id")) == str(child_conn.id)
+                    )
+                ),
+                None,
+            )
+            if request_id is not None:
+                await self.handle_guard_reconnect(ctx.phone, request_id)
+                return
+        await self._send_guard_scan_instructions(link, ctx.phone)
+        await self.show_pairing_qr(link.child_user_id, ctx.phone)
 
     async def _pending_for_guardian(
         self, guardian_id: str
