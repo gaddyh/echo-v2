@@ -2444,7 +2444,7 @@ async def test_contact_for_child_without_connection_starts_pairing():
     """Active link but no connection row and no reconnect tracking → start
     a fresh pairing flow for the child (scan instructions + provisioning)."""
     (
-        service, bot, _users, _connections, _links, provisioner, _reconnect,
+        service, bot, _users, _connections, _links, _provisioner, _reconnect,
         _request, _ref, contact_cls,
     ) = await _contact_reconnect_fixture(
         save_connection=False, with_reconnect_repo=False
