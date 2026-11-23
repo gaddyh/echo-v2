@@ -163,3 +163,21 @@ and persisted in `ops_digests` (idempotent on `worker_id:window_to`; migration
 (`/api/admin/guard/health`) — click a row for the full happened/resolved/
 still-open detail. No push notifications by design (Option B: table + history
 only). If `OPS_ALERT_TOKEN` is unset the ingest endpoint returns 503.
+
+## Baileys event_inbox consumption contract
+
+- Echo owns marking `whatsapp_connector.event_inbox.processed_at` when it
+  finishes consuming an event — both consumers: messages via
+  `complete_claimed_event`, connection-state via `process_claimed_event`
+  (including the stale-`state_version` ignore path). Marking runs in the
+  same transaction as the ledger update and is idempotent
+  (`processed_at IS NULL` guard). Failed events stay unprocessed so they
+  remain retryable.
+- The claim partial index is typed:
+  `(event_type, received_at, id) WHERE processed_at IS NULL`
+  (connector migration `008_event_inbox_typed_index`). Unmarked transport
+  rows made every claim poll scan the 30-day never-consumed backlog — that
+  was the 2026-11 Render "95ms × 3.6M SELECTs on event_inbox" finding.
+- `scripts/backfill_event_inbox_processed.py` backfills `processed_at` from
+  the ledger for already-consumed events (dry-run default, `--yes` to
+  execute, batched). Run it once after enabling the state-event marking.

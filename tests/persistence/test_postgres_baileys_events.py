@@ -185,6 +185,14 @@ async def test_consumer_claims_updates_and_enqueues_once(
                 {"event_id": event_id},
             )
         ).one()
+        transport = (
+            await session.execute(
+                text(
+                    "SELECT processed_at FROM whatsapp_connector.event_inbox WHERE event_id=:event_id"
+                ),
+                {"event_id": event_id},
+            )
+        ).scalar_one()
 
     assert status == "pairing_required"
     async with session_factory() as session:
@@ -200,6 +208,7 @@ async def test_consumer_claims_updates_and_enqueues_once(
     assert action["reconnect_request_id"]
     assert action["idempotency_key"].startswith("baileys-reauth:")
     assert ledger == ("processed", "pending")
+    assert transport is not None
     await repository.mark_notification_sent(event_id)
     async with session_factory() as session:
         assert (
@@ -221,6 +230,112 @@ async def test_consumer_claims_updates_and_enqueues_once(
         await session.commit()
     connected_claim = (await repository.claim_batch("worker-3", batch_size=50, lease_seconds=60))[0]
     assert await repository.process_claimed_event(connected_claim, notification_message="reauth") is False
+    async with session_factory() as session:
+        assert (
+            await session.execute(
+                text(
+                    "SELECT processed_at FROM whatsapp_connector.event_inbox WHERE event_id=:event_id"
+                ),
+                {"event_id": connected_event_id},
+            )
+        ).scalar_one() is not None
+
+
+async def test_state_event_stale_version_marks_transport_row(session_factory, clean_db):
+    await _create_connector_tables(session_factory)
+    user_id = str(uuid.uuid4())
+    connection_id = str(uuid.uuid4())
+    connector_id = str(uuid.uuid4())
+    event_id = f"state:{connector_id}:9"
+    payload = {
+        "schema_version": 1,
+        "event_type": "connection_state",
+        "event_id": event_id,
+        "provider": "baileys",
+        "connection_id": connector_id,
+        "status": "connected",
+        "provider_raw_status": "open",
+        "state_version": 9,
+        "timestamp": "2026-10-03T00:00:00Z",
+    }
+
+    async with session_factory() as session:
+        await session.execute(
+            text("INSERT INTO users(id, phone_number, onboarding_status) VALUES (:id, :phone, 'active')"),
+            {"id": user_id, "phone": "972500000002"},
+        )
+        await session.execute(
+            text(
+                """
+                INSERT INTO whatsapp_connections(
+                    id, user_id, provider, provider_connection_id, credentials,
+                    webhook_token_hash, connection_status, baileys_state_version
+                ) VALUES(
+                    :id, :user_id, 'baileys', :provider_id, :credentials,
+                    :webhook_hash, 'connected', 11
+                )
+                """
+            ),
+            {
+                "id": connection_id,
+                "user_id": user_id,
+                "provider_id": connector_id,
+                "credentials": b"",
+                "webhook_hash": b"",
+            },
+        )
+        await session.execute(
+            text("INSERT INTO whatsapp_connector.connections(id, status) VALUES (:id, 'connected')"),
+            {"id": connector_id},
+        )
+        await session.execute(
+            text(
+                """
+                INSERT INTO whatsapp_connector.event_inbox(
+                    event_id, connection_id, event_type, payload
+                ) VALUES (:event_id, :connection_id, 'connection_state', CAST(:payload AS jsonb))
+                """
+            ),
+            {
+                "event_id": event_id,
+                "connection_id": connector_id,
+                "payload": json.dumps(payload),
+            },
+        )
+        await session.commit()
+
+    repository = BaileysEventRepository(session_factory)
+    claimed = [
+        item
+        for item in await repository.claim_batch("test-worker", batch_size=50, lease_seconds=60)
+        if item.event.event_id == event_id
+    ]
+    assert len(claimed) == 1
+    assert await repository.process_claimed_event(
+        claimed[0], notification_message="reauth"
+    ) is False
+
+    async with session_factory() as session:
+        row = (
+            await session.execute(
+                text(
+                    """
+                    SELECT p.status AS ledger_status, e.processed_at AS transport_processed_at
+                      FROM baileys_connector_event_processing p
+                      JOIN whatsapp_connector.event_inbox e ON e.event_id = p.event_id
+                     WHERE p.event_id = :event_id
+                    """
+                ),
+                {"event_id": event_id},
+            )
+        ).one()
+    assert row.ledger_status == "processed"
+    assert row.transport_processed_at is not None
+    assert [
+        item
+        for item in await repository.claim_batch("test-worker-2", batch_size=50, lease_seconds=60)
+        if item.event.event_id == event_id
+    ] == []
 
 
 async def test_recent_event_queries(session_factory, clean_db):

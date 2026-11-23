@@ -226,6 +226,29 @@ class BaileysEventRepository:
                 return None
             return str(row["user_id"]), str(row["id"])
 
+    @staticmethod
+    async def _mark_transport_consumed(
+        session: AsyncSession, *, event_id: str, processed_at: datetime
+    ) -> None:
+        """Mark the connector transport row consumed for a processed event.
+
+        Lets the connector's retention sweep distinguish 7-day consumed
+        events from the 30-day never-consumed safety valve, and keeps
+        consumed rows out of future claim polls. Idempotent via the
+        ``processed_at IS NULL`` guard, so retry/re-claim races are safe.
+        """
+        await session.execute(
+            text(
+                """
+                UPDATE whatsapp_connector.event_inbox
+                   SET processed_at = :processed_at
+                 WHERE event_id = :event_id
+                   AND processed_at IS NULL
+                """
+            ),
+            {"processed_at": processed_at, "event_id": event_id},
+        )
+
     async def complete_claimed_event(
         self,
         claimed: ClaimedBaileysEvent,
@@ -253,21 +276,10 @@ class BaileysEventRepository:
             ))
             if result.rowcount != 1:
                 return False
-            # Mark the transport row consumed so the connector's retention
-            # sweep can distinguish 7-day consumed events from the 30-day
-            # never-consumed safety valve; also keeps consumed rows out of
-            # future claim polls. Same transaction as the fenced ledger
-            # update: both marks or neither.
-            await session.execute(
-                text(
-                    """
-                    UPDATE whatsapp_connector.event_inbox
-                       SET processed_at = :processed_at
-                     WHERE event_id = :event_id
-                       AND processed_at IS NULL
-                    """
-                ),
-                {"processed_at": now, "event_id": claimed.event.event_id},
+            # Same transaction as the fenced ledger update: both marks or
+            # neither.
+            await self._mark_transport_consumed(
+                session, event_id=claimed.event.event_id, processed_at=now
             )
             return True
 
@@ -345,6 +357,9 @@ class BaileysEventRepository:
                         ),
                         {"processed_at": now, "event_id": event.event_id,
                          "worker_id": claimed.worker_id},
+                    )
+                    await self._mark_transport_consumed(
+                        session, event_id=event.event_id, processed_at=now
                     )
                     return False
 
@@ -525,6 +540,9 @@ class BaileysEventRepository:
                         "event_id": event.event_id,
                         "worker_id": claimed.worker_id,
                     },
+                )
+                await self._mark_transport_consumed(
+                    session, event_id=event.event_id, processed_at=now
                 )
                 return should_notify
 
