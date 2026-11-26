@@ -18,7 +18,11 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Protocol, runtime_checkable
 
-from echo_v2.domain.waha import WahaBatchIngestResult, WahaInboxMessage
+from echo_v2.domain.waha import (
+    ClaimedWahaMessage,
+    WahaBatchIngestResult,
+    WahaInboxMessage,
+)
 
 __all__ = ["WahaEventInboxRepository"]
 
@@ -33,6 +37,45 @@ class WahaEventInboxRepository(Protocol):
 
     async def get(self, session: str, message_id: str) -> WahaInboxMessage | None:
         """Return the stored message for ``(session, message_id)``, if any."""
+        ...
+
+    async def claim_pending(
+        self,
+        worker_id: str,
+        *,
+        batch_size: int,
+        lease_seconds: int,
+        max_attempts: int = 10,
+    ) -> list[ClaimedWahaMessage]:
+        """Claim up to ``batch_size`` retryable rows for processing.
+
+        Claims pending/failed rows and expired ``processing`` leases,
+        skipping rows whose ``attempt_count`` reached ``max_attempts``.
+        Each claim bumps ``attempt_count`` and holds a lease.
+        """
+        ...
+
+    async def complete_claimed(self, claimed: ClaimedWahaMessage) -> bool:
+        """Mark a claimed row processed, fenced by revision and lease owner.
+
+        Returns ``False`` (and leaves the row retryable) when the payload was
+        updated mid-processing or the lease was lost.
+        """
+        ...
+
+    async def mark_failed(self, claimed: ClaimedWahaMessage, error: str) -> None:
+        """Release a claimed row as ``failed`` so a later poll can retry it."""
+        ...
+
+    async def backlog_stats(
+        self,
+    ) -> tuple[int, int, float | None]:
+        """Return ``(pending, failed, oldest_age_seconds)`` for unprocessed rows.
+
+        ``oldest_age_seconds`` is ``None`` when the inbox has no unprocessed
+        rows. Media CDN URLs expire (~hours), so a growing age is an
+        operational warning, not just lag.
+        """
         ...
 
     async def mark_processed(

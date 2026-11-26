@@ -16,11 +16,46 @@ from dataclasses import dataclass
 from datetime import datetime
 
 __all__ = [
+    "ClaimedWahaMessage",
     "WahaBatchIngestResult",
     "WahaInboxMessage",
+    "WahaMediaPayload",
     "WahaWorkerRegistration",
     "WahaWorkerStatus",
 ]
+
+
+@dataclass(frozen=True)
+class WahaMediaPayload:
+    """Media descriptor extracted from a GOWS envelope.
+
+    ``media_key`` / ``file_sha256`` are the base64 strings exactly as they
+    appear in the envelope (WhatsApp client-side E2E encryption fields).
+    ``media_type`` selects the HKDF info string ("WhatsApp <Type> Keys").
+    """
+
+    media_type: str
+    kind: str
+    url: str
+    media_key: str
+    file_length: int
+    file_sha256: str
+    mimetype: str | None = None
+    file_name: str | None = None
+
+
+@dataclass(frozen=True)
+class ClaimedWahaMessage:
+    """One inbox row claimed for processing by the WAHA consumer.
+
+    ``revision`` fences the completion: if the payload is updated while the
+    row is being processed (revision bumped, status reset to pending), the
+    processor's completion is rejected and the new revision is re-processed.
+    """
+
+    message: WahaInboxMessage
+    revision: int
+    worker_id: str
 
 
 @dataclass(frozen=True)

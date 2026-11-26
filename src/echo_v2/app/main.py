@@ -364,6 +364,41 @@ def create_app() -> FastAPI:
             max_attempts=int(os.environ.get("BAILEYS_MESSAGE_MAX_ATTEMPTS", "10")),
         )
 
+    # --- WAHA message consumer (inbox rows → chat ingestion) ---------------
+    from echo_v2.services.waha_media import (
+        ChainedMediaUrlResolver,
+        WahaMediaUrlResolver,
+    )
+    from echo_v2.services.waha_message_consumer import WahaMessageConsumer
+
+    waha_message_consumer: WahaMessageConsumer | None = None
+    waha_media_resolver: WahaMediaUrlResolver | None = None
+    if os.environ.get("WAHA_MESSAGE_CONSUMER_ENABLED", "false").lower() in (
+        "1", "true", "yes"
+    ):
+        waha_media_resolver = WahaMediaUrlResolver(
+            repos.waha_event_inbox,
+            max_bytes=int(
+                os.environ.get("WAHA_MEDIA_MAX_BYTES", str(16 * 1024 * 1024))
+            ),
+        )
+        waha_message_consumer = WahaMessageConsumer(
+            repos.waha_event_inbox,
+            repos.connections,
+            ingestion_service,
+            poll_interval_seconds=float(
+                os.environ.get("WAHA_MESSAGE_POLL_INTERVAL_MS", "1000")
+            )
+            / 1000,
+            batch_size=int(os.environ.get("WAHA_MESSAGE_BATCH_SIZE", "50")),
+            lease_seconds=int(os.environ.get("WAHA_MESSAGE_LEASE_SECONDS", "60")),
+            max_attempts=int(os.environ.get("WAHA_MESSAGE_MAX_ATTEMPTS", "10")),
+            backlog_alert_seconds=float(
+                os.environ.get("WAHA_BACKLOG_ALERT_SECONDS", "3600")
+            ),
+        )
+        _logger.info("WAHA message consumer enabled")
+
     # --- chat analysis worker (NOT started by default — CHAT_ANALYSIS_ENABLED)
     from echo_v2.services.gemini_video_summarizer import GeminiVideoSummarizer
     from echo_v2.services.guard_analysis import GuardAnalysisProcessor
@@ -410,10 +445,13 @@ def create_app() -> FastAPI:
         recorder=ai_usage_recorder,
     )
     _logger.info("media summarizer built: %s", type(media_summarizer).__name__)
+    media_resolvers: dict[str, object] = {}
+    if baileys_client is not None:
+        media_resolvers["baileys"] = BaileysMediaUrlResolver(baileys_client)
+    if waha_media_resolver is not None:
+        media_resolvers["waha"] = waha_media_resolver
     media_url_resolver = (
-        BaileysMediaUrlResolver(baileys_client)
-        if baileys_client is not None
-        else None
+        ChainedMediaUrlResolver(media_resolvers) if media_resolvers else None
     )
     media_enrichment = MediaEnrichmentService(
         message_repo=repos.messages,
@@ -1005,6 +1043,7 @@ def create_app() -> FastAPI:
     pool_warmup_task: asyncio.Task[None] | None = None
     baileys_event_consumer_task: asyncio.Task[None] | None = None
     baileys_message_consumer_task: asyncio.Task[None] | None = None
+    waha_message_consumer_task: asyncio.Task[None] | None = None
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -1013,6 +1052,7 @@ def create_app() -> FastAPI:
         nonlocal snooze_worker_task, alert_checker_task
         nonlocal pool_warmup_task, baileys_event_consumer_task
         nonlocal baileys_message_consumer_task
+        nonlocal waha_message_consumer_task
         # Startup: recover stale actions and isolated Guard Live Compare runs.
         try:
             recovered_guard_runs = await guard_live_compare.recover_stale_runs()
@@ -1038,6 +1078,11 @@ def create_app() -> FastAPI:
                 baileys_message_consumer.run_loop()
             )
             _logger.info("Baileys message consumer loop started")
+        if waha_message_consumer is not None:
+            waha_message_consumer_task = asyncio.create_task(
+                waha_message_consumer.run_loop()
+            )
+            _logger.info("WAHA message consumer loop started")
 
         # Start instance pool warm-up in the background (non-blocking).
         # Early users fall to the slow path if the pool isn't warm yet.
@@ -1090,6 +1135,13 @@ def create_app() -> FastAPI:
             except asyncio.CancelledError:
                 pass
             _logger.info("Baileys message consumer loop stopped")
+        if waha_message_consumer_task is not None:
+            waha_message_consumer_task.cancel()
+            try:
+                await waha_message_consumer_task
+            except asyncio.CancelledError:
+                pass
+            _logger.info("WAHA message consumer loop stopped")
         if alert_checker_task is not None:
             alert_checker_task.cancel()
             try:
