@@ -85,6 +85,8 @@ __all__ = [
     "ProviderWebhookEventRow",
     "ScheduledActionRow",
     "UserRow",
+    "WahaEventInboxRow",
+    "WahaWorkerRow",
     "WaitingForMeActionRow",
     "WaitingForMeActiveRow",
     "WaitingForMeFeedbackRow",
@@ -2228,4 +2230,102 @@ class OpsDigestRow(Base):
     __table_args__ = (
         Index("ix_ops_digests_received_at", "received_at"),
         Index("ix_ops_digests_worker_id", "worker_id"),
+    )
+
+
+class WahaEventInboxRow(Base):
+    """One message durably ingested from a WAHA batch agent.
+
+    ``data`` stores the exact raw Whatsmeow JSON string the agent sent —
+    never re-serialized. ``sha256`` is the agent-supplied digest of the
+    UTF-8 bytes of ``data``; ``(session, message_id)`` is the dedup key.
+    ``revision`` increments on every payload update and guards processing:
+    a processor that handled an older revision can never mark a newer one
+    processed. ``from_me`` / ``is_real`` keep the wire's 0/1 integers.
+    """
+
+    __tablename__ = "waha_event_inbox"
+
+    id: Mapped[str] = mapped_column(
+        Uuid, primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    session: Mapped[str] = mapped_column(Text, nullable=False)
+    message_id: Mapped[str] = mapped_column(Text, nullable=False)
+    chat_jid: Mapped[str] = mapped_column(Text, nullable=False)
+    whatsapp_timestamp: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False
+    )
+    from_me: Mapped[int] = mapped_column(Integer, nullable=False)
+    is_real: Mapped[int] = mapped_column(Integer, nullable=False)
+    data: Mapped[str] = mapped_column(Text, nullable=False)
+    sha256: Mapped[str] = mapped_column(Text, nullable=False)
+    seq: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    agent_first_seen_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False
+    )
+    first_received_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+    last_updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+    status: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default="pending"
+    )
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
+    batch_id: Mapped[str] = mapped_column(Text, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "session", "message_id", name="uq_waha_event_inbox_session_message"
+        ),
+        CheckConstraint("from_me IN (0, 1)", name="ck_waha_event_inbox_from_me"),
+        CheckConstraint("is_real IN (0, 1)", name="ck_waha_event_inbox_is_real"),
+        CheckConstraint(
+            "status IN ('pending', 'processing', 'processed', 'failed')",
+            name="ck_waha_event_inbox_status",
+        ),
+        Index("ix_waha_event_inbox_batch_id", "batch_id"),
+        Index(
+            "ix_waha_event_inbox_pending",
+            "first_received_at",
+            postgresql_where=text("status = 'pending'"),
+        ),
+    )
+
+
+class WahaWorkerRow(Base):
+    """One WAHA batch agent registered via POST /internal/waha/register.
+
+    ``last_seen_at`` is Echo's server-side receive time — the authoritative
+    heartbeat. ``reported_heartbeat`` is the worker's own clock, kept for
+    diagnostics only (clock skew cannot affect availability).
+    ``first_registered_at`` is set once and preserved by the upsert.
+    """
+
+    __tablename__ = "waha_workers"
+
+    worker_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    region: Mapped[str] = mapped_column(Text, nullable=False)
+    endpoint: Mapped[str] = mapped_column(Text, nullable=False)
+    max_sessions: Mapped[int] = mapped_column(Integer, nullable=False)
+    active_sessions: Mapped[int] = mapped_column(Integer, nullable=False)
+    agent_version: Mapped[str] = mapped_column(Text, nullable=False)
+    health: Mapped[str] = mapped_column(Text, nullable=False)
+    reported_heartbeat: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+    first_registered_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+    pending: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            "health IN ('starting', 'ok', 'degraded')",
+            name="ck_waha_workers_health",
+        ),
     )

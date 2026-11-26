@@ -151,6 +151,8 @@ async def clean_db(engine) -> AsyncIterator[None]:
         await conn.exec_driver_sql(
             "TRUNCATE TABLE "
             "ops_digests, "
+            "waha_event_inbox, "
+            "waha_workers, "
             "waitlist_signups, "
             "guard_eval_judgments, "
             "guard_eval_snapshots, "

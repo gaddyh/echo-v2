@@ -980,6 +980,19 @@ def create_app() -> FastAPI:
         alert_token=os.environ.get("OPS_ALERT_TOKEN", ""),
     )
 
+    # --- WAHA batch-agent ingestion (Phase 1: durable inbox + registry) ----
+    from echo_v2.app.waha_routes import build_waha_router
+
+    waha_router = build_waha_router(
+        inbox=repos.waha_event_inbox,
+        workers=repos.waha_workers,
+        token=os.environ.get("WAHA_AGENT_TOKEN", ""),
+        max_messages=int(os.environ.get("WAHA_BATCH_MAX_MESSAGES", "200")),
+        max_body_bytes=int(
+            os.environ.get("WAHA_BATCH_MAX_BODY_BYTES", str(8 * 1024 * 1024))
+        ),
+    )
+
     # --- FastAPI app with lifespan (scheduler + worker start/stop with app) --
     scheduler_task: asyncio.Task[None] | None = None
     analysis_worker_task: asyncio.Task[None] | None = None
@@ -1210,6 +1223,7 @@ def create_app() -> FastAPI:
     app.include_router(guard_analytics_router)
     app.include_router(guard_health_router)
     app.include_router(ops_alert_router)
+    app.include_router(waha_router)
     app.include_router(guard_demo_router)
 
     # Public landing page + waitlist signup.
