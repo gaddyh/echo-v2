@@ -2274,6 +2274,12 @@ class WahaEventInboxRow(Base):
     )
     revision: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
     batch_id: Mapped[str] = mapped_column(Text, nullable=False)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    lease_owner: Mapped[str | None] = mapped_column(Text, nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = (
         UniqueConstraint(
@@ -2287,9 +2293,14 @@ class WahaEventInboxRow(Base):
         ),
         Index("ix_waha_event_inbox_batch_id", "batch_id"),
         Index(
-            "ix_waha_event_inbox_pending",
+            "ix_waha_event_inbox_claimable",
             "first_received_at",
-            postgresql_where=text("status = 'pending'"),
+            postgresql_where=text("status IN ('pending', 'failed')"),
+        ),
+        Index(
+            "ix_waha_event_inbox_leases",
+            "lease_expires_at",
+            postgresql_where=text("status = 'processing'"),
         ),
     )
 

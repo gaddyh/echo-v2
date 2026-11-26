@@ -144,11 +144,32 @@ async def handle_direct_audio_download_url(
 
 
 async def download_file(url: str, target_path: Path) -> None:
-    """Download a URL to a local path using httpx."""
+    """Download a URL to a local path using httpx.
+
+    ``file://`` URLs are also supported: they are produced by Echo's own
+    media resolvers (e.g. the WAHA decrypting resolver handing over
+    pre-decrypted local files) and never originate from external input.
+    """
+    if url.startswith("file://"):
+        target_path.write_bytes(_read_local_media(url))
+        return
     async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
         response = await client.get(url)
         response.raise_for_status()
         target_path.write_bytes(response.content)
+
+
+def _read_local_media(url: str) -> bytes:
+    """Read a ``file://`` media path inside the resolver temp cache."""
+    from urllib.parse import unquote, urlparse
+
+    parsed = urlparse(url)
+    if parsed.netloc not in ("", "localhost"):
+        raise TranscriptionError("local media path must not reference a host")
+    path = Path(unquote(parsed.path))
+    if not path.is_file():
+        raise TranscriptionError(f"local media file not found: {path.name}")
+    return path.read_bytes()
 
 
 def ensure_transcribable_audio(path: Path) -> Path:

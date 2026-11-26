@@ -398,8 +398,24 @@ async def download_media(
     url: str,
     http_client: httpx.AsyncClient | None = None,
 ) -> bytes:
-    """Download a media file from a direct URL, capped at ``_MAX_DOWNLOAD_BYTES``."""
+    """Download a media file from a direct URL, capped at ``_MAX_DOWNLOAD_BYTES``.
+
+    ``file://`` URLs are also supported: they are produced by Echo's own
+    media resolvers (e.g. the WAHA decrypting resolver handing over
+    pre-decrypted local files) and never originate from external input.
+    """
     parsed = urlparse(url)
+    if parsed.scheme == "file":
+        if parsed.netloc not in ("", "localhost"):
+            raise MediaSummaryError("local media path must not reference a host")
+        from urllib.parse import unquote
+
+        content = Path(unquote(parsed.path)).read_bytes()
+        if len(content) > _MAX_DOWNLOAD_BYTES:
+            raise MediaSummaryError(
+                f"media download exceeded {_MAX_DOWNLOAD_BYTES} bytes: {len(content)}"
+            )
+        return content
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise MediaSummaryError("media download URL must be an absolute HTTP(S) URL")
     owns_client = http_client is None

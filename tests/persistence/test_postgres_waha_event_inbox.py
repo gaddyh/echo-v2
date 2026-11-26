@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -308,3 +308,162 @@ async def test_stale_retry_overwrites_newer_revision_last_writer_wins(
     assert row.revision == 3
     assert row.data == '{"v": 1}'
     assert row.status == "pending"
+
+
+# --- claim lifecycle (Phase 2 consumer) ---------------------------------------
+
+
+async def test_claim_pending_oldest_first_with_lease(
+    repo: PostgresWahaEventInboxRepository,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    a = _message(message_id="A-1")
+    b = _message(message_id="B-1")
+    await repo.ingest_batch("b-1", [a])
+    await repo.ingest_batch("b-2", [b])
+
+    claimed = await repo.claim_pending(
+        "worker-1", batch_size=10, lease_seconds=60, max_attempts=5
+    )
+    assert [c.message.message_id for c in claimed] == ["A-1", "B-1"]
+    for item in claimed:
+        assert item.worker_id == "worker-1"
+        assert item.revision == 1
+    row = await _fetch_row(session_factory, a.session, "A-1")
+    assert row.status == "processing"
+    assert row.lease_owner == "worker-1"
+    assert row.lease_expires_at is not None
+    assert row.attempt_count == 1
+
+    # Claimed rows are not re-claimed while the lease is fresh.
+    assert await repo.claim_pending("worker-2", batch_size=10, lease_seconds=60) == []
+
+
+async def test_complete_claimed_marks_processed_once(
+    repo: PostgresWahaEventInboxRepository,
+) -> None:
+    message = _message()
+    await repo.ingest_batch("b-1", [message])
+    claimed = (
+        await repo.claim_pending("worker-1", batch_size=1, lease_seconds=60)
+    )[0]
+
+    assert await repo.complete_claimed(claimed) is True
+    # Second completion is a no-op (already processed).
+    assert await repo.complete_claimed(claimed) is False
+
+
+async def test_mark_failed_releases_row_for_retry(
+    repo: PostgresWahaEventInboxRepository,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    message = _message()
+    await repo.ingest_batch("b-1", [message])
+    claimed = (
+        await repo.claim_pending("worker-1", batch_size=1, lease_seconds=60)
+    )[0]
+
+    await repo.mark_failed(claimed, "boom")
+
+    row = await _fetch_row(session_factory, message.session, message.message_id)
+    assert row.status == "failed"
+    assert row.lease_owner is None
+    assert row.attempt_count == 1
+    assert row.last_error == "boom"
+
+    # Re-claimed on the next poll, attempt_count grows.
+    reclaimed = await repo.claim_pending(
+        "worker-2", batch_size=1, lease_seconds=60
+    )
+    assert len(reclaimed) == 1
+    assert reclaimed[0].worker_id == "worker-2"
+    row = await _fetch_row(session_factory, message.session, message.message_id)
+    assert row.attempt_count == 2
+
+
+async def test_attempt_cap_stops_retrying(
+    repo: PostgresWahaEventInboxRepository,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    message = _message()
+    await repo.ingest_batch("b-1", [message])
+    claimed = (
+        await repo.claim_pending("worker-1", batch_size=1, lease_seconds=60, max_attempts=1)
+    )[0]
+    await repo.mark_failed(claimed, "terminal-ish")
+
+    assert (
+        await repo.claim_pending("worker-1", batch_size=1, lease_seconds=60, max_attempts=1)
+        == []
+    )
+    row = await _fetch_row(session_factory, message.session, message.message_id)
+    assert row.status == "failed"
+
+
+async def test_expired_lease_is_reclaimed(
+    repo: PostgresWahaEventInboxRepository,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    message = _message()
+    await repo.ingest_batch("b-1", [message])
+    await repo.claim_pending("worker-1", batch_size=1, lease_seconds=60)
+    # Simulate a crashed worker: lease expired in place.
+    async with session_factory() as db:
+        await db.execute(
+            text(
+                "UPDATE waha_event_inbox SET lease_expires_at = "
+                "now() - interval '120 seconds' WHERE session = :s AND message_id = :m"
+            ),
+            {"s": message.session, "m": message.message_id},
+        )
+        await db.commit()
+
+    reclaimed = await repo.claim_pending("worker-2", batch_size=1, lease_seconds=60)
+    assert len(reclaimed) == 1
+    assert reclaimed[0].worker_id == "worker-2"
+
+
+async def test_complete_claimed_rejected_when_revision_advanced(
+    repo: PostgresWahaEventInboxRepository,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    base = _message()
+    await repo.ingest_batch("b-1", [base])
+    claimed = (
+        await repo.claim_pending("worker-1", batch_size=1, lease_seconds=60)
+    )[0]
+
+    # The payload is updated mid-processing: revision bumps, status resets.
+    revised = _updated(base, data='{"edit": true}', batch_id="b-2")
+    await repo.ingest_batch("b-2", [revised])
+
+    # The stale processor cannot complete its claim.
+    assert await repo.complete_claimed(claimed) is False
+    row = await _fetch_row(session_factory, base.session, base.message_id)
+    assert row.status == "pending"
+    assert row.revision == 2
+
+    # The new revision is claimable and completable.
+    reclaimed = (
+        await repo.claim_pending("worker-2", batch_size=1, lease_seconds=60)
+    )[0]
+    assert reclaimed.revision == 2
+    assert await repo.complete_claimed(reclaimed) is True
+
+
+async def test_backlog_stats_counts_and_age(
+    repo: PostgresWahaEventInboxRepository,
+) -> None:
+    assert await repo.backlog_stats() == (0, 0, None)
+
+    a = _message(message_id="A-1")
+    b = _message(message_id="B-1")
+    await repo.ingest_batch("b-1", [a])
+    claimed = (await repo.claim_pending("w", batch_size=1, lease_seconds=60))[0]
+    await repo.mark_failed(claimed, "boom")
+    await repo.ingest_batch("b-2", [b])
+
+    pending, failed, oldest_age = await repo.backlog_stats()
+    assert pending == 1
+    assert failed == 1
+    assert oldest_age is not None and 0 <= oldest_age < 60

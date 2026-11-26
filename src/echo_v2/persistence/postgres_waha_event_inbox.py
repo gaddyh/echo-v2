@@ -21,13 +21,17 @@ batch is rolled back and nothing was persisted.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, cast
 
 from sqlalchemy import CursorResult, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from echo_v2.domain.waha import WahaBatchIngestResult, WahaInboxMessage
+from echo_v2.domain.waha import (
+    ClaimedWahaMessage,
+    WahaBatchIngestResult,
+    WahaInboxMessage,
+)
 from echo_v2.persistence.orm import WahaEventInboxRow
 
 __all__ = ["PostgresWahaEventInboxRepository"]
@@ -141,6 +145,160 @@ class PostgresWahaEventInboxRepository:
                 .one_or_none()
             )
             return _to_domain(row) if row is not None else None
+
+    async def claim_pending(
+        self,
+        worker_id: str,
+        *,
+        batch_size: int,
+        lease_seconds: int,
+        max_attempts: int = 10,
+    ) -> list[ClaimedWahaMessage]:
+        """Claim retryable rows: pending, failed, or expired processing leases.
+
+        Oldest first — media CDN URLs expire, so backlog age matters.
+        ``FOR UPDATE SKIP LOCKED`` lets concurrent workers claim disjoint
+        batches without blocking each other.
+        """
+        now = datetime.now(timezone.utc)
+        async with self._session_factory() as session, session.begin():
+            rows = (
+                await session.execute(
+                    text(
+                        """
+                        UPDATE waha_event_inbox
+                           SET status = 'processing',
+                               lease_owner = :worker_id,
+                               lease_expires_at = :lease_expires_at,
+                               attempt_count = waha_event_inbox.attempt_count + 1,
+                               last_error = NULL
+                         WHERE id IN (
+                             SELECT id FROM waha_event_inbox
+                              WHERE (status = 'pending' OR status = 'failed'
+                                     OR (status = 'processing'
+                                         AND lease_expires_at < :now))
+                                AND attempt_count < :max_attempts
+                              ORDER BY first_received_at, id
+                              LIMIT :batch_size
+                              FOR UPDATE SKIP LOCKED
+                         )
+                        RETURNING session, message_id, chat_jid,
+                                  whatsapp_timestamp, from_me, is_real, data,
+                                  sha256, seq, agent_first_seen_at, batch_id,
+                                  revision, attempt_count, first_received_at
+                        """
+                    ),
+                    {
+                        "worker_id": worker_id,
+                        "lease_expires_at": now + timedelta(seconds=lease_seconds),
+                        "now": now,
+                        "max_attempts": max_attempts,
+                        "batch_size": batch_size,
+                    },
+                )
+            ).mappings().all()
+            # UPDATE ... RETURNING does not preserve the subselect's ORDER BY
+            # (it only governs which rows the LIMIT picks); re-establish the
+            # oldest-first order for the caller.
+            rows = sorted(
+                rows, key=lambda row: (row["first_received_at"], row["message_id"])
+            )
+            return [
+                ClaimedWahaMessage(
+                    message=WahaInboxMessage(
+                        session=row["session"],
+                        message_id=row["message_id"],
+                        chat_jid=row["chat_jid"],
+                        whatsapp_timestamp=row["whatsapp_timestamp"],
+                        from_me=row["from_me"],
+                        is_real=row["is_real"],
+                        data=row["data"],
+                        sha256=row["sha256"],
+                        seq=row["seq"],
+                        agent_first_seen_at=row["agent_first_seen_at"],
+                        batch_id=row["batch_id"],
+                    ),
+                    revision=int(row["revision"]),
+                    worker_id=worker_id,
+                )
+                for row in rows
+            ]
+
+    async def complete_claimed(self, claimed: ClaimedWahaMessage) -> bool:
+        """Mark a claimed row processed, fenced by revision and lease owner."""
+        async with self._session_factory() as session:
+            result = cast(
+                CursorResult[Any],
+                await session.execute(
+                    text(
+                        """
+                        UPDATE waha_event_inbox
+                           SET status = 'processed',
+                               lease_owner = NULL,
+                               lease_expires_at = NULL,
+                               last_error = NULL,
+                               last_updated_at = now()
+                         WHERE session = :session AND message_id = :message_id
+                           AND revision = :revision
+                           AND status = 'processing'
+                           AND lease_owner = :worker_id
+                        """
+                    ),
+                    {
+                        "session": claimed.message.session,
+                        "message_id": claimed.message.message_id,
+                        "revision": claimed.revision,
+                        "worker_id": claimed.worker_id,
+                    },
+                ),
+            )
+            await session.commit()
+            return result.rowcount == 1
+
+    async def mark_failed(self, claimed: ClaimedWahaMessage, error: str) -> None:
+        async with self._session_factory() as session:
+            await session.execute(
+                text(
+                    """
+                    UPDATE waha_event_inbox
+                       SET status = 'failed',
+                           lease_owner = NULL,
+                           lease_expires_at = NULL,
+                           last_error = :error,
+                           last_updated_at = now()
+                     WHERE session = :session AND message_id = :message_id
+                       AND lease_owner = :worker_id
+                       AND status = 'processing'
+                    """
+                ),
+                {
+                    "session": claimed.message.session,
+                    "message_id": claimed.message.message_id,
+                    "worker_id": claimed.worker_id,
+                    "error": error[:2000],
+                },
+            )
+            await session.commit()
+
+    async def backlog_stats(self) -> tuple[int, int, float | None]:
+        async with self._session_factory() as session:
+            row = (
+                await session.execute(
+                    text(
+                        """
+                        SELECT count(*) FILTER (WHERE status = 'pending') AS pending,
+                               count(*) FILTER (WHERE status = 'failed') AS failed,
+                               EXTRACT(EPOCH FROM (now() - min(first_received_at)))
+                                   AS oldest_age_seconds
+                          FROM waha_event_inbox
+                         WHERE status IN ('pending', 'failed')
+                        """
+                    )
+                )
+            ).one()
+            return int(row[0]), int(row[1]), (
+                float(row[2]) if row[2] is not None else None
+            )
 
     async def mark_processed(
         self, session: str, message_id: str, *, revision: int

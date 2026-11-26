@@ -216,3 +216,43 @@ only). If `OPS_ALERT_TOKEN` is unset the ingest endpoint returns 503.
   durable receipt of the raw payload ONLY.
 - `batch_id` is stored per row for tracing but is NOT unique and must never
   be used as a dedup key. The `bytes` request field is informational only.
+
+### Phase 2 — message consumer + CDN-direct media (Nov 2026)
+
+- `WahaMessageConsumer` (`services/waha_message_consumer.py`, env
+  `WAHA_MESSAGE_CONSUMER_ENABLED`, default false) claims pending inbox
+  rows (`claim_pending`: pending/failed/expired-lease, attempt-capped,
+  `FOR UPDATE SKIP LOCKED`), parses the GOWS envelope
+  (`services/waha_messages.py` — GOWS JSON never escapes the adapter) and
+  routes it through `ChatIngestionService` exactly like the Baileys
+  consumer. Completion is revision-guarded (`complete_claimed`).
+- Session→user mapping: `whatsapp_connections` row with
+  `provider='waha'`, `provider_connection_id=<session>`, empty credentials
+  (Echo never calls WAHA). Link with
+  `scripts/link_waha_session.py --session <name> --user-phone <phone>`;
+  one waha connection per user (DB constraint).
+- Media is CDN-direct: the envelope's `URL` serves *ciphertext*; Echo
+  decrypts itself (`services/waha_media.py`, port of the verified
+  `decrypt_media.py`): bounded HTTPS download → HKDF-SHA256(mediaKey,
+  info="WhatsApp <Type> Keys", 112) → AES-256-CBC (no pad) → truncate to
+  `fileLength` → verify SHA-256(plaintext) == `fileSHA256` (the trailing
+  10-byte MAC scheme is skipped — the plaintext hash is the integrity
+  gate). `WahaMediaUrlResolver` hands the plaintext to the enrichment
+  pipeline as a `file://` temp path (content-addressed, age-cleaned,
+  never persisted — user decision). `download_file` /
+  `download_media` accept `file://` from Echo's own resolvers only.
+- Transcription/enrichment run in the standard analysis workers — same
+  path as Baileys (Modal Whisper must be configured).
+- Backlog alerting: the consumer warns when unprocessed rows age past
+  `WAHA_BACKLOG_ALERT_SECONDS` (default 1h) — media CDN URLs expire
+  (~hours) and the agent deletes local rows after ACK, so there is no
+  re-fetch fallback after expiry.
+- Known limitation (same as Baileys): `messages` dedups on
+  `(connection_id, provider_message_id)`, so only the *first* revision of
+  an edited WAHA message is persisted; the inbox keeps every revision.
+- GOWS gotcha: int64 fields serialize as JSON **strings** (`"fileLength":
+  "7023"`) — the parser coerces digit-strings to int; non-numeric values
+  make the media unavailable (terminal, not retried).
+- Verified live (Nov 26 canary): 16 rows consumed, voice notes
+  CDN-downloaded → HKDF/AES-decrypted → Modal Whisper-transcribed, byte-
+  identical to the Baileys connector's transcriptions of the same notes.
