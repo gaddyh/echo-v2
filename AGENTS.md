@@ -79,6 +79,7 @@
 - Gemini describes; the existing Guard analyzers decide. No risk classification or notification policy is added.
 - Videos are always enriched (`_target` returns `MEDIA_SUMMARY` for all videos, including captioned ones). Caption is preserved alongside the Gemini description (`caption | description`).
 - Per-kind versioning: `VIDEO_ENRICHMENT_VERSION` (default `2026-10-23.video.1`) is used only for video messages, so existing image/document/audio/link enrichments are not reprocessed on a version bump.
+- Processing mode: `GEMINI_VIDEO_MEDIA_PROCESSING` selects `static` (1 FPS frame extraction, Gemini default) or `agentic` (model-driven timeline navigation; the model reads transcripts first and loads only relevant segments on demand). No special pricing — billed per token. Applies only to inline (downloaded) videos; the YouTube path always stays static because its `GEMINI_VIDEO_YOUTUBE_MAX_SECONDS` clipping cap is a static-only feature. Supported by `gemini-3.5-flash-lite` and later Flash models (no model change needed; `gemini-3.7-flash` also works). Google's guidance: agentic is best for long-form video (>5–10 min); on short clips it can use MORE tokens and latency (navigation thought tokens + tool round-trips), so a one-week trial should compare `total_tokens` in `ai_usage_events` before/after (`total_token_count` already includes thought + tool-use tokens, so measured costs stay accurate).
 
 ### Environment variables
 
@@ -88,6 +89,7 @@
 | `GEMINI_API_KEY` | — | Gemini API key (required when enabled) |
 | `GEMINI_VIDEO_MODEL` | `gemini-3.5-flash-lite` | Gemini model for video analysis |
 | `GEMINI_VIDEO_MAX_BYTES` | `15728640` (15MB) | Max accepted video size; oversized → terminal |
+| `GEMINI_VIDEO_MEDIA_PROCESSING` | unset (SDK default: static) | `static` or `agentic` processing for inline videos |
 | `VIDEO_ENRICHMENT_VERSION` | `2026-10-23.video.1` | Per-kind enrichment version for videos |
 
 ## Video Link Enrichment
@@ -181,3 +183,36 @@ only). If `OPS_ALERT_TOKEN` is unset the ingest endpoint returns 503.
 - `scripts/backfill_event_inbox_processed.py` backfills `processed_at` from
   the ledger for already-consumed events (dry-run default, `--yes` to
   execute, batched). Run it once after enabling the state-event marking.
+
+## WAHA batch ingestion (Phase 1)
+
+- Two internal endpoints, shared-secret bearer auth (`WAHA_AGENT_TOKEN`,
+  constant-time compare; unset → 503, fail closed):
+  `POST /internal/waha/batch` and `POST /internal/waha/register`.
+- `waha_event_inbox` is Echo's durable inbox for WAHA GOWS batch agents.
+  Dedup key: `(session, message_id)` DB-unique. `data` is the exact raw
+  Whatsmeow JSON string (never re-serialized); `sha256` is the agent's
+  digest of its UTF-8 bytes and is validated before persisting.
+- Whole batch = one transaction (`SET LOCAL synchronous_commit = on`).
+  ACK is returned only after the commit returns; DB failure → 503, no ack.
+- Same key + same hash → duplicate (no state reset, included in ACK).
+  Same key + different hash → payload overwritten, `revision + 1`, status
+  reset to `pending`. Within one batch the last occurrence of a key wins;
+  discarded in-batch revisions are never ACKed.
+- Revision semantics are last-writer-wins: the protocol has no globally
+  monotonic revision ID, so a stale retry can overwrite a newer revision
+  (accepted Phase 1 limitation; revisit before enabling downstream
+  processing). `mark_processed(session, message_id, revision=…)` is
+  revision-guarded so processing of an older revision can never mark a
+  newer one processed.
+- `waha_workers` is the registry/heartbeat table (idempotent upsert on
+  `worker_id`, `first_registered_at` preserved). Availability is derived at
+  read time from Echo-side `last_seen_at` + `health == 'ok'`
+  (`WAHA_WORKER_HEARTBEAT_TIMEOUT_SECONDS`, default 90); worker-reported
+  `last_heartbeat` is stored but never authoritative. Capacity eligibility
+  (`active < max`) is kept separate from availability.
+- Phase 1 has no consumer/normalizer: unassigned canary sessions are
+  persisted only, no analysis dispatch, no media transfer. An ACK confirms
+  durable receipt of the raw payload ONLY.
+- `batch_id` is stored per row for tracing but is NOT unique and must never
+  be used as a dedup key. The `bytes` request field is informational only.
