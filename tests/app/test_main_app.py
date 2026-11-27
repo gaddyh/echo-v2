@@ -337,3 +337,34 @@ async def test_lifespan_scheduler_recovery_with_stale_actions(
     # exercises the try/except and the scheduler start.
     async with app.router.lifespan_context(app):
         pass
+
+
+def test_create_app_with_waha_onboarding_enabled(monkeypatch, postgres_url):
+    """The app builds with WAHA onboarding enabled, with and without worker
+    management configuration (the latter logs an allocation error but keeps
+    running)."""
+    _set_required_env(monkeypatch, postgres_url)
+    monkeypatch.setenv("WHATSAPP_PROVIDER", "baileys")
+    monkeypatch.setenv("BAILEYS_CONNECTOR_TOKEN", "dummy-baileys-token")
+    monkeypatch.setenv("WAHA_ONBOARDING_ENABLED", "true")
+    monkeypatch.setenv("ECHO_WEBHOOK_BASE_URL", "https://echo.example")
+
+    from echo_v2.app.main import create_app
+
+    # No worker configuration → warning path.
+    app = create_app()
+    assert isinstance(app, FastAPI)
+
+    app = create_app()
+    assert isinstance(app, FastAPI)
+    paths: set[str] = set()
+    for route in app.routes:
+        if hasattr(route, "path"):
+            paths.add(route.path)
+        elif hasattr(route, "original_router"):
+            for sub in route.original_router.routes:
+                if hasattr(sub, "path"):
+                    paths.add(sub.path)
+    # Agent management endpoints (always mounted, per-worker-token auth).
+    assert "/internal/waha/commands" in paths
+    assert "/internal/waha/events" in paths

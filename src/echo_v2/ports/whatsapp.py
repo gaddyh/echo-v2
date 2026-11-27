@@ -161,6 +161,12 @@ class ConnectionConfig:
     ``secrets.token_urlsafe(32)``) that the application sends to the provider
     as the webhook auth token and stores as a hash for later verification
     (plan guardrail G3). The provisioner never generates it.
+
+    ``user_id`` is optional provider-neutral context (the Echo user the
+    connection belongs to). Providers that need to persist an assignment
+    before creating anything on the provider side (e.g. WAHA, whose
+    lifecycle callbacks can race the create call) use it to own the mapping;
+    providers that do not need it ignore it.
     """
 
     webhook_url: str
@@ -168,6 +174,7 @@ class ConnectionConfig:
     subscriptions: WhatsAppEventSubscription = field(
         default_factory=WhatsAppEventSubscription
     )
+    user_id: str | None = None
 
 
 # --- Status snapshot ------------------------------------------------------

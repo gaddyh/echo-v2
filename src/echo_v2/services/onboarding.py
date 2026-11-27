@@ -77,7 +77,12 @@ if TYPE_CHECKING:
     from echo_v2.persistence.green_instance_pool import PooledInstance
     from echo_v2.services.green_instance_pool import GreenInstancePool
 
-__all__ = ["OnboardingContext", "OnboardingService", "UserRepository"]
+__all__ = [
+    "OnboardingContext",
+    "OnboardingService",
+    "UserRepository",
+    "WahaConnectionReconciler",
+]
 
 _logger = logging.getLogger("echo_v2.services.onboarding")
 
@@ -286,6 +291,19 @@ class OnboardingContext:
 
 
 @runtime_checkable
+class WahaConnectionReconciler(Protocol):
+    """Backfills a freshly created WAHA connection from persisted state.
+
+    Implemented by the WAHA session service: lifecycle callbacks can arrive
+    before the connection record is created, so right after onboarding
+    saves the row this hook applies the latest persisted WAHA state (a
+    WORKING event that arrived early completes onboarding correctly).
+    """
+
+    async def reconcile_connection(self, user_id: str) -> str: ...
+
+
+@runtime_checkable
 class UserRepository(Protocol):
     """Create and look up users for onboarding."""
 
@@ -372,6 +390,7 @@ class OnboardingService:
         pipeline_events: PipelineEventRepository | None = None,
         qr_retry_interval_seconds: float = 2.0,
         qr_retry_max_attempts: int = 30,
+        waha_reconciler: WahaConnectionReconciler | None = None,
     ) -> None:
         self._bot = bot
         self._user_repo = user_repo
@@ -387,6 +406,7 @@ class OnboardingService:
         self._pipeline_events = pipeline_events
         self._qr_retry_interval = qr_retry_interval_seconds
         self._qr_retry_max_attempts = qr_retry_max_attempts
+        self._waha_reconciler = waha_reconciler
         self._pending_contacts: dict[str, BotContact] = {}
         # Background instance-preparation tasks (pool miss path), keyed by
         # user_id. Prevents double-click from creating two instances.
@@ -992,6 +1012,7 @@ class OnboardingService:
                 webhook_url=webhook_url,
                 webhook_token=webhook_token,
                 subscriptions=WhatsAppEventSubscription(),
+                user_id=user_id,
             )
             created = await self._provisioner.create_connection(config)
             _logger.info(
@@ -1012,6 +1033,41 @@ class OnboardingService:
             )
             if self._pool:
                 self._pool.request_refill()
+
+            if created.ref.provider == "waha":
+                # WAHA: the session lifecycle webhook owns status
+                # transitions and QR delivery (no wait loop, no forced
+                # PAIRING_REQUIRED overwrite that could race a fast WORKING
+                # callback). Reconcile any callback that arrived before the
+                # connection record was saved, then offer the manual QR
+                # button as the fallback path.
+                if self._waha_reconciler is not None:
+                    try:
+                        await self._waha_reconciler.reconcile_connection(user_id)
+                    except Exception:
+                        _logger.warning(
+                            "onboarding: WAHA connection reconcile failed "
+                            "user_hash=%s",
+                            _safe_correlation_id(user_id),
+                            exc_info=True,
+                        )
+                connection = await self._connection_repo.get_by_user(user_id)
+                if (
+                    connection is not None
+                    and connection.status is ConnectionStatus.CONNECTED
+                ):
+                    # WORKING already arrived and completed onboarding via
+                    # the reconcile path — no button needed.
+                    return
+                await self._bot.send_buttons(
+                    phone, body_text=_READY_FOR_QR, buttons=[_SHOW_QR_BUTTON],
+                )
+                _logger.info(
+                    "onboarding: WAHA session provisioned, awaiting QR "
+                    "user_hash=%s",
+                    _safe_correlation_id(user_id),
+                )
+                return
 
             # Wait until the provider reports that pairing can begin.
             ready = await self._wait_until_ready(created.ref)
@@ -1481,6 +1537,14 @@ class OnboardingService:
             return
         if result.outcome is PairingOutcome.PREPARING:
             await self._bot.send_text(phone, _ONBOARDING_QR_PREPARING)
+            if conn.ref.provider == "waha":
+                # WAHA (agent-based): the QR arrives asynchronously as an
+                # agent qr_ready event and is delivered through the
+                # webhook-driven path — no polling loop (which would
+                # double-send the stored QR). The user can re-request with
+                # the button / 'qr' keyword; a fresh stored QR is re-sent
+                # on those explicit clicks.
+                return
             self._onboarding_qr_tasks[user_id] = asyncio.create_task(
                 self._deliver_onboarding_qr_when_ready(
                     user_id=user_id, phone=phone, conn=conn,
@@ -1553,6 +1617,33 @@ class OnboardingService:
             )
             return
         await self._deliver_onboarding_qr(user_id, phone, conn, result)
+
+    async def deliver_pairing_qr(self, user_id: str, image_base64: str) -> None:
+        """Deliver a webhook-fetched WAHA QR to the owning user.
+
+        Hook for :class:`~echo_v2.services.waha_session_service.WahaSessionService`
+        (WAHA's ``session.status`` SCAN_QR_CODE path): the QR is fetched from
+        the assigned worker and pushed to the user's conversation through
+        the standard onboarding QR presentation. Raises on delivery failure
+        so the callback layer can retry (the effect stays queued).
+        """
+        phone = await self._lookup_phone(user_id)
+        if phone is None:
+            raise RuntimeError(f"no phone found for user {user_id}")
+        try:
+            await self._bot.send_image(
+                phone,
+                image_bytes=base64.b64decode(image_base64),
+                mime_type="image/png",
+                caption=_QR_CAPTION,
+            )
+        except Exception:
+            _logger.exception("onboarding: failed to send WAHA QR")
+            raise
+        self._trace_funnel_event("qr_shown", user_id)
+        _logger.info(
+            "onboarding WAHA QR sent user_hash=%s", _safe_correlation_id(user_id)
+        )
 
     def _ensure_provider_poll_task(
         self,

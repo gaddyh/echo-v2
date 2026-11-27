@@ -256,3 +256,106 @@ only). If `OPS_ALERT_TOKEN` is unset the ingest endpoint returns 503.
 - Verified live (Nov 26 canary): 16 rows consumed, voice notes
   CDN-downloaded → HKDF/AES-decrypted → Modal Whisper-transcribed, byte-
   identical to the Baileys connector's transcriptions of the same notes.
+
+## WAHA session management + QR onboarding (Phase 3, agent-based)
+
+Architectural invariant: **all communication across the Echo/worker boundary
+is initiated by the worker agent over outbound HTTPS; WAHA itself is never
+publicly accessible** (it stays on 127.0.0.1:3000). Echo is the control
+plane (placement decisions, state, commands); the per-VM agent is the
+execution layer (local WAHA REST API). Echo holds no WAHA credentials.
+
+- WAHA is a **receive-only** connector: no WhatsApp message sending through
+  it, ever (intentional exclusion). Bot notifications use the independent
+  360dialog infrastructure.
+- `waha_sessions` (migration `0065`, + `last_qr_image`): one row per user
+  (`UNIQUE(user_id)`) with a **stable** session name (`echo-<uuid>`,
+  generated only at initial allocation — never the phone number) pinned to
+  one registered worker. Lifecycle state is persisted independently of the
+  `whatsapp_connections` row, so agent events can arrive before the create
+  command completes; `reconcile_connection` backfills the connection row on
+  save (WORKING-arrived-early still completes onboarding).
+- `waha_commands` (migration `0066`): a PG-backed queue of management
+  commands the agent claims by polling — `FOR UPDATE SKIP LOCKED`,
+  lease-bounded (expired leases reclaim), attempt-capped (`failed`),
+  idempotent completion. `allocate_and_enqueue_create` is atomic (advisory
+  lock → get-or-create assignment → enqueue `create_and_start`): an
+  assignment can never exist without an executable provisioning command,
+  and retries reuse the same worker + session. Allocation eligibility:
+  fresh heartbeat, `health=ok`, `management_protocol >= 1` (batch-only
+  agents are never assigned), Echo-assigned count < `max_sessions`;
+  lowest ratio, `worker_id` tie-break.
+- **Per-worker management tokens**: issued once at a worker's first
+  registration declaring `management_protocol >= 1` (returned once in the
+  registration response; only the SHA-256 of the secret is stored).
+  `POST /internal/waha/commands` and `POST /internal/waha/events` require
+  `Authorization: Bearer wt_<worker_id>_<secret>` (constant-time). A worker
+  sees only its own commands, reports only its own command results, and
+  publishes events only for sessions assigned to it (403 otherwise). The
+  batch/register endpoints keep the fleet token (`WAHA_AGENT_TOKEN`).
+- **`POST /internal/waha/commands`** (agent poll, ~2 s, independent of the
+  batch loop): claims lease-bounded commands for the authenticated worker;
+  claiming never removes anything.
+- **`POST /internal/waha/events`** (agent reporting; 200 only after state
+  persisted / processing completed, 503 on temporary effect failure so the
+  agent's bounded retries re-drive it idempotently):
+  - `command_result` — `{event_id, worker_id, session, type,
+    command_id, success, error?, qr?, status?, timestamp}` — completes the
+    command (worker-guarded, idempotent); an optional `qr` payload
+    (`get_qr`) or `status` payload (`get_status`) re-enters the state
+    machine.
+  - `session_status` — `{event_id, worker_id, session, type, status,
+    timestamp}` — a WAHA `session.status` transition observed by the
+    agent's local webhook listener.
+  - `qr_ready` — `{event_id, worker_id, session, type, status, qr:
+    {mimetype, data}, timestamp}` — a pairing QR the agent fetched from
+    its local WAHA. `timestamp` is epoch seconds; it orders events (the
+    fence ignores older ones; byte-identical QR images are not re-sent).
+- Status mapping: STARTING→connecting, SCAN_QR_CODE→pairing_required,
+  WORKING→connected (+onboarding confirm), STOPPED/FAILED→pairing_required
+  (+disconnect notify); unknown statuses are logged and ignored (never
+  regress an established connection). Retry-safe side effects:
+  `waha_sessions.pending_effect` keeps a transition's effect queued until
+  it completes — a failed confirmation/QR delivery is retried on the next
+  event while the state stays committed.
+- QR handling: the agent fetches and forwards QR images; Echo never fetches
+  from WAHA. Delayed/stale QRs are discarded (status + event-generation
+  re-checks after arrival) — never overwrite a newer QR or resurrect
+  pairing after WORKING. QR images are stored short-lived
+  (`WAHA_QR_TTL_SECONDS`, default 120) for on-demand re-send on explicit
+  user action ([הצג QR] / 'qr'); cleared on pairing; never logged.
+- Onboarding integration: `ConnectionConfig.user_id` (new optional field)
+  lets the WAHA provisioner persist the assignment before returning.
+  `WahaProvisioner` is a pure control-plane adapter — `create_connection`
+  allocates+enqueues (no HTTP, returns immediately); `get_status` serves
+  the persisted state; `get_pairing_qr` routes by persisted state
+  (connected → ALREADY_AUTHORIZED; stopped/failed → enqueue `start` once
+  per 60 s cooldown; fresh stored QR → QR_READY; else enqueue `get_qr`).
+  The waha branch in `_prepare_instance` skips `_wait_until_ready` (events
+  own the transitions) and sends the [הצצ QR] button as the manual
+  fallback; the on-demand PREPARING path does not start the polling retry
+  loop (events deliver). `ProvisionerRouter` gates *new* creates on
+  `WAHA_ONBOARDING_ENABLED` (default false — zero behavior change when off)
+  and routes everything else by `ref.provider`; the Green pool is disabled
+  while WAHA onboarding is enabled. `unpair`/`delete_connection` raise
+  `PermanentError`.
+- Env: `WAHA_ONBOARDING_ENABLED`, `WAHA_COMMAND_LEASE_SECONDS` (120),
+  `WAHA_COMMAND_MAX_ATTEMPTS` (5), `WAHA_COMMAND_POLL_LIMIT` (10),
+  `WAHA_QR_TTL_SECONDS` (120), plus the existing heartbeat/batch vars.
+  There are **no** Echo-side WAHA endpoints, API keys or webhook HMAC keys.
+- UpCloud agent requirements (implemented in the separate WAHA lab repo):
+  poll `/internal/waha/commands` every ~2 s with the worker token;
+  execute create/start/get_qr/get_status against 127.0.0.1:3000 (GOWS
+  storage policy with `messages=true`; idempotent create — inspect and
+  reuse existing sessions; never logout/delete credentials); run a local
+  webhook listener for WAHA `session.status` (session lifecycle events
+  only, no message webhooks) and forward transitions + QR images to
+  `/internal/waha/events`; reconcile WAHA session state after agent
+  restarts; retry event delivery on non-2xx with the same `event_id`.
+- Known limitations: scheduled/digest sends for WAHA-monitored accounts
+  still go through the default provider's messaging (WAHA is receive-only
+  by design); onboarding QR latency is bounded by the agent's ~2 s poll +
+  WAHA session start; a duplicate QR image is possible when the user
+  explicitly re-requests while the event path delivers; orphaned sessions
+  from permanently failed creates are not garbage-collected (the user's
+  next attempt reuses the same session name and enqueues a fresh command).

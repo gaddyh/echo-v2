@@ -33,6 +33,7 @@ def _registration(
     max_sessions: int = 1,
     version: str = "0.2",
     reported_heartbeat: datetime | None = None,
+    management_protocol: int = 0,
 ) -> WahaWorkerRegistration:
     return WahaWorkerRegistration(
         worker_id=worker_id,
@@ -44,6 +45,7 @@ def _registration(
         health=health,
         reported_heartbeat=reported_heartbeat or NOW,
         pending=pending,
+        management_protocol=management_protocol,
     )
 
 
@@ -57,8 +59,8 @@ async def registry(
 async def test_first_registration(
     registry: PostgresWahaWorkerRegistry,
 ) -> None:
-    first = await registry.register(_registration())
-    assert first is True
+    result = await registry.register(_registration())
+    assert result.first is True
     workers = await registry.list_workers()
     assert len(workers) == 1
     worker = workers[0]
@@ -75,7 +77,7 @@ async def test_repeated_heartbeat_preserves_first_registration(
     registry: PostgresWahaWorkerRegistry,
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    assert await registry.register(_registration()) is True
+    assert (await registry.register(_registration())).first is True
     before = (await registry.list_workers())[0]
     # Backdate the first registration so an overwrite would be detectable.
     async with session_factory() as db:
@@ -92,8 +94,7 @@ async def test_repeated_heartbeat_preserves_first_registration(
         await registry.register(
             _registration(health="degraded", pending=7, active_sessions=1)
         )
-        is False
-    )
+    ).first is False
     after = (await registry.list_workers())[0]
     assert after.first_registered_at == backdated  # preserved, not reset
     assert after.last_seen_at >= before.last_seen_at  # server-side refresh
@@ -223,3 +224,68 @@ async def test_heartbeat_timeout_is_configurable(
     assert fresh.available is True
     stale = (await registry.list_workers(heartbeat_timeout_seconds=1))[0]
     assert stale.available is False
+
+
+# --- management protocol + per-worker tokens (Phase 3 revision) -------------------
+
+
+async def test_management_registration_issues_token_once(
+    registry: PostgresWahaWorkerRegistry,
+) -> None:
+    first = await registry.register(
+        _registration(management_protocol=1)
+    )
+    assert first.first is True
+    assert first.issued_worker_token is not None
+    token = first.issued_worker_token
+    assert token.startswith("wt_waha-01-8e3dfc4bab32_")
+
+    # A batch-only registration never issues a token.
+    plain = await registry.register(_registration(worker_id="waha-02"))
+    assert plain.issued_worker_token is None
+
+    # Re-registration with management support does not re-issue (idempotent).
+    again = await registry.register(
+        _registration(management_protocol=1)
+    )
+    assert again.first is False
+    assert again.issued_worker_token is None
+
+    # Batch-only worker upgrading its agent: first management-capable
+    # registration issues a token (rollout path).
+    upgrade = await registry.register(
+        _registration(worker_id="waha-02", management_protocol=1)
+    )
+    assert upgrade.issued_worker_token is not None
+
+
+async def test_verify_worker_token_round_trip(
+    registry: PostgresWahaWorkerRegistry,
+) -> None:
+    result = await registry.register(
+        _registration(management_protocol=1)
+    )
+    assert result.issued_worker_token is not None
+    assert await registry.verify_worker_token(
+        f"Bearer {result.issued_worker_token}"
+    ) == "waha-01-8e3dfc4bab32"
+    # Wrong / malformed / foreign tokens fail closed.
+    assert await registry.verify_worker_token("Bearer wt_nope_nope") is None
+    assert await registry.verify_worker_token("Bearer garbage") is None
+    assert await registry.verify_worker_token(None) is None
+    assert await registry.verify_worker_token("Basic xyz") is None
+    # A token minted for a different secret does not verify.
+    from echo_v2.domain.waha import generate_worker_token
+
+    forged = generate_worker_token("waha-01-8e3dfc4bab32")
+    assert await registry.verify_worker_token(f"Bearer {forged}") is None
+
+
+async def test_batch_only_worker_has_no_management_token(
+    registry: PostgresWahaWorkerRegistry,
+) -> None:
+    await registry.register(_registration())
+    from echo_v2.domain.waha import generate_worker_token
+
+    token = generate_worker_token("waha-01-8e3dfc4bab32")
+    assert await registry.verify_worker_token(f"Bearer {token}") is None
