@@ -218,6 +218,13 @@ def _parse_registration(payload: Any) -> WahaWorkerRegistration:
     health = payload.get("health")
     if not isinstance(health, str) or health not in _HEALTH_VALUES:
         raise HTTPException(status_code=400, detail="invalid health")
+    management_protocol = payload.get("management_protocol", 0)
+    if (
+        isinstance(management_protocol, bool)
+        or not isinstance(management_protocol, int)
+        or management_protocol < 0
+    ):
+        raise HTTPException(status_code=400, detail="invalid management_protocol")
     return WahaWorkerRegistration(
         worker_id=_require_str(payload, "worker_id"),
         region=_require_str(payload, "region"),
@@ -228,6 +235,7 @@ def _parse_registration(payload: Any) -> WahaWorkerRegistration:
         health=health,
         reported_heartbeat=_parse_epoch(payload.get("last_heartbeat"), "last_heartbeat"),
         pending=_require_int(payload, "pending", minimum=0),
+        management_protocol=management_protocol,
     )
 
 
@@ -353,7 +361,7 @@ def build_waha_router(
             )
             raise
         try:
-            first_registration = await workers.register(registration)
+            registration_result = await workers.register(registration)
         except SQLAlchemyError as exc:
             _logger.error(
                 "waha worker register failed category=db error_type=%s worker_id=%s",
@@ -363,10 +371,12 @@ def build_waha_router(
             raise HTTPException(
                 status_code=503, detail="registration temporarily unavailable"
             ) from exc
+        first_registration = registration_result.first
         if first_registration:
             _logger.info(
                 "waha worker registered worker_id=%s region=%s version=%s "
-                "health=%s active_sessions=%d max_sessions=%d pending=%d",
+                "health=%s active_sessions=%d max_sessions=%d pending=%d "
+                "management_protocol=%d",
                 registration.worker_id,
                 registration.region,
                 registration.version,
@@ -374,6 +384,7 @@ def build_waha_router(
                 registration.active_sessions,
                 registration.max_sessions,
                 registration.pending,
+                registration.management_protocol,
             )
         else:
             _logger.debug(
@@ -386,6 +397,12 @@ def build_waha_router(
                 registration.max_sessions,
                 registration.pending,
             )
-        return JSONResponse(content={"ok": True}, headers=_headers())
+        content: dict[str, Any] = {"ok": True}
+        if registration_result.issued_worker_token is not None:
+            # Issued exactly once (first management-capable registration).
+            # The agent must persist it; it is never shown again and never
+            # logged.
+            content["worker_token"] = registration_result.issued_worker_token
+        return JSONResponse(content=content, headers=_headers())
 
     return router

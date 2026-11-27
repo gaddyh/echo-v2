@@ -10,18 +10,34 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
-from echo_v2.domain.waha import WahaWorkerRegistration, WahaWorkerStatus
+from echo_v2.domain.waha import (
+    WahaRegistrationResult,
+    WahaWorkerRegistration,
+    WahaWorkerStatus,
+)
 
 __all__ = ["WahaWorkerRegistry"]
 
 
 @runtime_checkable
 class WahaWorkerRegistry(Protocol):
-    async def register(self, registration: WahaWorkerRegistration) -> bool:
-        """Upsert a worker. Returns ``True`` on first registration.
+    async def register(
+        self, registration: WahaWorkerRegistration
+    ) -> WahaRegistrationResult:
+        """Upsert a worker. ``first`` is ``True`` on first registration.
 
         Subsequent heartbeats update the reported state and Echo's
-        ``last_seen_at`` while preserving ``first_registered_at``.
+        ``last_seen_at`` while preserving ``first_registered_at``. When the
+        registration declares management support and no token exists yet,
+        a per-worker management token is issued (returned exactly once).
+        """
+        ...
+
+    async def verify_worker_token(self, authorization: str | None) -> str | None:
+        """Resolve a management bearer token to its worker id, or ``None``.
+
+        Constant-time compare against the stored token hash; the worker id
+        is taken from the token, never from a request body.
         """
         ...
 

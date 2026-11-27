@@ -118,12 +118,19 @@ class FakeWahaWorkers:
         self.registered: dict[str, WahaWorkerRegistration] = {}
         self.fail = fail
 
-    async def register(self, registration: WahaWorkerRegistration) -> bool:
+    async def register(self, registration: WahaWorkerRegistration):
+        from echo_v2.domain.waha import WahaRegistrationResult
+
         if self.fail is not None:
             raise self.fail
         first = registration.worker_id not in self.registered
         self.registered[registration.worker_id] = registration
-        return first
+        issued = None
+        if first and registration.management_protocol >= 1:
+            from echo_v2.domain.waha import generate_worker_token
+
+            issued = generate_worker_token(registration.worker_id)
+        return WahaRegistrationResult(first=first, issued_worker_token=issued)
 
     async def list_workers(self, *, heartbeat_timeout_seconds: float = 90.0):
         return []
@@ -810,3 +817,51 @@ async def test_body_limit_allows_body_within_limit() -> None:
     body = await _read_body_limited(request, limit=100)
     assert body == b"hello world"
     assert queue == []
+
+
+async def test_register_management_protocol_issues_token() -> None:
+    """A management-capable first registration returns the worker token
+    exactly once; heartbeats do not; batch-only never does."""
+    inbox, workers = FakeWahaEventInbox(), FakeWahaWorkers()
+    payload = _registration_payload()
+    payload["management_protocol"] = 1
+    async with _client(inbox, workers) as client:
+        first = await client.post(
+            "/internal/waha/register", json=payload, headers=_auth()
+        )
+        assert first.status_code == 200
+        token = first.json().get("worker_token")
+        assert token is not None and token.startswith("wt_")
+
+        # Heartbeat: no token re-issue.
+        second = await client.post(
+            "/internal/waha/register", json=payload, headers=_auth()
+        )
+        assert second.status_code == 200
+        assert "worker_token" not in second.json()
+
+        # Batch-only worker: never a token.
+        batch_only = _registration_payload()
+        batch_only["worker_id"] = "waha-02-batch"
+        response = await client.post(
+            "/internal/waha/register", json=batch_only, headers=_auth()
+        )
+        assert response.status_code == 200
+        assert "worker_token" not in response.json()
+
+
+async def test_register_rejects_invalid_management_protocol() -> None:
+    inbox, workers = FakeWahaEventInbox(), FakeWahaWorkers()
+    payload = _registration_payload()
+    payload["management_protocol"] = -1
+    async with _client(inbox, workers) as client:
+        response = await client.post(
+            "/internal/waha/register", json=payload, headers=_auth()
+        )
+        assert response.status_code == 400
+        assert response.json()["detail"] == "invalid management_protocol"
+        payload["management_protocol"] = "1"
+        response = await client.post(
+            "/internal/waha/register", json=payload, headers=_auth()
+        )
+        assert response.status_code == 400

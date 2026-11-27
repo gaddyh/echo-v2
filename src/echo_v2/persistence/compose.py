@@ -90,6 +90,7 @@ from echo_v2.persistence.postgres_state_webhook import (
 from echo_v2.persistence.postgres_waha_event_inbox import (
     PostgresWahaEventInboxRepository,
 )
+from echo_v2.persistence.postgres_waha_sessions import PostgresWahaSessionRepository
 from echo_v2.persistence.postgres_waha_workers import PostgresWahaWorkerRegistry
 from echo_v2.persistence.postgres_webhook_dedup import PostgresWebhookDedupStore
 from echo_v2.persistence.postgres_whatsapp_connections import (
@@ -151,6 +152,7 @@ class PostgresRepos:
     guard_daily_stats: PostgresGuardDailyStatsRepository
     waha_event_inbox: PostgresWahaEventInboxRepository
     waha_workers: PostgresWahaWorkerRegistry
+    waha_sessions: PostgresWahaSessionRepository
     session_factory: async_sessionmaker[AsyncSession]
     unit_of_work: Callable[[], PostgresUnitOfWork]
 
@@ -262,6 +264,7 @@ def build_postgres_repos(settings: DBSettings) -> PostgresRepos:
         guard_daily_stats=guard_daily_stats,
         waha_event_inbox=waha_event_inbox,
         waha_workers=waha_workers,
+        waha_sessions=PostgresWahaSessionRepository(factory),
         session_factory=factory,
         unit_of_work=_BoundUoW,
     )

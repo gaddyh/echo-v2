@@ -153,6 +153,8 @@ async def clean_db(engine) -> AsyncIterator[None]:
             "ops_digests, "
             "waha_event_inbox, "
             "waha_workers, "
+            "waha_sessions, "
+            "waha_commands, "
             "waitlist_signups, "
             "guard_eval_judgments, "
             "guard_eval_snapshots, "

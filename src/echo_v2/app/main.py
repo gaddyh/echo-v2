@@ -190,6 +190,41 @@ def create_app() -> FastAPI:
     else:
         raise ValueError(f"unsupported WHATSAPP_PROVIDER: {whatsapp_provider}")
 
+    # --- WAHA session management (Phase 3, agent-based) --------------------
+    # Echo is the control plane: it allocates sessions and enqueues management
+    # commands that the per-VM agent executes against its local WAHA
+    # (127.0.0.1:3000). Echo never connects to a worker and holds no WAHA
+    # credentials. WAHA is receive-only: no WhatsApp message sending. The
+    # router keeps the default provider for everything except new WAHA
+    # onboardings (flag-gated) and existing WAHA connections (routed by
+    # provider, so they stay manageable even when the flag is off).
+    from echo_v2.integrations.waha.provisioner import WahaProvisioner
+    from echo_v2.integrations.waha.settings import load_waha_settings
+    from echo_v2.services.provisioner_router import ProvisionerRouter
+    from echo_v2.services.waha_session_service import WahaSessionService
+
+    waha_settings = load_waha_settings()
+    waha_provisioner = WahaProvisioner(
+        sessions=repos.waha_sessions,
+        settings=waha_settings,
+    )
+    waha_session_service = WahaSessionService(
+        sessions=repos.waha_sessions,
+        settings=waha_settings,
+    )
+    onboarding_provisioner: WhatsAppProvisioner = ProvisionerRouter(
+        default=provisioner,
+        waha=waha_provisioner,
+        waha_onboarding_enabled=waha_settings.onboarding_enabled,
+    )
+    if waha_settings.onboarding_enabled:
+        _logger.info(
+            "waha onboarding enabled (command_lease_seconds=%s, "
+            "command_max_attempts=%d)",
+            waha_settings.command_lease_seconds,
+            waha_settings.command_max_attempts,
+        )
+
     # --- 360dialog (Echo Business Bot — conversational interface) ---------
     d360_settings = Dialog360Settings()
     d360_client = Dialog360Client(settings=d360_settings)
@@ -207,10 +242,16 @@ def create_app() -> FastAPI:
 
     # --- green instance pool (pre-created instances for fast onboarding) ---
     # Pool size 0 disables the pool entirely (pool=None → onboarding creates
-    # instances on demand, the current behavior).
+    # instances on demand, the current behavior). The pool is also disabled
+    # while WAHA onboarding is enabled — pool hits would bypass the WAHA
+    # router and provision Green connections.
     pool_size = int(os.environ.get("GREEN_INSTANCE_POOL_SIZE", "1"))
     pool: GreenInstancePool | None = None
-    if whatsapp_provider == "green" and pool_size > 0:
+    if (
+        whatsapp_provider == "green"
+        and pool_size > 0
+        and not waha_settings.onboarding_enabled
+    ):
         assert green_provisioner is not None
         assert green_client is not None
         pool = GreenInstancePool(
@@ -229,14 +270,18 @@ def create_app() -> FastAPI:
         bot=d360_client,
         user_repo=user_repo,
         connection_repo=repos.connections,
-        provisioner=provisioner,
+        provisioner=onboarding_provisioner,
         green_client=green_client,
         webhook_base_url=webhook_base_url,
         pool=pool,
         guardian_child_links=repos.guardian_child_links,
         reconnect_requests=repos.baileys_events,
         pipeline_events=repos.pipeline_events,
+        waha_reconciler=waha_session_service,
     )
+    # Late-bind: onboarding implements the lifecycle side-effect hooks
+    # (QR delivery, connection-established, disconnect notification).
+    waha_session_service.bind_onboarding_hooks(onboarding_service)
 
     # --- scheduling service (executes due actions) ------------------------
     # Persistent idempotency store — survives restarts, prevents double-sends.
@@ -1276,6 +1321,17 @@ def create_app() -> FastAPI:
     app.include_router(guard_health_router)
     app.include_router(ops_alert_router)
     app.include_router(waha_router)
+
+    # WAHA agent management: command polling + event reporting
+    # (per-worker-token authenticated; independent of the batch loop).
+    from echo_v2.app.waha_management_routes import build_waha_management_router
+
+    app.include_router(
+        build_waha_management_router(
+            workers=repos.waha_workers,
+            service=waha_session_service,
+        )
+    )
     app.include_router(guard_demo_router)
 
     # Public landing page + waitlist signup.

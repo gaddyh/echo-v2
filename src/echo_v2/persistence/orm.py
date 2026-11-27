@@ -2333,10 +2333,113 @@ class WahaWorkerRow(Base):
         TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
     )
     pending: Mapped[int] = mapped_column(Integer, nullable=False)
+    management_protocol: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+    management_token_hash: Mapped[bytes | None] = mapped_column(
+        LargeBinary, nullable=True
+    )
 
     __table_args__ = (
         CheckConstraint(
             "health IN ('starting', 'ok', 'degraded')",
             name="ck_waha_workers_health",
+        ),
+    )
+
+
+class WahaSessionRow(Base):
+    """One user's WAHA session assignment (Phase 3).
+
+    ``session_name`` is generated once at initial allocation and is stable
+    for the life of the assignment; ``worker_id`` pins the registered worker
+    that owns the WAHA session. Lifecycle state is persisted independently
+    of the ``whatsapp_connections`` row so callbacks can arrive before the
+    connection record is created. ``pending_effect`` stays queued until the
+    side effect completes — persisting a transition and executing its effect
+    are separately retryable.
+    """
+
+    __tablename__ = "waha_sessions"
+
+    session_name: Mapped[str] = mapped_column(Text, primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        Uuid, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, unique=True
+    )
+    worker_id: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    raw_status: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_status_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    event_seq: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    pending_effect: Mapped[str | None] = mapped_column(Text, nullable=True)
+    pending_effect_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    last_qr_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_qr_image: Mapped[str | None] = mapped_column(Text, nullable=True)
+    qr_updated_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ("
+            "'provisioning','connecting','pairing_required','connected',"
+            "'degraded','blocked','suspended','unknown'"
+            ")",
+            name="ck_waha_sessions_status",
+        ),
+    )
+
+
+class WahaCommandRow(Base):
+    """One queued WAHA management command (agent-executed, lease-bounded).
+
+    Assigned to a specific worker; the agent claims it by polling, executes
+    it against the local WAHA REST API, and reports the result. A claimed
+    command whose lease expired becomes claimable again (attempt-capped);
+    completion is idempotent.
+    """
+
+    __tablename__ = "waha_commands"
+
+    command_id: Mapped[str] = mapped_column(
+        Uuid, primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    worker_id: Mapped[str] = mapped_column(Text, nullable=False)
+    session_name: Mapped[str] = mapped_column(Text, nullable=False)
+    action: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="pending")
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+    claimed_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "action IN ('create_and_start', 'start', 'get_qr', 'get_status')",
+            name="ck_waha_commands_action",
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'claimed', 'completed', 'failed')",
+            name="ck_waha_commands_status",
         ),
     )
