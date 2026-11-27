@@ -339,6 +339,7 @@ async def test_state_event_stale_version_marks_transport_row(session_factory, cl
 
 
 async def test_recent_event_queries(session_factory, clean_db):
+    await _create_connector_tables(session_factory)
     repository = BaileysEventRepository(session_factory)
     assert isinstance(await repository.recent_connection_events(), list)
     assert isinstance(await repository.recent_processing_failures(), list)

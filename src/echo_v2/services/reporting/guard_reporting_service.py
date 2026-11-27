@@ -450,10 +450,18 @@ class GuardReportingService:
         day_start: datetime,
         day_end: datetime,
     ) -> list[PipelineEventRow]:
-        """Query pipeline failure events for the child's day."""
+        """Query pipeline failure events for the child's day.
+
+        Enrichment failures are recorded as ``media.enrichment.failed``
+        events with ``status`` ``terminal``/``retryable`` (not ``failed``),
+        so failure selection is by event name. Guard analysis failures are
+        ``guard.analysis.failed`` events.
+        """
         result = await session.execute(
             select(PipelineEventRow).where(
-                PipelineEventRow.status == "failed",
+                PipelineEventRow.event_name.in_(
+                    ["media.enrichment.failed", "guard.analysis.failed"]
+                ),
                 PipelineEventRow.created_at >= day_start,
                 PipelineEventRow.created_at < day_end,
             )
@@ -514,7 +522,7 @@ class GuardReportingService:
                 private_msgs += 1
                 private_chats.add(msg.chat_id)
 
-            mtype = msg.message_type
+            mtype: str | None = msg.message_type
             if mtype in _MEDIA_TYPES:
                 media_received[_MEDIA_TYPES[mtype]] += 1
             elif mtype == "text" and msg.text:
@@ -523,7 +531,10 @@ class GuardReportingService:
                 # message_type, so this is handled in enrichments below.
                 pass
 
-        # Enrichment counts (by kind)
+        # Enrichment counts, classified by the underlying message's media
+        # type (``message_enrichments.kind`` is the enrichment stage —
+        # transcription / media_summary / link_summary / video_link_summary —
+        # not the media type).
         media_enriched: dict[str, int] = {
             "images": 0,
             "videos": 0,
@@ -531,18 +542,15 @@ class GuardReportingService:
             "links": 0,
             "documents": 0,
         }
+        message_types = {str(msg.id): msg.message_type for msg in messages}
         for enr in enrichments:
             kind = enr.kind
-            if kind == "image":
-                media_enriched["images"] += 1
-            elif kind == "video":
-                media_enriched["videos"] += 1
-            elif kind == "audio":
-                media_enriched["audio"] += 1
-            elif kind == "link" or kind == "video_link":
+            if kind in ("link_summary", "video_link_summary"):
                 media_enriched["links"] += 1
-            elif kind == "document":
-                media_enriched["documents"] += 1
+                continue
+            mtype = message_types.get(str(enr.message_id))
+            if mtype in _MEDIA_TYPES:
+                media_enriched[_MEDIA_TYPES[mtype]] += 1
 
         # Assessment counts
         guard_assessments = len(security_assessments) + len(exposure_assessments)

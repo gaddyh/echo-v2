@@ -82,6 +82,7 @@ __all__ = [
     "GuardianChildLinkRow",
     "IdempotencyOperationRow",
     "MessageRow",
+    "OpsMetricRow",
     "ProviderWebhookEventRow",
     "ScheduledActionRow",
     "UserRow",
@@ -2079,6 +2080,7 @@ class AiUsageEventRow(Base):
     provider_request_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     pipeline_event_id: Mapped[str | None] = mapped_column(Uuid, nullable=True)
     error_type: Mapped[str | None] = mapped_column(Text, nullable=True)
+    duration_ms: Mapped[float | None] = mapped_column(nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
     )
@@ -2280,6 +2282,12 @@ class WahaEventInboxRow(Base):
         TIMESTAMP(timezone=True), nullable=True
     )
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    claimed_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    processed_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
 
     __table_args__ = (
         UniqueConstraint(
@@ -2338,6 +2346,12 @@ class WahaWorkerRow(Base):
     )
     management_token_hash: Mapped[bytes | None] = mapped_column(
         LargeBinary, nullable=True
+    )
+    resources: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB, nullable=True
+    )
+    resources_observed_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
     )
 
     __table_args__ = (
@@ -2442,4 +2456,39 @@ class WahaCommandRow(Base):
             "status IN ('pending', 'claimed', 'completed', 'failed')",
             name="ck_waha_commands_status",
         ),
+    )
+
+
+# --- ops_metrics ------------------------------------------------------------
+
+
+class OpsMetricRow(Base):
+    """Time-bucketed, low-cardinality operational counter / gauge.
+
+    One row per (bucket, metric, provider, worker) — never per request and
+    never per message: routine polls and heartbeats only bump counters.
+    ``value`` is a sampled gauge (last write wins within a bucket),
+    ``count``/``sum_ms``/``max_ms`` are cumulative increments within the
+    bucket. Written best-effort by the ops metrics recorder; failures are
+    logged and never propagated to callers.
+    """
+
+    __tablename__ = "ops_metrics"
+
+    bucket_start: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), primary_key=True
+    )
+    metric: Mapped[str] = mapped_column(Text, primary_key=True)
+    provider: Mapped[str] = mapped_column(Text, primary_key=True)
+    worker_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    value: Mapped[float] = mapped_column(nullable=False, server_default="0")
+    count: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default="0")
+    sum_ms: Mapped[float | None] = mapped_column(nullable=True)
+    max_ms: Mapped[float | None] = mapped_column(nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        Index("ix_ops_metrics_metric_bucket", "metric", "bucket_start"),
     )

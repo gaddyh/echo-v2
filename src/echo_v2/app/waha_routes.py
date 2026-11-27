@@ -42,15 +42,40 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.requests import ClientDisconnect
 
+from echo_v2.domain.pipeline_event import PipelineEvent
 from echo_v2.domain.waha import WahaInboxMessage, WahaWorkerRegistration
+from echo_v2.persistence.pipeline_events import PipelineEventRepository
 from echo_v2.persistence.waha_event_inbox import WahaEventInboxRepository
 from echo_v2.persistence.waha_workers import WahaWorkerRegistry
+from echo_v2.services.ops_metrics_recorder import OpsMetricsRecorder
 
 _logger = logging.getLogger("echo_v2.app.waha_routes")
 
 _MAX_REGISTER_BODY_BYTES = 64 * 1024
 _SHA256_HEX = re.compile(r"^[0-9a-fA-F]{64}$")
 _HEALTH_VALUES = ("starting", "ok", "degraded")
+
+# Optional agent-reported resource telemetry (Operations Center contract).
+# Numeric gauges are whitelisted; anything else is rejected so a buggy agent
+# cannot stuff arbitrary JSON into the registry.
+_RESOURCE_NUMBER_FIELDS = (
+    "vm_cpu_percent",
+    "vm_ram_total_bytes",
+    "vm_ram_available_bytes",
+    "waha_container_memory_bytes",
+    "waha_container_cpu_percent",
+    "agent_memory_bytes",
+    "disk_total_bytes",
+    "disk_used_bytes",
+    "sqlite_db_bytes",
+    "agent_state_db_bytes",
+    "vm_uptime_seconds",
+    "waha_container_uptime_seconds",
+    "agent_uptime_seconds",
+    "oldest_undelivered_local_message_at",
+    "last_batch_delivery_at",
+)
+_RESOURCE_STRING_FIELDS = ("waha_version",)
 
 
 def _headers() -> dict[str, str]:
@@ -212,6 +237,42 @@ def _parse_batch(payload: Any) -> tuple[str, list[WahaInboxMessage]]:
     return batch_id, messages
 
 
+def _parse_resources(payload: dict[str, Any]) -> tuple[dict[str, Any], datetime | None]:
+    """Parse the optional ``resources`` telemetry object.
+
+    Backward compatible: absence returns ``(None-ish empty, None)`` so old
+    agents continue to register unchanged. Present but malformed values are
+    rejected (400) — the agent should send valid gauges or none at all.
+    ``observed_at`` (epoch seconds) is the agent's measurement time; when
+    omitted, Echo stamps ``now()`` server-side so resource freshness never
+    depends on the agent's clock.
+    """
+    raw = payload.get("resources")
+    if raw is None:
+        return {}, None
+    if not isinstance(raw, dict):
+        raise HTTPException(status_code=400, detail="invalid resources")
+    resources: dict[str, Any] = {}
+    for field in _RESOURCE_NUMBER_FIELDS:
+        value = raw.get(field)
+        if value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise HTTPException(status_code=400, detail=f"invalid resources.{field}")
+        resources[field] = float(value)
+    for field in _RESOURCE_STRING_FIELDS:
+        value = raw.get(field)
+        if value is None:
+            continue
+        if not isinstance(value, str) or not value or len(value) > 64:
+            raise HTTPException(status_code=400, detail=f"invalid resources.{field}")
+        resources[field] = value
+    observed = raw.get("observed_at")
+    if observed is None:
+        return resources, datetime.now(timezone.utc)
+    return resources, _parse_epoch(observed, "resources.observed_at")
+
+
 def _parse_registration(payload: Any) -> WahaWorkerRegistration:
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="payload must be an object")
@@ -225,6 +286,7 @@ def _parse_registration(payload: Any) -> WahaWorkerRegistration:
         or management_protocol < 0
     ):
         raise HTTPException(status_code=400, detail="invalid management_protocol")
+    resources, resources_observed_at = _parse_resources(payload)
     return WahaWorkerRegistration(
         worker_id=_require_str(payload, "worker_id"),
         region=_require_str(payload, "region"),
@@ -236,6 +298,8 @@ def _parse_registration(payload: Any) -> WahaWorkerRegistration:
         reported_heartbeat=_parse_epoch(payload.get("last_heartbeat"), "last_heartbeat"),
         pending=_require_int(payload, "pending", minimum=0),
         management_protocol=management_protocol,
+        resources=resources or None,
+        resources_observed_at=resources_observed_at if resources else None,
     )
 
 
@@ -246,15 +310,49 @@ def build_waha_router(
     token: str = "",
     max_messages: int = 200,
     max_body_bytes: int = 8 * 1024 * 1024,
+    pipeline_events: PipelineEventRepository | None = None,
+    metrics: OpsMetricsRecorder | None = None,
 ) -> APIRouter:
     router = APIRouter()
+
+    async def _record_event(event: PipelineEvent) -> None:
+        """Best-effort telemetry: never let it fail or delay the response."""
+        if pipeline_events is None:
+            return
+        try:
+            await pipeline_events.record(event)
+        except Exception:
+            _logger.exception(
+                "waha telemetry event failed event_name=%s", event.event_name
+            )
+
+    def _count(metric: str, **kwargs: Any) -> None:
+        if metrics is None:
+            return
+        try:
+            metrics.increment(metric, **kwargs)
+        except Exception:
+            _logger.exception("waha telemetry counter failed metric=%s", metric)
 
     @router.post("/internal/waha/batch")
     async def ingest_batch(request: Request) -> JSONResponse:
         started = time.perf_counter()
-        _require_token(token, request.headers.get("authorization"))
+        try:
+            _require_token(token, request.headers.get("authorization"))
+        except HTTPException:
+            await _record_event(
+                PipelineEvent(
+                    event_name="waha.auth.rejected",
+                    pipeline="waha_ingestion",
+                    status="rejected",
+                    error_type="auth",
+                )
+            )
+            raise
         body = await _read_body_limited(request, limit=max_body_bytes)
         actual_bytes = len(body)
+        _count("waha.batch.requests", provider="waha", count=1)
+        _count("waha.batch.bytes", provider="waha", count=1, sum_ms=actual_bytes)
         try:
             payload = json.loads(body)
             batch_id, messages = _parse_batch(payload)
@@ -265,6 +363,15 @@ def build_waha_router(
                 "waha batch rejected category=invalid_json body_bytes=%d",
                 actual_bytes,
             )
+            await _record_event(
+                PipelineEvent(
+                    event_name="waha.batch.rejected",
+                    pipeline="waha_ingestion",
+                    status="invalid_json",
+                    error_type="invalid_json",
+                    event_id=None,
+                )
+            )
             raise HTTPException(status_code=400, detail="invalid JSON") from exc
         except HTTPException as exc:
             _logger.info(
@@ -273,6 +380,15 @@ def build_waha_router(
                 exc.status_code,
                 exc.detail,
                 actual_bytes,
+            )
+            category = "oversized" if exc.status_code == 413 else "validation"
+            await _record_event(
+                PipelineEvent(
+                    event_name="waha.batch.rejected",
+                    pipeline="waha_ingestion",
+                    status=category,
+                    error_type=category,
+                )
             )
             raise
 
@@ -309,6 +425,15 @@ def build_waha_router(
                 batch_id,
                 len(messages),
             )
+            await _record_event(
+                PipelineEvent(
+                    event_name="waha.batch.failed",
+                    pipeline="waha_ingestion",
+                    status="failed",
+                    error_type=type(exc).__name__,
+                    event_id=batch_id,
+                )
+            )
             raise HTTPException(
                 status_code=503, detail="ingestion temporarily unavailable"
             ) from exc
@@ -335,6 +460,46 @@ def build_waha_router(
             persistence_ms,
             total_ms,
         )
+        if messages:
+            # Exact per-batch historical record (bounded, privacy-safe
+            # counters only). Empty batches are counted only in ops_metrics.
+            await _record_event(
+                PipelineEvent(
+                    event_name="waha.batch.ingested",
+                    pipeline="waha_ingestion",
+                    status="success",
+                    event_id=batch_id,
+                    duration_ms=total_ms,
+                    attempt=1,
+                    metadata={
+                        "received": len(messages),
+                        "acked": len(acked),
+                        "inserted": result.inserted,
+                        "duplicated": result.duplicated + in_batch_dup,
+                        "updated": result.updated,
+                        "in_batch_dup": in_batch_dup,
+                        "discarded_revisions": discarded_revisions,
+                        "body_bytes": actual_bytes,
+                        "persistence_ms": round(persistence_ms, 1),
+                    },
+                )
+            )
+        else:
+            _count("waha.batch.empty", provider="waha", count=1)
+        _count(
+            "waha.batch.latency_ms",
+            provider="waha",
+            count=1,
+            sum_ms=total_ms,
+            max_ms=total_ms,
+        )
+        _count(
+            "waha.batch.persistence_ms",
+            provider="waha",
+            count=1,
+            sum_ms=persistence_ms,
+            max_ms=persistence_ms,
+        )
         return JSONResponse(
             content={
                 "batch_id": batch_id,
@@ -347,7 +512,18 @@ def build_waha_router(
 
     @router.post("/internal/waha/register")
     async def register_worker(request: Request) -> JSONResponse:
-        _require_token(token, request.headers.get("authorization"))
+        try:
+            _require_token(token, request.headers.get("authorization"))
+        except HTTPException:
+            await _record_event(
+                PipelineEvent(
+                    event_name="waha.auth.rejected",
+                    pipeline="waha_ingestion",
+                    status="rejected",
+                    error_type="auth",
+                )
+            )
+            raise
         body = await _read_body_limited(request, limit=_MAX_REGISTER_BODY_BYTES)
         try:
             registration = _parse_registration(json.loads(body))
@@ -367,6 +543,15 @@ def build_waha_router(
                 "waha worker register failed category=db error_type=%s worker_id=%s",
                 type(exc).__name__,
                 registration.worker_id,
+            )
+            await _record_event(
+                PipelineEvent(
+                    event_name="waha.register.failed",
+                    pipeline="waha_ingestion",
+                    status="failed",
+                    error_type=type(exc).__name__,
+                    event_id=registration.worker_id,
+                )
             )
             raise HTTPException(
                 status_code=503, detail="registration temporarily unavailable"

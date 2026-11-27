@@ -87,6 +87,7 @@ class UsagePayload:
         error_type: Exception type name when ``status`` is ``error``.
         invocation_id: Fresh UUID per actual provider call. When ``None``,
             the recorder generates one.
+        duration_ms: Wall-clock provider-call latency when measured in-run.
     """
 
     usage_type: str
@@ -99,6 +100,7 @@ class UsagePayload:
     provider_request_id: str | None = None
     error_type: str | None = None
     invocation_id: UUID | None = None
+    duration_ms: float | None = None
 
 
 class AiUsageRecorder:
@@ -153,6 +155,7 @@ class AiUsageRecorder:
             provider_request_id=payload.provider_request_id,
             pipeline_event_id=context.pipeline_event_id,
             error_type=payload.error_type,
+            duration_ms=payload.duration_ms,
             created_at=datetime.now(timezone.utc),
         )
         try:

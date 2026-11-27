@@ -21,6 +21,7 @@ single worker identity via a constant-time compare.
 from __future__ import annotations
 
 import hmac
+import json
 from datetime import datetime, timezone
 
 from sqlalchemy import text
@@ -42,11 +43,12 @@ _REGISTER_SQL = """
     INSERT INTO waha_workers (
         worker_id, region, endpoint, max_sessions, active_sessions,
         agent_version, health, reported_heartbeat, last_seen_at,
-        first_registered_at, pending, management_protocol
+        first_registered_at, pending, management_protocol,
+        resources, resources_observed_at
     ) VALUES (
         :worker_id, :region, :endpoint, :max_sessions, :active_sessions,
         :agent_version, :health, :reported_heartbeat, now(), now(), :pending,
-        :management_protocol
+        :management_protocol, CAST(:resources AS jsonb), :resources_observed_at
     )
     ON CONFLICT (worker_id) DO UPDATE SET
         region = EXCLUDED.region,
@@ -58,7 +60,9 @@ _REGISTER_SQL = """
         reported_heartbeat = EXCLUDED.reported_heartbeat,
         last_seen_at = now(),
         pending = EXCLUDED.pending,
-        management_protocol = EXCLUDED.management_protocol
+        management_protocol = EXCLUDED.management_protocol,
+        resources = EXCLUDED.resources,
+        resources_observed_at = EXCLUDED.resources_observed_at
     RETURNING (xmax = 0) AS first_registration, management_token_hash
 """
 
@@ -85,6 +89,12 @@ class PostgresWahaWorkerRegistry:
                         "reported_heartbeat": registration.reported_heartbeat,
                         "pending": registration.pending,
                         "management_protocol": registration.management_protocol,
+                        "resources": (
+                            json.dumps(registration.resources)
+                            if registration.resources is not None
+                            else None
+                        ),
+                        "resources_observed_at": registration.resources_observed_at,
                     },
                 )
             ).mappings().one()
@@ -163,7 +173,8 @@ class PostgresWahaWorkerRegistry:
                             "SELECT worker_id, region, endpoint, max_sessions,"
                             " active_sessions, agent_version, health,"
                             " reported_heartbeat, last_seen_at,"
-                            " first_registered_at, pending, management_protocol"
+                            " first_registered_at, pending, management_protocol,"
+                            " resources, resources_observed_at"
                             " FROM waha_workers ORDER BY worker_id"
                         )
                     )
@@ -190,6 +201,9 @@ class PostgresWahaWorkerRegistry:
                         and row["health"] == "ok"
                     ),
                     has_capacity=row["active_sessions"] < row["max_sessions"],
+                    management_protocol=row["management_protocol"],
+                    resources=row["resources"],
+                    resources_observed_at=row["resources_observed_at"],
                 )
                 for row in rows
             ]

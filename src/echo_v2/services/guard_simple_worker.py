@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Protocol
@@ -11,6 +12,7 @@ from typing import Protocol
 from echo_v2.domain.guard import GuardChatState
 from echo_v2.domain.guard_exposure import ExposureAssessment
 from echo_v2.domain.guard_simple import SafetyAssessment
+from echo_v2.domain.pipeline_event import PipelineEvent
 from echo_v2.persistence.guard_exposure_repositories import (
     GuardExposureAssessmentRepository,
 )
@@ -18,6 +20,7 @@ from echo_v2.persistence.guard_repositories import GuardChatStateRepository
 from echo_v2.persistence.guard_simple_repositories import (
     GuardSimpleAssessmentCommitRepository,
 )
+from echo_v2.persistence.pipeline_events import PipelineEventRepository
 from echo_v2.services.guard_simple_processor import GuardSimpleProcessor
 
 _logger = logging.getLogger("echo_v2.services.guard_simple_worker")
@@ -82,6 +85,7 @@ class GuardSimpleAnalysisWorker:
         incident_evaluator: IncidentEvaluator | None = None,
         poll_interval_seconds: float = 10.0,
         excluded_chat_ids: frozenset[str] = frozenset(),
+        pipeline_events: PipelineEventRepository | None = None,
     ) -> None:
         self._state = state_repo
         self._processor = processor
@@ -93,6 +97,18 @@ class GuardSimpleAnalysisWorker:
         self._incident_evaluator = incident_evaluator
         self._poll_interval = poll_interval_seconds
         self._excluded = excluded_chat_ids
+        self._pipeline_events = pipeline_events
+
+    async def _record_event(self, event: PipelineEvent) -> None:
+        """Best-effort analysis telemetry; never breaks the worker loop."""
+        if self._pipeline_events is None:
+            return
+        try:
+            await self._pipeline_events.record(event)
+        except Exception:
+            _logger.exception(
+                "guard analysis telemetry failed event_name=%s", event.event_name
+            )
 
     def set_delivery(self, delivery: ParentAttentionDelivery) -> None:
         self._delivery = delivery
@@ -158,22 +174,37 @@ class GuardSimpleAnalysisWorker:
             "guard simple analysis start child_user_id=%s chat_id=%s version=%d",
             chat.child_user_id, chat.chat_id, chat.activity_version,
         )
-        if self._exposure is not None and chat.is_group:
-            assessment, exposure = await self._processor.process_with_exposure(
-                child_user_id=chat.child_user_id,
-                connection_id=chat.connection_id,
-                chat_id=chat.chat_id,
-                child_name=child_name,
-                target_version=chat.activity_version,
+        started = time.perf_counter()
+        try:
+            if self._exposure is not None and chat.is_group:
+                assessment, exposure = await self._processor.process_with_exposure(
+                    child_user_id=chat.child_user_id,
+                    connection_id=chat.connection_id,
+                    chat_id=chat.chat_id,
+                    child_name=child_name,
+                    target_version=chat.activity_version,
+                )
+            else:
+                assessment = await self._processor.process(
+                    child_user_id=chat.child_user_id,
+                    connection_id=chat.connection_id,
+                    chat_id=chat.chat_id,
+                    child_name=child_name,
+                )
+                exposure = None
+        except Exception as exc:
+            await self._record_event(
+                PipelineEvent(
+                    event_name="guard.analysis.failed",
+                    pipeline="guard_analysis",
+                    status="failed",
+                    error_type=type(exc).__name__,
+                    user_id_hash=chat.child_user_id,
+                    chat_id_hash=chat.chat_id,
+                )
             )
-        else:
-            assessment = await self._processor.process(
-                child_user_id=chat.child_user_id,
-                connection_id=chat.connection_id,
-                chat_id=chat.chat_id,
-                child_name=child_name,
-            )
-            exposure = None
+            raise
+        analysis_ms = (time.perf_counter() - started) * 1000
         assessment = replace(assessment, chat_type="group" if chat.is_group else "private")
         _logger.info(
             "guard simple assessment prepared child_user_id=%s chat_id=%s parent_should_know=%s reason=%s input_count=%d",
@@ -187,6 +218,7 @@ class GuardSimpleAnalysisWorker:
             assessment=assessment,
         )
         exposure_id: str | None = None
+        exposure_status: str | None = None
         if (
             exposure is not None
             and self._exposure is not None
@@ -265,6 +297,43 @@ class GuardSimpleAnalysisWorker:
             assessment_id,
             assessment.parent_should_know,
         )
+        await self._record_event(
+            PipelineEvent(
+                event_name="guard.analysis.completed",
+                pipeline="guard_analysis",
+                status=status,
+                duration_ms=analysis_ms,
+                user_id_hash=chat.child_user_id,
+                chat_id_hash=chat.chat_id,
+                metadata={
+                    "analyzer": "security",
+                    "model": assessment.model,
+                    "chat_type": assessment.chat_type,
+                    "parent_should_know": assessment.parent_should_know,
+                    "llm_skipped": bool(
+                        (assessment.diagnostics or {}).get("llm_skipped")
+                    ),
+                },
+            )
+        )
+        if exposure is not None and exposure_id:
+            await self._record_event(
+                PipelineEvent(
+                    event_name="guard.analysis.completed",
+                    pipeline="guard_analysis",
+                    status=exposure_status or "unavailable",
+                    duration_ms=analysis_ms,
+                    user_id_hash=chat.child_user_id,
+                    chat_id_hash=chat.chat_id,
+                    metadata={
+                        "analyzer": "exposure",
+                        "model": exposure.model,
+                        "chat_type": exposure.chat_type,
+                        "significant_exposure": exposure.significant_exposure,
+                        "category": exposure.category,
+                    },
+                )
+            )
         return status
 
 

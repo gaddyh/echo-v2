@@ -110,6 +110,8 @@ class PostgresWahaEventInboxRepository:
             "  batch_id = EXCLUDED.batch_id,"
             "  last_updated_at = :now,"
             "  status = 'pending',"
+            "  claimed_at = NULL,"
+            "  processed_at = NULL,"
             "  revision = waha_event_inbox.revision + 1"
             " WHERE waha_event_inbox.sha256 <> EXCLUDED.sha256"
             " RETURNING session, message_id, sha256, (xmax = 0) AS inserted"
@@ -171,7 +173,8 @@ class PostgresWahaEventInboxRepository:
                                lease_owner = :worker_id,
                                lease_expires_at = :lease_expires_at,
                                attempt_count = waha_event_inbox.attempt_count + 1,
-                               last_error = NULL
+                               last_error = NULL,
+                               claimed_at = :now
                          WHERE id IN (
                              SELECT id FROM waha_event_inbox
                               WHERE (status = 'pending' OR status = 'failed'
@@ -237,7 +240,8 @@ class PostgresWahaEventInboxRepository:
                                lease_owner = NULL,
                                lease_expires_at = NULL,
                                last_error = NULL,
-                               last_updated_at = now()
+                               last_updated_at = now(),
+                               processed_at = now()
                          WHERE session = :session AND message_id = :message_id
                            AND revision = :revision
                            AND status = 'processing'
@@ -310,7 +314,8 @@ class PostgresWahaEventInboxRepository:
                     text(
                         """
                         UPDATE waha_event_inbox
-                           SET status = 'processed', last_updated_at = now()
+                           SET status = 'processed', last_updated_at = now(),
+                               processed_at = now()
                          WHERE session = :session AND message_id = :message_id
                            AND revision = :revision
                            AND status IN ('pending', 'processing')

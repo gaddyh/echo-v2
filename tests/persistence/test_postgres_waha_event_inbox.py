@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+from dataclasses import replace
 from datetime import datetime, timezone
 
 import pytest
@@ -467,3 +468,76 @@ async def test_backlog_stats_counts_and_age(
     assert pending == 1
     assert failed == 1
     assert oldest_age is not None and 0 <= oldest_age < 60
+
+
+async def test_claim_and_completion_set_latency_timestamps(
+    repo: PostgresWahaEventInboxRepository,
+) -> None:
+    """Operations Center latency stages: claimed_at / processed_at are set."""
+    from sqlalchemy import text
+
+    message = _message()
+    await repo.ingest_batch("b-1", [message])
+    claimed = (
+        await repo.claim_pending("worker-1", batch_size=1, lease_seconds=60)
+    )[0]
+    async with repo._session_factory() as session:
+        row = (
+            await session.execute(
+                text(
+                    "SELECT claimed_at, processed_at FROM waha_event_inbox"
+                    " WHERE session = :s AND message_id = :m"
+                ),
+                {"s": message.session, "m": message.message_id},
+            )
+        ).one()
+    assert row.claimed_at is not None
+    assert row.processed_at is None
+
+    assert await repo.complete_claimed(claimed) is True
+    async with repo._session_factory() as session:
+        row = (
+            await session.execute(
+                text(
+                    "SELECT claimed_at, processed_at FROM waha_event_inbox"
+                    " WHERE session = :s AND message_id = :m"
+                ),
+                {"s": message.session, "m": message.message_id},
+            )
+        ).one()
+    assert row.processed_at is not None
+    assert row.processed_at >= row.claimed_at
+
+
+async def test_revision_update_resets_latency_timestamps(
+    repo: PostgresWahaEventInboxRepository,
+) -> None:
+    """A new payload revision resets claimed_at/processed_at with status."""
+    from sqlalchemy import text
+
+    message = _message()
+    await repo.ingest_batch("b-1", [message])
+    claimed = (
+        await repo.claim_pending("worker-1", batch_size=1, lease_seconds=60)
+    )[0]
+    assert await repo.complete_claimed(claimed) is True
+
+    revised = replace(message, data='{"text": "v2"}', sha256=None)
+    revised = replace(
+        revised,
+        sha256=hashlib.sha256(revised.data.encode("utf-8")).hexdigest(),
+    )
+    await repo.ingest_batch("b-2", [revised])
+    async with repo._session_factory() as session:
+        row = (
+            await session.execute(
+                text(
+                    "SELECT status, claimed_at, processed_at FROM waha_event_inbox"
+                    " WHERE session = :s AND message_id = :m"
+                ),
+                {"s": message.session, "m": message.message_id},
+            )
+        ).one()
+    assert row.status == "pending"
+    assert row.claimed_at is None
+    assert row.processed_at is None
