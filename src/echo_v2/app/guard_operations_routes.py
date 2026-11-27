@@ -1,4 +1,4 @@
-"""Authenticated Guard Activity telemetry routes."""
+"""Authenticated Guard Activity telemetry routes + Echo Operations Center."""
 
 from __future__ import annotations
 
@@ -6,14 +6,20 @@ from dataclasses import asdict
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
 
-from fastapi import APIRouter, Cookie, HTTPException
+from fastapi import APIRouter, Cookie, HTTPException, Query
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from echo_v2.app.guard_admin_dashboard_page import ADMIN_DASHBOARD_PAGE
 from echo_v2.app.guard_operations_page import GUARD_ACTIVITY_PAGE
-from echo_v2.services.guard_admin_dashboard_service import GuardAdminDashboardService
 from echo_v2.services.guard_simple_telemetry_service import GuardSimpleTelemetryService
+from echo_v2.services.ops_center_service import (
+    DEFAULT_PERIOD,
+    PERIOD_SECONDS,
+    OpsCenterService,
+)
+from echo_v2.services.ops_error_view import OpsErrorView
+from echo_v2.services.ops_health_rules import OpsHealthRules
 from echo_v2.services.waiting_list_token_service import WaitingListTokenService
 
 _SESSION_COOKIE = "wls"
@@ -36,7 +42,9 @@ def build_guard_operations_router(
     service: GuardSimpleTelemetryService,
     token_service: WaitingListTokenService,
     admin_user_ids: set[str] | frozenset[str] = frozenset(),
-    admin_dashboard_service: GuardAdminDashboardService | None = None,
+    ops_center_service: OpsCenterService | None = None,
+    ops_health_rules: OpsHealthRules | None = None,
+    ops_error_view: OpsErrorView | None = None,
 ) -> APIRouter:
     router = APIRouter()
 
@@ -67,17 +75,74 @@ def build_guard_operations_router(
     async def admin_page() -> HTMLResponse:
         return HTMLResponse(content=ADMIN_DASHBOARD_PAGE, headers=_headers())
 
-    @router.get("/api/debug/guard/admin")
-    async def admin_data(
-        wls: str | None = Cookie(default=None, alias=_SESSION_COOKIE),
-    ) -> JSONResponse:
-        if wls is None or admin_dashboard_service is None:
+    async def _require_admin(
+        wls: str | None,
+    ) -> None:
+        if wls is None or ops_center_service is None:
             raise HTTPException(status_code=401, detail="admin access required")
         resolved = await token_service.resolve_session(wls)
         if resolved is None or resolved.user_id not in admin_user_ids:
             raise HTTPException(status_code=401, detail="admin access required")
+
+    @router.get("/api/debug/guard/admin")
+    async def admin_data(
+        wls: str | None = Cookie(default=None, alias=_SESSION_COOKIE),
+        period: str = Query(default=DEFAULT_PERIOD),
+        provider: str = Query(default="all"),
+        worker_id: str | None = Query(default=None),
+        user_id: str | None = Query(default=None),
+    ) -> JSONResponse:
+        await _require_admin(wls)
+        if ops_center_service is None:
+            raise HTTPException(status_code=503, detail="ops center unavailable")
+        snapshot = await ops_center_service.snapshot(
+            period=period if period in PERIOD_SECONDS else DEFAULT_PERIOD,
+            provider=provider,
+            worker_id=worker_id,
+            user_id=user_id,
+        )
+        if ops_health_rules is not None:
+            snapshot["health"] = ops_health_rules.evaluate(snapshot)
         return JSONResponse(
-            content=jsonable_encoder(await admin_dashboard_service.snapshot()),
+            content=jsonable_encoder(snapshot),
+            headers=_headers(),
+        )
+
+    @router.get("/api/debug/guard/admin/users/{user_id}")
+    async def admin_user_detail(
+        user_id: str,
+        wls: str | None = Cookie(default=None, alias=_SESSION_COOKIE),
+    ) -> JSONResponse:
+        await _require_admin(wls)
+        if ops_center_service is None:
+            raise HTTPException(status_code=503, detail="ops center unavailable")
+        return JSONResponse(
+            content=jsonable_encoder(await ops_center_service.user_detail(user_id)),
+            headers=_headers(),
+        )
+
+    @router.get("/api/debug/guard/admin/errors")
+    async def admin_errors(
+        wls: str | None = Cookie(default=None, alias=_SESSION_COOKIE),
+        subsystem: str | None = Query(default=None),
+        severity: str | None = Query(default=None),
+        hours: int = Query(default=24, ge=1, le=720),
+        limit: int = Query(default=50, ge=1, le=200),
+        offset: int = Query(default=0, ge=0),
+    ) -> JSONResponse:
+        await _require_admin(wls)
+        if ops_error_view is None:
+            raise HTTPException(status_code=503, detail="error view unavailable")
+        since = datetime.now(timezone.utc) - timedelta(hours=hours)
+        result = await ops_error_view.list_errors(
+            since=since,
+            subsystem=subsystem,
+            severity=severity,
+            limit=limit,
+            offset=offset,
+        )
+        return JSONResponse(
+            content=jsonable_encoder(result),
             headers=_headers(),
         )
 

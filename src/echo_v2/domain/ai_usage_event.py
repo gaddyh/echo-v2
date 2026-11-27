@@ -98,6 +98,8 @@ class AiUsageEvent:
         provider_request_id: Provider's request id, for reconciliation.
         pipeline_event_id: Optional link to ``pipeline_events.id``.
         error_type: Exception type name when ``status`` is ``error``.
+        duration_ms: Wall-clock provider-call latency when the call site
+            measures it (Operations Center model-latency metric).
         created_at: When the provider call occurred (UTC).
     """
 
@@ -120,6 +122,7 @@ class AiUsageEvent:
     provider_request_id: str | None = None
     pipeline_event_id: str | None = None
     error_type: str | None = None
+    duration_ms: float | None = None
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 

@@ -461,7 +461,7 @@ async def test_rebuild_day_with_enrichments(session_factory, clean_db) -> None:
         message_type="image",
     )
     await _insert_enrichment(
-        session_factory, message_id=msg_id, kind="image", status="completed"
+        session_factory, message_id=msg_id, kind="media_summary", status="completed"
     )
 
     repo = PostgresGuardDailyStatsRepository(session_factory)
@@ -540,7 +540,7 @@ async def test_rebuild_day_with_video_link_document_enrichments(
         message_type="video",
     )
     await _insert_enrichment(
-        session_factory, message_id=msg1, kind="video", status="completed"
+        session_factory, message_id=msg1, kind="media_summary", status="completed"
     )
 
     # Insert a text message (link) + link enrichment
@@ -550,7 +550,7 @@ async def test_rebuild_day_with_video_link_document_enrichments(
         message_type="text", msg_text="https://example.com",
     )
     await _insert_enrichment(
-        session_factory, message_id=msg2, kind="link", status="completed"
+        session_factory, message_id=msg2, kind="link_summary", status="completed"
     )
 
     # Insert a document message + document enrichment
@@ -560,7 +560,7 @@ async def test_rebuild_day_with_video_link_document_enrichments(
         message_type="document",
     )
     await _insert_enrichment(
-        session_factory, message_id=msg3, kind="document", status="completed"
+        session_factory, message_id=msg3, kind="media_summary", status="completed"
     )
 
     repo = PostgresGuardDailyStatsRepository(session_factory)

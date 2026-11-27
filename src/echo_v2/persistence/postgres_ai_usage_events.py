@@ -52,6 +52,7 @@ class PostgresAiUsageEventRepository:
                     provider_request_id=event.provider_request_id,
                     pipeline_event_id=event.pipeline_event_id,
                     error_type=event.error_type,
+                    duration_ms=event.duration_ms,
                     created_at=event.created_at,
                 )
                 .on_conflict_do_nothing(index_elements=["invocation_id"])

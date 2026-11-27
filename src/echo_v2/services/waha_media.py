@@ -40,8 +40,11 @@ from echo_v2.services.waha_messages import extract_media
 
 __all__ = [
     "ChainedMediaUrlResolver",
+    "WahaMediaDecryptError",
     "WahaMediaDecryptor",
+    "WahaMediaDownloadError",
     "WahaMediaError",
+    "WahaMediaUnavailableError",
     "WahaMediaUrlResolver",
 ]
 
@@ -65,7 +68,24 @@ _DEFAULT_CDN_USER_AGENT = "WhatsApp/2.0"
 
 
 class WahaMediaError(RuntimeError):
-    """Raised when WhatsApp media cannot be downloaded or decrypted."""
+    """Raised when WhatsApp media cannot be downloaded or decrypted.
+
+    Subclasses classify the failure stage for the Operations Center media
+    metrics (retrieval vs decryption vs unavailable reference) — the class
+    name is recorded as ``error_type`` on enrichment failure events.
+    """
+
+
+class WahaMediaUnavailableError(WahaMediaError):
+    """The media reference/envelope is missing or malformed."""
+
+
+class WahaMediaDownloadError(WahaMediaError):
+    """The ciphertext could not be retrieved from the CDN."""
+
+
+class WahaMediaDecryptError(WahaMediaError):
+    """Decryption or integrity verification failed."""
 
 
 class WahaMediaDecryptor:
@@ -88,28 +108,28 @@ class WahaMediaDecryptor:
         """
         info = _MEDIA_INFO_STRINGS.get(media_type)
         if info is None:
-            raise WahaMediaError(f"unsupported media type: {media_type}")
+            raise WahaMediaDecryptError(f"unsupported media type: {media_type}")
         try:
             key_bytes = base64.b64decode(media_key, validate=True)
             expected_sha = base64.b64decode(file_sha256, validate=True)
         except ValueError as exc:
-            raise WahaMediaError(f"invalid base64 media fields: {exc}") from exc
+            raise WahaMediaDecryptError(f"invalid base64 media fields: {exc}") from exc
 
         keys = self._hkdf_sha256(key_bytes, info, _HKDF_LENGTH)
         iv, cipher_key = keys[:_IV_LENGTH], keys[_IV_LENGTH : _IV_LENGTH + _KEY_LENGTH]
         if len(iv) != _IV_LENGTH or len(cipher_key) != _KEY_LENGTH:
-            raise WahaMediaError("HKDF derived short key material")
+            raise WahaMediaDecryptError("HKDF derived short key material")
 
         # The ciphertext ends with a 10-byte truncated HMAC; the plaintext
         # SHA-256 check below is the end-to-end integrity gate, so the MAC
         # bytes are simply not part of the AES input.
         aes_input = ciphertext[:-10] if len(ciphertext) > 10 else b""
         if len(aes_input) % _IV_LENGTH != 0:
-            raise WahaMediaError(
+            raise WahaMediaDecryptError(
                 f"ciphertext length {len(aes_input)} is not block-aligned"
             )
         if len(aes_input) < file_length:
-            raise WahaMediaError(
+            raise WahaMediaDecryptError(
                 f"ciphertext shorter than declared file length {file_length}"
             )
         decryptor = Cipher(
@@ -118,7 +138,7 @@ class WahaMediaDecryptor:
         padded = decryptor.update(aes_input) + decryptor.finalize()
         plaintext = padded[:file_length]
         if hashlib.sha256(plaintext).digest() != expected_sha:
-            raise WahaMediaError("plaintext SHA-256 mismatch")
+            raise WahaMediaDecryptError("plaintext SHA-256 mismatch")
         return plaintext
 
     @staticmethod
@@ -152,17 +172,17 @@ async def download_ciphertext(
     """
     parsed = urlparse(url)
     if parsed.scheme != "https" or not parsed.netloc:
-        raise WahaMediaError("media URL must be an absolute HTTPS URL")
+        raise WahaMediaDownloadError("media URL must be an absolute HTTPS URL")
     buf = bytearray()
     async with httpx.AsyncClient(timeout=120, follow_redirects=False) as client:
         response = await client.get(url, headers={"User-Agent": user_agent})
         if response.status_code in (301, 302, 303, 307, 308):
-            raise WahaMediaError("media URL returned an unexpected redirect")
+            raise WahaMediaDownloadError("media URL returned an unexpected redirect")
         response.raise_for_status()
         async for chunk in response.aiter_bytes():
             buf.extend(chunk)
             if len(buf) > max_bytes:
-                raise WahaMediaError(
+                raise WahaMediaDownloadError(
                     f"media exceeded size cap {max_bytes} bytes "
                     f"(at least {len(buf)})"
                 )
@@ -207,11 +227,11 @@ class WahaMediaUrlResolver:
             return None
         parts = reference.split(":", 2)
         if len(parts) != 3:
-            raise WahaMediaError(f"invalid WAHA media reference: {reference}")
+            raise WahaMediaUnavailableError(f"invalid WAHA media reference: {reference}")
         _, session, message_id = parts
         row = await self._inbox.get(session, message_id)
         if row is None:
-            raise WahaMediaError(
+            raise WahaMediaUnavailableError(
                 f"inbox row not found for media reference {reference}"
             )
         media = extract_media(row)

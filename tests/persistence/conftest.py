@@ -151,6 +151,7 @@ async def clean_db(engine) -> AsyncIterator[None]:
         await conn.exec_driver_sql(
             "TRUNCATE TABLE "
             "ops_digests, "
+            "ops_metrics, "
             "waha_event_inbox, "
             "waha_workers, "
             "waha_sessions, "
@@ -164,6 +165,26 @@ async def clean_db(engine) -> AsyncIterator[None]:
             "chat_mutes, "
             "waiting_for_me_active, "
             "waiting_for_me_results, "
+            "message_enrichments, "
+            "pipeline_events, "
+            "ai_usage_events, "
+            "guard_analysis_attempts, "
+            "guard_analysis_results, "
+            "guard_simple_assessments, "
+            "guard_exposure_assessments, "
+            "guard_exposure_delivery, "
+            "guard_exposure_delivery_outcomes, "
+            "guard_parent_attention_delivery, "
+            "guard_parent_attention_delivery_outcomes, "
+            "guard_alert_evaluations, "
+            "guard_alerts, "
+            "guard_threshold_state, "
+            "guard_chat_state, "
+            "guard_reconnect_requests, "
+            "guard_analysis_feedback_events, "
+            "guard_analysis_feedback, "
+            "guard_daily_stats, "
+            "alerted_incidents, "
             "messages, "
             "chats, "
             "daily_digests, "
@@ -172,13 +193,16 @@ async def clean_db(engine) -> AsyncIterator[None]:
             "idempotency_operations, "
             "provider_webhook_events, "
             "bot_webhook_events, "
-            "alerted_incidents, "
-            "guard_daily_stats, "
             "contacts, "
             "whatsapp_connections, "
             "waiting_list_sessions, "
             "users "
             "RESTART IDENTITY CASCADE"
+        )
+        # The connector-owned schema is created per-test where needed; drop
+        # any leftovers so tests start from a known state.
+        await conn.exec_driver_sql(
+            "DROP SCHEMA IF EXISTS whatsapp_connector CASCADE"
         )
     yield
 

@@ -28,6 +28,7 @@ import hashlib
 import secrets
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
 
 from echo_v2.ports.whatsapp import ConnectionStatus
 
@@ -134,6 +135,10 @@ class WahaWorkerRegistration:
     management protocol (command polling + event reporting). ``0`` (the
     default, and the value implied by its absence in older agents) means a
     batch-only agent that must never receive onboarding assignments.
+
+    ``resources`` is the optional agent-reported VM/container/disk telemetry
+    object (Operations Center contract, migration 0067). Backward
+    compatible: old agents never send it and the registry stores NULL.
     """
 
     worker_id: str
@@ -146,6 +151,8 @@ class WahaWorkerRegistration:
     reported_heartbeat: datetime
     pending: int
     management_protocol: int = 0
+    resources: dict[str, Any] | None = None
+    resources_observed_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -170,6 +177,9 @@ class WahaWorkerStatus:
     pending: int
     available: bool
     has_capacity: bool
+    management_protocol: int = 0
+    resources: dict[str, Any] | None = None
+    resources_observed_at: datetime | None = None
 
 
 # --- Phase 3: session management --------------------------------------------

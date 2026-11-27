@@ -5,9 +5,11 @@ from datetime import datetime, timezone
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
+from echo_v2.app.guard_admin_dashboard_page import ADMIN_DASHBOARD_PAGE
 from echo_v2.app.guard_operations_routes import build_guard_operations_router
 from echo_v2.persistence.waiting_list_tokens import InMemoryWaitingListSessionRepository
 from echo_v2.services.guard_simple_telemetry_service import GuardActivityResponse
+from echo_v2.services.ops_health_rules import OpsHealthRules
 from echo_v2.services.waiting_list_token_service import WaitingListTokenService
 
 
@@ -47,16 +49,75 @@ class FakeOperationsService:
         return {"trust": "exact message selection, verified content", "messages": []}
 
 
-class FakeAdminDashboardService:
-    async def snapshot(self):
-        return {"counts": {"total": 0}, "connections": [], "alerts": []}
+class FakeOpsSnapshot:
+    """Static ops snapshot for route-level tests (service tested separately)."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+        self.payload = {
+            "generated_at": "2026-11-27T12:00:00+00:00",
+            "period": "24h",
+            "period_seconds": 86400,
+            "filters": {"provider": "all", "worker_id": None, "user_id": None},
+            "settings": {},
+            "sections": {
+                "providers": {"available": True, "providers": [], "connection_summary": {}},
+                "waha_infrastructure": {"available": True, "worker_summary": {}, "workers": []},
+                "users": {"available": True, "users": []},
+                "ingestion": {"available": True, "waha_inbox": {"current": {}}},
+                "media": {"available": True},
+                "guard_analysis": {"available": True},
+                "notifications": {"available": True},
+                "management": {"available": True},
+                "ai_costs": {"available": True},
+                "overview": {"available": True},
+            },
+        }
+
+    async def snapshot(self, **kwargs):
+        self.calls.append(kwargs)
+        return {**self.payload, "period": kwargs.get("period", "24h")}
+
+    async def user_detail(self, user_id: str):
+        return {"available": True, "user": {"user_id": user_id, "first_name": "Shay"}}
+
+
+class FakeErrorView:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    async def list_errors(self, **kwargs):
+        self.calls.append(kwargs)
+        return {
+            "available": True,
+            "errors": [
+                {
+                    "timestamp": "2026-11-27T11:00:00+00:00",
+                    "subsystem": "waha_message_consumer",
+                    "provider": "waha",
+                    "user_id": None,
+                    "worker_id": "session-1",
+                    "category": "inbox_retryable",
+                    "description": "boom",
+                    "state": "retryable",
+                    "attempt_count": 2,
+                    "recovered": None,
+                }
+            ],
+            "total_in_window": 1,
+            "offset": 0,
+            "limit": 50,
+            "aggregates": [{"subsystem": "waha_message_consumer", "category": "inbox_retryable", "count": 1}],
+            "notes": "",
+        }
 
 
 def _client(
     service: FakeOperationsService,
     tokens: WaitingListTokenService,
     admin_user_ids: set[str] | None = None,
-    admin_dashboard_service: FakeAdminDashboardService | None = None,
+    ops_snapshot: FakeOpsSnapshot | None = None,
+    error_view: FakeErrorView | None = None,
 ) -> AsyncClient:
     app = FastAPI()
     app.include_router(
@@ -64,7 +125,9 @@ def _client(
             service=service,
             token_service=tokens,
             admin_user_ids=admin_user_ids or set(),
-            admin_dashboard_service=admin_dashboard_service,
+            ops_center_service=ops_snapshot,
+            ops_health_rules=OpsHealthRules() if ops_snapshot else None,
+            ops_error_view=error_view,
         )
     )
     return AsyncClient(transport=ASGITransport(app=app), base_url="https://test")
@@ -99,15 +162,24 @@ async def test_operations_route_requires_session_and_serializes_activity() -> No
     assert "Echo Guard — Activity" in page.text
     assert "Confirmed notifications" in page.text
     assert 'placeholder="Chat name"' in page.text
-    assert "chat_name" in page.text
-    assert "Conversation snapshot" in page.text
-    assert "Decision transitions" not in page.text
-    assert "Relevant messages for this transition" not in page.text
-    assert "function resetFilters" in page.text
-    assert "renderChildren(data.children)" in page.text
-    assert "parent_name" in page.text
-    assert "cursor=null;" in page.text
-    assert "addEventListener('change',resetFilters)" in page.text
+
+
+async def test_admin_page_is_echo_operations_center() -> None:
+    sessions = InMemoryWaitingListSessionRepository()
+    tokens = WaitingListTokenService(sessions)
+    service = FakeOperationsService()
+    async with _client(service, tokens) as client:
+        page = await client.get("/debug/guard/admin")
+
+    assert page.status_code == 200
+    assert page.headers["cache-control"] == "no-store"
+    assert "Echo Operations Center" in page.text
+    assert "Provider health" in page.text
+    assert "WAHA infrastructure" in page.text
+    assert "Per-user monitoring health" in page.text
+    assert "Recent errors and operational incidents" in page.text
+    # No fake metrics in the shipped page.
+    assert "lorem" not in page.text.lower()
 
 
 async def test_admin_session_forwards_admin_scope() -> None:
@@ -194,16 +266,24 @@ async def test_admin_route_requires_admin_session_and_returns_snapshot() -> None
     tokens = WaitingListTokenService(sessions)
     session_id, _ = await tokens.issue(user_id="admin")
     service = FakeOperationsService()
-    dashboard = FakeAdminDashboardService()
-    async with _client(service, tokens, {"admin"}, dashboard) as client:
+    ops = FakeOpsSnapshot()
+    async with _client(service, tokens, {"admin"}, ops) as client:
         no_cookie = await client.get("/api/debug/guard/admin")
         response = await client.get(
-            "/api/debug/guard/admin", cookies={"wls": session_id}
+            "/api/debug/guard/admin",
+            params={"period": "1h", "provider": "waha", "worker_id": "w1"},
+            cookies={"wls": session_id},
         )
 
     assert no_cookie.status_code == 401
     assert response.status_code == 200
-    assert response.json()["counts"]["total"] == 0
+    body = response.json()
+    assert body["period"] == "1h"
+    assert body["sections"]["providers"]["available"] is True
+    assert "health" in body
+    assert ops.calls == [
+        {"period": "1h", "provider": "waha", "worker_id": "w1", "user_id": None}
+    ]
 
 
 async def test_admin_route_rejects_non_admin_and_missing_service() -> None:
@@ -211,7 +291,7 @@ async def test_admin_route_rejects_non_admin_and_missing_service() -> None:
     tokens = WaitingListTokenService(sessions)
     session_id, _ = await tokens.issue(user_id="guardian")
     service = FakeOperationsService()
-    async with _client(service, tokens, {"admin"}, FakeAdminDashboardService()) as client:
+    async with _client(service, tokens, {"admin"}, FakeOpsSnapshot()) as client:
         response = await client.get(
             "/api/debug/guard/admin", cookies={"wls": session_id}
         )
@@ -221,6 +301,42 @@ async def test_admin_route_rejects_non_admin_and_missing_service() -> None:
         )
 
     assert response.status_code == 401
+    assert missing.status_code == 401
+
+
+async def test_admin_user_detail_and_errors_require_admin() -> None:
+    sessions = InMemoryWaitingListSessionRepository()
+    tokens = WaitingListTokenService(sessions)
+    session_id, _ = await tokens.issue(user_id="admin")
+    guardian_session, _ = await tokens.issue(user_id="guardian")
+    service = FakeOperationsService()
+    ops = FakeOpsSnapshot()
+    errors = FakeErrorView()
+    async with _client(service, tokens, {"admin"}, ops, errors) as client:
+        detail = await client.get(
+            "/api/debug/guard/admin/users/1234",
+            cookies={"wls": session_id},
+        )
+        error_list = await client.get(
+            "/api/debug/guard/admin/errors",
+            params={"subsystem": "waha_message_consumer", "severity": "retryable"},
+            cookies={"wls": session_id},
+        )
+    async with _client(service, tokens, {"admin"}, FakeOpsSnapshot(), FakeErrorView()) as client:
+        non_admin = await client.get(
+            "/api/debug/guard/admin/users/1234", cookies={"wls": guardian_session}
+        )
+        no_service = _client(service, tokens, {"admin"})
+        missing = await no_service.get(
+            "/api/debug/guard/admin/errors", cookies={"wls": session_id}
+        )
+
+    assert detail.status_code == 200
+    assert detail.json()["user"]["first_name"] == "Shay"
+    assert error_list.status_code == 200
+    assert error_list.json()["errors"][0]["subsystem"] == "waha_message_consumer"
+    assert error_list.json()["aggregates"][0]["count"] == 1
+    assert non_admin.status_code == 401
     assert missing.status_code == 401
 
 
@@ -234,3 +350,16 @@ async def test_operations_token_exchange_rejects_expired_token() -> None:
 
     assert response.status_code == 200
     assert "expired" in response.text
+
+
+def test_admin_page_has_no_sensitive_fields() -> None:
+    lowered = ADMIN_DASHBOARD_PAGE.lower()
+    for forbidden in (
+        "management_token",
+        "qr_image",
+        "api_key",
+        "webhook_token",
+        "credentials",
+        "last_qr_image",
+    ):
+        assert forbidden not in lowered

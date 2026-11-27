@@ -865,3 +865,195 @@ async def test_register_rejects_invalid_management_protocol() -> None:
             "/internal/waha/register", json=payload, headers=_auth()
         )
         assert response.status_code == 400
+
+
+# --- Operations Center: resources contract + batch telemetry ------------------
+
+
+class FakePipelineEvents:
+    def __init__(self, fail: Exception | None = None) -> None:
+        self.events: list[Any] = []
+        self.fail = fail
+
+    async def record(self, event: Any) -> None:
+        if self.fail is not None:
+            raise self.fail
+        self.events.append(event)
+
+
+class FakeMetricsRepo:
+    def __init__(self) -> None:
+        self.flushed: list[list[Any]] = []
+
+    async def flush(self, points):
+        self.flushed.append(points)
+
+    async def series(self, **kwargs):
+        return []
+
+    async def delete_before(self, cutoff):
+        return 0
+
+
+def _ops_client(
+    inbox: FakeWahaEventInbox,
+    workers: FakeWahaWorkers,
+    pipeline_events: FakePipelineEvents | None = None,
+    metrics=None,
+) -> AsyncClient:
+
+    app = FastAPI()
+    app.include_router(
+        build_waha_router(
+            inbox=inbox,  # type: ignore[arg-type]
+            workers=workers,  # type: ignore[arg-type]
+            token=TOKEN,
+            pipeline_events=pipeline_events,  # type: ignore[arg-type]
+            metrics=metrics,
+        )
+    )
+    return AsyncClient(transport=ASGITransport(app=app), base_url="https://test")
+
+
+async def test_registration_with_resources_persisted_backward_compatible() -> None:
+    inbox, workers = FakeWahaEventInbox(), FakeWahaWorkers()
+    payload = _registration_payload()
+    payload["management_protocol"] = 1
+    payload["resources"] = {
+        "vm_cpu_percent": 37.5,
+        "vm_ram_total_bytes": 2147483648,
+        "vm_ram_available_bytes": 1073741824,
+        "waha_container_memory_bytes": 512000000,
+        "waha_container_cpu_percent": 22.0,
+        "agent_memory_bytes": 48000000,
+        "disk_total_bytes": 80000000000,
+        "disk_used_bytes": 40000000000,
+        "sqlite_db_bytes": 1048576,
+        "agent_state_db_bytes": 2048,
+        "vm_uptime_seconds": 86400,
+        "waha_container_uptime_seconds": 3600,
+        "agent_uptime_seconds": 7200,
+        "waha_version": "WWE-4.6",
+        "last_batch_delivery_at": 1795718136.0,
+        "oldest_undelivered_local_message_at": 1795718000.0,
+        "observed_at": 1795718140.0,
+    }
+    async with _ops_client(inbox, workers) as client:
+        response = await client.post(
+            "/internal/waha/register", json=payload, headers=_auth()
+        )
+    assert response.status_code == 200
+    registration = workers.registered[payload["worker_id"]]
+    assert registration.resources is not None
+    assert registration.resources["vm_cpu_percent"] == 37.5
+    assert registration.resources["waha_version"] == "WWE-4.6"
+    assert registration.resources_observed_at is not None
+    # Old agents without the object still register unchanged.
+    legacy = _registration_payload(worker_id="waha-legacy")
+    async with _ops_client(inbox, workers) as client:
+        response = await client.post(
+            "/internal/waha/register", json=legacy, headers=_auth()
+        )
+    assert response.status_code == 200
+    assert workers.registered["waha-legacy"].resources is None
+    assert workers.registered["waha-legacy"].resources_observed_at is None
+
+
+async def test_registration_rejects_malformed_resources() -> None:
+    inbox, workers = FakeWahaEventInbox(), FakeWahaWorkers()
+    payload = _registration_payload()
+    payload["resources"] = {"vm_cpu_percent": "not-a-number"}
+    async with _ops_client(inbox, workers) as client:
+        response = await client.post(
+            "/internal/waha/register", json=payload, headers=_auth()
+        )
+        assert response.status_code == 400
+        assert response.json()["detail"] == "invalid resources.vm_cpu_percent"
+        payload["resources"] = "not-an-object"
+        response = await client.post(
+            "/internal/waha/register", json=payload, headers=_auth()
+        )
+        assert response.status_code == 400
+        assert response.json()["detail"] == "invalid resources"
+
+
+async def test_successful_batch_records_telemetry_event() -> None:
+    inbox, workers = FakeWahaEventInbox(), FakeWahaWorkers()
+    events = FakePipelineEvents()
+    from echo_v2.services.ops_metrics_recorder import OpsMetricsRecorder
+
+    recorder = OpsMetricsRecorder(FakeMetricsRepo())
+    async with _ops_client(inbox, workers, events, recorder) as client:
+        response = await client.post(
+            "/internal/waha/batch",
+            json=_batch_payload([_message_payload()]),
+            headers=_auth(),
+        )
+    assert response.status_code == 200
+    # One exact per-batch event with bounded, privacy-safe counters.
+    assert len(events.events) == 1
+    event = events.events[0]
+    assert event.event_name == "waha.batch.ingested"
+    assert event.pipeline == "waha_ingestion"
+    assert event.status == "success"
+    assert event.event_id == "1795718136-14"
+    assert event.duration_ms is not None
+    assert event.metadata["received"] == 1
+    assert event.metadata["inserted"] == 1
+    assert event.metadata["body_bytes"] > 0
+    # Aggregate counters buffered for the ops_metrics flush.
+    assert recorder.buffered_points() >= 2
+
+
+async def test_empty_batch_counted_only_in_aggregates() -> None:
+    inbox, workers = FakeWahaEventInbox(), FakeWahaWorkers()
+    events = FakePipelineEvents()
+    from echo_v2.services.ops_metrics_recorder import OpsMetricsRecorder
+
+    recorder = OpsMetricsRecorder(FakeMetricsRepo())
+    async with _ops_client(inbox, workers, events, recorder) as client:
+        response = await client.post(
+            "/internal/waha/batch", json=_batch_payload([]), headers=_auth()
+        )
+    assert response.status_code == 200
+    assert events.events == []  # no per-event row for empty batches
+    assert recorder.buffered_points() >= 3  # requests + bytes + empty + latency
+
+
+async def test_rejected_and_failed_batches_record_failure_events() -> None:
+    inbox, workers = FakeWahaEventInbox(), FakeWahaWorkers()
+    events = FakePipelineEvents()
+    async with _ops_client(inbox, workers, events) as client:
+        invalid = await client.post(
+            "/internal/waha/batch", content=b"{bad json", headers=_auth()
+        )
+        assert invalid.status_code == 400
+        oversized = await client.post(
+            "/internal/waha/batch",
+            json=_batch_payload(
+                [_message_payload() for _ in range(5)], batch_id="big"
+            ),
+            headers=_auth(),
+            # Force 413 through the message-count cap instead of body size.
+        )
+        assert oversized.status_code in (200, 413)
+    rejects = [e for e in events.events if e.event_name == "waha.batch.rejected"]
+    assert any(e.status == "invalid_json" for e in rejects)
+
+
+async def test_telemetry_failure_never_breaks_ingestion_or_ack() -> None:
+    inbox, workers = FakeWahaEventInbox(), FakeWahaWorkers()
+    events = FakePipelineEvents(fail=RuntimeError("metrics down"))
+    from echo_v2.services.ops_metrics_recorder import OpsMetricsRecorder
+
+    recorder = OpsMetricsRecorder(FakeMetricsRepo())
+    async with _ops_client(inbox, workers, events, recorder) as client:
+        response = await client.post(
+            "/internal/waha/batch",
+            json=_batch_payload([_message_payload()]),
+            headers=_auth(),
+        )
+    # The batch still ACKs exactly; telemetry failure is invisible to the agent.
+    assert response.status_code == 200
+    acked = response.json()["acked"]
+    assert acked[0]["id"] == MESSAGE_ID

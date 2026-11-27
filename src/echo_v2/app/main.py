@@ -613,6 +613,7 @@ def create_app() -> FastAPI:
         exposure_repo=repos.guard_exposure_assessments,
         poll_interval_seconds=float(os.environ.get("GUARD_SIMPLE_ANALYSIS_POLL_INTERVAL", "10")),
         excluded_chat_ids=excluded_chat_ids,
+        pipeline_events=repos.pipeline_events,
     )
     from echo_v2.services.guard_analyzer import (
         GUARD_ANALYZER_VERSION,
@@ -942,14 +943,17 @@ def create_app() -> FastAPI:
     from echo_v2.app.guard_parent_alert_routes import build_guard_parent_alert_router
     from echo_v2.app.waiting_list_routes import build_waiting_list_router
     from echo_v2.services.debug_analysis_service import DebugAnalysisService
-    from echo_v2.services.guard_admin_dashboard_service import (
-        GuardAdminDashboardService,
-    )
     from echo_v2.services.guard_parent_alert_service import GuardParentAlertService
     from echo_v2.services.guard_review_service import GuardReviewService
     from echo_v2.services.guard_simple_telemetry_service import (
         GuardSimpleTelemetryService,
     )
+    from echo_v2.services.ops_center_service import (
+        OpsCenterService,
+        OpsCenterSettings,
+    )
+    from echo_v2.services.ops_error_view import OpsErrorView, OpsErrorViewSettings
+    from echo_v2.services.ops_health_rules import OpsHealthRules
     from echo_v2.services.reporting.cost_analytics_service import (
         CostAnalyticsService,
     )
@@ -1015,19 +1019,69 @@ def create_app() -> FastAPI:
         for user_id in os.environ.get("GUARD_OPERATIONS_ADMIN_USER_IDS", "").split(",")
         if user_id.strip()
     )
-    guard_admin_dashboard_service = GuardAdminDashboardService(
-        connections=repos.connections,
-        events=repos.baileys_events,
-        provisioner=provisioner if whatsapp_provider == "baileys" else None,
-        users=user_repo,
-        security=repos.guard_simple_assessments,
-        exposure=repos.guard_exposure_assessments,
+    # --- Echo Operations Center (read-only, admin-only) ---------------------
+    # One snapshot for the whole platform: providers, WAHA workers, per-user
+    # monitoring health, ingestion, media, Guard analysis, notifications,
+    # costs, errors. Replaces the old Baileys-only GuardAdminDashboardService.
+    ops_center_settings = OpsCenterSettings(
+        waha_heartbeat_timeout_seconds=waha_settings.heartbeat_timeout_seconds,
+        waha_message_max_attempts=int(
+            os.environ.get("WAHA_MESSAGE_MAX_ATTEMPTS", "10")
+        ),
+        waha_message_lease_seconds=int(
+            os.environ.get("WAHA_MESSAGE_LEASE_SECONDS", "60")
+        ),
+        waha_command_max_attempts=int(waha_settings.command_max_attempts),
+        waha_command_lease_seconds=int(waha_settings.command_lease_seconds),
+        baileys_message_max_attempts=int(
+            os.environ.get("BAILEYS_MESSAGE_MAX_ATTEMPTS", "10")
+        ),
+        baileys_lease_seconds=int(
+            os.environ.get("BAILEYS_MESSAGE_LEASE_SECONDS", "60")
+        ),
+        inbox_backlog_warning_seconds=float(
+            os.environ.get("WAHA_BACKLOG_ALERT_SECONDS", "3600")
+        ),
+        analysis_overdue_seconds=float(
+            os.environ.get("OPS_HEALTH_ANALYSIS_OVERDUE_SECONDS", "600")
+        ),
+        analyzer_failure_threshold=int(
+            os.environ.get("OPS_HEALTH_ANALYZER_FAILURES_THRESHOLD", "5")
+        ),
+        analysis_backlog_threshold=int(
+            os.environ.get("OPS_HEALTH_ANALYSIS_BACKLOG_THRESHOLD", "20")
+        ),
+        notification_overdue_seconds=float(
+            os.environ.get("OPS_HEALTH_NOTIFICATION_OVERDUE_SECONDS", "900")
+        ),
+        media_url_expiry_seconds=float(
+            os.environ.get("OPS_HEALTH_MEDIA_URL_EXPIRY_SECONDS", "86400")
+        ),
+        expired_lease_grace_seconds=float(
+            os.environ.get("OPS_HEALTH_EXPIRED_LEASE_GRACE_SECONDS", "300")
+        ),
+    )
+    ops_center_service = OpsCenterService(
+        session_factory=repos.session_factory,
+        settings=ops_center_settings,
+    )
+    ops_health_rules = OpsHealthRules(ops_center_settings)
+    ops_error_view = OpsErrorView(
+        session_factory=repos.session_factory,
+        settings=OpsErrorViewSettings(
+            waha_message_max_attempts=ops_center_settings.waha_message_max_attempts,
+            baileys_message_max_attempts=(
+                ops_center_settings.baileys_message_max_attempts
+            ),
+        ),
     )
     guard_operations_router = build_guard_operations_router(
         service=guard_activity_service,
         token_service=token_service,
         admin_user_ids=admin_user_ids,
-        admin_dashboard_service=guard_admin_dashboard_service,
+        ops_center_service=ops_center_service,
+        ops_health_rules=ops_health_rules,
+        ops_error_view=ops_error_view,
     )
     guard_demo_router = build_guard_demo_router(live_compare=guard_live_compare)
 
@@ -1065,6 +1119,30 @@ def create_app() -> FastAPI:
 
     # --- WAHA batch-agent ingestion (Phase 1: durable inbox + registry) ----
     from echo_v2.app.waha_routes import build_waha_router
+    from echo_v2.persistence.postgres_ops_metrics import (
+        PostgresOpsMetricsRepository,
+    )
+    from echo_v2.services.ops_metrics_recorder import OpsMetricsRecorder
+
+    # Best-effort aggregate telemetry (counters + sampled gauges) for the
+    # Operations Center. Never on the ingestion critical path: increments
+    # are in-memory and flushed by a background task; failures are logged.
+    ops_metrics_enabled = os.environ.get("OPS_METRICS_ENABLED", "true").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    ops_metrics_recorder: OpsMetricsRecorder | None = None
+    if ops_metrics_enabled:
+        ops_metrics_recorder = OpsMetricsRecorder(
+            PostgresOpsMetricsRepository(repos.session_factory),
+            flush_interval_seconds=float(
+                os.environ.get("OPS_METRICS_FLUSH_SECONDS", "60")
+            ),
+            retention_days=int(
+                os.environ.get("OPS_METRICS_RETENTION_DAYS", "30")
+            ),
+        )
 
     waha_router = build_waha_router(
         inbox=repos.waha_event_inbox,
@@ -1074,6 +1152,8 @@ def create_app() -> FastAPI:
         max_body_bytes=int(
             os.environ.get("WAHA_BATCH_MAX_BODY_BYTES", str(8 * 1024 * 1024))
         ),
+        pipeline_events=repos.pipeline_events,
+        metrics=ops_metrics_recorder,
     )
 
     # --- FastAPI app with lifespan (scheduler + worker start/stop with app) --
@@ -1089,6 +1169,43 @@ def create_app() -> FastAPI:
     baileys_event_consumer_task: asyncio.Task[None] | None = None
     baileys_message_consumer_task: asyncio.Task[None] | None = None
     waha_message_consumer_task: asyncio.Task[None] | None = None
+    ops_metrics_task: asyncio.Task[None] | None = None
+    ops_gauge_task: asyncio.Task[None] | None = None
+
+    async def _sample_ops_gauges() -> None:
+        """Sample live gauges (inbox backlog, worker state) into ops_metrics.
+
+        Best-effort: sampled every 60s alongside the recorder flush, so
+        backlog trends build up over time without fabricating history.
+        """
+        assert ops_metrics_recorder is not None
+        while True:
+            try:
+                pending, failed, oldest = await repos.waha_event_inbox.backlog_stats()
+                ops_metrics_recorder.gauge("waha.inbox.pending", pending, provider="waha")
+                ops_metrics_recorder.gauge("waha.inbox.failed", failed, provider="waha")
+                if oldest is not None:
+                    ops_metrics_recorder.gauge(
+                        "waha.inbox.oldest_age_seconds", oldest, provider="waha"
+                    )
+                for worker in await repos.waha_workers.list_workers():
+                    ops_metrics_recorder.gauge(
+                        "waha.worker.pending",
+                        worker.pending,
+                        provider="waha",
+                        worker_id=worker.worker_id,
+                    )
+                    ops_metrics_recorder.gauge(
+                        "waha.worker.active_sessions",
+                        worker.active_sessions,
+                        provider="waha",
+                        worker_id=worker.worker_id,
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                _logger.exception("ops metrics gauge sampling failed")
+            await asyncio.sleep(60)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -1098,6 +1215,7 @@ def create_app() -> FastAPI:
         nonlocal pool_warmup_task, baileys_event_consumer_task
         nonlocal baileys_message_consumer_task
         nonlocal waha_message_consumer_task
+        nonlocal ops_metrics_task, ops_gauge_task
         # Startup: recover stale actions and isolated Guard Live Compare runs.
         try:
             recovered_guard_runs = await guard_live_compare.recover_stale_runs()
@@ -1128,6 +1246,10 @@ def create_app() -> FastAPI:
                 waha_message_consumer.run_loop()
             )
             _logger.info("WAHA message consumer loop started")
+        if ops_metrics_recorder is not None:
+            ops_metrics_task = asyncio.create_task(ops_metrics_recorder.run())
+            ops_gauge_task = asyncio.create_task(_sample_ops_gauges())
+            _logger.info("ops metrics recorder started")
 
         # Start instance pool warm-up in the background (non-blocking).
         # Early users fall to the slow path if the pool isn't warm yet.
@@ -1187,6 +1309,23 @@ def create_app() -> FastAPI:
             except asyncio.CancelledError:
                 pass
             _logger.info("WAHA message consumer loop stopped")
+        if ops_metrics_task is not None:
+            ops_metrics_task.cancel()
+            try:
+                await ops_metrics_task
+            except asyncio.CancelledError:
+                pass
+            try:
+                await ops_metrics_recorder.flush() if ops_metrics_recorder else None
+            except Exception:
+                _logger.exception("final ops metrics flush failed")
+            _logger.info("ops metrics recorder stopped")
+        if ops_gauge_task is not None:
+            ops_gauge_task.cancel()
+            try:
+                await ops_gauge_task
+            except asyncio.CancelledError:
+                pass
         if alert_checker_task is not None:
             alert_checker_task.cancel()
             try:
