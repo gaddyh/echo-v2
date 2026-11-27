@@ -126,6 +126,7 @@ class WahaSessionRepository(Protocol):
         raw_status: str,
         mapped_status: str,
         event_at: datetime,
+        account_phone: str | None = None,
     ) -> WahaTransitionOutcome | None:
         """Fence-apply one lifecycle event and queue its side effect.
 

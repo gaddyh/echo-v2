@@ -665,3 +665,152 @@ def test_effect_mapping() -> None:
     assert effect_for_waha_status("FAILED") == WahaLifecycleEffect.NOTIFY_DISCONNECTED
     assert effect_for_waha_status("STARTING") is None
     assert effect_for_waha_status("WHATEVER") is None
+
+
+# --- account identity persistence (migration 0068) ----------------------------
+
+
+async def _allocated_working_session(
+    sessions: PostgresWahaSessionRepository,
+    workers: PostgresWahaWorkerRegistry,
+    session_factory: async_sessionmaker[AsyncSession],
+    phone: str = "+972501111111",
+) -> tuple[str, str]:
+    await _register_worker(workers, worker_id="waha-1")
+    user_id = await _user(session_factory, phone)
+    assignment = await sessions.allocate_and_enqueue_create(user_id)
+    return user_id, assignment.session_name
+
+
+async def test_identity_set_on_working_and_exposed_on_assignment(
+    sessions: PostgresWahaSessionRepository,
+    workers: PostgresWahaWorkerRegistry,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    _, session_name = await _allocated_working_session(sessions, workers, session_factory)
+    at = datetime(2026, 11, 27, 21, 0, tzinfo=timezone.utc)
+    outcome = await sessions.apply_lifecycle(
+        session_name,
+        raw_status="WORKING",
+        mapped_status="connected",
+        event_at=at,
+        account_phone="972512217037",
+    )
+    assert outcome is not None and outcome.applied is True
+    assignment = await sessions.get(session_name)
+    assert assignment is not None
+    assert assignment.account_phone == "972512217037"
+    assert assignment.account_identity_at == at
+
+
+async def test_identity_preserved_when_working_event_carries_none(
+    sessions: PostgresWahaSessionRepository,
+    workers: PostgresWahaWorkerRegistry,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Old agents never report identity; a WORKING event without it must
+    not erase an identity already persisted."""
+    _, session_name = await _allocated_working_session(sessions, workers, session_factory)
+    t1 = datetime(2026, 11, 27, 21, 0, tzinfo=timezone.utc)
+    await sessions.apply_lifecycle(
+        session_name, raw_status="SCAN_QR_CODE", mapped_status="pairing_required",
+        event_at=t1 - timedelta(minutes=2),
+    )
+    await sessions.apply_lifecycle(
+        session_name, raw_status="WORKING", mapped_status="connected",
+        event_at=t1, account_phone="972512217037",
+    )
+    # A later WORKING event from an old agent (no identity) — preserved.
+    await sessions.apply_lifecycle(
+        session_name, raw_status="WORKING", mapped_status="connected",
+        event_at=t1 + timedelta(minutes=1),
+    )
+    assignment = await sessions.get(session_name)
+    assert assignment is not None
+    assert assignment.account_phone == "972512217037"
+
+
+async def test_identity_cleared_on_non_working_transitions(
+    sessions: PostgresWahaSessionRepository,
+    workers: PostgresWahaWorkerRegistry,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Re-pairing (SCAN_QR_CODE), STOPPED and FAILED all clear the identity
+    so a stale account can never be verified after a new pairing."""
+    _, session_name = await _allocated_working_session(sessions, workers, session_factory)
+    t1 = datetime(2026, 11, 27, 21, 0, tzinfo=timezone.utc)
+    await sessions.apply_lifecycle(
+        session_name, raw_status="WORKING", mapped_status="connected",
+        event_at=t1, account_phone="972512217037",
+    )
+    for raw, mapped in (
+        ("SCAN_QR_CODE", "pairing_required"),
+        ("WORKING", "connected"),
+        ("STOPPED", "unknown"),
+        ("WORKING", "connected"),
+        ("FAILED", "unknown"),
+    ):
+        await sessions.apply_lifecycle(
+            session_name, raw_status=raw, mapped_status=mapped,
+            event_at=t1 + timedelta(minutes=1),
+            account_phone="972512217037" if raw == "WORKING" else None,
+        )
+        t1 += timedelta(minutes=1)
+        assignment = await sessions.get(session_name)
+        assert assignment is not None
+        if raw == "WORKING":
+            assert assignment.account_phone == "972512217037"
+        else:
+            assert assignment.account_phone is None, raw
+            assert assignment.account_identity_at is None, raw
+
+
+async def test_stale_event_does_not_clear_or_set_identity(
+    sessions: PostgresWahaSessionRepository,
+    workers: PostgresWahaWorkerRegistry,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    _, session_name = await _allocated_working_session(sessions, workers, session_factory)
+    t1 = datetime(2026, 11, 27, 21, 0, tzinfo=timezone.utc)
+    await sessions.apply_lifecycle(
+        session_name, raw_status="WORKING", mapped_status="connected",
+        event_at=t1, account_phone="972512217037",
+    )
+    # A stale STOPPED (older than the stored WORKING) must not clear.
+    outcome = await sessions.apply_lifecycle(
+        session_name, raw_status="STOPPED", mapped_status="unknown",
+        event_at=t1 - timedelta(minutes=5),
+    )
+    assert outcome is not None and outcome.applied is False
+    assignment = await sessions.get(session_name)
+    assert assignment is not None
+    assert assignment.account_phone == "972512217037"
+
+
+async def test_identical_replayed_event_persists_identity(
+    sessions: PostgresWahaSessionRepository,
+    workers: PostgresWahaWorkerRegistry,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A get_status re-drive can re-report the exact same status+timestamp
+    the first time identity becomes available — the replay must still
+    persist it (self-healing), because otherwise identity would depend on
+    a state change that already happened."""
+    _, session_name = await _allocated_working_session(sessions, workers, session_factory)
+    t1 = datetime(2026, 11, 27, 21, 0, tzinfo=timezone.utc)
+    # First application WITHOUT identity (old agent / not yet reported).
+    first = await sessions.apply_lifecycle(
+        session_name, raw_status="WORKING", mapped_status="connected",
+        event_at=t1,
+    )
+    assert first is not None and first.applied is True
+    # Identical replay, now carrying the identity.
+    replay = await sessions.apply_lifecycle(
+        session_name, raw_status="WORKING", mapped_status="connected",
+        event_at=t1, account_phone="972512217037",
+    )
+    assert replay is not None and replay.applied is False  # identical fence
+    assignment = await sessions.get(session_name)
+    assert assignment is not None
+    assert assignment.account_phone == "972512217037"
+    assert assignment.account_identity_at == t1

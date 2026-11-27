@@ -1944,7 +1944,10 @@ class OnboardingService:
         if conn is None or normalized_child_phone is None:
             return False
         account_phone: str | None = None
-        if conn.ref.provider == "baileys":
+        if conn.ref.provider in ("baileys", "waha"):
+            # Both providers expose the provider-reported account phone
+            # through ConnectionStatusSnapshot.phone_number (WAHA: the
+            # persisted agent-reported identity, cleared on re-pairing).
             try:
                 snapshot = await self._provisioner.get_status(conn.ref)
                 account_phone = (
@@ -1986,6 +1989,25 @@ class OnboardingService:
             _phone_log_value(normalized_child_phone),
             _phone_log_value(normalized_account_phone),
         )
+        if (
+            conn.ref.provider == "waha"
+            and verification_reason in ("provider_phone_missing", "provider_phone_invalid")
+        ):
+            # WAHA identity arrives asynchronously in agent WORKING events:
+            # its absence is NOT evidence of a wrong account. Leave
+            # verification pending — no activation, no guardian rejection
+            # message — and never fall through to legacy onboarding. Every
+            # fresh WORKING transition re-runs this verification, so the
+            # first event that carries the provider-reported identity
+            # completes it (match or real mismatch).
+            _logger.info(
+                "onboarding child verification pending provider=waha reason=%s "
+                "child_phone=%s connection_hash=%s",
+                verification_reason,
+                _phone_log_value(normalized_child_phone),
+                _safe_correlation_id(conn.ref.provider_connection_id),
+            )
+            return True
         if verification_reason != "match":
             _logger.warning(
                 "onboarding child connection rejected provider=%s reason=%s "
@@ -2029,7 +2051,7 @@ class OnboardingService:
                     child_user_id=child_user_id,
                     now=now_utc,
                 )
-            if conn.ref.provider == "baileys" and self._reconnect_requests is not None:
+            if conn.ref.provider in ("baileys", "waha") and self._reconnect_requests is not None:
                 await self._reconnect_requests.mark_verified_child_connection(child_user_id)
         child = await self._user_repo.get_by_phone(normalized_child_phone)
         child_name = child[2] if child and child[2] else normalized_child_phone

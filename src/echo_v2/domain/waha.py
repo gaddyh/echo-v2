@@ -273,6 +273,8 @@ class WahaSessionAssignment:
     last_qr_hash: str | None = None
     last_qr_image: str | None = None
     qr_updated_at: datetime | None = None
+    account_phone: str | None = None
+    account_identity_at: datetime | None = None
 
 
 @dataclass(frozen=True)
