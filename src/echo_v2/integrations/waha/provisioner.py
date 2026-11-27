@@ -132,10 +132,16 @@ class WahaProvisioner:
                 f"{connection.provider_connection_id}"
             )
         # The stored status is exactly the mapped value of the latest
-        # applied lifecycle event (kept fresh by agent events).
+        # applied lifecycle event (kept fresh by agent events). The account
+        # phone is the provider-reported identity persisted from agent
+        # WORKING events — NULL when the agent does not report it (old
+        # agents) or the session is not in a verified-working state, and
+        # cleared on any non-WORKING transition so it can never go stale
+        # across a re-pairing.
         return ConnectionStatusSnapshot(
             status=ConnectionStatus(assignment.status),
             provider_raw_status=assignment.raw_status,
+            phone_number=assignment.account_phone,
         )
 
     async def get_pairing_qr(self, connection: ConnectionRef) -> PairingResult:

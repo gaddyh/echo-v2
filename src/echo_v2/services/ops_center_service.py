@@ -702,6 +702,7 @@ class OpsCenterService:
             """
             SELECT s.user_id::text AS user_id, s.worker_id, s.status
                    AS session_status, s.raw_status, s.last_status_at,
+                   s.account_phone, s.account_identity_at,
                    s.created_at AS allocated_at
               FROM waha_sessions s
             """,
@@ -716,6 +717,16 @@ class OpsCenterService:
             """,
         )
         workers = {row["worker_id"]: row for row in worker_rows}
+        verified_links = await self._rows(
+            session,
+            """
+            SELECT child_user_id::text AS child_user_id, count(*) AS active_links
+              FROM guardian_child_links
+             WHERE status = 'active'
+             GROUP BY child_user_id
+            """,
+        )
+        verified_children = {row["child_user_id"] for row in verified_links}
         security_stats = {
             row["child_user_id"]: row
             for row in await self._rows(
@@ -888,6 +899,20 @@ class OpsCenterService:
                 "overdue_analyses": chat.get("overdue", 0),
                 "alerts_period": incident_stats.get(uid, 0),
                 "notifications_sent_period": notification_stats.get(uid, 0),
+                # Separated operational states — a connected session is NOT
+                # necessarily verified, and verification is NOT monitoring.
+                "whatsapp_connected": conn["connection_status"] == "connected",
+                "account_identity_at": (
+                    session_row.get("account_identity_at") if session_row else None
+                ),
+                "account_identity_available": bool(
+                    session_row and session_row.get("account_phone")
+                ),
+                "child_verified": uid in verified_children,
+                "guard_monitoring_active": bool(
+                    sec.get("last_at") or exp.get("last_at") or (chat.get("scheduled", 0) or 0) > 0
+                    or (chat.get("overdue", 0) or 0) > 0
+                ),
                 "monitoring_health": monitoring_health,
                 "monitoring_health_reason": health_reason,
                 "inactive_hours": inactive_hours,

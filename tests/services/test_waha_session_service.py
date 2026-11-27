@@ -186,6 +186,7 @@ class FakeRepo:
         raw_status: str,
         mapped_status: str,
         event_at: datetime,
+        account_phone: str | None = None,
     ) -> WahaTransitionOutcome | None:
         async with self._lock:
             row = self.rows.get(session_name)
@@ -213,6 +214,14 @@ class FakeRepo:
                     connection_updated=True,
                 )
             effect = _effect_for(raw_status)
+            if raw_status == "WORKING":
+                identity_update = (
+                    {"account_phone": account_phone, "account_identity_at": event_at}
+                    if account_phone
+                    else {}
+                )
+            else:
+                identity_update = {"account_phone": None, "account_identity_at": None}
             updated = replace(
                 row,
                 status=mapped_status,
@@ -221,6 +230,7 @@ class FakeRepo:
                 event_seq=row.event_seq + 1,
                 pending_effect=effect,
                 pending_effect_at=event_at if effect else None,
+                **identity_update,
             )
             self.rows[session_name] = updated
             return WahaTransitionOutcome(

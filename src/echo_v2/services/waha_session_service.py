@@ -115,6 +115,33 @@ def event_datetime(value: Any) -> datetime:
     return datetime.now(timezone.utc)
 
 
+def extract_account_phone(payload: dict[str, Any]) -> str | None:
+    """Extract the provider-reported account phone from an agent event.
+
+    Reads the optional ``me`` object the agent attaches to WORKING
+    session_status events and get_status command results. Only the
+    phone-number JID user part is accepted — ``me.id`` (``<digits>@c.us``)
+    or ``me.jid`` (``<digits>:<device>@s.whatsapp.net``). An opaque LID, an
+    empty value, or any non-phone format yields ``None`` (unverifiable),
+    never a guess: the phone is never derived from ``me.lid``, message
+    senders, session names or user-supplied values.
+    """
+    me = payload.get("me")
+    if not isinstance(me, dict):
+        return None
+    for key in ("id", "jid"):
+        value = me.get(key)
+        if not isinstance(value, str) or not value:
+            continue
+        user, sep, domain = value.partition("@")
+        if not sep or domain not in ("c.us", "s.whatsapp.net"):
+            continue
+        digits = user.split(":", 1)[0]
+        if digits.isdigit():
+            return digits
+    return None
+
+
 class WahaSessionService:
     def __init__(
         self,
@@ -269,6 +296,7 @@ class WahaSessionService:
             assignment,
             raw_status=raw_status,
             event_at=event_datetime(payload.get("timestamp")),
+            account_phone=extract_account_phone(payload),
         )
 
     async def _handle_qr_ready(
@@ -379,6 +407,7 @@ class WahaSessionService:
         *,
         raw_status: str,
         event_at: datetime,
+        account_phone: str | None = None,
     ) -> str:
         mapped = map_waha_session_status(raw_status)
         if mapped is None:
@@ -394,6 +423,7 @@ class WahaSessionService:
             raw_status=raw_status,
             mapped_status=mapped.value,
             event_at=event_at,
+            account_phone=account_phone,
         )
         if outcome is None:
             return "unknown_session"

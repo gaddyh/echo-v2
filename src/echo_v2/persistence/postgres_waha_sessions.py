@@ -53,7 +53,7 @@ _ALLOCATION_LOCK_KEY = 8300065
 _COLUMNS = (
     "session_name, user_id, worker_id, status, raw_status, last_status_at, "
     "event_seq, pending_effect, pending_effect_at, last_qr_hash, "
-    "last_qr_image, qr_updated_at"
+    "last_qr_image, qr_updated_at, account_phone, account_identity_at"
 )
 
 _SELECT_BY_SESSION = (
@@ -83,6 +83,8 @@ def _row_to_assignment(row: Any) -> WahaSessionAssignment:
         last_qr_hash=row["last_qr_hash"],
         last_qr_image=row["last_qr_image"],
         qr_updated_at=row["qr_updated_at"],
+        account_phone=row["account_phone"],
+        account_identity_at=row["account_identity_at"],
     )
 
 
@@ -497,6 +499,7 @@ class PostgresWahaSessionRepository:
         raw_status: str,
         mapped_status: str,
         event_at: datetime,
+        account_phone: str | None = None,
     ) -> WahaTransitionOutcome | None:
         async with self._session_factory() as session:
             row = (
@@ -527,7 +530,14 @@ class PostgresWahaSessionRepository:
                 # No state change: mirror the *stored* status onto the
                 # connection row (idempotent; also self-heals rows created
                 # after the transition landed) and surface any unfinished
-                # pending effect so the caller can retry it.
+                # pending effect so the caller can retry it. A replayed
+                # (identical, never stale) WORKING event may still carry the
+                # account identity — persist it idempotently so identity
+                # reporting does not depend on a state change.
+                if not stale and raw_status == "WORKING" and account_phone:
+                    await self._set_account_identity(
+                        session, session_name, account_phone, event_at
+                    )
                 connection_updated = await self._mirror_connection(
                     session, session_name, row["status"], row["raw_status"]
                 )
@@ -550,12 +560,27 @@ class PostgresWahaSessionRepository:
             # queued effect is what makes a failed delivery retryable on
             # the next (even identical) event.
             effect = effect_for_waha_status(raw_status)
+            # Account identity rides the same transaction as the lifecycle
+            # transition: any applied transition into a non-WORKING state
+            # (re-pairing, stop, failure) clears it so a stale identity can
+            # never be reused after a new pairing; a WORKING transition
+            # carrying the provider-reported phone sets it.
+            if raw_status == "WORKING":
+                identity_sql = (
+                    ", account_phone = :account_phone,"
+                    " account_identity_at = :identity_at"
+                    if account_phone
+                    else ""
+                )
+            else:
+                identity_sql = ", account_phone = NULL, account_identity_at = NULL"
             await session.execute(
                 text(
                     "UPDATE waha_sessions SET status = :status,"
                     " raw_status = :raw_status, last_status_at = :event_at,"
                     " event_seq = event_seq + 1, pending_effect = :effect,"
                     " pending_effect_at = :effect_at, updated_at = :now"
+                    f"{identity_sql}"
                     " WHERE session_name = :session_name"
                 ),
                 {
@@ -566,6 +591,8 @@ class PostgresWahaSessionRepository:
                     "effect_at": event_at if effect else None,
                     "now": datetime.now(timezone.utc),
                     "session_name": session_name,
+                    "account_phone": account_phone,
+                    "identity_at": event_at if account_phone else None,
                 },
             )
             connection_updated = await self._mirror_connection(
@@ -584,6 +611,27 @@ class PostgresWahaSessionRepository:
                 pending_effect_at=event_at if effect else None,
                 connection_updated=connection_updated,
             )
+
+    async def _set_account_identity(
+        self,
+        session: AsyncSession,
+        session_name: str,
+        account_phone: str,
+        observed_at: datetime,
+    ) -> None:
+        await session.execute(
+            text(
+                "UPDATE waha_sessions SET account_phone = :account_phone,"
+                " account_identity_at = :observed_at, updated_at = :now"
+                " WHERE session_name = :session_name"
+            ),
+            {
+                "account_phone": account_phone,
+                "observed_at": observed_at,
+                "now": datetime.now(timezone.utc),
+                "session_name": session_name,
+            },
+        )
 
     async def _mirror_connection(
         self,

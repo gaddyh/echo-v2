@@ -2396,6 +2396,10 @@ class WahaSessionRow(Base):
     qr_updated_at: Mapped[datetime | None] = mapped_column(
         TIMESTAMP(timezone=True), nullable=True
     )
+    account_phone: Mapped[str | None] = mapped_column(Text, nullable=True)
+    account_identity_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
     )

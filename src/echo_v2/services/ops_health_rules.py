@@ -81,6 +81,7 @@ class OpsHealthRules:
         sections = snapshot.get("sections", {})
         issues = _Issues()
         self._infrastructure(sections, issues)
+        self._verification(sections, issues)
         self._message_delivery(sections, issues)
         self._analysis(sections, issues)
         self._notifications(sections, issues)
@@ -163,6 +164,50 @@ class OpsHealthRules:
                 )
 
     # -- message delivery ---------------------------------------------------------
+
+    def _verification(self, sections: dict[str, Any], issues: _Issues) -> None:
+        """Connected-but-unverified sessions are explicitly not operational.
+
+        WhatsApp connected, account identity available, child verified and
+        Guard monitoring active are separate states: a child whose session
+        is connected but whose account identity has not yet been verified
+        is NOT being monitored (activation gates on verification), so this
+        is actionable — either identity reporting is missing or a wrong
+        account was linked.
+        """
+        users = sections.get("users") or {}
+        if not users.get("available"):
+            return
+        for user in users.get("users", []):
+            if not user.get("whatsapp_connected"):
+                continue
+            if user.get("child_verified"):
+                continue
+            name = user.get("display_name") or user["user_id"][:8]
+            if (
+                user.get("provider") == "waha"
+                and not user.get("account_identity_available")
+            ):
+                issues.add(
+                    _WARNING,
+                    "awaiting_account_identity",
+                    "users",
+                    f"{name}: WAHA session connected but the agent has not "
+                    "reported the account identity — verification pending; "
+                    "Guard is NOT active. Check the agent version/reporting "
+                    "or re-drive get_status.",
+                    user_id=user["user_id"],
+                )
+            else:
+                issues.add(
+                    _WARNING,
+                    "awaiting_account_verification",
+                    "users",
+                    f"{name}: WhatsApp connected but the child account is "
+                    "not verified — Guard is NOT active. If a wrong account "
+                    "was linked, unlink it from the phone and re-pair.",
+                    user_id=user["user_id"],
+                )
 
     def _message_delivery(self, sections: dict[str, Any], issues: _Issues) -> None:
         ingestion = sections.get("ingestion") or {}

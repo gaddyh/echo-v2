@@ -644,7 +644,7 @@ class BaileysEventRepository:
                     """
                     UPDATE whatsapp_connections
                        SET last_authenticated_at = now(), updated_at = now()
-                     WHERE user_id = :child_user_id AND provider = 'baileys'
+                     WHERE user_id = :child_user_id AND provider IN ('baileys', 'waha')
                     """
                 ),
                 {"child_user_id": child_user_id},
@@ -658,7 +658,7 @@ class BaileysEventRepository:
                     UPDATE whatsapp_connections
                        SET auth_loss_episode_key = NULL, last_authenticated_at = now(),
                            updated_at = now()
-                     WHERE user_id = :child_user_id AND provider = 'baileys'
+                     WHERE user_id = :child_user_id AND provider IN ('baileys', 'waha')
                        AND auth_loss_episode_key IS NOT NULL
                     """
                 ),

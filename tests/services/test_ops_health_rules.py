@@ -322,3 +322,72 @@ def test_pending_notification_not_overdue_is_not_an_issue() -> None:
     })
     result = rules.evaluate(snapshot)
     assert result["issues"] == []
+
+
+def _user_row(**overrides):
+    row = {
+        "user_id": "u-1",
+        "display_name": "child",
+        "provider": "waha",
+        "whatsapp_connected": True,
+        "account_identity_available": True,
+        "child_verified": True,
+        "guard_monitoring_active": True,
+    }
+    row.update(overrides)
+    return row
+
+
+def test_connected_unverified_waha_without_identity_warns() -> None:
+    rules = OpsHealthRules(_settings())
+    snapshot = _snapshot({
+        "users": {
+            "available": True,
+            "users": [_user_row(child_verified=False, account_identity_available=False)],
+        }
+    })
+    result = rules.evaluate(snapshot)
+    matches = [i for i in result["issues"] if i["category"] == "awaiting_account_identity"]
+    assert len(matches) == 1
+    assert matches[0]["severity"] == "warning"
+    assert "NOT active" in matches[0]["message"]
+
+
+def test_connected_unverified_with_identity_warns_verification() -> None:
+    rules = OpsHealthRules(_settings())
+    snapshot = _snapshot({
+        "users": {
+            "available": True,
+            "users": [_user_row(child_verified=False)],
+        }
+    })
+    result = rules.evaluate(snapshot)
+    matches = [i for i in result["issues"] if i["category"] == "awaiting_account_verification"]
+    assert len(matches) == 1
+
+
+def test_verified_connected_user_has_no_verification_warning() -> None:
+    rules = OpsHealthRules(_settings())
+    snapshot = _snapshot({
+        "users": {"available": True, "users": [_user_row()]}
+    })
+    result = rules.evaluate(snapshot)
+    assert not any(
+        i["category"] in ("awaiting_account_identity", "awaiting_account_verification")
+        for i in result["issues"]
+    )
+
+
+def test_disconnected_user_has_no_verification_warning() -> None:
+    rules = OpsHealthRules(_settings())
+    snapshot = _snapshot({
+        "users": {
+            "available": True,
+            "users": [_user_row(whatsapp_connected=False, child_verified=False)],
+        }
+    })
+    result = rules.evaluate(snapshot)
+    assert not any(
+        i["category"] in ("awaiting_account_identity", "awaiting_account_verification")
+        for i in result["issues"]
+    )
