@@ -143,6 +143,10 @@ function render(d){
 }
 function unavailable(name){return `<p class="empty">Section ${esc(name)} is currently unavailable.</p>`}
 
+function windowLabel(){
+  const v=$('period')?$('period').value:'24h';
+  return {'15m':'15 min','1h':'1 hour','24h':'24 hours','7d':'7 days','30d':'30 days'}[v]||v;
+}
 function renderOverview(o){
   const cards=[
     ['Monitored users',o.monitored_users],['Connected',o.connected_users,'good'],['Disconnected',o.disconnected_users,'warn'],['Awaiting pairing',o.pairing_required_users,'warn'],['Stale status',o.stale_status_users,'warn'],
@@ -154,8 +158,6 @@ function renderOverview(o){
   ];
   $('overview').innerHTML=cards.map(([label,v,cls])=>`<div class="card ${v>0&&cls==='bad'?'bad':v>0&&cls==='warn'?'warn':cls==='good'?'good':''}"><span>${esc(label)}</span><strong>${v===null||v===undefined?'<span class="na">N/A</span>':num(v)}</strong></div>`).join('');
 }
-const windowLabel=()=>$('period').options[$('period').selectedIndex].text;
-
 function table(headers,rows){
   if(!rows.length)return'<p class="empty">No data.</p>';
   return `<table class="table"><thead><tr>${headers.map(h=>`<th>${esc(h)}</th>`).join('')}</tr></thead><tbody>${rows.join('')}</tbody></table>`;
@@ -163,7 +165,7 @@ function table(headers,rows){
 function renderProviders(p){
   if(!p.available){$('providers').innerHTML=unavailable('providers');return}
   $('providers').innerHTML=table(['Provider','Users','Connected','Pairing','Provisioning','Degraded/blocked','Stale','Messages (window)','Incoming','Phone-sent','Group','Last WhatsApp','Last ingest','Device→ingest p50/p95*','Pending backlog','Failed','Oldest pending'],
-    (p.providers||[]).map(x=>`<tr><td><b>${esc(x.provider)}</b></td><td>${num(x.users)}</td><td>${num(x.connected)}</td><td>${num(x.pairing_required)}</td><td>${num(x.provisioning)}</td><td>${num(x.degraded_or_blocked)}</td><td>${num(x.stale)}</td><td>${num(x.messages_period)}</td><td>${num(x.incoming_period)}</td><td>${num(x.phone_sent_period)}</td><td>${num(x.group_messages_period)}</td><td>${fmt(x.last_whatsapp_at)}</td><td>${fmt(x.last_ingested_at)}</td><td>${secs(x.device_to_ingest_p50_s)} / ${secs(x.device_to_ingest_p95_s)}</td><td>${num(x.pending_backlog)}</td><td>${num(x.failed_backlog)}</td><td>${ago(x.oldest_pending_at)||'—'}</td></tr>`)
+    (p.providers||[]).map(x=>`<tr><td><b>${esc(x.provider)}</b></td><td>${num(x.users)}</td><td>${num(x.connected)}</td><td>${num(x.pairing_required)}</td><td>${num(x.provisioning)}</td><td>${num(x.degraded_or_blocked)}</td><td>${num(x.stale)}</td><td>${num(x.messages_period)}</td><td>${num(x.incoming_period)}</td><td>${num(x.phone_sent_period)}</td><td>${num(x.group_messages_period)}</td><td>${fmt(x.last_whatsapp_at)}</td><td>${fmt(x.last_ingested_at)}</td><td>${secs(x.device_to_ingest_p50_s)} / ${secs(x.device_to_ingest_p95_s)}</td><td>${num(x.pending_backlog)}</td><td>${num(x.failed_backlog)}</td><td>${ago(x.oldest_pending_at)||'—'}</td></tr>`))
     +`<p class="tiny">* Device timestamp → Echo insert; affected by device clock skew and historical sync. ${esc(p.provider_neutrality_note||'')}</p>`;
 }
 function renderWaha(w){
@@ -176,7 +178,7 @@ function renderWaha(w){
   const ids=['',...workers.map(x=>x.worker_id)];
   if(sel.options.length!==ids.length||[...sel.options].every((o,i)=>o.value!==ids[i])){sel.innerHTML=ids.map(i=>`<option value="${esc(i)}">${i===''?'All workers':esc(i)}</option>`).join('');sel.value=cur}
   $('workers').innerHTML=table(['Worker','Region','Agent','Mgmt proto','Health','Derived','Heartbeat','First registered','Max','Assigned*','Reported','Util','Mismatch','Agent backlog','Pending cmds','Expired leases','Failed cmds','Oldest cmd','Pending effects','Resources'],
-    workers.map(x=>`<tr><td class="mono">${esc(x.worker_id)}</td><td>${cell(x.region)}</td><td class="mono">${cell(x.agent_version)}</td><td>${num(x.management_protocol)}</td><td>${pill(x.reported_health)}</td><td>${pill(x.derived_availability)}</td><td>${ago(x.heartbeat_age_seconds!==null&&x.heartbeat_age_seconds!==undefined?new Date(Date.now()-x.heartbeat_age_seconds*1000).toISOString():null)||'—'}</td><td>${fmt(x.first_registered_at)}</td><td>${num(x.max_sessions)}</td><td>${num(x.assigned_sessions)}</td><td>${num(x.reported_active_sessions)}</td><td>${x.capacity_utilization===null||x.capacity_utilization===undefined?'<span class="na">N/A</span>':Math.round(x.capacity_utilization*100)+'%'}</td><td>${num(x.session_count_mismatch)}</td><td>${num(x.reported_pending_backlog)}</td><td>${num(x.pending_commands)}</td><td>${num(x.expired_command_leases)}</td><td>${num(x.failed_commands)}</td><td>${ago(x.oldest_outstanding_command_at)||'—'}</td><td>${num(x.sessions_with_pending_effects)}</td><td>${resourcesCell(x)}</td></tr>`)
+    workers.map(x=>`<tr><td class="mono">${esc(x.worker_id)}</td><td>${cell(x.region)}</td><td class="mono">${cell(x.agent_version)}</td><td>${num(x.management_protocol)}</td><td>${pill(x.reported_health)}</td><td>${pill(x.derived_availability)}</td><td>${ago(x.heartbeat_age_seconds!==null&&x.heartbeat_age_seconds!==undefined?new Date(Date.now()-x.heartbeat_age_seconds*1000).toISOString():null)||'—'}</td><td>${fmt(x.first_registered_at)}</td><td>${num(x.max_sessions)}</td><td>${num(x.assigned_sessions)}</td><td>${num(x.reported_active_sessions)}</td><td>${x.capacity_utilization===null||x.capacity_utilization===undefined?'<span class="na">N/A</span>':Math.round(x.capacity_utilization*100)+'%'}</td><td>${num(x.session_count_mismatch)}</td><td>${num(x.reported_pending_backlog)}</td><td>${num(x.pending_commands)}</td><td>${num(x.expired_command_leases)}</td><td>${num(x.failed_commands)}</td><td>${ago(x.oldest_outstanding_command_at)||'—'}</td><td>${num(x.sessions_with_pending_effects)}</td><td>${resourcesCell(x)}</td></tr>`))
     +`<p class="tiny">* ${esc((w.notes||{}).assigned_vs_reported||'')} ${esc((w.notes||{}).resources||'')}</p>`;
 }
 function resourcesCell(x){
@@ -233,9 +235,9 @@ function renderIngestion(i){
   const w=i.waha_inbox||{},b=i.baileys_inbox||{},t=i.trends||{};
   const per=w.period||{},cur=w.current||{},bd=w.batch_delivery||{};
   $('ingestion').innerHTML=`<div class="row"><div><h3>WAHA inbox (window)</h3>${table(['Unique rows','Real messages','Non-real events','Incoming','Phone-sent','Pending','Processing','Processed','Retryable failed','Exhausted failed','Expired leases','Revised rows','Oldest retryable','Oldest exhausted'],
-    [`<tr><td>${num(per.unique_rows)}</td><td>${num(per.real_messages)}</td><td>${num(per.non_real_events)}</td><td>${num(per.incoming)}</td><td>${num(per.phone_sent)}</td><td>${num(per.pending)}</td><td>${num(per.processing)}</td><td>${num(per.processed)}</td><td>${num(per.failed_retryable)}</td><td>${num(per.failed_exhausted)}</td><td>${num(per.expired_leases)}</td><td>${num(per.revised_rows)}</td><td>${fmt(per.oldest_retryable_at)}</td><td>${fmt(per.oldest_exhausted_at)}</td></tr>`)}</div>
+    [`<tr><td>${num(per.unique_rows)}</td><td>${num(per.real_messages)}</td><td>${num(per.non_real_events)}</td><td>${num(per.incoming)}</td><td>${num(per.phone_sent)}</td><td>${num(per.pending)}</td><td>${num(per.processing)}</td><td>${num(per.processed)}</td><td>${num(per.failed_retryable)}</td><td>${num(per.failed_exhausted)}</td><td>${num(per.expired_leases)}</td><td>${num(per.revised_rows)}</td><td>${fmt(per.oldest_retryable_at)}</td><td>${fmt(per.oldest_exhausted_at)}</td></tr>`])}</div>
   <div><h3>WAHA inbox (current)</h3>${table(['Pending','Processing','Retryable','Exhausted','Expired leases','Oldest pending','Unknown session rows'],
-    [`<tr><td>${num(cur.pending)}</td><td>${num(cur.processing)}</td><td>${num(cur.failed_retryable)}</td><td>${num(cur.failed_exhausted)}</td><td>${num(cur.expired_leases)}</td><td>${fmt(cur.oldest_pending_at)}</td><td>${num(cur.unknown_session_rows)}</td></tr>`)}</div>
+    [`<tr><td>${num(cur.pending)}</td><td>${num(cur.processing)}</td><td>${num(cur.failed_retryable)}</td><td>${num(cur.failed_exhausted)}</td><td>${num(cur.expired_leases)}</td><td>${fmt(cur.oldest_pending_at)}</td><td>${num(cur.unknown_session_rows)}</td></tr>`])}</div>
   <div><h3>Baileys inbox</h3><p class="tiny">Connector-owned inbox + Echo processing ledger.</p>${table(['Event type','Received (window)','Unprocessed','Oldest unprocessed','Last received'],
     (b.period||[]).map(x=>`<tr><td>${esc(x.event_type)}</td><td>${num(x.received)}</td><td>${num(x.unprocessed)}</td><td>${fmt(x.oldest_unprocessed_at)}</td><td>${fmt(x.last_received_at)}</td></tr>`))}
   ${table(['Ledger status','Total','Exhausted','Last updated','Claim→processed p50/p95'],
