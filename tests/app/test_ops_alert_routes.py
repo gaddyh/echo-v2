@@ -97,6 +97,20 @@ def _auth(token: str = ALERT_TOKEN) -> dict[str, str]:
     return {"authorization": f"Bearer {token}"}
 
 
+async def test_ingest_returns_empty_body_204() -> None:
+    """204 must carry no body — a non-empty body aborts the ASGI send
+    (RuntimeError: Response content longer than Content-Length)."""
+    repo = FakeOpsDigestRepository()
+    sessions = InMemoryWaitingListSessionRepository()
+    tokens = WaitingListTokenService(sessions)
+    async with _client(repo, tokens) as client:
+        r = await client.post(
+            "/internal/ops-alerts", json=_digest_payload(), headers=_auth()
+        )
+        assert r.status_code == 204
+        assert r.content == b""
+
+
 async def test_ingest_persists_digest() -> None:
     repo = FakeOpsDigestRepository()
     sessions = InMemoryWaitingListSessionRepository()
