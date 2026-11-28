@@ -445,7 +445,7 @@ class OpsCenterService:
                 SELECT count(*) FILTER (WHERE processed_at IS NULL
                        AND event_type = 'message') AS pending,
                        0 AS failed_retryable,
-                       count(*) FILTER (EXISTS (
+                       count(*) FILTER (WHERE EXISTS (
                            SELECT 1 FROM baileys_connector_event_processing p
                             WHERE p.inbox_id = whatsapp_connector.event_inbox.id
                               AND p.status = 'failed'
