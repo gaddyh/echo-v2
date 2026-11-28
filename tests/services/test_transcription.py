@@ -11,6 +11,8 @@ import pytest
 
 from echo_v2.services.transcription import (
     SUPPORTED_TRANSCRIPTION_EXTS,
+    MediaUnavailableError,
+    TranscriptionError,
     TranscriptionResult,
     download_file,
     ensure_transcribable_audio,
@@ -72,8 +74,8 @@ def test_suffix_from_mime_whitespace() -> None:
 async def test_download_file_success(mock_client_cls: MagicMock, tmp_path: Path) -> None:
     """Successful download writes bytes to the target path."""
     mock_response = MagicMock()
+    mock_response.status_code = 200
     mock_response.content = b"audio data"
-    mock_response.raise_for_status = MagicMock()
 
     mock_client = AsyncMock()
     mock_client.get = AsyncMock(return_value=mock_response)
@@ -88,22 +90,60 @@ async def test_download_file_success(mock_client_cls: MagicMock, tmp_path: Path)
     mock_client.get.assert_called_once_with("http://example.com/audio.ogg")
 
 
-@patch("echo_v2.services.transcription.httpx.AsyncClient")
-async def test_download_file_http_error(mock_client_cls: MagicMock, tmp_path: Path) -> None:
-    """HTTP error from the response is propagated."""
-    mock_response = MagicMock()
-    mock_response.raise_for_status = MagicMock(side_effect=httpx.HTTPError("404"))
-
+def _mock_download_client(
+    mock_client_cls: MagicMock,
+    *,
+    response: httpx.Response | None = None,
+    get_error: Exception | None = None,
+) -> AsyncMock:
     mock_client = AsyncMock()
-    mock_client.get = AsyncMock(return_value=mock_response)
-
+    if get_error is not None:
+        mock_client.get = AsyncMock(side_effect=get_error)
+    else:
+        mock_client.get = AsyncMock(return_value=response)
     mock_instance = mock_client_cls.return_value
     mock_instance.__aenter__ = AsyncMock(return_value=mock_client)
     mock_instance.__aexit__ = AsyncMock(return_value=None)
+    return mock_client
 
-    target = tmp_path / "audio.ogg"
-    with pytest.raises(httpx.HTTPError):
-        await download_file("http://example.com/audio.ogg", target)
+
+@patch("echo_v2.services.transcription.httpx.AsyncClient")
+async def test_download_file_http_4xx_is_unavailable_and_sanitized(
+    mock_client_cls: MagicMock, tmp_path: Path
+) -> None:
+    """A 4xx means the remote media object is gone: terminal class, no URL leak."""
+    signed = "https://connector.example/media/abc?sig=secret&exp=123"
+    response = httpx.Response(403, request=httpx.Request("GET", signed))
+    _mock_download_client(mock_client_cls, response=response)
+
+    with pytest.raises(MediaUnavailableError) as excinfo:
+        await download_file(signed, tmp_path / "audio.ogg")
+    assert "403" in str(excinfo.value)
+    assert "sig" not in str(excinfo.value)
+    assert "example.com" not in str(excinfo.value)
+
+
+@patch("echo_v2.services.transcription.httpx.AsyncClient")
+async def test_download_file_http_5xx_stays_retryable(
+    mock_client_cls: MagicMock, tmp_path: Path
+) -> None:
+    response = httpx.Response(503, request=httpx.Request("GET", "https://x.test/a"))
+    _mock_download_client(mock_client_cls, response=response)
+
+    with pytest.raises(TranscriptionError, match="HTTP 503"):
+        await download_file("https://example.com/a.ogg", tmp_path / "a.ogg")
+
+
+@patch("echo_v2.services.transcription.httpx.AsyncClient")
+async def test_download_file_transport_error_sanitized(
+    mock_client_cls: MagicMock, tmp_path: Path
+) -> None:
+    _mock_download_client(
+        mock_client_cls, get_error=httpx.ConnectError("refused https://signed.url/x")
+    )
+    with pytest.raises(TranscriptionError, match="ConnectError") as excinfo:
+        await download_file("https://signed.url/x", tmp_path / "a.ogg")
+    assert "signed.url" not in str(excinfo.value)
 
 
 # --- ensure_transcribable_audio ---

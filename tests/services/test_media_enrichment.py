@@ -21,6 +21,14 @@ class Resolver:
     async def resolve(self, message: Message) -> str:
         return "https://media.test/file"
 
+
+class FailingResolver:
+    def __init__(self, exc: Exception) -> None:
+        self._exc = exc
+
+    async def resolve(self, message: Message) -> str:
+        raise self._exc
+
 class Summarizer:
     def __init__(self, *, fail: bool = False) -> None:
         self.fail = fail
@@ -60,6 +68,66 @@ async def test_failed_enrichment_is_retryable_then_terminal() -> None:
                             max_attempts=1, retry_base_seconds=0).enrich([image()]))[0]
     assert result.enrichment is not None and result.enrichment.status is EnrichmentStatus.TERMINAL
     assert result.enrichment.error == "provider unavailable"
+
+async def test_permanently_unavailable_media_is_terminal_at_first_attempt() -> None:
+    """CDN-gone media (resolver 4xx / bad reference) ends terminal, not retryable."""
+    from echo_v2.services.waha_media import WahaMediaUnavailableError
+
+    repo = InMemoryMessageEnrichmentRepository()
+    worker = MediaEnrichmentService(
+        message_repo=InMemoryMessageRepository(), enrichment_repo=repo,
+        media_summarizer=Summarizer(),
+        media_url_resolver=FailingResolver(WahaMediaUnavailableError("media no longer available on WhatsApp CDN (HTTP 403)")),
+        max_attempts=3, retry_base_seconds=0,
+    )
+    result = (await worker.enrich([image()]))[0]
+    assert result.enrichment is not None
+    assert result.enrichment.status is EnrichmentStatus.TERMINAL
+    assert result.enrichment.attempts == 1
+    assert "no longer available" in (result.enrichment.error or "")
+
+
+async def test_decrypt_failure_is_terminal() -> None:
+    from echo_v2.services.waha_media import WahaMediaDecryptError
+
+    repo = InMemoryMessageEnrichmentRepository()
+    worker = MediaEnrichmentService(
+        message_repo=InMemoryMessageRepository(), enrichment_repo=repo,
+        media_summarizer=Summarizer(),
+        media_url_resolver=FailingResolver(WahaMediaDecryptError("SHA-256 mismatch")),
+        max_attempts=3, retry_base_seconds=0,
+    )
+    result = (await worker.enrich([image()]))[0]
+    assert result.enrichment is not None and result.enrichment.status is EnrichmentStatus.TERMINAL
+
+
+async def test_cdn_transport_error_stays_retryable() -> None:
+    from echo_v2.services.waha_media import WahaMediaDownloadError
+
+    repo = InMemoryMessageEnrichmentRepository()
+    worker = MediaEnrichmentService(
+        message_repo=InMemoryMessageRepository(), enrichment_repo=repo,
+        media_summarizer=Summarizer(),
+        media_url_resolver=FailingResolver(WahaMediaDownloadError("CDN returned HTTP 503")),
+        max_attempts=3, retry_base_seconds=0,
+    )
+    result = (await worker.enrich([image()]))[0]
+    assert result.enrichment is not None and result.enrichment.status is EnrichmentStatus.FAILED
+
+
+async def test_remote_media_gone_4xx_is_terminal() -> None:
+    """MediaUnavailableError (the generic download path) is terminal too."""
+    from echo_v2.services.transcription import MediaUnavailableError
+
+    repo = InMemoryMessageEnrichmentRepository()
+    summarizer = Summarizer()
+    summarizer.summarize_media = AsyncMock(
+        side_effect=MediaUnavailableError("media no longer available (HTTP 404)")
+    )
+    worker = service(repo, summarizer, max_attempts=3, retry_base_seconds=0)
+    result = (await worker.enrich([image()]))[0]
+    assert result.enrichment is not None and result.enrichment.status is EnrichmentStatus.TERMINAL
+
 
 async def test_retryable_failure_can_be_reclaimed_and_completed() -> None:
     repo = InMemoryMessageEnrichmentRepository(); summarizer = Summarizer(fail=True)

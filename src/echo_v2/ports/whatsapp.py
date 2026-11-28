@@ -293,6 +293,9 @@ class ProviderMessageEvent:
     media_mime_type: str | None = None
     media_file_name: str | None = None
     media_size: int | None = None
+    # True when the provider delivered this message through a history-sync
+    # replay rather than a live push (WAHA: non-empty ``SourceWebMsg``).
+    is_history_sync: bool = False
 
 
 @dataclass(frozen=True)

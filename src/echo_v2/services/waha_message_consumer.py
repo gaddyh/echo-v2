@@ -88,9 +88,22 @@ class WahaMessageConsumer:
         processed = 0
         if claimed:
             _logger.info("waha message batch claimed count=%d", len(claimed))
+        suppressed = 0
         for item in claimed:
             try:
                 event = parse_envelope(item.message)
+                if event.is_history_sync:
+                    # History-sync replays are suppressed before persistence:
+                    # no message row, no analysis scheduling, no media
+                    # enrichment. The claim still completes so the durable
+                    # inbox row is consumed exactly once.
+                    if not await self._repository.complete_claimed(item):
+                        raise RuntimeError(
+                            "WAHA message claim was lost or the revision advanced "
+                            "before completion"
+                        )
+                    suppressed += 1
+                    continue
                 connection = await self._connections.get_by_provider_id(
                     _PROVIDER, item.message.session
                 )
@@ -124,6 +137,9 @@ class WahaMessageConsumer:
                     type(exc).__name__,
                 )
                 await self._repository.mark_failed(item, str(exc))
+        processed += suppressed
+        if suppressed:
+            _logger.info("waha history-sync envelopes suppressed count=%d", suppressed)
         return processed
 
     async def run_loop(self) -> None:
