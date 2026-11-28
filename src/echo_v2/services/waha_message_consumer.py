@@ -16,6 +16,7 @@ import logging
 import socket
 import time
 
+from echo_v2.domain.waha import ClaimedWahaMessage
 from echo_v2.persistence.waha_event_inbox import WahaEventInboxRepository
 from echo_v2.persistence.whatsapp_connections import WhatsAppConnectionRepository
 from echo_v2.services.chat_ingestion import ChatIngestionService
@@ -88,21 +89,17 @@ class WahaMessageConsumer:
         processed = 0
         if claimed:
             _logger.info("waha message batch claimed count=%d", len(claimed))
-        suppressed = 0
+        suppressed_items: list[ClaimedWahaMessage] = []
         for item in claimed:
             try:
                 event = parse_envelope(item.message)
                 if event.is_history_sync:
                     # History-sync replays are suppressed before persistence:
                     # no message row, no analysis scheduling, no media
-                    # enrichment. The claim still completes so the durable
-                    # inbox row is consumed exactly once.
-                    if not await self._repository.complete_claimed(item):
-                        raise RuntimeError(
-                            "WAHA message claim was lost or the revision advanced "
-                            "before completion"
-                        )
-                    suppressed += 1
+                    # enrichment. The claims are bulk-completed below so a
+                    # multi-thousand-row sync drains in a handful of
+                    # statements instead of a round-trip per row.
+                    suppressed_items.append(item)
                     continue
                 connection = await self._connections.get_by_provider_id(
                     _PROVIDER, item.message.session
@@ -137,10 +134,17 @@ class WahaMessageConsumer:
                     type(exc).__name__,
                 )
                 await self._repository.mark_failed(item, str(exc))
-        processed += suppressed
-        if suppressed:
-            _logger.info("waha history-sync envelopes suppressed count=%d", suppressed)
-        return processed
+        completed_suppressed = 0
+        if suppressed_items:
+            completed_suppressed = await self._repository.complete_claimed_many(
+                suppressed_items
+            )
+            _logger.info(
+                "waha history-sync envelopes suppressed count=%d completed=%d",
+                len(suppressed_items),
+                completed_suppressed,
+            )
+        return processed + completed_suppressed
 
     async def run_loop(self) -> None:
         while True:

@@ -22,6 +22,8 @@ from typing import Any, Protocol, runtime_checkable
 
 import httpx
 
+from echo_v2.services.local_media import LocalMediaError, read_local_media_url
+
 __all__ = [
     "SUPPORTED_TRANSCRIPTION_EXTS",
     "MediaUnavailableError",
@@ -159,21 +161,28 @@ async def download_file(url: str, target_path: Path) -> None:
     ``file://`` URLs are also supported: they are produced by Echo's own
     media resolvers (e.g. the WAHA decrypting resolver handing over
     pre-decrypted local files) and never originate from external input.
+    Reads are confined to the resolver cache root via
+    :func:`read_local_media_url`.
     """
     if url.startswith("file://"):
-        target_path.write_bytes(_read_local_media(url))
+        try:
+            content = read_local_media_url(url)
+        except LocalMediaError as exc:
+            raise TranscriptionError(str(exc)) from exc
+        target_path.write_bytes(content)
         return
     async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
         try:
             response = await client.get(url)
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
-            # 4xx: the remote object is gone for good (expired/evicted media or
-            # a dead connector URL) — a distinct, terminal failure class. 5xx
-            # stays retryable. HTTPStatusError embeds the signed request URL,
-            # so the persisted error carries only the status code.
+            # 403/404/410: the remote object is gone for good (expired/evicted
+            # media or a dead connector URL) — a distinct, terminal failure
+            # class. Other 4xx (401/408/429) and 5xx stay retryable.
+            # HTTPStatusError embeds the signed request URL, so the persisted
+            # error carries only the status code.
             status = exc.response.status_code
-            if 400 <= status < 500:
+            if status in (403, 404, 410):
                 raise MediaUnavailableError(
                     f"media no longer available (HTTP {status})"
                 ) from exc
@@ -185,19 +194,6 @@ async def download_file(url: str, target_path: Path) -> None:
                 f"media download failed ({type(exc).__name__})"
             ) from exc
         target_path.write_bytes(response.content)
-
-
-def _read_local_media(url: str) -> bytes:
-    """Read a ``file://`` media path inside the resolver temp cache."""
-    from urllib.parse import unquote, urlparse
-
-    parsed = urlparse(url)
-    if parsed.netloc not in ("", "localhost"):
-        raise TranscriptionError("local media path must not reference a host")
-    path = Path(unquote(parsed.path))
-    if not path.is_file():
-        raise TranscriptionError(f"local media file not found: {path.name}")
-    return path.read_bytes()
 
 
 def ensure_transcribable_audio(path: Path) -> Path:

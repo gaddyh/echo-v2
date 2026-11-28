@@ -614,9 +614,12 @@ async def test_ssrf_rejects_too_many_redirects() -> None:
 # --- file:// local media (WAHA resolver handoff) -------------------------------
 
 
-async def test_file_url_reads_local_media(tmp_path: Any) -> None:
+async def test_file_url_reads_local_media(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The WAHA resolver hands over decrypted media as file:// — it is read
     locally and sent to Gemini without any HTTP download."""
+    monkeypatch.setenv("WAHA_MEDIA_CACHE_DIR", str(tmp_path))
     summarizer = GeminiVideoSummarizer(api_key="test-key")
     video = tmp_path / "voice.mp4"
     video_bytes = b"\x00\x00\x00\x20ftypisom" + b"\x01" * 200
@@ -645,7 +648,10 @@ async def test_file_url_reads_local_media(tmp_path: Any) -> None:
     stream_mock.assert_not_called()  # no HTTP download for local media
 
 
-async def test_file_url_oversized_raises_too_large(tmp_path: Any) -> None:
+async def test_file_url_oversized_raises_too_large(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("WAHA_MEDIA_CACHE_DIR", str(tmp_path))
     summarizer = GeminiVideoSummarizer(api_key="test-key", max_bytes=100)
     big = tmp_path / "big.mp4"
     big.write_bytes(b"\x00" * 500)
@@ -671,7 +677,10 @@ async def test_file_url_with_host_rejected(tmp_path: Any) -> None:
         )
 
 
-async def test_file_url_missing_file_raises(tmp_path: Any) -> None:
+async def test_file_url_missing_file_raises(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("WAHA_MEDIA_CACHE_DIR", str(tmp_path))
     summarizer = GeminiVideoSummarizer(api_key="test-key")
     with pytest.raises(MediaSummaryError, match="not found"):
         await summarizer.summarize_media(
@@ -699,3 +708,66 @@ async def test_file_url_does_not_skip_ssrf_for_remote_urls(tmp_path: Any) -> Non
             message_type="video",
         )
     guard.assert_called_once_with("https://media.test/v.mp4")
+
+
+async def test_file_url_outside_cache_root_rejected(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An arbitrary local file is never read — reads are confined to the
+    resolver cache root."""
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    monkeypatch.setenv("WAHA_MEDIA_CACHE_DIR", str(cache))
+    secret = tmp_path / "secret.bin"
+    secret.write_bytes(b"sensitive")
+
+    summarizer = GeminiVideoSummarizer(api_key="test-key")
+    with pytest.raises(MediaSummaryError, match="escapes the resolver cache"):
+        await summarizer.summarize_media(
+            download_url=f"file://{secret}",
+            mime_type="video/mp4",
+            file_name="secret.bin",
+            message_type="video",
+        )
+
+
+async def test_file_url_symlink_escape_rejected(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A symlink inside the cache pointing outside is rejected — the path is
+    resolved before the confinement check."""
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    monkeypatch.setenv("WAHA_MEDIA_CACHE_DIR", str(cache))
+    secret = tmp_path / "secret.mp4"
+    secret.write_bytes(b"sensitive")
+    link = cache / "linked.mp4"
+    link.symlink_to(secret)
+
+    summarizer = GeminiVideoSummarizer(api_key="test-key")
+    with pytest.raises(MediaSummaryError, match="escapes the resolver cache"):
+        await summarizer.summarize_media(
+            download_url=f"file://{link}",
+            mime_type="video/mp4",
+            file_name="linked.mp4",
+            message_type="video",
+        )
+
+
+async def test_file_url_relative_traversal_rejected(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    secret = tmp_path / "secret.mp4"
+    secret.write_bytes(b"sensitive")
+    monkeypatch.setenv("WAHA_MEDIA_CACHE_DIR", str(cache))
+
+    summarizer = GeminiVideoSummarizer(api_key="test-key")
+    with pytest.raises(MediaSummaryError, match="escapes the resolver cache"):
+        await summarizer.summarize_media(
+            download_url=f"file://{cache}/../secret.mp4",
+            mime_type="video/mp4",
+            file_name="secret.mp4",
+            message_type="video",
+        )

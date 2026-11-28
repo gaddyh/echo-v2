@@ -259,6 +259,50 @@ class PostgresWahaEventInboxRepository:
             await session.commit()
             return result.rowcount == 1
 
+    async def complete_claimed_many(
+        self, claimed: Sequence[ClaimedWahaMessage]
+    ) -> int:
+        """Mark several claimed rows processed with per-row fencing."""
+        if not claimed:
+            return 0
+        async with self._session_factory() as session:
+            result = cast(
+                CursorResult[Any],
+                await session.execute(
+                    text(
+                        """
+                        UPDATE waha_event_inbox w
+                           SET status = 'processed',
+                               lease_owner = NULL,
+                               lease_expires_at = NULL,
+                               last_error = NULL,
+                               last_updated_at = now(),
+                               processed_at = now()
+                          FROM (
+                              SELECT * FROM unnest(
+                                  CAST(:sessions AS text[]),
+                                  CAST(:message_ids AS text[]),
+                                  CAST(:revisions AS integer[])
+                              )
+                          ) v(session, message_id, revision)
+                         WHERE w.session = v.session
+                           AND w.message_id = v.message_id
+                           AND w.revision = v.revision
+                           AND w.status = 'processing'
+                           AND w.lease_owner = :worker_id
+                        """
+                    ),
+                    {
+                        "sessions": [c.message.session for c in claimed],
+                        "message_ids": [c.message.message_id for c in claimed],
+                        "revisions": [c.revision for c in claimed],
+                        "worker_id": claimed[0].worker_id,
+                    },
+                ),
+            )
+            await session.commit()
+            return result.rowcount
+
     async def mark_failed(self, claimed: ClaimedWahaMessage, error: str) -> None:
         async with self._session_factory() as session:
             await session.execute(

@@ -86,6 +86,17 @@ async def test_download_ciphertext_5xx_stays_retryable(
         await download_ciphertext("https://mmg.whatsapp.net/v/t62", max_bytes=10)
 
 
+async def test_download_ciphertext_other_4xx_stays_retryable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """401 auth, 408 timeout and 429 rate-limit are transient — not terminal."""
+    for status in (400, 401, 408, 429):
+        handler = httpx.MockTransport(lambda request, s=status: httpx.Response(s))
+        _install_mock_client(monkeypatch, handler)
+        with pytest.raises(WahaMediaDownloadError, match=f"HTTP {status}"):
+            await download_ciphertext("https://mmg.whatsapp.net/v/t62", max_bytes=10)
+
+
 async def test_download_ciphertext_errors_never_leak_signed_url(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

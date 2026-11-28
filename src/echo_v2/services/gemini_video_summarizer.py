@@ -14,14 +14,14 @@ from __future__ import annotations
 import ipaddress
 import logging
 import socket
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from urllib.parse import unquote, urljoin, urlparse
+from urllib.parse import urljoin, urlparse
 from uuid import uuid4
 
 import httpx
 
 from echo_v2.domain.ai_usage_event import AiUsageStatus, AiUsageType
+from echo_v2.services.local_media import LocalMediaError, read_local_media_url
 from echo_v2.services.media_summarizer import MediaSummary, MediaSummaryError
 
 if TYPE_CHECKING:
@@ -223,16 +223,14 @@ class GeminiVideoSummarizer:
         ``file://`` URLs are the connector-independent media handoff — they
         are produced only by Echo's own media resolvers (e.g. the WAHA
         decrypting resolver) and never originate from external input. The
-        SSRF guard applies to remote URLs; local reads are capped by
-        ``max_bytes`` exactly like downloads.
+        SSRF guard applies to remote URLs; local reads are confined to the
+        resolver cache root (symlinks followed before the check) and capped
+        by ``max_bytes`` exactly like downloads.
         """
-        parsed = urlparse(url)
-        if parsed.netloc not in ("", "localhost"):
-            raise MediaSummaryError("local media path must not reference a host")
-        path = Path(unquote(parsed.path))
-        if not path.is_file():
-            raise MediaSummaryError(f"local media file not found: {path.name}")
-        data = path.read_bytes()
+        try:
+            data = read_local_media_url(url)
+        except LocalMediaError as exc:
+            raise MediaSummaryError(str(exc)) from exc
         if len(data) > self._max_bytes:
             raise VideoTooLargeError(
                 f"video exceeded size cap {self._max_bytes} bytes ({len(data)} bytes)"

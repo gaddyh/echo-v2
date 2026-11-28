@@ -63,6 +63,18 @@ class WahaEventInboxRepository(Protocol):
         """
         ...
 
+    async def complete_claimed_many(
+        self, claimed: Sequence[ClaimedWahaMessage]
+    ) -> int:
+        """Mark several claimed rows processed in a single statement.
+
+        Per-row fencing is identical to ``complete_claimed`` (revision +
+        processing status + lease owner must match); rows that no longer
+        qualify stay retryable. Returns the number completed. Used to drain
+        suppressed history-sync rows without a round-trip per row.
+        """
+        ...
+
     async def mark_failed(self, claimed: ClaimedWahaMessage, error: str) -> None:
         """Release a claimed row as ``failed`` so a later poll can retry it."""
         ...
