@@ -88,7 +88,7 @@ class PostgresGuardExposureAssessmentRepository:
             filters.append(GuardExposureAssessmentRow.significant_exposure.is_(True))
         elif decision == "no":
             filters.append(GuardExposureAssessmentRow.significant_exposure.is_(False))
-        elif decision == "unknown":
+        elif decision in {"unknown", "uncertain"}:
             filters.append(GuardExposureAssessmentRow.significant_exposure.is_(None))
         if before is not None:
             before_at, before_id = before

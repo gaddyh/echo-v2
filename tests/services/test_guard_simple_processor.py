@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -9,6 +10,7 @@ import pytest
 from echo_v2.domain.chat import Message
 from echo_v2.domain.guard_exposure import ExposureAssessment, ExposureCategory
 from echo_v2.domain.guard_simple import ChildRole, SafetyAssessment
+from echo_v2.domain.media_enrichment import EnrichmentStatus, MessageEnrichment
 from echo_v2.persistence.chat_repositories import InMemoryMessageRepository
 from echo_v2.persistence.guard_simple_repositories import (
     InMemoryGuardSimpleAssessmentRepository,
@@ -16,6 +18,7 @@ from echo_v2.persistence.guard_simple_repositories import (
 from echo_v2.ports.whatsapp import MessageDirection
 from echo_v2.services.guard_conversation import SimpleGuardConversationBuilder
 from echo_v2.services.guard_simple_processor import GuardSimpleProcessor
+from echo_v2.services.media_enrichment import EnrichedMessage
 
 pytestmark = pytest.mark.asyncio
 BASE = datetime(2026, 10, 16, 8, tzinfo=timezone.utc)
@@ -61,6 +64,23 @@ class FakeExposureAnalyzer:
 class FailingExposureAnalyzer:
     async def analyze(self, conversation):
         raise RuntimeError("temporary exposure failure")
+
+
+class PendingMediaEnrichment:
+    async def enrich(self, messages):
+        return [
+            EnrichedMessage(
+                message=item,
+                enrichment=MessageEnrichment(
+                    message_id=item.id,
+                    enrichment_version="test-media",
+                    status=EnrichmentStatus.PENDING,
+                    next_retry_at=item.timestamp + timedelta(minutes=5) if item.timestamp else None,
+                ),
+                effective_text=item.text or "",
+            )
+            for item in messages
+        ]
 
 
 class FakeTimezoneResolver:
@@ -132,23 +152,34 @@ async def test_invalid_timezone_falls_back_to_pilot_timezone() -> None:
 
 
 async def test_incomplete_media_without_text_is_unknown() -> None:
-    return
-
-
     messages = InMemoryMessageRepository()
-    await messages.save(message("media", BASE, sender_id="classmate"))
-    builder = SimpleGuardConversationBuilder(messages)
+    media = replace(message("media", BASE, sender_id="classmate"), text=None)
+    await messages.save(media)
+    builder = SimpleGuardConversationBuilder(
+        messages,
+        enrichment_service=PendingMediaEnrichment(),
+    )
+    analyzer = FakeAnalyzer(True)
     processor = GuardSimpleProcessor(
         message_repo=messages,
-        analyzer=FakeAnalyzer(True),
+        analyzer=analyzer,
         assessment_repo=InMemoryGuardSimpleAssessmentRepository(),
         conversation_builder=builder,
     )
+
     result = await processor.process(
-        child_user_id="child", child_name="Shay", connection_id="connection",
-        chat_id="group@g.us", as_of=BASE,
+        child_user_id="child",
+        child_name="Shay",
+        connection_id="connection",
+        chat_id="group@g.us",
+        as_of=BASE,
     )
-    assert result.parent_should_know is False
+
+    assert result.parent_should_know is None
+    assert result.reason == "incomplete_media_evidence"
+    assert result.diagnostics["llm_skipped"] is True
+    assert result.diagnostics["semantic_uncertainty"] is False
+    assert analyzer.conversations == []
 
 
 async def test_exposure_uses_same_conversation_without_prior_concern() -> None:
@@ -303,6 +334,364 @@ async def test_prior_actionable_assessment_is_context_not_forced_decision() -> N
     assert analyzer.conversations[0].prior_concern.evidence_message_ids == ("old",)
 
 
+async def test_actionable_prior_concern_takes_precedence_over_uncertainty() -> None:
+    messages = InMemoryMessageRepository()
+    await messages.save(message("m1", BASE, direction=MessageDirection.OUTBOUND, sender_id=None))
+    assessments = InMemoryGuardSimpleAssessmentRepository()
+    uncertain = SafetyAssessment(
+        parent_should_know=None,
+        child_role=ChildRole.PARTICIPANT,
+        summary="Ambiguous object exchange",
+        evidence_message_ids=("ambiguous-object",),
+        reason="A realistic dangerous interpretation remains unresolved.",
+        child_user_id="child",
+        connection_id="connection",
+        chat_id="group@g.us",
+        created_at=BASE - timedelta(hours=22),
+        diagnostics={"semantic_uncertainty": True},
+    )
+    await assessments.save(uncertain)
+    await assessments.save(
+        replace(
+            uncertain,
+            parent_should_know=True,
+            child_role=ChildRole.TARGET,
+            summary="Actionable threat",
+            evidence_message_ids=("threat",),
+            created_at=BASE - timedelta(hours=21),
+            first_detected_at=BASE - timedelta(hours=21),
+            last_evidence_at=BASE - timedelta(hours=21),
+            diagnostics={},
+        )
+    )
+    analyzer = FakeAnalyzer(False)
+    processor = GuardSimpleProcessor(
+        message_repo=messages,
+        analyzer=analyzer,
+        assessment_repo=assessments,
+    )
+
+    await processor.process(
+        child_user_id="child",
+        connection_id="connection",
+        chat_id="group@g.us",
+        child_name="Shay",
+        as_of=BASE,
+    )
+
+    prior = analyzer.conversations[0].prior_concern
+    assert prior is not None
+    assert prior.parent_should_know is True
+    assert prior.evidence_message_ids == ("threat",)
+
+
+async def test_previous_day_semantic_uncertainty_is_carried_as_context() -> None:
+    messages = InMemoryMessageRepository()
+    await messages.save(message("m1", BASE, direction=MessageDirection.OUTBOUND, sender_id=None))
+    assessments = InMemoryGuardSimpleAssessmentRepository()
+    await assessments.save(
+        SafetyAssessment(
+            parent_should_know=None,
+            child_role=ChildRole.PARTICIPANT,
+            summary="Ambiguous object exchange",
+            evidence_message_ids=("ambiguous-object",),
+            reason="A realistic dangerous interpretation remains unresolved.",
+            child_user_id="child",
+            connection_id="connection",
+            chat_id="group@g.us",
+            created_at=BASE - timedelta(days=1),
+            diagnostics={"semantic_uncertainty": True},
+        )
+    )
+    analyzer = FakeAnalyzer(True)
+    processor = GuardSimpleProcessor(
+        message_repo=messages,
+        analyzer=analyzer,
+        assessment_repo=assessments,
+    )
+
+    result = await processor.process(
+        child_user_id="child",
+        connection_id="connection",
+        chat_id="group@g.us",
+        child_name="Shay",
+        as_of=BASE,
+    )
+
+    prior = analyzer.conversations[0].prior_concern
+    assert prior is not None
+    assert prior.parent_should_know is None
+    assert prior.evidence_message_ids == ("ambiguous-object",)
+    assert result.first_detected_at == BASE
+
+
+async def test_uncertain_context_does_not_cross_more_than_one_day_boundary() -> None:
+    messages = InMemoryMessageRepository()
+    await messages.save(message("m1", BASE, direction=MessageDirection.OUTBOUND, sender_id=None))
+    assessments = InMemoryGuardSimpleAssessmentRepository()
+    await assessments.save(
+        SafetyAssessment(
+            parent_should_know=None,
+            child_role=ChildRole.PARTICIPANT,
+            summary="Ambiguous object exchange",
+            evidence_message_ids=("ambiguous-object",),
+            reason="A realistic dangerous interpretation remains unresolved.",
+            child_user_id="child",
+            connection_id="connection",
+            chat_id="group@g.us",
+            created_at=BASE - timedelta(days=3),
+            diagnostics={"semantic_uncertainty": True},
+        )
+    )
+    analyzer = FakeAnalyzer(False)
+    processor = GuardSimpleProcessor(
+        message_repo=messages,
+        analyzer=analyzer,
+        assessment_repo=assessments,
+    )
+
+    await processor.process(
+        child_user_id="child",
+        connection_id="connection",
+        chat_id="group@g.us",
+        child_name="Shay",
+        as_of=BASE,
+    )
+
+    assert analyzer.conversations[0].prior_concern is None
+
+
+async def test_uncertain_context_uses_immediate_previous_local_day_boundary() -> None:
+    messages = InMemoryMessageRepository()
+    await messages.save(message("m1", BASE, direction=MessageDirection.OUTBOUND, sender_id=None))
+    assessments = InMemoryGuardSimpleAssessmentRepository()
+    await assessments.save(
+        SafetyAssessment(
+            parent_should_know=None,
+            child_role=ChildRole.PARTICIPANT,
+            summary="Ambiguous object exchange",
+            evidence_message_ids=("ambiguous-object",),
+            reason="A realistic dangerous interpretation remains unresolved.",
+            child_user_id="child",
+            connection_id="connection",
+            chat_id="group@g.us",
+            created_at=datetime(2026, 10, 14, 20, 59, tzinfo=timezone.utc),
+            diagnostics={"semantic_uncertainty": True},
+        )
+    )
+    await assessments.save(
+        SafetyAssessment(
+            parent_should_know=None,
+            child_role=ChildRole.PARTICIPANT,
+            summary="Ambiguous object exchange",
+            evidence_message_ids=("ambiguous-object-newer",),
+            reason="A realistic dangerous interpretation remains unresolved.",
+            child_user_id="child",
+            connection_id="connection",
+            chat_id="group@g.us",
+            created_at=datetime(2026, 10, 14, 21, 0, tzinfo=timezone.utc),
+            diagnostics={"semantic_uncertainty": True},
+        )
+    )
+    analyzer = FakeAnalyzer(False)
+    processor = GuardSimpleProcessor(
+        message_repo=messages,
+        analyzer=analyzer,
+        assessment_repo=assessments,
+    )
+
+    await processor.process(
+        child_user_id="child",
+        connection_id="connection",
+        chat_id="group@g.us",
+        child_name="Shay",
+        as_of=BASE,
+    )
+
+    prior = analyzer.conversations[0].prior_concern
+    assert prior is not None
+    assert prior.evidence_message_ids == ("ambiguous-object-newer",)
+
+
+async def test_definitive_assessment_supersedes_previous_day_uncertainty() -> None:
+    messages = InMemoryMessageRepository()
+    await messages.save(message("m1", BASE, direction=MessageDirection.OUTBOUND, sender_id=None))
+    assessments = InMemoryGuardSimpleAssessmentRepository()
+    uncertain = SafetyAssessment(
+        parent_should_know=None,
+        child_role=ChildRole.PARTICIPANT,
+        summary="Ambiguous object exchange",
+        evidence_message_ids=("ambiguous-object",),
+        reason="A realistic dangerous interpretation remains unresolved.",
+        child_user_id="child",
+        connection_id="connection",
+        chat_id="group@g.us",
+        created_at=BASE - timedelta(days=1),
+        diagnostics={"semantic_uncertainty": True},
+    )
+    await assessments.save(uncertain)
+    await assessments.save(
+        replace(
+            uncertain,
+            parent_should_know=False,
+            created_at=BASE - timedelta(hours=20),
+            diagnostics={},
+        )
+    )
+    analyzer = FakeAnalyzer(False)
+    processor = GuardSimpleProcessor(
+        message_repo=messages,
+        analyzer=analyzer,
+        assessment_repo=assessments,
+    )
+
+    await processor.process(
+        child_user_id="child",
+        connection_id="connection",
+        chat_id="group@g.us",
+        child_name="Shay",
+        as_of=BASE,
+    )
+
+    assert analyzer.conversations[0].prior_concern is None
+
+
+async def test_older_definitive_assessment_does_not_supersede_newer_uncertainty() -> None:
+    messages = InMemoryMessageRepository()
+    await messages.save(message("m1", BASE, direction=MessageDirection.OUTBOUND, sender_id=None))
+    assessments = InMemoryGuardSimpleAssessmentRepository()
+    definitive = SafetyAssessment(
+        parent_should_know=False,
+        child_role=ChildRole.PARTICIPANT,
+        summary="Earlier resolved conversation",
+        evidence_message_ids=("resolved",),
+        reason="No supported concern in the earlier evidence.",
+        child_user_id="child",
+        connection_id="connection",
+        chat_id="group@g.us",
+        created_at=BASE - timedelta(hours=22),
+    )
+    await assessments.save(definitive)
+    await assessments.save(
+        replace(
+            definitive,
+            parent_should_know=None,
+            summary="Ambiguous object exchange",
+            evidence_message_ids=("ambiguous-object",),
+            reason="A realistic dangerous interpretation remains unresolved.",
+            created_at=BASE - timedelta(hours=20),
+            diagnostics={"semantic_uncertainty": True},
+        )
+    )
+    analyzer = FakeAnalyzer(False)
+    processor = GuardSimpleProcessor(
+        message_repo=messages,
+        analyzer=analyzer,
+        assessment_repo=assessments,
+    )
+
+    await processor.process(
+        child_user_id="child",
+        connection_id="connection",
+        chat_id="group@g.us",
+        child_name="Shay",
+        as_of=BASE,
+    )
+
+    prior = analyzer.conversations[0].prior_concern
+    assert prior is not None
+    assert prior.evidence_message_ids == ("ambiguous-object",)
+
+
+async def test_operational_null_does_not_resolve_or_extend_uncertainty_chain() -> None:
+    messages = InMemoryMessageRepository()
+    await messages.save(message("m1", BASE, direction=MessageDirection.OUTBOUND, sender_id=None))
+    assessments = InMemoryGuardSimpleAssessmentRepository()
+    uncertain = SafetyAssessment(
+        parent_should_know=None,
+        child_role=ChildRole.PARTICIPANT,
+        summary="Ambiguous object exchange",
+        evidence_message_ids=("ambiguous-object",),
+        reason="A realistic dangerous interpretation remains unresolved.",
+        child_user_id="child",
+        connection_id="connection",
+        chat_id="group@g.us",
+        created_at=BASE - timedelta(hours=20),
+        diagnostics={"semantic_uncertainty": True},
+    )
+    await assessments.save(uncertain)
+    await assessments.save(
+        replace(
+            uncertain,
+            evidence_message_ids=(),
+            created_at=BASE - timedelta(hours=19),
+            diagnostics={"semantic_uncertainty": False},
+        )
+    )
+    analyzer = FakeAnalyzer(False)
+    processor = GuardSimpleProcessor(
+        message_repo=messages,
+        analyzer=analyzer,
+        assessment_repo=assessments,
+    )
+
+    await processor.process(
+        child_user_id="child",
+        connection_id="connection",
+        chat_id="group@g.us",
+        child_name="Shay",
+        as_of=BASE,
+    )
+
+    prior = analyzer.conversations[0].prior_concern
+    assert prior is not None
+    assert prior.evidence_message_ids == ("ambiguous-object",)
+
+
+async def test_resolved_positive_assessment_supersedes_previous_day_uncertainty() -> None:
+    messages = InMemoryMessageRepository()
+    await messages.save(message("m1", BASE, direction=MessageDirection.OUTBOUND, sender_id=None))
+    assessments = InMemoryGuardSimpleAssessmentRepository()
+    uncertain = SafetyAssessment(
+        parent_should_know=None,
+        child_role=ChildRole.PARTICIPANT,
+        summary="Ambiguous object exchange",
+        evidence_message_ids=("ambiguous-object",),
+        reason="A realistic dangerous interpretation remains unresolved.",
+        child_user_id="child",
+        connection_id="connection",
+        chat_id="group@g.us",
+        created_at=BASE - timedelta(days=1),
+        diagnostics={"semantic_uncertainty": True},
+    )
+    await assessments.save(uncertain)
+    await assessments.save(
+        replace(
+            uncertain,
+            parent_should_know=True,
+            created_at=BASE - timedelta(hours=20),
+            resolved_at=BASE - timedelta(hours=19),
+            diagnostics={},
+        )
+    )
+    analyzer = FakeAnalyzer(False)
+    processor = GuardSimpleProcessor(
+        message_repo=messages,
+        analyzer=analyzer,
+        assessment_repo=assessments,
+    )
+
+    await processor.process(
+        child_user_id="child",
+        connection_id="connection",
+        chat_id="group@g.us",
+        child_name="Shay",
+        as_of=BASE,
+    )
+
+    assert analyzer.conversations[0].prior_concern is None
+
+
 async def test_same_day_parent_concern_is_not_reused_as_recursive_context() -> None:
     messages = InMemoryMessageRepository()
     await messages.save(message("m1", BASE, direction=MessageDirection.OUTBOUND, sender_id=None))
@@ -341,6 +730,65 @@ async def test_same_day_parent_concern_is_not_reused_as_recursive_context() -> N
     assert analyzer.conversations[0].prior_concern is None
 
 
+async def test_same_day_uncertain_context_remains_in_followup_window() -> None:
+    messages = InMemoryMessageRepository()
+    await messages.save(message("ambiguous-object", BASE - timedelta(hours=2)))
+    await messages.save(message("resolving-followup", BASE, direction=MessageDirection.OUTBOUND, sender_id=None))
+    assessments = InMemoryGuardSimpleAssessmentRepository()
+    await assessments.save(
+        SafetyAssessment(
+            parent_should_know=None,
+            child_role=ChildRole.UNKNOWN,
+            summary="Ambiguous object exchange",
+            evidence_message_ids=("ambiguous-object",),
+            reason="Insufficient evidence",
+            child_user_id="child",
+            connection_id="connection",
+            chat_id="group@g.us",
+            created_at=BASE - timedelta(hours=1),
+        )
+    )
+    analyzer = FakeAnalyzer(False)
+    processor = GuardSimpleProcessor(
+        message_repo=messages,
+        analyzer=analyzer,
+        assessment_repo=assessments,
+    )
+
+    await processor.process(
+        child_user_id="child",
+        connection_id="connection",
+        chat_id="group@g.us",
+        child_name="Shay",
+        as_of=BASE,
+    )
+
+    conversation = analyzer.conversations[0]
+    assert conversation.prior_concern is None
+    assert [message.id for message in conversation.messages] == [
+        "ambiguous-object",
+        "resolving-followup",
+    ]
+
+
+async def test_llm_uncertain_result_is_marked_as_semantic_uncertainty() -> None:
+    messages = InMemoryMessageRepository()
+    await messages.save(message("m1", BASE))
+    processor = GuardSimpleProcessor(
+        message_repo=messages,
+        analyzer=FakeAnalyzer(None),
+        assessment_repo=InMemoryGuardSimpleAssessmentRepository(),
+    )
+
+    result = await processor.process(
+        child_user_id="child", connection_id="connection", chat_id="group@g.us",
+        child_name="Shay", as_of=BASE,
+    )
+
+    assert result.parent_should_know is None
+    assert result.diagnostics["semantic_uncertainty"] is True
+
+
 async def test_missing_child_name_fails_closed() -> None:
     messages = InMemoryMessageRepository()
     await messages.save(message("m1", BASE))
@@ -357,6 +805,7 @@ async def test_missing_child_name_fails_closed() -> None:
 
     assert result.parent_should_know is None
     assert not result.identity_verified
+    assert result.diagnostics["semantic_uncertainty"] is False
 
 
 async def test_empty_day_is_unknown_and_does_not_create_false_result() -> None:
@@ -378,6 +827,7 @@ async def test_empty_day_is_unknown_and_does_not_create_false_result() -> None:
     )
 
     assert result.parent_should_know is None
+    assert result.diagnostics["semantic_uncertainty"] is False
 
 
 async def test_processor_rejects_non_positive_message_cap() -> None:

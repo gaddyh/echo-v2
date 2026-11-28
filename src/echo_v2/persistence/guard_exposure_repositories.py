@@ -157,6 +157,7 @@ def _matches_decision(item: ExposureAssessment, decision: str | None) -> bool:
         "yes": item.significant_exposure is True,
         "no": item.significant_exposure is False,
         "unknown": item.significant_exposure is None,
+        "uncertain": item.significant_exposure is None,
     }.get(decision, False)
 
 

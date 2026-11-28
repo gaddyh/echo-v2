@@ -268,6 +268,7 @@ class GuardSimpleTelemetryService:
         return {
             "id": assessment_id,
             "decision": _decision(assessment),
+            "uncertainty": _uncertainty_view(assessment),
             "child_user_id": assessment.child_user_id,
             "child_name": child_name,
             "chat_id": assessment.chat_id,
@@ -481,7 +482,28 @@ def _exposure_decision(assessment: ExposureAssessment) -> str:
         return "yes"
     if assessment.significant_exposure is False:
         return "no"
-    return "unknown"
+    return "uncertain"
+
+
+def _uncertainty_view(assessment: SafetyAssessment) -> dict[str, str] | None:
+    if assessment.parent_should_know is not None:
+        return None
+    if assessment.diagnostics.get("incomplete_media_evidence") is True:
+        kind = "incomplete_media"
+        label = "Operational · incomplete media"
+    elif not assessment.input_message_ids:
+        kind = "empty_context"
+        label = "Operational · empty context"
+    elif assessment.identity_verified is False:
+        kind = "identity_unverified"
+        label = "Operational · unverified identity"
+    elif assessment.diagnostics.get("semantic_uncertainty") is True:
+        kind = "semantic"
+        label = "Semantic uncertainty"
+    else:
+        kind = "operational"
+        label = "Operational uncertainty"
+    return {"kind": kind, "label": label}
 
 
 def _activity_view(
@@ -501,6 +523,7 @@ def _activity_view(
         "analyzer": "child",
         "created_at": assessment.created_at,
         "decision": _decision(assessment),
+        "uncertainty": _uncertainty_view(assessment),
         "child_user_id": assessment.child_user_id,
         "child_name": assessment.child_name or child_name or assessment.child_user_id,
         "chat_id": assessment.chat_id,
@@ -597,7 +620,7 @@ def _decision(assessment: SafetyAssessment) -> str:
         return "yes"
     if assessment.parent_should_know is False:
         return "no"
-    return "unknown"
+    return "uncertain"
 
 
 def _message_view(message: Message, *, cited: bool) -> dict[str, Any]:
@@ -612,8 +635,10 @@ def _message_view(message: Message, *, cited: bool) -> dict[str, Any]:
 
 
 def _normalize_decision(value: str | None) -> str | None:
-    if value in {None, "", "yes", "no", "unknown"}:
+    if value in {None, "", "yes", "no", "uncertain"}:
         return value or None
+    if value == "unknown":
+        return "uncertain"
     return "invalid"
 
 

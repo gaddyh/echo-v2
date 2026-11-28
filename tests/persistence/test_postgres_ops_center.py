@@ -512,13 +512,19 @@ async def test_snapshot_media_guard_notifications_management_costs(
             chat_id, chat_type, timezone, window_start, window_end,
             parent_should_know, child_role, summary, reason,
             evidence_message_ids, input_message_ids, model, prompt_version,
-            analyzer_version, created_at)
+            analyzer_version, diagnostics, created_at)
         VALUES (gen_random_uuid(), :child, :conn, 'c@c.us', 'private',
                 'Asia/Jerusalem', :ws, :we, TRUE, 'target', 's', 'r', '[]',
-                '[]', 'gpt-5.6-luna', 'pv', 'av', :at),
+                '[]', 'gpt-5.6-luna', 'pv', 'av', '{}', :at),
                (gen_random_uuid(), :child, :conn, 'c@c.us', 'private',
                 'Asia/Jerusalem', :ws, :we, FALSE, 'target', 's2', 'r2', '[]',
-                '[]', 'gpt-5.6-luna', 'pv', 'av', :at)
+                '[]', 'gpt-5.6-luna', 'pv', 'av', '{}', :at),
+               (gen_random_uuid(), :child, :conn, 'c@c.us', 'private',
+                'Asia/Jerusalem', :ws, :we, NULL, 'unknown', 's3', 'r3', '[]',
+                '[]', 'gpt-5.6-luna', 'pv', 'av', '{}', :at),
+               (gen_random_uuid(), :child, :conn, 'c@c.us', 'private',
+                'Asia/Jerusalem', :ws, :we, NULL, 'participant', 's4', 'r4', '[]',
+                '[]', 'gpt-5.6-luna', 'pv', 'av', '{"semantic_uncertainty": true}', :at)
         """,
         {
             "child": child,
@@ -629,9 +635,12 @@ async def test_snapshot_media_guard_notifications_management_costs(
     assert media["enrichment_latency_samples"] == 1
 
     guard = sections["guard_analysis"]
-    assert guard["security"]["committed"] == 2
+    assert guard["security"]["committed"] == 4
     assert guard["security"]["parent_should_know_true"] == 1
     assert guard["security"]["parent_should_know_false"] == 1
+    assert guard["security"]["parent_should_know_null"] == 2
+    assert guard["security"]["parent_should_know_semantic_uncertain"] == 1
+    assert guard["security"]["parent_should_know_operational_uncertain"] == 1
     assert guard["exposure"]["committed"] == 1
     assert guard["exposure"]["significant_true"] == 1
     assert guard["scheduled"]["overdue"] == 1

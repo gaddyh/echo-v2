@@ -119,7 +119,7 @@ class PostgresGuardSimpleAssessmentRepository:
             filters.append(GuardSimpleAssessmentRow.parent_should_know.is_(True))
         elif decision == "no":
             filters.append(GuardSimpleAssessmentRow.parent_should_know.is_(False))
-        elif decision == "unknown":
+        elif decision in {"unknown", "uncertain"}:
             filters.append(GuardSimpleAssessmentRow.parent_should_know.is_(None))
         if before is not None:
             before_at, before_id = before
@@ -171,7 +171,7 @@ class PostgresGuardSimpleAssessmentRepository:
             filters.append(GuardSimpleAssessmentRow.parent_should_know.is_(True))
         elif decision == "no":
             filters.append(GuardSimpleAssessmentRow.parent_should_know.is_(False))
-        elif decision == "unknown":
+        elif decision in {"unknown", "uncertain"}:
             filters.append(GuardSimpleAssessmentRow.parent_should_know.is_(None))
         async with self._session_factory() as session:
             rows = (

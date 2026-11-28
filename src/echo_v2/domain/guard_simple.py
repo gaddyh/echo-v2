@@ -29,7 +29,7 @@ class SimpleConversationMessage:
 
 @dataclass(frozen=True)
 class PriorConcern:
-    parent_should_know: bool
+    parent_should_know: bool | None
     child_role: ChildRole
     summary: str
     reason: str

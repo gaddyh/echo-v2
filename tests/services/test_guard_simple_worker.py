@@ -36,10 +36,13 @@ class FailingProcessor:
 
 
 class FakeProcessor:
+    def __init__(self, parent_should_know: bool | None = True) -> None:
+        self.parent_should_know = parent_should_know
+
     async def process(self, **kwargs):
         return SafetyAssessment(
-            parent_should_know=True,
-            child_role=ChildRole.TARGET,
+            parent_should_know=self.parent_should_know,
+            child_role=ChildRole.TARGET if self.parent_should_know is True else ChildRole.PARTICIPANT,
             summary="Concern",
             evidence_message_ids=("m1",),
             reason="Reason",
@@ -127,6 +130,52 @@ async def test_worker_commits_current_version_and_delivers() -> None:
     assert state is not None
     assert state.last_parent_should_know is True
     assert state.last_analyzed_version == state.activity_version
+
+
+@pytest.mark.parametrize("decision", [False, None])
+async def test_worker_commits_false_and_uncertain_without_retry(decision: bool | None) -> None:
+    states = InMemoryGuardChatStateRepository()
+    await states.upsert_on_message(
+        child_user_id="child",
+        chat_id="chat@c.us",
+        observed_at=NOW,
+        next_analysis_at=NOW,
+        pending_since=NOW,
+        connection_id="connection",
+    )
+    assessments = InMemoryGuardSimpleAssessmentRepository()
+    delivery = FakeDelivery()
+    worker = GuardSimpleAnalysisWorker(
+        state_repo=states,
+        processor=FakeProcessor(decision),
+        commit_repo=InMemoryGuardSimpleAssessmentCommitRepository(states, assessments),
+        delivery=delivery,
+        users=FakeUsers(),
+    )
+
+    assert await worker.run_once()
+
+    assert len(assessments.assessments) == 1
+    assert assessments.assessments[0].parent_should_know is decision
+    assert len(delivery.assessments) == 1
+    state = await states.get("child", "chat@c.us")
+    assert state is not None
+    assert state.last_parent_should_know is decision
+    assert state.last_analyzed_version == state.activity_version
+    assert state.next_analysis_at is None
+
+    await states.upsert_on_message(
+        child_user_id="child",
+        chat_id="chat@c.us",
+        observed_at=NOW,
+        next_analysis_at=NOW,
+        pending_since=NOW,
+        connection_id="connection",
+    )
+    reactivated = await states.get("child", "chat@c.us")
+    assert reactivated is not None
+    assert reactivated.activity_version == state.activity_version + 1
+    assert reactivated.next_analysis_at == NOW
 
 
 async def test_worker_commits_exposure_after_child_commit_for_same_version() -> None:

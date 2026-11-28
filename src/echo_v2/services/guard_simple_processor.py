@@ -6,7 +6,7 @@ import hashlib
 import json
 import logging
 from dataclasses import replace
-from datetime import datetime, time, timezone
+from datetime import datetime, time, timedelta, timezone
 from typing import Protocol
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -120,14 +120,26 @@ class GuardSimpleProcessor:
         current_day_start = datetime.combine(
             local_now.date(), time.min, tzinfo=local_zone
         ).astimezone(timezone.utc)
-        prior = await self._assessments.latest_unresolved(
+        previous_day_start = datetime.combine(
+            local_now.date() - timedelta(days=1), time.min, tzinfo=local_zone
+        ).astimezone(timezone.utc)
+        prior_actionable = await self._assessments.latest_unresolved(
             child_user_id=child_user_id,
             chat_id=chat_id,
             before=current_day_start,
         )
+        prior_uncertain = None
+        if prior_actionable is None:
+            prior_uncertain = await self._latest_uncertain_context(
+                child_user_id=child_user_id,
+                chat_id=chat_id,
+                after=previous_day_start,
+                before=current_day_start,
+            )
+        prior_context = prior_actionable or prior_uncertain
         _logger.info(
             "guard simple build conversation child_user_id=%s chat_id=%s timezone=%s prior_concern=%s",
-            child_user_id, chat_id, timezone_name, prior.id if prior is not None else None,
+            child_user_id, chat_id, timezone_name, prior_context.id if prior_context is not None else None,
         )
         conversation = await self._builder.build(
             child_user_id=child_user_id,
@@ -136,7 +148,7 @@ class GuardSimpleProcessor:
             chat_id=chat_id,
             timezone_name=timezone_name,
             as_of=observed_at,
-            prior_concern=_prior_concern(prior),
+            prior_concern=_prior_concern(prior_context),
         )
         _logger.info(
             "guard simple conversation built child_user_id=%s chat_id=%s messages=%d usable=%s incomplete_media=%s identity_verified=%s",
@@ -195,12 +207,19 @@ class GuardSimpleProcessor:
         )
         current_evidence_at = max(evidence_timestamps, default=None)
         first_detected_at = (
-            prior.first_detected_at if prior is not None else observed_at
+            prior_actionable.first_detected_at if prior_actionable is not None else observed_at
         ) if parent_should_know is True else None
         last_evidence_at = (
             current_evidence_at
             if parent_should_know is True
             else None
+        )
+        semantic_uncertainty = (
+            parent_should_know is None
+            and current.parent_should_know is None
+            and not conversation.incomplete_media_evidence
+            and bool(conversation.messages)
+            and identity_verified
         )
         assessment = replace(
             current,
@@ -243,9 +262,10 @@ class GuardSimpleProcessor:
                     ),
                     default=None,
                 ),
-                "prior_concern_id": prior.id if prior is not None else None,
+                "semantic_uncertainty": semantic_uncertainty,
+                "prior_concern_id": prior_context.id if prior_context is not None else None,
                 "prior_concern_parent_should_know": (
-                    prior.parent_should_know if prior is not None else None
+                    prior_context.parent_should_know if prior_context is not None else None
                 ),
             },
         )
@@ -257,6 +277,36 @@ class GuardSimpleProcessor:
             target_version=target_version,
         ) if include_exposure else None
         return assessment, exposure
+
+    async def _latest_uncertain_context(
+        self,
+        *,
+        child_user_id: str,
+        chat_id: str,
+        after: datetime,
+        before: datetime,
+    ) -> SafetyAssessment | None:
+        """Return unresolved semantic uncertainty from the adjacent local day.
+
+        Baseline B raw context is the current local calendar day. Semantic null
+        context is therefore a bounded bridge from the immediately preceding
+        local day, not an indefinite incident. A definitive true/false
+        assessment ends the uncertainty chain. Operational nulls (empty context,
+        incomplete media, or unverified identity) neither resolve nor extend it.
+        """
+        rows = await self._assessments.list_for_children(
+            child_user_ids=[child_user_id],
+            chat_id=chat_id,
+            created_after=after,
+            created_before=before,
+            limit=50,
+        )
+        for row in rows:
+            if row.parent_should_know is not None:
+                return None
+            if row.diagnostics.get("semantic_uncertainty") is True:
+                return row
+        return None
 
     async def _exposure_assessment(
         self,
@@ -335,10 +385,10 @@ def _conversation_input_hash(conversation: SimpleConversation) -> str:
 
 
 def _prior_concern(assessment: SafetyAssessment | None) -> PriorConcern | None:
-    if assessment is None or assessment.parent_should_know is not True:
+    if assessment is None or assessment.parent_should_know is False:
         return None
     return PriorConcern(
-        parent_should_know=True,
+        parent_should_know=assessment.parent_should_know,
         child_role=assessment.child_role,
         summary=assessment.summary,
         reason=assessment.reason,

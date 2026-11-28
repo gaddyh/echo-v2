@@ -46,6 +46,7 @@ from echo_v2.services.guard_simple_telemetry_service import (
     _encode_cursor,
     _message_hash,
     _queue_view,
+    _uncertainty_view,
 )
 from echo_v2.services.waiting_list_token_service import WaitingListTokenService
 
@@ -164,7 +165,12 @@ async def test_activity_lists_recent_rows_and_confirmed_counter() -> None:
     assert response.summary == {"analyzed": 3, "yes": 1, "no": 1, "unknown": 1, "notifications": 1}
     assert [row["id"] for row in response.analyses] == ["a1", "a2", "a3"]
     assert response.analyses[0]["delivery"]["label"] == "Sent"
+    assert response.analyses[0]["uncertainty"] is None
     assert response.analyses[1]["delivery"]["label"] == "Unknown (historical)"
+    assert response.analyses[2]["uncertainty"] == {
+        "kind": "empty_context",
+        "label": "Operational · empty context",
+    }
 
 
 async def test_activity_merges_exposure_without_message_content() -> None:
@@ -258,7 +264,7 @@ async def test_activity_filters_and_cursor_are_scoped_to_linked_children() -> No
 
     response = await service.list_activity(
         session_id=session_id,
-        decision="unknown",
+        decision="uncertain",
         limit=1,
     )
 
@@ -294,6 +300,13 @@ async def test_activity_keeps_all_child_options_when_one_child_is_selected() -> 
 
 async def test_detail_and_context_report_exact_verified_content() -> None:
     service, session_id, _ = await setup()
+
+    uncertain_detail = await service.get_analysis(session_id=session_id, assessment_id="a3")
+    assert uncertain_detail is not None
+    assert uncertain_detail["uncertainty"] == {
+        "kind": "empty_context",
+        "label": "Operational · empty context",
+    }
 
     detail = await service.get_analysis(session_id=session_id, assessment_id="a1")
     context = await service.get_context(session_id=session_id, assessment_id="a1")
@@ -350,6 +363,38 @@ async def test_context_detects_changed_and_missing_messages() -> None:
     assert missing is not None and missing["missing_message_ids"] == ["m2"]
 
 
+async def test_uncertainty_view_distinguishes_semantic_and_operational_nulls() -> None:
+    base = assessment("uncertain", decision=None, input_ids=("m1",))
+
+    assert _uncertainty_view(replace(base, diagnostics={"semantic_uncertainty": True})) == {
+        "kind": "semantic",
+        "label": "Semantic uncertainty",
+    }
+    assert _uncertainty_view(replace(base, diagnostics={"incomplete_media_evidence": True})) == {
+        "kind": "incomplete_media",
+        "label": "Operational · incomplete media",
+    }
+    assert _uncertainty_view(
+        replace(
+            base,
+            diagnostics={"incomplete_media_evidence": True, "semantic_uncertainty": True},
+        )
+    )["kind"] == "incomplete_media"
+    assert _uncertainty_view(replace(base, input_message_ids=())) == {
+        "kind": "empty_context",
+        "label": "Operational · empty context",
+    }
+    assert _uncertainty_view(replace(base, identity_verified=False)) == {
+        "kind": "identity_unverified",
+        "label": "Operational · unverified identity",
+    }
+    assert _uncertainty_view(base) == {
+        "kind": "operational",
+        "label": "Operational uncertainty",
+    }
+    assert _uncertainty_view(assessment("positive", decision=True, input_ids=("m1",))) is None
+
+
 async def test_delivery_labels_and_helper_projections() -> None:
     action = ScheduledAction(
         id="action",
@@ -383,7 +428,7 @@ async def test_delivery_labels_and_helper_projections() -> None:
     assert _queue_view(None) is None
     assert _decision(assessment("x", decision=True)) == "yes"
     assert _decision(assessment("x", decision=False)) == "no"
-    assert _decision(assessment("x", decision=None)) == "unknown"
+    assert _decision(assessment("x", decision=None)) == "uncertain"
     cursor = _encode_cursor(NOW, "a")
     assert _decode_cursor(cursor) == (NOW, "a")
     assert _decode_cursor("bad") is None

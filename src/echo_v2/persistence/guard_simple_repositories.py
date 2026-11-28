@@ -263,6 +263,7 @@ def _matches_decision(assessment: SafetyAssessment, decision: str | None) -> boo
         "yes": assessment.parent_should_know is True,
         "no": assessment.parent_should_know is False,
         "unknown": assessment.parent_should_know is None,
+        "uncertain": assessment.parent_should_know is None,
     }.get(decision, False)
 
 
