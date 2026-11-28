@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any
@@ -130,6 +130,16 @@ class FakeRepository:
             return True
         return False
 
+    async def complete_claimed_many(
+        self, claimed: Sequence[ClaimedWahaMessage]
+    ) -> int:
+        done = 0
+        for item in claimed:
+            if self.complete_result:
+                self.completed.append(item)
+                done += 1
+        return done
+
     async def mark_failed(self, claimed: ClaimedWahaMessage, error: str) -> None:
         self.failures.append((claimed, error))
 
@@ -209,7 +219,7 @@ async def test_history_sync_rows_are_suppressed_before_ingest() -> None:
     processed = await _consumer(repo, connections, ingestion).run_once()
 
     assert processed == 3
-    assert [c.message.message_id for c in repo.completed] == ["H-1", "H-2", "L-1"]
+    assert {c.message.message_id for c in repo.completed} == {"H-1", "H-2", "L-1"}
     assert repo.failures == []
     # Only the live row reached ingestion; history never persisted a message.
     assert len(ingestion.calls) == 1
@@ -271,8 +281,14 @@ async def test_old_catchup_message_without_sync_marker_is_ingested() -> None:
 
 
 async def test_large_history_flush_drains_without_ingestion() -> None:
-    """A first-pairing flush drains at claim pace with zero ingest calls."""
-    repo = FakeRepository([_history_row(f"H-{i}") for i in range(1500)])
+    """A first-pairing flush drains at claim pace with zero ingest calls.
+
+    Uses the real observed scale (~15k rows) to bound live-message delay:
+    the consumer issues at most one bulk-complete per claimed batch, so a
+    live row behind the flush waits ~`(backlog/batch_size)` claims, not one
+    per row.
+    """
+    repo = FakeRepository([_history_row(f"H-{i}") for i in range(15_000)])
     repo.rows.extend([_text_row("LIVE-1")])  # live message mid-flush
     ingestion = FakeIngestion()
     consumer = WahaMessageConsumer(
@@ -286,8 +302,8 @@ async def test_large_history_flush_drains_without_ingestion() -> None:
     while processed := await consumer.run_once():
         total += processed
 
-    assert total == 1501
-    assert len(repo.completed) == 1501
+    assert total == 15_001
+    assert len(repo.completed) == 15_001
     assert repo.failures == []
     assert [call[0].provider_message_id for call in ingestion.calls] == ["LIVE-1"]
 

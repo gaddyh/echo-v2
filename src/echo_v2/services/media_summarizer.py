@@ -40,6 +40,7 @@ from uuid import uuid4
 import httpx
 
 from echo_v2.domain.ai_usage_event import AiUsageStatus, AiUsageType
+from echo_v2.services.local_media import LocalMediaError, read_local_media_url
 
 if TYPE_CHECKING:
     from echo_v2.services.reporting.ai_usage_recorder import AiUsageRecorder
@@ -415,11 +416,10 @@ async def download_media(
     """
     parsed = urlparse(url)
     if parsed.scheme == "file":
-        if parsed.netloc not in ("", "localhost"):
-            raise MediaSummaryError("local media path must not reference a host")
-        from urllib.parse import unquote
-
-        content = Path(unquote(parsed.path)).read_bytes()
+        try:
+            content = read_local_media_url(url)
+        except LocalMediaError as exc:
+            raise MediaSummaryError(str(exc)) from exc
         if len(content) > _MAX_DOWNLOAD_BYTES:
             raise MediaSummaryError(
                 f"media download exceeded {_MAX_DOWNLOAD_BYTES} bytes: {len(content)}"

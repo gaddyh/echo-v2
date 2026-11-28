@@ -25,7 +25,6 @@ import base64
 import hashlib
 import hmac
 import logging
-import tempfile
 import time
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
@@ -35,6 +34,7 @@ import httpx
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 from echo_v2.domain.waha import WahaInboxMessage, WahaMediaPayload
+from echo_v2.services.local_media import local_media_root
 from echo_v2.services.transcription import suffix_from_mime
 from echo_v2.services.waha_messages import extract_media
 
@@ -184,11 +184,11 @@ async def download_ciphertext(
             ) from exc
         if response.status_code in (301, 302, 303, 307, 308):
             raise WahaMediaDownloadError("media URL returned an unexpected redirect")
-        # 4xx means the CDN object itself is gone — signed WhatsApp media URLs
-        # have a bounded lifetime, so once evicted the ciphertext is
-        # permanently unrecoverable. Kept separate from transport/5xx
-        # failures, which are retried.
-        if 400 <= response.status_code < 500:
+        # 403/404/410 mean the CDN object itself is gone — signed WhatsApp
+        # media URLs have a bounded lifetime, so once evicted or expired the
+        # ciphertext is permanently unrecoverable. Other 4xx (401 auth,
+        # 408 timeout, 429 rate-limit) and 5xx stay retryable.
+        if response.status_code in (403, 404, 410):
             raise WahaMediaUnavailableError(
                 f"media no longer available on WhatsApp CDN (HTTP {response.status_code})"
             )
@@ -231,7 +231,7 @@ class WahaMediaUrlResolver:
         self._inbox = inbox
         self._decryptor = decryptor or WahaMediaDecryptor()
         self._max_bytes = max_bytes
-        self._cache_dir = cache_dir or Path(tempfile.gettempdir()) / "echo-waha-media"
+        self._cache_dir = cache_dir or local_media_root()
 
     async def resolve(self, message: Any) -> str | None:
         """Return a ``file://`` path to the decrypted media, or ``None``.
