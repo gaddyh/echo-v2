@@ -25,7 +25,7 @@ from typing import Any
 
 from fastapi import APIRouter, Cookie, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from echo_v2.domain.ops_digest import OpsDigest
 from echo_v2.persistence.ops_digests import OpsDigestRepository
@@ -88,7 +88,7 @@ def build_ops_alert_router(
             raise HTTPException(status_code=401, detail="invalid bearer token")
 
     @router.post("/internal/ops-alerts", status_code=204)
-    async def ingest_ops_alert(request: Request) -> JSONResponse:
+    async def ingest_ops_alert(request: Request) -> Response:
         _require_alert_token(request.headers.get("authorization"))
         raw = await request.body()
         if len(raw) > _MAX_BODY_BYTES:
@@ -154,7 +154,10 @@ def build_ops_alert_router(
                 received_at=received_at,
             )
         )
-        return JSONResponse(status_code=204, headers=_headers(), content=None)
+        # Plain Response: JSONResponse(content=None) serializes the body to
+        # b"null", which violates the bodiless 204 contract and aborts the
+        # connection mid-send ("Response content longer than Content-Length").
+        return Response(status_code=204, headers=_headers())
 
     @router.get("/api/admin/guard/ops/digests")
     async def list_ops_digests(
