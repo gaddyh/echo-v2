@@ -13,7 +13,7 @@ from echo_v2.domain.guard_simple import (
 @dataclass(frozen=True)
 class SimpleGoldCheckpoint:
     after_message_id: str
-    expected_parent_should_know: tuple[bool, ...]
+    expected_parent_should_know: tuple[bool | None, ...]
     expected_child_roles: tuple[ChildRole, ...] = (
         ChildRole.PARTICIPANT,
         ChildRole.TARGET,
@@ -240,6 +240,88 @@ CASES: tuple[SimpleGoldCase, ...] = (
             SimpleGoldCheckpoint("m2", (None, True), (ChildRole.TARGET,)),
             SimpleGoldCheckpoint("m3", (True,), (ChildRole.TARGET,)),
             SimpleGoldCheckpoint("m4", (True,), (ChildRole.TARGET,)),
+        ),
+    ),
+    SimpleGoldCase(
+        case_id="ambiguity_original_object_exchange",
+        title="Ambiguous object exchange from production",
+        chat_type="private",
+        messages=(
+            SimpleConversationMessage("ball-1", "other", "אני בדרך"),
+            SimpleConversationMessage("ball-2", "child", "יש לך כדורים?"),
+            SimpleConversationMessage("ball-3", "other", "👍🏻"),
+            SimpleConversationMessage("ball-4", "child", "כן"),
+            SimpleConversationMessage("ball-5", "other", "75?"),
+            SimpleConversationMessage("ball-6", "child", "לא"),
+            SimpleConversationMessage("ball-7", "other", "אז הבאתי 4"),
+            SimpleConversationMessage("ball-8", "other", "אתה שם?"),
+            SimpleConversationMessage("ball-9", "child", "כן"),
+            SimpleConversationMessage("ball-10", "other", "אני עוד 5 דקות מגיע"),
+        ),
+        checkpoints=(
+            SimpleGoldCheckpoint("ball-7", (None, False)),
+            SimpleGoldCheckpoint("ball-10", (None,)),
+        ),
+    ),
+    SimpleGoldCase(
+        case_id="ambiguity_benign_continuation",
+        title="Ambiguous exchange resolved as ordinary play",
+        chat_type="private",
+        messages=(
+            SimpleConversationMessage("m1", "child", "יש לך כדורים?"),
+            SimpleConversationMessage("m2", "other", "כן"),
+            SimpleConversationMessage("m3", "child", "אז הבאתי 4"),
+            SimpleConversationMessage("m4", "other", "אחלה, נשחק בהפסקה"),
+            SimpleConversationMessage("m5", "child", "אני מביא גם את המחבטים"),
+        ),
+        checkpoints=(
+            SimpleGoldCheckpoint("m3", (None, False)),
+            SimpleGoldCheckpoint("m5", (False,), (ChildRole.PARTICIPANT, ChildRole.UNKNOWN)),
+        ),
+    ),
+    SimpleGoldCase(
+        case_id="ambiguity_harmful_continuation",
+        title="Ambiguous exchange corroborated as dangerous",
+        chat_type="private",
+        messages=(
+            SimpleConversationMessage("m1", "child", "יש לך כדורים?"),
+            SimpleConversationMessage("m2", "other", "כן"),
+            SimpleConversationMessage("m3", "child", "אז הבאתי 4"),
+            SimpleConversationMessage("m4", "other", "אל תגיד לאף אחד מה זה, אלה כדורים חזקים"),
+            SimpleConversationMessage("m5", "child", "ברור, אביא בלי שרואים"),
+            SimpleConversationMessage("m6", "other", "אם מישהו ידע נהיה בצרות"),
+        ),
+        checkpoints=(
+            SimpleGoldCheckpoint("m3", (None, False)),
+            SimpleGoldCheckpoint("m5", (True,), (ChildRole.PARTICIPANT, ChildRole.UNKNOWN)),
+            SimpleGoldCheckpoint("m6", (True,), (ChildRole.PARTICIPANT, ChildRole.UNKNOWN)),
+        ),
+    ),
+    SimpleGoldCase(
+        case_id="ambiguity_explicit_danger_true",
+        title="Explicit danger remains alert-worthy without corroboration",
+        chat_type="private",
+        messages=(
+            SimpleConversationMessage("m1", "other", "אם לא תבוא לבד היום אני אחכה לך מחר מחוץ לבית הספר"),
+            SimpleConversationMessage("m2", "child", "תפסיק לאיים עליי"),
+        ),
+        checkpoints=(
+            SimpleGoldCheckpoint("m1", (True,), (ChildRole.TARGET, ChildRole.UNKNOWN)),
+            SimpleGoldCheckpoint("m2", (True,), (ChildRole.TARGET,)),
+        ),
+    ),
+    SimpleGoldCase(
+        case_id="ambiguity_ordinary_logistics_false",
+        title="Ordinary logistics are false rather than uncertain",
+        chat_type="private",
+        messages=(
+            SimpleConversationMessage("m1", "other", "אתה מביא את הספרים למחר?"),
+            SimpleConversationMessage("m2", "child", "כן, שמתי בתיק"),
+            SimpleConversationMessage("m3", "other", "אחלה, נתראה בכיתה בבוקר"),
+        ),
+        checkpoints=tuple(
+            SimpleGoldCheckpoint(message_id, (False,))
+            for message_id in ("m1", "m2", "m3")
         ),
     ),
 )

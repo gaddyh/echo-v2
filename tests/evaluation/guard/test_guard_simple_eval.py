@@ -14,6 +14,11 @@ from tests.evaluation.guard.guard_simple_cases import (
     SimpleGoldCase,
     validate_cases,
 )
+from tests.evaluation.guard.guard_simple_metrics import (
+    EvalObservation,
+    format_alert_metrics,
+    summarize_alert_metrics,
+)
 
 pytestmark = [
     pytest.mark.eval_guard,
@@ -41,13 +46,17 @@ def analyzer() -> SimpleSafetyAnalyzer:
 
     return SimpleSafetyAnalyzer(
         client=AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY", "")),
-        model=os.environ.get("GUARD_SIMPLE_LLM_MODEL", os.environ.get("LLM_MODEL_NAME", "gpt-4.1")),
+        model=os.environ.get(
+            "GUARD_SIMPLE_LLM_MODEL",
+            os.environ.get("GUARD_LLM_MODEL_NAME", os.environ.get("LLM_MODEL_NAME", "gpt-4.1")),
+        ),
     )
 
 
 async def test_baseline_b_gold_prefixes(analyzer: SimpleSafetyAnalyzer) -> None:
     validate_cases()
     failures: list[str] = []
+    observations: list[EvalObservation] = []
     for case in CASES:
         for checkpoint in case.checkpoints:
             conversation = SimpleConversation(
@@ -70,6 +79,14 @@ async def test_baseline_b_gold_prefixes(analyzer: SimpleSafetyAnalyzer) -> None:
                 f"evidence={list(assessment.evidence_message_ids)} / "
                 f"summary={assessment.summary} / reason={assessment.reason}"
             )
+            observations.append(
+                EvalObservation(
+                    case_id=case.case_id,
+                    checkpoint_id=checkpoint.after_message_id,
+                    expected=checkpoint.expected_parent_should_know,
+                    predicted=assessment.parent_should_know,
+                )
+            )
             prefix_ids = {message.id for message in conversation.messages}
             if assessment.parent_should_know not in checkpoint.expected_parent_should_know:
                 failures.append(
@@ -90,5 +107,6 @@ async def test_baseline_b_gold_prefixes(analyzer: SimpleSafetyAnalyzer) -> None:
                 failures.append(
                     f"{case.case_id}@{checkpoint.after_message_id}: true result has no evidence"
                 )
+    print("\n" + format_alert_metrics(summarize_alert_metrics(observations)))
     if failures:
         pytest.fail("\n".join(failures))

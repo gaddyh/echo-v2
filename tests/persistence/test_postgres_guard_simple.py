@@ -84,6 +84,14 @@ async def test_assessments_are_isolated_and_resolution_is_separate(
         assessment(
             child,
             connection_id,
+            parent_should_know=None,
+            created_at=NOW.replace(hour=10, minute=30),
+        )
+    )
+    await repository.save(
+        assessment(
+            child,
+            connection_id,
             parent_should_know=False,
             created_at=NOW.replace(hour=11),
         )
@@ -111,15 +119,20 @@ async def test_assessments_are_isolated_and_resolution_is_separate(
         child_user_id=child, chat_id="group@g.us"
     ) is None
     listed = await repository.list_for_chat(child_user_id=child, chat_id="group@g.us")
-    assert len(listed) == 2
+    assert len(listed) == 3
     assert listed[0].resolved_at == NOW
     assert listed[0].summary == "summary"
     filtered = await repository.list_for_children(
         child_user_ids=[child], chat_name="class", limit=10
     )
-    assert len(filtered) == 2
+    assert len(filtered) == 3
     counts = await repository.count_for_children(child_user_ids=[child], chat_name="class")
-    assert counts == {"analyzed": 2, "yes": 1, "no": 1, "unknown": 0}
+    assert counts == {"analyzed": 3, "yes": 1, "no": 1, "unknown": 1}
+    uncertain = await repository.list_for_children(
+        child_user_ids=[child], chat_name="class", decision="uncertain", limit=10
+    )
+    assert len(uncertain) == 1
+    assert uncertain[0].parent_should_know is None
 
 
 async def test_postgres_message_window_reports_bounds_connections_and_unknown_senders(

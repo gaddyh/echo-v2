@@ -1538,6 +1538,14 @@ class OpsCenterService:
                        AS parent_should_know_false,
                    count(*) FILTER (WHERE parent_should_know IS NULL)
                        AS parent_should_know_null,
+                   count(*) FILTER (
+                       WHERE parent_should_know IS NULL
+                         AND diagnostics->>'semantic_uncertainty' = 'true'
+                   ) AS parent_should_know_semantic_uncertain,
+                   count(*) FILTER (
+                       WHERE parent_should_know IS NULL
+                         AND coalesce(diagnostics->>'semantic_uncertainty', 'false') <> 'true'
+                   ) AS parent_should_know_operational_uncertain,
                    percentile_cont(0.5) WITHIN GROUP (ORDER BY
                        EXTRACT(EPOCH FROM (created_at - window_end)))
                        AS analysis_delay_p50_s,
@@ -1670,7 +1678,9 @@ class OpsCenterService:
                 "legacy_attempts cover the legacy worker's "
                 "guard_analysis_attempts table only (empty under Guard "
                 "Simple). Stale/superseded commits leave no assessment "
-                "row — only legacy attempts record 'stale'."
+                "row — only legacy attempts record 'stale'. Uncertain "
+                "assessments are valid analyzer outcomes, not analyzer "
+                "failures."
             ),
         }
 
@@ -2141,6 +2151,18 @@ class OpsCenterService:
             SELECT count(*) AS committed,
                    count(*) FILTER (WHERE parent_should_know IS TRUE)
                        AS parent_should_know_true,
+                   count(*) FILTER (WHERE parent_should_know IS FALSE)
+                       AS parent_should_know_false,
+                   count(*) FILTER (WHERE parent_should_know IS NULL)
+                       AS parent_should_know_null,
+                   count(*) FILTER (
+                       WHERE parent_should_know IS NULL
+                         AND diagnostics->>'semantic_uncertainty' = 'true'
+                   ) AS parent_should_know_semantic_uncertain,
+                   count(*) FILTER (
+                       WHERE parent_should_know IS NULL
+                         AND coalesce(diagnostics->>'semantic_uncertainty', 'false') <> 'true'
+                   ) AS parent_should_know_operational_uncertain,
                    max(created_at) AS last_at
               FROM guard_simple_assessments
              WHERE child_user_id::text = :user_id AND created_at >= :since
@@ -2153,6 +2175,10 @@ class OpsCenterService:
             SELECT count(*) AS committed,
                    count(*) FILTER (WHERE significant_exposure IS TRUE)
                        AS significant_true,
+                   count(*) FILTER (WHERE significant_exposure IS FALSE)
+                       AS significant_false,
+                   count(*) FILTER (WHERE significant_exposure IS NULL)
+                       AS significant_null,
                    max(created_at) AS last_at
               FROM guard_exposure_assessments
              WHERE child_user_id::text = :user_id AND created_at >= :since

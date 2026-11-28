@@ -98,7 +98,7 @@ def _make_safety(
     child_id: str = "child-001",
     chat_id: str = "chat-001",
     child_name: str = "Mikush",
-    yes: bool = True,
+    yes: bool | None = True,
 ) -> SafetyAssessment:
     return SafetyAssessment(
         parent_should_know=yes,
@@ -508,13 +508,15 @@ async def test_disabled_tracker_returns_disabled() -> None:
     assert result == "disabled"
 
 
-async def test_not_parent_attention() -> None:
-    tracker, _, _, _, _ = _make_tracker()
+@pytest.mark.parametrize("decision", [False, None])
+async def test_not_parent_attention(decision: bool | None) -> None:
+    tracker, _, _, _, scheduling = _make_tracker()
     result = await tracker.evaluate_security(
-        assessment=_make_safety(yes=False),
+        assessment=_make_safety(yes=decision),
         assessment_id="assess-001",
     )
     assert result == "not_parent_attention"
+    assert scheduling.created == []
 
 
 # --- Idempotency ----------------------------------------------------------

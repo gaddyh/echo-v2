@@ -10,6 +10,7 @@ import pytest
 
 from echo_v2.domain.guard_simple import (
     ChildRole,
+    PriorConcern,
     SimpleConversation,
     SimpleConversationMessage,
 )
@@ -76,6 +77,10 @@ def test_output_schema_is_strict_and_has_only_simple_fields() -> None:
         "evidence_message_ids",
         "reason",
     }
+    assert schema["properties"]["parent_should_know"]["anyOf"] == [
+        {"type": "boolean"},
+        {"type": "null"},
+    ]
 
 
 def test_user_payload_identifies_child_and_preserves_group_context() -> None:
@@ -86,10 +91,38 @@ def test_user_payload_identifies_child_and_preserves_group_context() -> None:
     assert '"id":"m1"' in payload
 
 
+def test_user_payload_serializes_uncertain_prior_context_as_null() -> None:
+    prior = PriorConcern(
+        parent_should_know=None,
+        child_role=ChildRole.PARTICIPANT,
+        summary="Ambiguous object exchange.",
+        reason="The evidence was insufficient.",
+        evidence_message_ids=("old-1",),
+        created_at=NOW,
+        first_detected_at=NOW,
+        last_evidence_at=None,
+    )
+
+    payload = _build_user_message(conversation(prior_concern=prior))
+
+    assert '"unresolved_prior_concern":{"parent_should_know":null' in payload
+    assert '"evidence_message_ids":["old-1"]' in payload
+
+
 def test_prompt_calibrates_urgent_non_physical_risk_and_current_context() -> None:
     prompt = " ".join(_SYSTEM_PROMPT.lower().split())
 
-    assert "parent_should_know = true or false" in prompt
+    assert "parent_should_know = true, false, or null" in prompt
+    assert "false does not require positive proof of a benign explanation" in prompt
+    assert "a plausible harmful interpretation is not sufficient evidence of harm" in prompt
+    assert "quantities, prices, arrival times, or exchanging objects" in prompt
+    assert "specific, realistic safety hypothesis" in prompt
+    assert "specific, realistic dangerous interpretation remains unresolved" in prompt
+    assert "ordinary object or a dangerous object or substance" in prompt
+    assert "exact identity of the object or activity remains uncertain" in prompt
+    assert "prior null value means the earlier evidence was uncertain" in prompt
+    assert "merely being addressed in a benign or unclear message" in prompt
+    assert "do not require multiple independent signals" in prompt
     assert "configured name" in prompt
     assert "publish private or humiliating material" in prompt
     assert "ordinary social activity" in prompt
@@ -202,6 +235,40 @@ async def test_safe_output_can_have_no_evidence() -> None:
 
     assert result.parent_should_know is False
     assert result.evidence_message_ids == ()
+
+
+@pytest.mark.asyncio
+async def test_uncertain_output_is_valid_and_may_cite_supporting_evidence() -> None:
+    client = MagicMock()
+    client.chat.completions.parse = AsyncMock(
+        return_value=response(
+            output(
+                parent_should_know=None,
+                child_role=ChildRole.UNKNOWN,
+                evidence_message_ids=["m1"],
+                summary="The available evidence is ambiguous.",
+                reason="A potentially meaningful concern is not sufficiently supported.",
+            )
+        )
+    )
+    analyzer = SimpleSafetyAnalyzer(client=client, max_retries=0)
+
+    result = await analyzer.analyze(conversation())
+
+    assert result.parent_should_know is None
+    assert result.evidence_message_ids == ("m1",)
+
+
+def test_parent_should_know_is_required_even_though_nullable() -> None:
+    with pytest.raises(ValueError, match="parent_should_know"):
+        SimpleSafetyLLMOutput.model_validate(
+            {
+                "child_role": "unknown",
+                "summary": "Ambiguous.",
+                "evidence_message_ids": [],
+                "reason": "Insufficient evidence.",
+            }
+        )
 
 
 @pytest.mark.asyncio

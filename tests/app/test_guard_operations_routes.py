@@ -161,6 +161,8 @@ async def test_operations_route_requires_session_and_serializes_activity() -> No
     assert page.status_code == 200
     assert "Echo Guard — Activity" in page.text
     assert "Confirmed notifications" in page.text
+    assert "YES / NO / UNCERTAIN" in page.text
+    assert "Uncertainty:" in page.text
     assert 'placeholder="Chat name"' in page.text
 
 
@@ -178,6 +180,8 @@ async def test_admin_page_is_echo_operations_center() -> None:
     assert "WAHA infrastructure" in page.text
     assert "Per-user monitoring health" in page.text
     assert "Recent errors and operational incidents" in page.text
+    assert "'YES','NO','UNCERTAIN'" in page.text
+    assert "semantic /" in page.text
     # No fake metrics in the shipped page.
     assert "lorem" not in page.text.lower()
 

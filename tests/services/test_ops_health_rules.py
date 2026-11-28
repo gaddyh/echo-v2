@@ -309,6 +309,26 @@ def test_analysis_backlog_below_threshold_is_not_an_issue() -> None:
     assert result["issues"] == []
 
 
+def test_uncertain_completed_analysis_is_not_analyzer_failure() -> None:
+    rules = OpsHealthRules(_settings(analyzer_failure_threshold=1))
+    snapshot = _snapshot({
+        "guard_analysis": {
+            "available": True,
+            "scheduled": {"overdue": 0, "significantly_overdue": 0},
+            "analysis_events": [
+                {
+                    "event_name": "guard.analysis.completed",
+                    "status": "committed",
+                    "count": 3,
+                    "metadata": {"parent_should_know": None},
+                },
+            ],
+        }
+    })
+    result = rules.evaluate(snapshot)
+    assert result["issues"] == []
+
+
 def test_pending_notification_not_overdue_is_not_an_issue() -> None:
     rules = OpsHealthRules(_settings(notification_overdue_seconds=900))
     snapshot = _snapshot({
