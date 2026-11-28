@@ -943,3 +943,55 @@ async def test_error_view_survives_missing_connector_schema(
     assert result["available"] is True
     # The Baileys source is unavailable but the rest of the view still loads.
     assert isinstance(result["errors"], list)
+
+
+async def test_baileys_backlog_counts_connector_inbox(
+    session_factory, clean_db
+) -> None:
+    """Regression: FILTER (EXISTS ...) was a syntax error — the whole Baileys
+    backlog silently reported nulls via the 'inbox unavailable' fallback."""
+    await _exec(
+        session_factory,
+        """
+        CREATE SCHEMA IF NOT EXISTS whatsapp_connector;
+        CREATE TABLE IF NOT EXISTS whatsapp_connector.event_inbox (
+            id bigserial primary key,
+            event_id text, connection_id text, event_type text,
+            provider_message_id text, payload text,
+            received_at timestamptz, processed_at timestamptz);
+        """,
+    )
+    await _exec(
+        session_factory,
+        """
+        INSERT INTO whatsapp_connector.event_inbox
+            (event_id, connection_id, event_type, provider_message_id,
+             payload, received_at, processed_at)
+        VALUES
+            ('e-pending', 'c1', 'message', 'm1', '{}', :now, NULL),
+            ('e-done', 'c1', 'message', 'm2', '{}', :now, :now),
+            ('e-state', 'c1', 'connection_state', 'm3', '{}', :now, NULL)
+        """,
+        {"now": NOW},
+    )
+    await _exec(
+        session_factory,
+        """
+        INSERT INTO baileys_connector_event_processing
+            (event_id, inbox_id, status, attempt_count)
+        VALUES ('x1', 2, 'failed', 10)
+        """,
+    )
+    baileys_child = await insert_user(session_factory, "+972500000009")
+    await insert_connection(
+        session_factory, baileys_child, "baileys", "connected", "b-conn-9"
+    )
+
+    snapshot = await _service(session_factory).snapshot(period="24h")
+    provider = {
+        p["provider"]: p
+        for p in snapshot["sections"]["providers"]["providers"]
+    }["baileys"]
+    assert provider["pending_backlog"] == 1  # message events only, not state
+    assert provider["failed_backlog"] == 1
+    assert provider["oldest_pending_at"] is not None
