@@ -28,7 +28,15 @@ from echo_v2.services.media_summarizer import (
     is_link_message,
     is_video_link_message,
 )
-from echo_v2.services.transcription import Transcriber, handle_direct_audio_download_url
+from echo_v2.services.transcription import (
+    MediaUnavailableError,
+    Transcriber,
+    handle_direct_audio_download_url,
+)
+from echo_v2.services.waha_media import (
+    WahaMediaDecryptError,
+    WahaMediaUnavailableError,
+)
 
 _logger = logging.getLogger("echo_v2.services.media_enrichment")
 
@@ -257,11 +265,21 @@ class MediaEnrichmentService:
             return EnrichedMessage(message, result, text)
         except Exception as exc:  # noqa: BLE001 - one bad media item must not abort a window
             attempts = claimed.attempts
-            # Deterministic size-limit failures and fundamentally unavailable
-            # media are terminal immediately — retrying won't help and
-            # wastes attempts.
+            # Deterministic size-limit failures, permanently unavailable
+            # media (bad reference, CDN object evicted — 4xx) and
+            # hash/decryption mismatches are terminal immediately —
+            # retrying won't help and wastes attempts. Transport and 5xx
+            # failures stay retryable.
             terminal = (
-                isinstance(exc, VideoTooLargeError)
+                isinstance(
+                    exc,
+                    (
+                        VideoTooLargeError,
+                        MediaUnavailableError,
+                        WahaMediaUnavailableError,
+                        WahaMediaDecryptError,
+                    ),
+                )
                 or media_unavailable
                 or attempts >= self._max_attempts
             )

@@ -609,3 +609,93 @@ async def test_ssrf_rejects_too_many_redirects() -> None:
 
     # Should have attempted _MAX_REDIRECTS + 1 hops before giving up.
     assert stream_call_count == _MAX_REDIRECTS + 1
+
+
+# --- file:// local media (WAHA resolver handoff) -------------------------------
+
+
+async def test_file_url_reads_local_media(tmp_path: Any) -> None:
+    """The WAHA resolver hands over decrypted media as file:// — it is read
+    locally and sent to Gemini without any HTTP download."""
+    summarizer = GeminiVideoSummarizer(api_key="test-key")
+    video = tmp_path / "voice.mp4"
+    video_bytes = b"\x00\x00\x00\x20ftypisom" + b"\x01" * 200
+    video.write_bytes(video_bytes)
+
+    stream_mock = AsyncMock()
+    with (
+        patch.object(httpx.AsyncClient, "stream", stream_mock),
+        patch("google.genai.Client") as mock_client_cls,
+    ):
+        mock_client = MagicMock()
+        mock_client.aio.models.generate_content = AsyncMock(
+            return_value=_fake_response("סרטון מהטלפון")
+        )
+        mock_client_cls.return_value = mock_client
+
+        result = await summarizer.summarize_media(
+            download_url=f"file://{video}",
+            mime_type="video/mp4",
+            file_name="voice.mp4",
+            message_type="video",
+        )
+
+    assert result.kind == "video"
+    assert result.text == "סרטון מהטלפון"
+    stream_mock.assert_not_called()  # no HTTP download for local media
+
+
+async def test_file_url_oversized_raises_too_large(tmp_path: Any) -> None:
+    summarizer = GeminiVideoSummarizer(api_key="test-key", max_bytes=100)
+    big = tmp_path / "big.mp4"
+    big.write_bytes(b"\x00" * 500)
+
+    with pytest.raises(VideoTooLargeError, match="exceeded size cap"):
+        await summarizer.summarize_media(
+            download_url=f"file://{big}",
+            mime_type="video/mp4",
+            file_name="big.mp4",
+            message_type="video",
+        )
+
+
+async def test_file_url_with_host_rejected(tmp_path: Any) -> None:
+    """file:// with a remote host is not a local path — never read it."""
+    summarizer = GeminiVideoSummarizer(api_key="test-key")
+    with pytest.raises(MediaSummaryError, match="must not reference a host"):
+        await summarizer.summarize_media(
+            download_url="file://evil.example/share/v.mp4",
+            mime_type="video/mp4",
+            file_name="v.mp4",
+            message_type="video",
+        )
+
+
+async def test_file_url_missing_file_raises(tmp_path: Any) -> None:
+    summarizer = GeminiVideoSummarizer(api_key="test-key")
+    with pytest.raises(MediaSummaryError, match="not found"):
+        await summarizer.summarize_media(
+            download_url=f"file://{tmp_path}/gone.mp4",
+            mime_type="video/mp4",
+            file_name="gone.mp4",
+            message_type="video",
+        )
+
+
+async def test_file_url_does_not_skip_ssrf_for_remote_urls(tmp_path: Any) -> None:
+    """The file:// branch never weakens the remote path: https URLs still go
+    through _assert_safe_url before any request."""
+    summarizer = GeminiVideoSummarizer(api_key="test-key")
+
+    with (
+        patch.object(GeminiVideoSummarizer, "_assert_safe_url") as guard,
+        pytest.raises(MediaSummaryError, match="blocked"),
+    ):
+        guard.side_effect = MediaSummaryError("blocked")
+        await summarizer.summarize_media(
+            download_url="https://media.test/v.mp4",
+            mime_type="video/mp4",
+            file_name="v.mp4",
+            message_type="video",
+        )
+    guard.assert_called_once_with("https://media.test/v.mp4")

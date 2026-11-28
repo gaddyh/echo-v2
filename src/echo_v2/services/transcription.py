@@ -24,6 +24,7 @@ import httpx
 
 __all__ = [
     "SUPPORTED_TRANSCRIPTION_EXTS",
+    "MediaUnavailableError",
     "Transcriber",
     "TranscriptionError",
     "TranscriptionResult",
@@ -83,6 +84,15 @@ class TranscriptionResult:
 
 class TranscriptionError(RuntimeError):
     """Provider-neutral transcription failure."""
+
+
+class MediaUnavailableError(TranscriptionError):
+    """The remote media object is permanently gone (HTTP 4xx).
+
+    Deterministic — retrying cannot resurrect an expired/evicted media
+    object, so the enrichment layer marks this terminal immediately
+    instead of burning the remaining attempts.
+    """
 
 
 @runtime_checkable
@@ -154,8 +164,26 @@ async def download_file(url: str, target_path: Path) -> None:
         target_path.write_bytes(_read_local_media(url))
         return
     async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
-        response = await client.get(url)
-        response.raise_for_status()
+        try:
+            response = await client.get(url)
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            # 4xx: the remote object is gone for good (expired/evicted media or
+            # a dead connector URL) — a distinct, terminal failure class. 5xx
+            # stays retryable. HTTPStatusError embeds the signed request URL,
+            # so the persisted error carries only the status code.
+            status = exc.response.status_code
+            if 400 <= status < 500:
+                raise MediaUnavailableError(
+                    f"media no longer available (HTTP {status})"
+                ) from exc
+            raise TranscriptionError(
+                f"media download returned HTTP {status}"
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise TranscriptionError(
+                f"media download failed ({type(exc).__name__})"
+            ) from exc
         target_path.write_bytes(response.content)
 
 

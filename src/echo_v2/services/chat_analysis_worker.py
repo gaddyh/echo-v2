@@ -39,6 +39,7 @@ import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Literal, Protocol, runtime_checkable
+from urllib.parse import urlparse
 
 from langsmith import traceable
 
@@ -355,9 +356,9 @@ class ChatAnalysisProcessor:
                 and msg.media_download_url is not None
             ):
                 _logger.info(
-                    "starting transcription for message %s url=%s",
+                    "starting transcription for message %s url_host=%s",
                     msg.id,
-                    msg.media_download_url,
+                    urlparse(msg.media_download_url).hostname,
                 )
                 try:
                     if self._transcriber is None:

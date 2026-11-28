@@ -202,6 +202,41 @@ def test_media_without_url_or_key_is_not_media() -> None:
     assert event.media_reference is None  # fundamentally unavailable
 
 
+def test_history_sync_envelope_sets_flag() -> None:
+    row = _row(
+        {
+            "Info": _info(),
+            "Message": {"conversation": "very old message"},
+            # whatsmeow serializes the reconstructed WebMessageInfo here for
+            # history-sync deliveries; live pushes leave it null/absent.
+            "SourceWebMsg": {
+                "key": {"ID": "M-1", "remoteJID": "61280626974807@lid"},
+                "message": {"conversation": "very old message"},
+            },
+        }
+    )
+    assert parse_envelope(row).is_history_sync is True
+
+
+def test_live_envelope_is_not_history_sync() -> None:
+    row = _row({"Info": _info(), "Message": {"conversation": "hi"}})
+    assert parse_envelope(row).is_history_sync is False
+
+    row_null = _row(
+        {"Info": _info(), "Message": {"conversation": "hi"}, "SourceWebMsg": None}
+    )
+    assert parse_envelope(row_null).is_history_sync is False
+
+
+@pytest.mark.parametrize("marker", ["", {}, 0, False])
+def test_malformed_source_web_msg_defaults_to_live(marker: Any) -> None:
+    """Ambiguous origin metadata must never suppress a message."""
+    row = _row(
+        {"Info": _info(), "Message": {"conversation": "hi"}, "SourceWebMsg": marker}
+    )
+    assert parse_envelope(row).is_history_sync is False
+
+
 def test_invalid_json_raises() -> None:
     row = _row({"Info": _info()})
     object.__setattr__(row, "data", "{not json")

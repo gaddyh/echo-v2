@@ -8,7 +8,9 @@ import httpx
 import pytest
 
 from echo_v2.services.waha_media import (
+    WahaMediaDownloadError,
     WahaMediaError,
+    WahaMediaUnavailableError,
     WahaMediaUrlResolver,
     download_ciphertext,
 )
@@ -64,12 +66,48 @@ async def test_download_ciphertext_rejects_redirect(
         await download_ciphertext("https://mmg.whatsapp.net/v/t62", max_bytes=10)
 
 
-async def test_download_ciphertext_raises_for_http_status(
+async def test_download_ciphertext_4xx_is_unavailable_not_retryable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    handler = httpx.MockTransport(lambda request: httpx.Response(404))
+    """CDN 4xx = the object is evicted/expired: a distinct terminal class."""
+    for status in (403, 404, 410):
+        handler = httpx.MockTransport(lambda request, s=status: httpx.Response(s))
+        _install_mock_client(monkeypatch, handler)
+        with pytest.raises(WahaMediaUnavailableError, match="no longer available"):
+            await download_ciphertext("https://mmg.whatsapp.net/v/t62", max_bytes=10)
+
+
+async def test_download_ciphertext_5xx_stays_retryable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    handler = httpx.MockTransport(lambda request: httpx.Response(503))
     _install_mock_client(monkeypatch, handler)
-    with pytest.raises(httpx.HTTPStatusError):
+    with pytest.raises(WahaMediaDownloadError, match="HTTP 503"):
+        await download_ciphertext("https://mmg.whatsapp.net/v/t62", max_bytes=10)
+
+
+async def test_download_ciphertext_errors_never_leak_signed_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    signed = "https://mmg.whatsapp.net/v/t62.7117-24/abc.enc?oe=DEADBEEF&oh=secret&token=xyz"
+    for status in (403, 503):
+        handler = httpx.MockTransport(lambda request, s=status: httpx.Response(s))
+        _install_mock_client(monkeypatch, handler)
+        with pytest.raises(WahaMediaError) as excinfo:
+            await download_ciphertext(signed, max_bytes=10)
+        assert "mmg.whatsapp.net" not in str(excinfo.value)
+        assert "token" not in str(excinfo.value)
+
+
+async def test_download_ciphertext_transport_error_is_sanitized(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _raise(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused")
+
+    handler = httpx.MockTransport(_raise)
+    _install_mock_client(monkeypatch, handler)
+    with pytest.raises(WahaMediaDownloadError, match="ConnectError"):
         await download_ciphertext("https://mmg.whatsapp.net/v/t62", max_bytes=10)
 
 

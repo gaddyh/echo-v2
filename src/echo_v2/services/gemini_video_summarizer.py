@@ -14,8 +14,9 @@ from __future__ import annotations
 import ipaddress
 import logging
 import socket
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from urllib.parse import urljoin, urlparse
+from urllib.parse import unquote, urljoin, urlparse
 from uuid import uuid4
 
 import httpx
@@ -127,8 +128,8 @@ class GeminiVideoSummarizer:
                 kind="unsupported",
             )
         _logger.info(
-            "gemini video summarizer start url=%s mime=%s file=%s caption=%s",
-            download_url, mime_type, file_name, bool(caption),
+            "gemini video summarizer start url_host=%s mime=%s file=%s caption=%s",
+            urlparse(download_url).hostname, mime_type, file_name, bool(caption),
         )
         video_bytes = await self._download_bounded(download_url)
         _logger.info(
@@ -216,6 +217,28 @@ class GeminiVideoSummarizer:
                     f"SSRF guard rejected {hostname}: resolves to {ip}"
                 )
 
+    def _read_local(self, url: str) -> bytes:
+        """Read a ``file://`` media path from the resolver temp cache.
+
+        ``file://`` URLs are the connector-independent media handoff — they
+        are produced only by Echo's own media resolvers (e.g. the WAHA
+        decrypting resolver) and never originate from external input. The
+        SSRF guard applies to remote URLs; local reads are capped by
+        ``max_bytes`` exactly like downloads.
+        """
+        parsed = urlparse(url)
+        if parsed.netloc not in ("", "localhost"):
+            raise MediaSummaryError("local media path must not reference a host")
+        path = Path(unquote(parsed.path))
+        if not path.is_file():
+            raise MediaSummaryError(f"local media file not found: {path.name}")
+        data = path.read_bytes()
+        if len(data) > self._max_bytes:
+            raise VideoTooLargeError(
+                f"video exceeded size cap {self._max_bytes} bytes ({len(data)} bytes)"
+            )
+        return data
+
     async def _download_bounded(self, url: str) -> bytes:
         """Download ``url`` with a streaming read, aborting on size overflow.
 
@@ -228,6 +251,8 @@ class GeminiVideoSummarizer:
         :class:`VideoTooLargeError` as soon as the running total exceeds
         ``max_bytes``, without buffering the entire oversized file.
         """
+        if url.startswith("file://"):
+            return self._read_local(url)
         owns_client = self._http_client is None
         client = self._http_client or httpx.AsyncClient(timeout=120, follow_redirects=False)
         try:

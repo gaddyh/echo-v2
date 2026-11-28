@@ -51,13 +51,17 @@ def _capture_logs(level: int = logging.WARNING) -> Iterator[list[str]]:
 
 
 def _inbox_message(
-    data: dict[str, Any], *, session: str = "gaddy-test", message_id: str = "M-1"
+    data: dict[str, Any],
+    *,
+    session: str = "gaddy-test",
+    message_id: str = "M-1",
+    whatsapp_timestamp: datetime = NOW,
 ) -> WahaInboxMessage:
     return WahaInboxMessage(
         session=session,
         message_id=message_id,
         chat_jid="61280626974807@lid",
-        whatsapp_timestamp=NOW,
+        whatsapp_timestamp=whatsapp_timestamp,
         from_me=0,
         is_real=1,
         data=json.dumps(data),
@@ -80,6 +84,23 @@ def _text_row(message_id: str = "M-1") -> WahaInboxMessage:
             "Message": {"conversation": "hello"},
         },
         message_id=message_id,
+    )
+
+
+def _history_row(message_id: str = "H-1") -> WahaInboxMessage:
+    return _inbox_message(
+        {
+            "Info": {
+                "Chat": "61280626974807@lid",
+                "IsFromMe": False,
+                "IsGroup": False,
+                "Type": "text",
+            },
+            "Message": {"conversation": "synced history"},
+            "SourceWebMsg": {"key": {"ID": message_id}, "status": "READ"},
+        },
+        message_id=message_id,
+        whatsapp_timestamp=datetime(2024, 4, 22, 8, 0, 0, tzinfo=timezone.utc),
     )
 
 
@@ -178,6 +199,97 @@ async def test_processes_claimed_rows_end_to_end() -> None:
     assert connection_id == "conn-1"
     assert [c.message.message_id for c in repo.completed] == ["M-1", "M-2"]
     assert repo.failures == []
+
+
+async def test_history_sync_rows_are_suppressed_before_ingest() -> None:
+    """SourceWebMsg-marked rows: consumed + ACKed, never ingested."""
+    repo = FakeRepository([_history_row("H-1"), _history_row("H-2"), _text_row("L-1")])
+    connections = FakeConnections(_stored_connection())
+    ingestion = FakeIngestion()
+    processed = await _consumer(repo, connections, ingestion).run_once()
+
+    assert processed == 3
+    assert [c.message.message_id for c in repo.completed] == ["H-1", "H-2", "L-1"]
+    assert repo.failures == []
+    # Only the live row reached ingestion; history never persisted a message.
+    assert len(ingestion.calls) == 1
+    assert ingestion.calls[0][0].provider_message_id == "L-1"
+    assert ingestion.calls[0][0].is_history_sync is False
+
+
+async def test_history_suppression_needs_no_connection() -> None:
+    """Suppressed rows complete even without a mapped session connection —
+    nothing resolves, schedules or enriches them."""
+    repo = FakeRepository([_history_row()])
+    processed = await _consumer(
+        repo, FakeConnections(None), FakeIngestion()
+    ).run_once()
+
+    assert processed == 1
+    assert len(repo.completed) == 1
+    assert repo.failures == []
+
+
+async def test_replayed_history_stays_suppressed() -> None:
+    """Re-pairing redelivers the same history — suppression is idempotent."""
+    for _round in range(2):
+        repo = FakeRepository([_history_row("H-1"), _history_row("H-2")])
+        ingestion = FakeIngestion()
+        processed = await _consumer(
+            repo, FakeConnections(_stored_connection()), ingestion
+        ).run_once()
+        assert processed == 2
+        assert len(repo.completed) == 2
+        assert ingestion.calls == []
+        assert repo.failures == []
+
+
+async def test_old_catchup_message_without_sync_marker_is_ingested() -> None:
+    """Age alone never suppresses: a days-old message delivered without
+    SourceWebMsg (offline catch-up) is ingested normally."""
+    old_ts = datetime(2026, 11, 20, 8, 0, 0, tzinfo=timezone.utc)
+    row = _inbox_message(
+        {
+            "Info": {
+                "Chat": "61280626974807@lid",
+                "IsFromMe": False,
+                "IsGroup": False,
+                "Type": "text",
+            },
+            "Message": {"conversation": "missed while offline"},
+        },
+        message_id="CU-1",
+        whatsapp_timestamp=old_ts,
+    )
+    repo = FakeRepository([row])
+    ingestion = FakeIngestion()
+    processed = await _consumer(repo, FakeConnections(_stored_connection()), ingestion).run_once()
+
+    assert processed == 1
+    assert len(ingestion.calls) == 1
+    assert len(repo.completed) == 1
+
+
+async def test_large_history_flush_drains_without_ingestion() -> None:
+    """A first-pairing flush drains at claim pace with zero ingest calls."""
+    repo = FakeRepository([_history_row(f"H-{i}") for i in range(1500)])
+    repo.rows.extend([_text_row("LIVE-1")])  # live message mid-flush
+    ingestion = FakeIngestion()
+    consumer = WahaMessageConsumer(
+        repo,  # type: ignore[arg-type]
+        FakeConnections(_stored_connection()),  # type: ignore[arg-type]
+        ingestion,  # type: ignore[arg-type]
+        batch_size=500,
+    )
+
+    total = 0
+    while processed := await consumer.run_once():
+        total += processed
+
+    assert total == 1501
+    assert len(repo.completed) == 1501
+    assert repo.failures == []
+    assert [call[0].provider_message_id for call in ingestion.calls] == ["LIVE-1"]
 
 
 async def test_unknown_connection_marks_row_failed() -> None:

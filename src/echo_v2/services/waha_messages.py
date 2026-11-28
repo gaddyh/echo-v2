@@ -207,6 +207,12 @@ def parse_envelope(message: WahaInboxMessage) -> ProviderMessageEvent:
         is_group=_bool_field(info, "IsGroup"),
         media_reference=media_reference,
         media_download_url=None,
+        # ``SourceWebMsg`` is the WebMessageInfo whatsmeow reconstructs synced
+        # history from; it is null on live/offline-push deliveries (verified
+        # against the 2026-11-27 pairing flush: every synced row carried a
+        # non-empty object, every live row had null/absent). Missing or
+        # malformed values default to live — never suppress on ambiguity.
+        is_history_sync=bool(envelope.get("SourceWebMsg")),
         media_mime_type=media.mimetype if media else None,
         media_file_name=media.file_name if media else None,
         media_size=media.file_length if media else None,

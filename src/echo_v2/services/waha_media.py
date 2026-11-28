@@ -175,10 +175,27 @@ async def download_ciphertext(
         raise WahaMediaDownloadError("media URL must be an absolute HTTPS URL")
     buf = bytearray()
     async with httpx.AsyncClient(timeout=120, follow_redirects=False) as client:
-        response = await client.get(url, headers={"User-Agent": user_agent})
+        try:
+            response = await client.get(url, headers={"User-Agent": user_agent})
+        except httpx.HTTPError as exc:
+            # The raw exception may embed the signed CDN URL — never surface it.
+            raise WahaMediaDownloadError(
+                f"CDN fetch failed ({type(exc).__name__})"
+            ) from exc
         if response.status_code in (301, 302, 303, 307, 308):
             raise WahaMediaDownloadError("media URL returned an unexpected redirect")
-        response.raise_for_status()
+        # 4xx means the CDN object itself is gone — signed WhatsApp media URLs
+        # have a bounded lifetime, so once evicted the ciphertext is
+        # permanently unrecoverable. Kept separate from transport/5xx
+        # failures, which are retried.
+        if 400 <= response.status_code < 500:
+            raise WahaMediaUnavailableError(
+                f"media no longer available on WhatsApp CDN (HTTP {response.status_code})"
+            )
+        if response.status_code >= 400:
+            raise WahaMediaDownloadError(
+                f"CDN returned HTTP {response.status_code}"
+            )
         async for chunk in response.aiter_bytes():
             buf.extend(chunk)
             if len(buf) > max_bytes:

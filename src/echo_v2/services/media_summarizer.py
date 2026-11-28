@@ -169,6 +169,15 @@ def classify_video_url(url: str) -> str | None:
     return None
 
 
+def _url_host(url: str) -> str:
+    """Return only the URL's host for logs — media links are signed URLs and
+    must never be written to logs or persisted errors."""
+    try:
+        return urlparse(url).hostname or "<none>"
+    except (ValueError, TypeError):
+        return "<invalid>"
+
+
 def is_video_link_message(text: str | None) -> bool:
     """Heuristic: is this text message "mostly a video link"?
 
@@ -326,7 +335,7 @@ class OpenAIMediaSummarizer:
                 child_user_id=child_user_id,
             )
         except Exception as exc:  # noqa: BLE001 - best-effort link summary
-            _logger.warning("link summarization failed for %s: %s", url, exc)
+            _logger.warning("link summarization failed for %s: %s", _url_host(url), exc)
             return MediaSummary(text=f"[link: {url}]", kind="link_error")
 
     async def summarize_youtube(self, url: str) -> MediaSummary:
@@ -349,7 +358,7 @@ class OpenAIMediaSummarizer:
         try:
             media_bytes = await download_media(download_url, self._http_client)
         except Exception as exc:  # noqa: BLE001 - best-effort
-            _logger.warning("image download failed for %s: %s", download_url, exc)
+            _logger.warning("image download failed for %s: %s", _url_host(download_url), exc)
             return MediaSummary(text=_image_placeholder(caption), kind="image_download_error")
         return await summarize_image_bytes(
             client=self._client,
@@ -373,7 +382,7 @@ class OpenAIMediaSummarizer:
         try:
             media_bytes = await download_media(download_url, self._http_client)
         except Exception as exc:  # noqa: BLE001 - best-effort
-            _logger.warning("document download failed for %s: %s", download_url, exc)
+            _logger.warning("document download failed for %s: %s", _url_host(download_url), exc)
             return MediaSummary(
                 text=_document_placeholder(caption, file_name),
                 kind="document_download_error",
@@ -421,8 +430,19 @@ async def download_media(
     owns_client = http_client is None
     client = http_client or httpx.AsyncClient(timeout=120, follow_redirects=True)
     try:
-        response = await client.get(url)
-        response.raise_for_status()
+        try:
+            response = await client.get(url)
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            # HTTPStatusError embeds the signed request URL — persist the
+            # status code only, never the URL.
+            raise MediaSummaryError(
+                f"media download returned HTTP {exc.response.status_code}"
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise MediaSummaryError(
+                f"media download failed ({type(exc).__name__})"
+            ) from exc
         content = response.content
         if len(content) > _MAX_DOWNLOAD_BYTES:
             raise MediaSummaryError(
@@ -722,13 +742,19 @@ async def summarize_link(
     try:
         response = await hc.get(url)
         response.raise_for_status()
-        content_type = response.headers.get("content-type", "").split(";")[0].strip().lower()
-        body = response.text[:_MAX_LINK_BYTES]
+    except httpx.HTTPStatusError as exc:
+        # HTTPStatusError embeds the request URL — keep it out of persisted
+        # errors (it may be a signed/credential-bearing URL).
+        raise MediaSummaryError(
+            f"link fetch failed (HTTP {exc.response.status_code})"
+        ) from exc
     except Exception as exc:
-        raise MediaSummaryError(f"link fetch failed: {exc}") from exc
+        raise MediaSummaryError(f"link fetch failed: {type(exc).__name__}") from exc
     finally:
         if owns_client:
             await hc.aclose()
+    content_type = response.headers.get("content-type", "").split(";")[0].strip().lower()
+    body = response.text[:_MAX_LINK_BYTES]
 
     if "html" in content_type:
         text = _strip_html(body)
